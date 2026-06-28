@@ -187,12 +187,24 @@ void    FreePage(int64_t logicalPage);
 
 All newly allocated pages are zero-filled before returning.
 
-Allocation is zone-based for thread safety: the logical page space is
-divided into zones of 1M pages. `Allocate` picks a zone by thread ID,
-scans from a per-zone hint cursor for `count` consecutive free bits.
-Falls back to adjacent zones if the home zone is full. When no free pages
-exist, the StorageBackend extends the backing file and updates its internal
-bitmap accordingly; no separate "extend" API is needed.
+**Capacity limit.** The `bitmap_dir` array in the header has a fixed capacity
+of `(page_size − 64) / 8` entries. When all entries are non-zero and no
+further bitmap pages can be allocated, the instance has reached its maximum
+logical page count. `Allocate` returns -1. The maximum at page_size = 8192
+is 1,016 bitmap pages covering 66,570,496 logical pages (~545 GB).
+
+**Thread safety.** `Allocate` is thread-safe. Allocation is zone-based: the
+logical page space is divided into zones of 1M pages. `Allocate` picks a
+zone by thread ID, scans from a per-zone hint cursor for `count` consecutive
+free bits using atomic bit operations. Falls back to adjacent zones if the
+home zone is full.
+
+When no free pages exist in any zone, a new bitmap page must be allocated.
+The StorageBackend extends the backing file, allocates the new bitmap page,
+zero-fills it, and appends its index to the first zero slot in `bitmap_dir`
+via CAS. Then it updates `total_pages` in the header via CAS. The header
+page is ping-pong backed (§3.6) — the CAS on `bitmap_dir` entries and
+`total_pages` is safe because the underlying page write is crash-safe.
 
 ### 3.4 Page I/O
 
