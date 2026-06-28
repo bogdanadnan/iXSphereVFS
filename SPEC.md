@@ -67,7 +67,7 @@ at 0, then `ComputeAndWriteChecksum` computes and stores it. On read:
 Type   Name        Purpose
 ────   ────        ───────
 0x00   Superblock  File header (§4)
-0x01   Bitmap      Free-page bitmap overflow page (§3.6)
+0x01   Bitmap      Free-page bitmap overflow page (§3.7)
 0x02   TreeNode    Directory, file, or section node (§5)
 0x03   PoolPage    Version node pool (§5.4)
 0x04   MapperPage  Epoch mapper (§8.5)
@@ -105,11 +105,38 @@ H + 16KB      Logical page 1 (superblock ping-pong alternate)
 ```
 
 The header size H is an implementation detail. Each logical page is backed
-internally by a ping-pong physical pair (§3.5); the StorageBackend allocates
+internally by a ping-pong physical pair (§3.7); the StorageBackend allocates
 the pair, stores both halves contiguously, and exposes a single logical page
 index.
 
-### 3.2 Page Allocation
+### 3.2 Initialization
+
+When opening a VFS instance, the StorageBackend checks whether the backing
+file exists:
+
+**File does not exist or is empty:**
+1. Create the backing file.
+2. Write the StorageBackend header with an initialized free bitmap (all pages
+   free) and chain of bitmap overflow pages (none, covering 0 pages).
+3. Allocate logical page 0 (ping-pong pair) for the superblock.
+4. Initialize the superblock (§4): `rootNodeOffset = 0` (empty tree),
+   `currentEpoch = 0`, `epochMapperPage = 0` (no mapper yet),
+   `poolListHead = 0` (no pool pages yet), `treeLockState = 0`.
+5. Flush. The instance is ready.
+
+**File exists:**
+1. Read the header.
+2. Load the free bitmap from the header and any overflow pages.
+3. Read the superblock (logical page 0, ping-pong active half).
+4. Validate CRC32C. If invalid, try the alternate superblock half and the
+   ping-pong alternate page (logical page 1, reserved for superblock swap).
+5. Initialize the in-memory pool list head and tree lock state from the
+   superblock fields.
+6. Walk the epoch mapper chain from `epochMapperPage`. Build in-memory
+   mapping dictionary.
+7. The instance is ready. All other pages are validated lazily on first read.
+
+### 3.3 Page Allocation
 
 ```
 int64_t Allocate(int count);
@@ -117,7 +144,7 @@ void    FreePage(int64_t logicalPage);
 ```
 
 - `Allocate(count)`: reserves `count` contiguous logical pages. Each logical
-  page is internally backed by a ping-pong physical pair (§3.5). Returns the
+  page is internally backed by a ping-pong physical pair (§3.6). Returns the
   first logical page index, or -1 if no space.
 - `FreePage(logicalPage)`: marks the logical page as free, releasing the
   underlying ping-pong pair. GC is the primary caller; normal VFS operations
@@ -132,7 +159,7 @@ Falls back to adjacent zones if the home zone is full. When no free pages
 exist, the StorageBackend extends the backing file and updates its internal
 bitmap accordingly; no separate "extend" API is needed.
 
-### 3.3 Page I/O
+### 3.4 Page I/O
 
 ```
 uint8_t* ReadPage(int64_t logicalPage);
@@ -140,7 +167,7 @@ void     WritePage(int64_t logicalPage, uint8_t* data);
 void     Flush(void);
 ```
 
-- `ReadPage`: checks the unified page cache (§3.4) first. On hit, returns
+- `ReadPage`: checks the unified page cache (§3.5) first. On hit, returns
   the cached buffer. On miss, reads from the backing file, inserts into
   the cache as clean, and returns it. Returns NULL if the page has never
   been written.
@@ -149,7 +176,7 @@ void     Flush(void);
 - `Flush`: writes all dirty pages to the backing file and fsyncs. Marks
   them clean. Clean pages remain cached.
 
-### 3.4 Unified Page Cache
+### 3.5 Unified Page Cache
 
 Pages in the cache are in one of two states: clean (read from disk,
 unmodified) or dirty (written via `WritePage`, not yet flushed). Eviction:
@@ -157,7 +184,7 @@ when a configurable memory budget is exceeded (default 256 MB, ~32,768
 pages), evict clean pages via LRU. Dirty pages are never evicted. The
 cache is thread-safe (concurrent reads/writes).
 
-### 3.5 Ping-Pong Pages
+### 3.6 Ping-Pong Pages
 
 Every logical page is backed by two physical pages for crash-safe writes.
 When `Allocate` is called, the StorageBackend internally reserves two
@@ -179,7 +206,7 @@ visible. All page types — superblock, bitmap, tree nodes, pool pages,
 mapper pages, and data pages — share this mechanism. There is no distinction
 between "data" and "metadata" durability.
 
-### 3.6 Free-Page Bitmap (Internal)
+### 3.7 Free-Page Bitmap (Internal)
 
 The StorageBackend maintains a private free-page bitmap. One bit per
 allocatable logical page. `1` = free, `0` = allocated.
@@ -271,7 +298,7 @@ during GC (which rebuilds and flushes the superblock). Between GC cycles:
   stale. This is safe — pool pages are also reachable via VirtualPtrs in
   section slots. GC walks the tree and rebuilds the complete pool list.
 - `treeLockState` is always 0 at flush time (no operations in flight during
-  a flush), so recovery zeros it unconditionally ping-pong (§3.5).
+  a flush), so recovery zeros it unconditionally ping-pong (§3.6).
 
 ---
 
@@ -299,7 +326,7 @@ Offset  Size  Field
 **Section entries (type=0x04):** `nameLen` is repurposed as `sectionIdx`
 (uint16), identifying which 1021-page segment of the file this section
 page covers (0, 1, 2... up to 65,535 → 535 GB max logical file size).
-With ping-pong page backing (§3.5), physical storage is up to ~1.1 TB for a
+With ping-pong page backing (§3.6), physical storage is up to ~1.1 TB for a
 fully written 535 GB logical file. No name bytes follow. `childOffset` is
 the section page index.
 
@@ -340,7 +367,7 @@ The `dataCrc32c` field stores the CRC32C of the physical data page's content
 
 On write: compute CRC32C of the new content, store via `atomic_store_release`.
 On read: recompute the data page's CRC32C. If it matches `dataCrc32c`, the
-page is valid. If not, the ping-pong mechanism (§3.5) tries the backup half.
+page is valid. If not, the ping-pong mechanism (§3.6) tries the backup half.
 If both halves fail CRC, fall back to the previous version in the chain.
 
 This provides defense-in-depth against silent corruption (SSD bit rot, memory
@@ -589,7 +616,7 @@ Given file node F, logical page P, offset O within page, data D, write epoch E:
 2. Read `vp = section[P]` (the VirtualPtr, 0 if never written).
 3. Walk the version chain starting at `vp`. Find any existing version node
    with `epoch == E`.
-   - **FOUND** → in-place write. Ping-pong write to the data page ping-pong (§3.5):
+   - **FOUND** → in-place write. Ping-pong write to the data page ping-pong (§3.6):
      write new content to inactive half, increment generation.
      Update `version.dataCrc32c` via `atomic_store_release`.
    - **NOT FOUND, vp == 0 (first-ever write):** Allocate new data page Q
@@ -990,7 +1017,7 @@ committed snapshot epochs before invoking GC.
 ### 11.1 Page Durability
 
 All pages — superblock, bitmap, tree nodes, pool pages, mapper pages, and
-data pages — are backed by ping-pong physical pairs (§3.5). A crash
+data pages — are backed by ping-pong physical pairs (§3.6). A crash
 mid-write leaves the old half intact (generation not updated) or the new
 half intact (CRC32C valid — generation was written last). No torn page is
 ever visible. The reader picks the half with higher generation; if its CRC
@@ -1028,7 +1055,7 @@ new logical state — never a torn page.
      Logical pages whose chain head is elsewhere but whose chain passes
      through a node in the corrupt page lose history below the corrupt
      entry but retain the head — the chain terminates at the corrupt node.
-   - Data page: ping-pong handles CRC failure on read (§3.5). No mount-time
+   - Data page: ping-pong handles CRC failure on read (§3.6). No mount-time
      scan needed.
 
 All corruption is detected and handled at read time, not mount time.
@@ -1039,7 +1066,7 @@ Pages that are never read after a crash need no validation.
 
 Estimated per-operation cost for a single 8KB page write on the hot path.
 Timings assume warm cache — pages resident in the unified page cache
-(§3.4), no disk I/O:
+(§3.5), no disk I/O:
 
 | Operation | Cost |
 |---|---|
