@@ -157,15 +157,16 @@ file exists:
 
 **File does not exist or is empty:**
 1. Create the backing file.
-2. Bootstrap: reserve logical pages 0–3 directly — `Allocate` cannot be used
-   yet because no bitmap exists. Pages 0 (header), 1 (first bitmap), 2
-   (superblock, reserved for VFS), and 3 (superblock alternate). All four
+2. Bootstrap: reserve logical pages 0 (header) and 1 (first bitmap page)
+   directly — `Allocate` cannot be used yet because no bitmap exists. Both
    are zero-filled and use ping-pong backing.
-3. Write the header: `total_pages = 4`, `page_size = 8192` (default),
-   `first_data_page = 4`, `flags = 0`. Write `1` to `bitmap_dir[0]`.
-4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0–3 (header,
-   bitmap, superblock, superblock alternate) as allocated (`0`).
-5. Return success. The VFS layer initializes the superblock (§4) on page 2.
+3. Write the header: `total_pages = 2`, `page_size = 8192` (default),
+   `first_data_page = 2`, `flags = 0`. Write `1` to `bitmap_dir[0]`.
+4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header)
+   and 1 (bitmap) as allocated (`0`).
+5. Return success. The VFS layer calls `AcquirePage(2)` and `AcquirePage(3)`
+   for the superblock and its ping-pong alternate, then initializes the
+   superblock (§4) on page 2.
 
 **File exists:**
 1. Read logical page 0 (header block). Validate: `pageType == 0x5658 &&
@@ -178,12 +179,17 @@ file exists:
 
 ```
 int64_t Allocate(int count);
+bool    AcquirePage(int64_t logicalPage);
 void    FreePage(int64_t logicalPage);
 ```
 
 - `Allocate(count)`: reserves `count` contiguous logical pages. Each logical
   page is internally backed by a ping-pong physical pair §3.7. Returns the
   first logical page index, or -1 if no space.
+- `AcquirePage(logicalPage)`: atomically checks whether `logicalPage` is
+  free. If yes, marks it allocated and returns true. If already allocated,
+  returns false. This is a CAS on the bitmap bit — no scanning, O(1).
+  Used for fixed-location allocations (superblock, GC target pages).
 - `FreePage(logicalPage)`: marks the logical page as free, releasing the
   underlying ping-pong pair. GC is the primary caller; normal VFS operations
   never free individual pages.
