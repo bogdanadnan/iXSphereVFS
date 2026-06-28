@@ -75,13 +75,14 @@ Type   Name        Purpose
 0x03   PoolPage    Version node pool (§5.4)
 0x04   MapperPage  Epoch mapper (§8.5)
 0x05   Data        User file content
-0xFF   StorageHdr  StorageBackend header block — identifies the file as an iXSphereVFS instance (§3.1)
 ```
 
-The `StorageHdr` type (0xFF) on logical page 0 serves as the file magic
-number. On mount, the StorageBackend reads page 0, validates that the
-PageHeader type is `StorageHdr` and the CRC32C is valid. If either fails,
-the file is not a valid VFS instance.
+The StorageBackend header page (logical page 0) uses a special pageType value
+of `0x5658` and flags of `0x5346` — the ASCII string `"XVFS"` in little-endian
+byte order. This serves as the VFS file magic number. On mount, the
+StorageBackend reads logical page 0 and validates: `pageType == 0x5658 &&
+flags == 0x5346 && CRC32C valid`. If any check fails, the file is not a valid
+iXSphereVFS instance.
 
 ### 2.3 Bit-Set Helper
 
@@ -108,7 +109,7 @@ pages.
 ```
 Logical page   Content
 ────────────   ───────
-0              StorageBackend header (config + bitmap directory)
+0              StorageBackend header (magic "XVFS" at pageType+flags, config + bitmap directory)
 1..B           Free-bitmap pages (chained via bitmap directory in header)
 B+1            First allocatable page — superblock (ping-pong pair)
 B+2            Superblock alternate
@@ -165,9 +166,9 @@ file exists:
    the superblock.
 
 **File exists:**
-1. Read logical page 0 (header block). Validate the PageHeader type is
-   `StorageHdr` (0xFF) and CRC32C is valid. If either fails, the file is
-   not a valid iXSphereVFS instance.
+1. Read logical page 0 (header block). Validate: `pageType == 0x5658 &&
+   flags == 0x5346` (the "XVFS" magic) and CRC32C is valid. If any check
+   fails, the file is not a valid iXSphereVFS instance.
 2. Read `total_pages`, `page_size`, `first_data_page`. Load the `bitmap_dir`
    array (all non-zero entries). Read all referenced bitmap pages.
 
