@@ -219,11 +219,12 @@ void     WritePage(int64_t logicalPage, uint8_t* data);
 void     Flush(void);
 ```
 
-- `ReadPage`: reads the physical page pair, validates the active half via
-  generation, validates CRC32C on the payload, and returns a pointer to an
-  page_size-byte buffer containing the payload only. Checks the unified page
-  cache (§3.5) first. Returns NULL if the page has never been written.
-- `WritePage`: accepts an page_size-byte payload buffer. The StorageBackend
+- `ReadPage`: checks the unified page cache (§3.5) first. On cache hit,
+  returns the cached buffer immediately (CRC32C was validated on initial
+  load). On cache miss, reads the physical page pair from disk, validates
+  the active half via generation, validates CRC32C on the payload, and
+  inserts into the cache. Returns NULL if the page has never been written.
+- `WritePage`: accepts a page_size-byte payload buffer. The StorageBackend
   writes it to the inactive physical half with incremented generation and
   computed CRC32C (§3.6). Marks the page dirty but does not write to disk.
 - `Flush`: writes all dirty pages to the backing file and fsyncs. Marks
