@@ -156,9 +156,11 @@ file exists:
 
 **File does not exist or is empty:**
 1. Create the backing file.
-2. Allocate logical pages 0 (header) and 1 (first bitmap page).
-3. Write the header: `total_pages = 2`, `page_size = 8192`, `first_data_page = 2`,
-   `flags = 0`. Write `1` to `bitmap_dir[0]`.
+2. Bootstrap: reserve logical pages 0 (header) and 1 (first bitmap page)
+   directly — `Allocate` cannot be used yet because no bitmap exists. Both
+   pages are zero-filled and use ping-pong backing.
+3. Write the header: `total_pages = 2`, `page_size = 8192` (default),
+   `first_data_page = 2`, `flags = 0`. Write `1` to `bitmap_dir[0]`.
 4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header) and
    1 (bitmap) as allocated (`0`).
 5. Return success. The VFS layer allocates `first_data_page` (page 2) for
