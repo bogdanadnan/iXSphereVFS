@@ -69,13 +69,19 @@ at 0, then `ComputeAndWriteChecksum` computes and stores it. On read:
 ```
 Type   Name        Purpose
 ────   ────        ───────
-0x00   Superblock  File header (§4)
-0x01   Bitmap      Free-page bitmap overflow page (§3.7)
+0x00   Superblock  Tree root and epoch state (§4)
+0x01   Bitmap      Free-page bitmap page (§3.7)
 0x02   TreeNode    Directory, file, or section node (§5)
 0x03   PoolPage    Version node pool (§5.4)
 0x04   MapperPage  Epoch mapper (§8.5)
 0x05   Data        User file content
+0xFF   StorageHdr  StorageBackend header block — identifies the file as an iXSphereVFS instance (§3.1)
 ```
+
+The `StorageHdr` type (0xFF) on logical page 0 serves as the file magic
+number. On mount, the StorageBackend reads page 0, validates that the
+PageHeader type is `StorageHdr` and the CRC32C is valid. If either fails,
+the file is not a valid VFS instance.
 
 ### 2.3 Bit-Set Helper
 
@@ -159,11 +165,11 @@ file exists:
    the superblock.
 
 **File exists:**
-1. Read the header.
-2. Load the free bitmap from the header and any overflow pages.
-3. Validate the header CRC32C. If invalid, the file is corrupt.
-4. Return success. The VFS layer reads and validates the superblock from
-   logical page 0 at mount time (§11.2).
+1. Read logical page 0 (header block). Validate the PageHeader type is
+   `StorageHdr` (0xFF) and CRC32C is valid. If either fails, the file is
+   not a valid iXSphereVFS instance.
+2. Read `total_pages`, `page_size`, `first_data_page`. Load the `bitmap_dir`
+   array (all non-zero entries). Read all referenced bitmap pages.
 
 ### 3.3 Page Allocation
 
