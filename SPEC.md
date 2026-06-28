@@ -139,12 +139,12 @@ of non-zero entries. The first entry is always 1 (the first bitmap page).
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0    page_size  bits[65536]  (65,536 bits = page_size bytes, covering 65,536 logical pages)
+ 0    page_size  bits[]          (page_size bytes = page_size × 8 bits, covering that many logical pages)
 ```
 
 Bitmap pages have no `next` pointer — the header's `bitmap_dir` array is
 the authoritative chain. To find the bitmap bit for logical page N:
-`bitmap_index = N / 65536`, `bit_offset = N % 65536`. If `bitmap_index`
+`bitmap_index = N / (page_size * 8)`, `bit_offset = N % (page_size * 8)`. If `bitmap_index`
 exceeds the number of allocated bitmap pages, a new bitmap page is
 allocated and its index appended to the first zero slot in `bitmap_dir`.
 
@@ -255,8 +255,8 @@ allocatable logical page. `1` = free, `0` = allocated.
 
 **Layout.** The header's `bitmap_dir` array (§3.1) lists bitmap page indices.
 Bitmap pages have no internal linking — the directory is authoritative. Each
-bitmap page holds 65,536 bits (a full page_size-byte payload). Bit position `N`
-in page `bitmap_dir[M]` corresponds to logical page `M * 65536 + N`.
+bitmap page holds page_size * 8 bits (a full page_size-byte payload). Bit position `N`
+in page `bitmap_dir[M]` corresponds to logical page `M * page_size * 8 + N`.
 
 **Growth.** When `Allocate` needs a page beyond the current bitmap capacity,
 a new bitmap page is allocated, zero-filled (all bits `0` = allocated), then
