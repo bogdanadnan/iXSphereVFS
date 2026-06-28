@@ -40,8 +40,7 @@ databases, file storage, content-addressable data, and internal service state.
 Every page consists of a 12-byte PageHeader followed by a page_size-byte
 payload (page_size + 12 bytes total per logical page, doubled to 2 × (page_size + 12) bytes with
 ping-pong). The header is transparent to the VFS layer — `ReadPage` and
-`WritePage` operate on the payload only. A 12-byte header + page_size bytes of
-payload means standard SQLite page sizes (4,096, 8,192) fit without waste.
+`WritePage` operate on the payload only.
 
 ### 2.1 PageHeader (12 bytes)
 
