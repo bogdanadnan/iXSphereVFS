@@ -39,8 +39,8 @@ databases, file storage, content-addressable data, and internal service state.
 
 Every page consists of a 12-byte PageHeader followed by a page_size-byte
 payload (page_size + 12 bytes total per logical page, doubled to 2 × (page_size + 12) bytes with
-ping-pong). The header is transparent to the VFS layer — `ReadPage` and
-`WritePage` operate on the payload only.
+ping-pong). The header is transparent to the VFS layer — `Read` and
+`Write` operate on the payload only.
 
 ### 2.1 PageHeader (12 bytes)
 
@@ -164,7 +164,7 @@ file exists:
    `first_data_page = 2`, `flags = 0`. Write `1` to `bitmap_dir[0]`.
 4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header)
    and 1 (bitmap) as allocated (`0`).
-5. Return success. The VFS layer calls `AcquirePage(2)` and `AcquirePage(3)`
+5. Return success. The VFS layer calls `Acquire(2)` and `Acquire(3)`
    for the superblock and its ping-pong alternate, then initializes the
    superblock (§4) on page 2.
 
@@ -179,18 +179,18 @@ file exists:
 
 ```
 int64_t Allocate(int count);
-bool    AcquirePage(int64_t logicalPage);
-void    FreePage(int64_t logicalPage);
+bool    Acquire(int64_t logicalPage);
+void    Free(int64_t logicalPage);
 ```
 
 - `Allocate(count)`: reserves `count` contiguous logical pages. Each logical
   page is internally backed by a ping-pong physical pair §3.7. Returns the
   first logical page index, or -1 if no space.
-- `AcquirePage(logicalPage)`: atomically checks whether `logicalPage` is
+- `Acquire(logicalPage)`: atomically checks whether `logicalPage` is
   free. If yes, marks it allocated and returns true. If already allocated,
   returns false. This is a CAS on the bitmap bit — no scanning, O(1).
   Used for fixed-location allocations (superblock, GC target pages).
-- `FreePage(logicalPage)`: marks the logical page as free, releasing the
+- `Free(logicalPage)`: marks the logical page as free, releasing the
   underlying ping-pong pair. GC is the primary caller; normal VFS operations
   never free individual pages.
 
@@ -223,17 +223,17 @@ writes the full page_size + 12 bytes (header + payload) internally, computing an
 validating CRC32C on the payload on every I/O operation.
 
 ```
-uint8_t* ReadPage(int64_t logicalPage);
-void     WritePage(int64_t logicalPage, uint8_t* data);
+uint8_t* Read(int64_t logicalPage);
+void     Write(int64_t logicalPage, uint8_t* data);
 void     Flush(void);
 ```
 
-- `ReadPage`: checks the unified page cache §3.7  first. On cache hit,
+- `Read`: checks the unified page cache §3.7  first. On cache hit,
   returns the cached buffer immediately (CRC32C was validated on initial
   load). On cache miss, reads the physical page pair from disk, validates
   the active half via generation, validates CRC32C on the payload, and
   inserts into the cache. Returns NULL if the page has never been written.
-- `WritePage`: accepts a page_size-byte payload buffer. The StorageBackend
+- `Write`: accepts a page_size-byte payload buffer. The StorageBackend
   writes it to the inactive physical half with incremented generation and
   computed CRC32C §3.7. Marks the page dirty but does not write to disk.
 - `Flush`: writes all dirty pages to the backing file and fsyncs. Marks
@@ -284,7 +284,7 @@ pages written before the fsync are durable before pages written after.
 ### 3.6 Unified Page Cache
 
 Pages in the cache are in one of two states: clean (read from disk,
-unmodified) or dirty (written via `WritePage`, not yet flushed). Eviction:
+unmodified) or dirty (written via `Write`, not yet flushed). Eviction:
 when a configurable memory budget is exceeded (default 256 MB, ~32,768
 pages), evict clean pages via LRU. Dirty pages are never evicted. The
 cache is thread-safe (concurrent reads/writes).
@@ -892,10 +892,10 @@ head at the moment of the successful CAS. The CAS is uncontested under
 per-file serialization (§9.3) but is retained as a correctness invariant
 and for future lock-free operation.
 
-After a successful section slot CAS, the section page must be `WritePage`'d
+After a successful section slot CAS, the section page must be `Write`'d
 to the dirty cache so the updated slot is persisted on flush. Similarly,
 after an in-place `dataCrc32c` update via `atomic_store_release`, the pool page
-containing that version node must be `WritePage`'d.
+containing that version node must be `Write`'d.
 
 Pool allocation (§5.4) uses a per-pool-page CAS on `freeCount`/`firstFreeSlot`.
 
@@ -926,7 +926,7 @@ must guarantee publication ordering so lock-free readers never observe
 uninitialized memory:
 
 1. Allocate and fully populate the new overflow page buffer.
-2. Compute its CRC32C and commit to the dirty cache via `WritePage`.
+2. Compute its CRC32C and commit to the dirty cache via `Write`.
 3. Emit a **release memory barrier** (e.g., `Thread.MemoryBarrier` or a
    volatile store) before linking the new page to the preceding page's
    `nextOverflow` or `nextOffset` pointer.
@@ -987,7 +987,7 @@ Snapshot (`epoch += 2`) increments the epoch counter. **Before any write
 at the new epoch proceeds, `currentEpoch` MUST be persisted to the superblock.**
 The superblock page (two physical ping-pong pages) is written and fsync'd
 directly — this is a targeted superblock flush, not a full dirty-cache flush.
-Write the superblock bytes to the inactive physical half via WritePage,
+Write the superblock bytes to the inactive physical half via Write,
 then Flush only that page range. One fsync per snapshot. If the process
 crashes before the flush, the on-disk superblock retains the old epoch.
 On remount, the system re-uses that epoch — any previously written snapshot
