@@ -158,18 +158,24 @@ bitmap accordingly; no separate "extend" API is needed.
 
 ### 3.4 Page I/O
 
+The StorageBackend manages the 12-byte PageHeader transparently. Callers
+pass and receive 8,192-byte payload buffers. The StorageBackend reads and
+writes the full 8,204 bytes (header + payload) internally, computing and
+validating CRC32C on the payload on every I/O operation.
+
 ```
 uint8_t* ReadPage(int64_t logicalPage);
 void     WritePage(int64_t logicalPage, uint8_t* data);
 void     Flush(void);
 ```
 
-- `ReadPage`: checks the unified page cache (§3.5) first. On hit, returns
-  the cached buffer. On miss, reads from the backing file, inserts into
-  the cache as clean, and returns it. Returns NULL if the page has never
-  been written.
-- `WritePage`: inserts or updates the page in the cache, marked dirty.
-  Does NOT write to disk.
+- `ReadPage`: reads the physical page pair, validates the active half via
+  generation, validates CRC32C on the payload, and returns a pointer to an
+  8,192-byte buffer containing the payload only. Checks the unified page
+  cache (§3.5) first. Returns NULL if the page has never been written.
+- `WritePage`: accepts an 8,192-byte payload buffer. The StorageBackend
+  writes it to the inactive physical half with incremented generation and
+  computed CRC32C (§3.6). Marks the page dirty but does not write to disk.
 - `Flush`: writes all dirty pages to the backing file and fsyncs. Marks
   them clean. Clean pages remain cached.
 
