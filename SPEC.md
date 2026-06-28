@@ -279,16 +279,31 @@ adjacent physical pages and returns a single logical page index. Both halves
 have full PageHeaders (§2). The active half is the one with the higher
 `generation` field. Cold start: half 0 is active.
 
+**Physical layout.** Each logical page is stored as one contiguous block of
+`2 × (page_size + 12)` bytes:
+
+```
+Offset                Size   Content
+──────                ────   ───────
+0                      12    PageHeader for half 0
+12                     12    PageHeader for half 1
+24                page_size  Payload for half 0
+24 + page_size    page_size  Payload for half 1
+```
+
+Both headers are adjacent — a single 24-byte read fetches both generations.
+The winning half's payload follows at a known offset.
+
 **Write:** read the active half's generation. Build the new payload in
 memory. Compute CRC32C of the payload. Write the payload to the inactive
 half, then write the PageHeader with generation = active.generation + 1
 and the computed CRC32C. The header write is the atomic commit point —
 the generation increment makes this half active.
 
-**Read:** read the PageHeader from both halves (24 bytes total). Use the half
-with the higher generation. Read only that half's payload. Validate CRC32C.
-If CRC fails, read the other half's payload as fallback. If both halves fail
-CRC, the page is unrecoverable.
+**Read:** read both PageHeaders (24 contiguous bytes at offset 0). Use the
+half with higher generation. Read its payload at offset `24 + (half * page_size)`.
+Validate CRC32C. If CRC fails, read the other half's payload as fallback.
+If both fail, the page is unrecoverable.
 
 **Crash safety:** a crash mid-write leaves the old half intact (generation
 not updated) or the new half intact (CRC valid). No torn page is ever
