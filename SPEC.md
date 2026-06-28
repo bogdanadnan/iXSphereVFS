@@ -37,10 +37,10 @@ databases, file storage, content-addressable data, and internal service state.
 
 ## 2. Page Format
 
-Every page consists of a 12-byte PageHeader followed by an 8,192-byte
-payload (8,204 bytes total per logical page, doubled to 16,408 bytes with
+Every page consists of a 12-byte PageHeader followed by a page_size-byte
+payload (page_size + 12 bytes total per logical page, doubled to 16,408 bytes with
 ping-pong). The header is transparent to the VFS layer — `ReadPage` and
-`WritePage` operate on the payload only. A 12-byte header + 8,192-byte
+`WritePage` operate on the payload only. A 12-byte header + page_size bytes of
 payload means standard SQLite page sizes (4,096, 8,192) fit without waste.
 
 ### 2.1 PageHeader (12 bytes)
@@ -116,7 +116,7 @@ B+2            Superblock alternate
 ...            remaining logical pages
 ```
 
-**Header page layout (8,192-byte payload):**
+**Header page layout (page_size-byte payload):**
 
 ```
 Offset  Size  Field
@@ -134,12 +134,12 @@ bitmap page indices starting at offset 64. Since newly allocated pages are
 zero-filled, unused entries are 0. The number of bitmap pages is the count
 of non-zero entries. The first entry is always 1 (the first bitmap page).
 
-**Bitmap page layout (8,192-byte payload):**
+**Bitmap page layout (page_size-byte payload):**
 
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0    8192    bits[65536]       (65,536 bits, covering 65,536 logical pages)
+ 0    page_size  bits[65536]  (65,536 bits = page_size bytes, covering 65,536 logical pages)
 ```
 
 Bitmap pages have no `next` pointer — the header's `bitmap_dir` array is
@@ -198,8 +198,8 @@ bitmap accordingly; no separate "extend" API is needed.
 ### 3.4 Page I/O
 
 The StorageBackend manages the 12-byte PageHeader transparently. Callers
-pass and receive 8,192-byte payload buffers. The StorageBackend reads and
-writes the full 8,204 bytes (header + payload) internally, computing and
+pass and receive page_size-byte payload buffers. The StorageBackend reads and
+writes the full page_size + 12 bytes (header + payload) internally, computing and
 validating CRC32C on the payload on every I/O operation.
 
 ```
@@ -210,9 +210,9 @@ void     Flush(void);
 
 - `ReadPage`: reads the physical page pair, validates the active half via
   generation, validates CRC32C on the payload, and returns a pointer to an
-  8,192-byte buffer containing the payload only. Checks the unified page
+  page_size-byte buffer containing the payload only. Checks the unified page
   cache (§3.5) first. Returns NULL if the page has never been written.
-- `WritePage`: accepts an 8,192-byte payload buffer. The StorageBackend
+- `WritePage`: accepts an page_size-byte payload buffer. The StorageBackend
   writes it to the inactive physical half with incremented generation and
   computed CRC32C (§3.6). Marks the page dirty but does not write to disk.
 - `Flush`: writes all dirty pages to the backing file and fsyncs. Marks
@@ -235,7 +235,7 @@ have full PageHeaders (§2). The active half is the one with the higher
 `generation` field. Cold start: half 0 is active.
 
 **Write:** read the inactive half's header. Increment its generation to
-`active.generation + 1`. Write the full 8KB content. Compute CRC32C.
+`active.generation + 1`. Write the full page content. Compute CRC32C.
 The new page now has the higher generation — implicitly active.
 
 **Read:** read both halves. Use the one with higher generation. Validate
@@ -255,7 +255,7 @@ allocatable logical page. `1` = free, `0` = allocated.
 
 **Layout.** The header's `bitmap_dir` array (§3.1) lists bitmap page indices.
 Bitmap pages have no internal linking — the directory is authoritative. Each
-bitmap page holds 65,536 bits (a full 8,192-byte payload). Bit position `N`
+bitmap page holds 65,536 bits (a full page_size-byte payload). Bit position `N`
 in page `bitmap_dir[M]` corresponds to logical page `M * 65536 + N`.
 
 **Growth.** When `Allocate` needs a page beyond the current bitmap capacity,
@@ -282,7 +282,7 @@ page 2 in a fresh instance) after StorageBackend initialization. The
 StorageBackend provides the blank pages; the VFS writes the initial
 superblock values.
 
-### 4.1 Layout (8192-byte payload)
+### 4.1 Layout (page_size-byte payload)
 
 ```
 Offset  Size  Field
@@ -334,7 +334,7 @@ during GC (which rebuilds and flushes the superblock). Between GC cycles:
 
 ## 5. Node Layout
 
-Each node occupies one or more linked 8KB pages. Entries within a page form
+Each node occupies one or more linked page_size-byte pages. Entries within a page form
 a singly-linked list ordered by epoch descending (newest prepended at head).
 
 ### 5.1 Directory and File Node Entry Format (24 bytes + variable name)
@@ -381,7 +381,7 @@ superblock), so `(poolPage=0, slot=0)` is never a valid reference.
 ### 5.3 Version Node (24 bytes, stored in Pool pages)
 
 Each version node records one epoch of one logical page's history.
-They are packed 340 per 8KB pool page and linked via `next` VirtualPtrs.
+They are packed 340 per pool page and linked via `next` VirtualPtrs.
 
 ```
 Offset  Size  Field
@@ -404,12 +404,12 @@ This provides defense-in-depth against silent corruption (SSD bit rot, memory
 errors) beyond the ping-pong torn-write protection. The CRC is checked on
 every read, so corruption is detected immediately, not at mount time.
 
-Total: 24 bytes. Available payload in a pool page: 8,192 − 16 (nextPoolPage
-+ poolState + reserved) = 8,176 bytes. ⌊8,176 / 24⌋ = 340 per pool page.
+Total: 24 bytes. Available payload in a pool page: page_size − 16 (nextPoolPage
++ poolState + reserved) = page_size − 16 bytes. ⌊8,176 / 24⌋ = 340 per pool page.
 
 ### 5.4 Pool Page
 
-An 8KB page storing up to 340 version nodes in a contiguous array.
+An page_size-byte page storing up to 340 version nodes in a contiguous array.
 
 ```
 Offset  Size  Field
@@ -417,7 +417,7 @@ Offset  Size  Field
  0       8    nextPoolPage   (int64 — next pool page in flat list; write-once, immutable after insertion)
  8       4    poolState      (uint32 — packed: bits 0–15 = firstFreeSlot, bits 16–31 = freeCount)
 12       4    reserved       (uint32)
-16    8160    slots[340]     (340 × 24 bytes version nodes; 8,160 + 16 overhead = 8,176 ≤ 8,192)
+16    8160    slots[340]     (340 × 24 bytes version nodes; 8,160 + 16 overhead = 8,176 ≤ page_size)
 ```
 
 `poolState` packs `freeCount` and `firstFreeSlot` into a single 32-bit word
@@ -469,7 +469,7 @@ Freeing (during GC compaction only — no individual frees):
 ### 5.5 Section Page (pageType = TreeNode)
 
 A fixed-size array of 1,021 VirtualPtr slots, one per logical page in an
-~8.1MB file range. Each slot is an 8-byte aligned `long` storing a 6-byte
+~(page_size × 1021) file range. Each slot is an 8-byte aligned `long` storing a 6-byte
 VirtualPtr with 2 bytes trailing zero-padding. Each slot is the **head** of
 a version chain for that logical page.
 
@@ -481,7 +481,7 @@ Offset  Size  Field
 12    8168    slots[1021]    (1021 × 8 bytes, 8-byte aligned)
 ```
 
-Total: 8 + 4 + 8,168 = 8,180 bytes payload; 12 bytes padding to 8,192.
+Total: 8 + 4 + 8,168 = 8,180 bytes payload; page_size − 8,180 bytes padding.
 
 `slots[P] = 0` means the page has never been written. Non-zero means follow
 the version chain starting at that pool slot. A slot value of 0 is the null
@@ -559,7 +559,7 @@ Offset  Size  Field
 16      ...   entries        (variable-length, linked via nextOffset)
 ```
 
-If entries overflow one page, allocate a new overflow page. The directory
+If entries overflow a page, allocate a new overflow page. The directory
 node header is only on the first page. Overflow pages have this layout:
 
 ```
@@ -749,7 +749,7 @@ mapping depth is always 1.
 
 ### 8.5 Epoch Mapper Page Layout (pageType = MapperPage, 0x0B)
 
-The epoch mapper is stored in one or more linked 8KB pages. Each page holds
+The epoch mapper is stored in one or more linked page_size-byte pages. Each page holds
 up to 680 entries. When full, a new page is allocated and linked via
 `nextMapperPage` in the page header.
 
@@ -1091,7 +1091,7 @@ Pages that are never read after a crash need no validation.
 
 ## 12. Performance Model
 
-Estimated per-operation cost for a single 8KB page write on the hot path.
+Estimated per-operation cost for a single page_size-byte page write on the hot path.
 Timings assume warm cache — pages resident in the unified page cache
 (§3.5), no disk I/O:
 
@@ -1099,7 +1099,7 @@ Timings assume warm cache — pages resident in the unified page cache
 |---|---|
 | Section array lookup + VirtualPtr decode | ~1 µs |
 | Version chain walk (typical: 2 hops) | ~0.1 µs |
-| Data page write (ping-pong: 8KB to inactive half, generation flip, CRC32C) | ~40 µs |
+| Data page write (ping-pong: a page to inactive half, generation flip, CRC32C) | ~40 µs |
 | Pool slot allocation (per-page CAS) | ~0.1 µs |
 | Section slot CAS | ~0.1 µs |
 | **Total per page write** | **~42 µs** |
