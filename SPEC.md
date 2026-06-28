@@ -157,17 +157,15 @@ file exists:
 
 **File does not exist or is empty:**
 1. Create the backing file.
-2. Bootstrap: reserve logical pages 0 (header) and 1 (first bitmap page)
-   directly — `Allocate` cannot be used yet because no bitmap exists. Both
-   pages are zero-filled and use ping-pong backing.
-3. Write the header: `total_pages = 2`, `page_size = 8192` (default),
-   `first_data_page = 2`, `flags = 0`. Write `1` to `bitmap_dir[0]`.
-4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header) and
-   1 (bitmap) as allocated (`0`).
-5. Return success. The VFS layer then calls `Allocate(2)` to obtain the
-   superblock and its ping-pong alternate — since pages 0 and 1 are already
-   allocated, this naturally returns pages 2 and 3. The VFS initializes the
-   superblock (§4) on page 2.
+2. Bootstrap: reserve logical pages 0–3 directly — `Allocate` cannot be used
+   yet because no bitmap exists. Pages 0 (header), 1 (first bitmap), 2
+   (superblock, reserved for VFS), and 3 (superblock alternate). All four
+   are zero-filled and use ping-pong backing.
+3. Write the header: `total_pages = 4`, `page_size = 8192` (default),
+   `first_data_page = 4`, `flags = 0`. Write `1` to `bitmap_dir[0]`.
+4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0–3 (header,
+   bitmap, superblock, superblock alternate) as allocated (`0`).
+5. Return success. The VFS layer initializes the superblock (§4) on page 2.
 
 **File exists:**
 1. Read logical page 0 (header block). Validate: `pageType == 0x5658 &&
