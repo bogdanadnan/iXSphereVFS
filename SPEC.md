@@ -280,10 +280,10 @@ have full PageHeaders (§2). The active half is the one with the higher
 `generation` field. Cold start: half 0 is active.
 
 **Write:** read the active half's generation. Build the new payload in
-memory. Compute CRC32C of the payload. Write the PageHeader (with
-generation = active.generation + 1 and the computed CRC32C) followed by
-the payload to the inactive half. The inactive half now has the higher
-generation — implicitly active.
+memory. Compute CRC32C of the payload. Write the payload to the inactive
+half, then write the PageHeader with generation = active.generation + 1
+and the computed CRC32C. The header write is the atomic commit point —
+the generation increment makes this half active.
 
 **Read:** read both halves. Use the one with higher generation. Validate
 CRC32C. If the active half's CRC fails, try the backup half. If both fail,
