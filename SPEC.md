@@ -164,9 +164,8 @@ file exists:
    `first_data_page = 2`, `flags = 0`. Write `1` to `bitmap_dir[0]`.
 4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header)
    and 1 (bitmap) as allocated (`0`).
-5. Return success. The VFS layer calls `Acquire(2)` and `Acquire(3)`
-   for the superblock and its ping-pong alternate, then initializes the
-   superblock (§4) on page 2.
+5. Return success. The VFS layer calls `Acquire(2)` for the superblock
+   and initializes it (§4).
 
 **File exists:**
 1. Read logical page 0 (header block). Validate: `pageType == 0x5658 &&
@@ -358,10 +357,12 @@ The VFS layer never accesses the bitmap directly.
 
 The first page (page 0) of the VFS backing file is a superblock containing
 the tree root pointer and epoch state. It is the single entry point for
-mount and recovery. The superblock is allocated by the VFS layer at `first_data_page` (logical
-page 2 in a fresh instance) after StorageBackend initialization. The
-StorageBackend provides the blank pages; the VFS writes the initial
-superblock values.
+mount and recovery. The superblock is allocated by the VFS layer at logical page 2 via
+`Acquire` after StorageBackend initialization. Like every other page, it
+uses standard ping-pong (§3.7) — there is no separate superblock alternate
+page or special swap protocol. The VFS writes superblock updates via
+`Write`, which writes to the inactive half and increments generation
+atomically. Mount reads both headers and picks the active half (§3.7).
 
 ### 4.1 Layout (page_size-byte payload)
 
@@ -377,29 +378,12 @@ Offset  Size  Field
 56    8136    reserved / future use
 ```
 
-### 4.2 Atomic Root Swap
-
-The tree root is never modified in-place. When GC produces a new tree,
-the new root offset is written to a fresh superblock page, and the
-superblock pointer is swapped atomically. This guarantees the old tree
-remains consistent until the swap completes.
-
-Two superblock pages (page 0 and page 1) in a ping-pong arrangement:
-- Write new superblock to the inactive page.
-- fsync.
-- Write the active page indicator (the `generation` field in PageHeader
-  of the new page, incremented beyond the old page's generation).
-- On mount: read both pages. The page with the **higher generation field**
-  is the active one. If generations are equal (should not happen), prefer
-  the page with the higher CRC32C. If both identical, prefer page 0.
-- The previous active page becomes the inactive page for the next swap.
-
-### 4.3 Tree Lock
+### 4.2 Tree Lock
 
 `treeLockState` gates GC: shared lock for normal operations, exclusive for
 GC. Bit layout and crash recovery semantics are in §9.6.
 
-### 4.4 Mutable Field Persistence
+### 4.3 Mutable Field Persistence
 
 `poolListHead` and `treeLockState` are CAS'd on **in-memory copies**, not
 directly on the on-disk superblock byte array. They are written to disk
