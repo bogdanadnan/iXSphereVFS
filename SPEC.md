@@ -285,9 +285,10 @@ half, then write the PageHeader with generation = active.generation + 1
 and the computed CRC32C. The header write is the atomic commit point —
 the generation increment makes this half active.
 
-**Read:** read both halves. Use the one with higher generation. Validate
-CRC32C. If the active half's CRC fails, try the backup half. If both fail,
-the page is unrecoverable.
+**Read:** read the PageHeader from both halves (24 bytes total). Use the half
+with the higher generation. Read only that half's payload. Validate CRC32C.
+If CRC fails, read the other half's payload as fallback. If both halves fail
+CRC, the page is unrecoverable.
 
 **Crash safety:** a crash mid-write leaves the old half intact (generation
 not updated) or the new half intact (CRC valid). No torn page is ever
