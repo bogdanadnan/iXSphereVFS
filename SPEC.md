@@ -164,8 +164,10 @@ file exists:
    `first_data_page = 2`, `flags = 0`. Write `1` to `bitmap_dir[0]`.
 4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header) and
    1 (bitmap) as allocated (`0`).
-5. Return success. The VFS layer allocates `first_data_page` (page 2) for
-   the superblock.
+5. Return success. The VFS layer then calls `Allocate(2)` to obtain the
+   superblock and its ping-pong alternate — since pages 0 and 1 are already
+   allocated, this naturally returns pages 2 and 3. The VFS initializes the
+   superblock (§4) on page 2.
 
 **File exists:**
 1. Read logical page 0 (header block). Validate: `pageType == 0x5658 &&
