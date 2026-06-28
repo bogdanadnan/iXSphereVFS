@@ -95,31 +95,52 @@ never performs logical-to-physical translation.
 
 ### 3.1 File Layout
 
-The backing file begins with a StorageBackend header, followed by logical
-page data. The header is exactly 8,204 bytes (12-byte internal header +
-8,192-byte inline free bitmap).
+The backing file begins with a StorageBackend header page, followed by the
+first free-bitmap page, followed by logical page data.
 
 ```
-Offset        Size   Content
-──────        ────   ───────
-0               12   Internal header (type = 0xFF, reserved for StorageBackend use)
-12               8   total_pages       (int64 — highest allocated logical page + 1)
-20               8   page_size         (int64 — payload size in bytes, default 8192)
-28               8   bitmap_overflow   (int64 — page index of first bitmap overflow page, 0 if none)
-36               8   reserved
-44            8160   inline_bitmap     (8,160 bytes = 65,280 bits, covering pages 0–65,279)
-             ─────
-             8,204   total header size
+Logical page   Content
+────────────   ───────
+0              StorageBackend header (metadata: total_pages, page_size, bitmap_page, first_bitmap_page, rsvd)
+1              Free-bitmap page 0 (65,536 bits, covers logical pages 0–65,535)
+2              Free-bitmap page 1 (if allocated, covers logical pages 65,536–131,071)
+...
+B              Logical page 0 — superblock (ping-pong pair)
+B + 1          Logical page 1 — superblock ping-pong alternate
+B + 2          Logical page 2 — tree root / first user-allocated page
+...            remaining logical pages
 ```
 
-The `inline_bitmap` covers the first 65,280 logical pages (~510 MB at 8,192
-bytes/page). For instances that grow beyond this, `bitmap_overflow` points to
-the first overflow page (§3.7). The `total_pages` field tracks the highest
-allocated logical page index + 1, used to compute the backing file size and
-detect when overflow pages need allocation.
+The StorageBackend header page contains only metadata — no inline bitmap.
+The free bitmap starts at logical page 1 as a full 8,192-byte payload
+(65,536 bits). Overflow pages are chained via `bitmap_page`.
 
-The header is followed by logical page data. Logical page 0 is the superblock
-(ping-pong pair). Logical page 1 is reserved for superblock ping-pong swap.
+**Header page layout (8,192-byte payload):**
+
+```
+Offset  Size  Field
+──────  ────  ─────
+ 0       8    total_pages       (int64 — highest allocated logical page + 1)
+ 8       8    page_size         (int64 — payload size in bytes, default 8192)
+16       8    bitmap_page       (int64 — logical page index of the first bitmap page, always 1)
+24       8    first_data_page   (int64 — logical page index of the first allocatable data page, ≥ 2)
+32    8160    reserved
+```
+
+The `bitmap_page` chain forms a linked list of bitmap pages. Each bitmap
+page payload (8,192 bytes = 65,536 bits) is laid out as:
+
+```
+Offset  Size  Field
+──────  ────  ─────
+ 0       8    next              (int64 — logical page index of next bitmap page, 0 = end)
+ 8    8184    bits[65536]       (65,536 bits, covering 65,536 logical pages)
+```
+
+A fresh VFS instance allocates logical pages 0 (header), 1 (first bitmap),
+and B=2 (superblock). The first bitmap page covers 65,536 pages by default.
+When the instance grows beyond this, a new bitmap page is allocated and
+appended to the chain.
 
 ### 3.2 Initialization
 
@@ -128,10 +149,12 @@ file exists:
 
 **File does not exist or is empty:**
 1. Create the backing file.
-2. Write the StorageBackend header with an initialized free bitmap (all pages
-   free) and chain of bitmap overflow pages (none, covering 0 pages).
-3. Return success. The VFS layer is responsible for allocating and
-   initializing the superblock (§4) on first use.
+2. Allocate logical pages 0 (header) and 1 (first bitmap page).
+3. Write the header: `total_pages = 2`, `page_size = 8192`, `bitmap_page = 1`,
+   `first_data_page = 2`.
+4. Write the first bitmap page: `next = 0`, all bits set to `1` (free).
+   Pages 0 (header) and 1 (bitmap) are marked allocated (bits 0 and 1 = `0`).
+5. Return success. The VFS layer allocates logical page 2 for the superblock.
 
 **File exists:**
 1. Read the header.
@@ -221,34 +244,24 @@ between "data" and "metadata" durability.
 The StorageBackend maintains a private free-page bitmap. One bit per
 allocatable logical page. `1` = free, `0` = allocated.
 
-**Layout.** The StorageBackend header (§3.1) contains an inline bitmap
-covering the first 65,280 pages (65,280 bits = 8,160 bytes, stored
-inline in the header). For instances that grow beyond this, the
-StorageBackend allocates overflow pages. Each overflow page holds 65,536
-bits (8,192 bytes of bitmap data, one full payload) and is chained from
-the header via the `bitmap_overflow` field (0 = end of chain).
+**Layout.** The first bitmap page is always at logical page 1 (§3.1). Each
+page holds 65,536 bits (8,192 bytes of payload) and is linked via a `next`
+field. The chain is rooted at `bitmap_page` in the header.
 
 ```
-Header inline:    bits[0..65279]       ← pages 0..65279
-Overflow page 1:  bits[0..65535]      ← pages 65280..130815
-Overflow page 2:  bits[0..65535]      ← pages 130816..196351
-...
+bitmap_page → page 1 (pages 0..65535) → page N (pages 65536..131071) → ...
 ```
 
 **Growth.** When `Allocate` needs a page beyond the current bitmap capacity,
-new overflow pages are allocated and added to the end of the chain. The
-header's `bitmap_overflow_page` is updated. The bitmap chain is persisted
-on `Flush`.
+a new bitmap page is allocated, populated, and appended to the end of the
+chain. The chain is persisted on `Flush`.
 
-**Mount.** On mount, the inline bitmap and chain of overflow pages are read
-from the header. The allocator is initialized with the free/allocated state
-from disk.
+**Mount.** On mount, the `bitmap_page` chain is walked from the header.
+The allocator is initialized with the free/allocated state from all pages.
 
-**GC.** GC rebuilds the bitmap by calling `FreePage` for every unreachable
-page and marking reachable pages as allocated via internal API. The bitmap
-chain is rebuilt during the GC copy phase — only pages covering the new
-(logically smaller) page range need be written. Unused overflow pages are
-freed.
+**GC.** The bitmap chain is rebuilt during the GC copy phase — only pages
+covering the new (logically smaller) page range need be written. Unused
+bitmap pages are freed.
 
 The VFS layer never accesses the bitmap directly.
 
@@ -258,10 +271,10 @@ The VFS layer never accesses the bitmap directly.
 
 The first page (page 0) of the VFS backing file is a superblock containing
 the tree root pointer and epoch state. It is the single entry point for
-mount and recovery. The superblock is allocated and initialized by the VFS
-layer (not the StorageBackend) on first use after a fresh StorageBackend
-initialization (§3.2). The StorageBackend provides the blank page; the VFS
-writes the initial superblock values.
+mount and recovery. The superblock is allocated by the VFS layer at `first_data_page` (logical
+page 2 in a fresh instance) after StorageBackend initialization. The
+StorageBackend provides the blank pages; the VFS writes the initial
+superblock values.
 
 ### 4.1 Layout (8192-byte payload)
 
