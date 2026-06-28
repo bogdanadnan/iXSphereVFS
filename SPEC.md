@@ -95,25 +95,19 @@ never performs logical-to-physical translation.
 
 ### 3.1 File Layout
 
-The backing file begins with a StorageBackend header page, followed by the
-first free-bitmap page, followed by logical page data.
+The backing file begins with a StorageBackend header block (at logical page 0,
+ping-pong backed), followed by free-bitmap pages, followed by allocatable data
+pages.
 
 ```
 Logical page   Content
 ────────────   ───────
-0              StorageBackend header (metadata: total_pages, page_size, bitmap_page, first_bitmap_page, rsvd)
-1              Free-bitmap page 0 (65,536 bits, covers logical pages 0–65,535)
-2              Free-bitmap page 1 (if allocated, covers logical pages 65,536–131,071)
-...
-B              Logical page 0 — superblock (ping-pong pair)
-B + 1          Logical page 1 — superblock ping-pong alternate
-B + 2          Logical page 2 — tree root / first user-allocated page
+0              StorageBackend header (config + bitmap directory)
+1..B           Free-bitmap pages (chained via bitmap directory in header)
+B+1            First allocatable page — superblock (ping-pong pair)
+B+2            Superblock alternate
 ...            remaining logical pages
 ```
-
-The StorageBackend header page contains only metadata — no inline bitmap.
-The free bitmap starts at logical page 1 as a full 8,192-byte payload
-(65,536 bits). Overflow pages are chained via `bitmap_page`.
 
 **Header page layout (8,192-byte payload):**
 
@@ -122,25 +116,32 @@ Offset  Size  Field
 ──────  ────  ─────
  0       8    total_pages       (int64 — highest allocated logical page + 1)
  8       8    page_size         (int64 — payload size in bytes, default 8192)
-16       8    bitmap_page       (int64 — logical page index of the first bitmap page, always 1)
-24       8    first_data_page   (int64 — logical page index of the first allocatable data page, ≥ 2)
-32    8160    reserved
+16       8    first_data_page   (int64 — logical page index of first allocatable page)
+24       8    flags             (int64 — reserved for future use)
+32      96    reserved
+128     ...   bitmap_dir[]      (array of int64 logical page indices; zero-terminated)
 ```
 
-The `bitmap_page` chain forms a linked list of bitmap pages. Each bitmap
-page payload (8,192 bytes = 65,536 bits) is laid out as:
+The header is zero-filled at allocation. `bitmap_dir` is a compact array of
+bitmap page indices. Since newly allocated pages are zero-filled, unused
+entries are 0. The number of bitmap pages is the count of non-zero entries
+starting at offset 128. The first entry is always 1 (the first bitmap page).
+
+**Bitmap page layout (8,192-byte payload):**
 
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0       8    next              (int64 — logical page index of next bitmap page, 0 = end)
- 8    8184    bits[65536]       (65,536 bits, covering 65,536 logical pages)
+ 0    8192    bits[65536]       (65,536 bits, covering 65,536 logical pages)
 ```
 
-A fresh VFS instance allocates logical pages 0 (header), 1 (first bitmap),
-and B=2 (superblock). The first bitmap page covers 65,536 pages by default.
-When the instance grows beyond this, a new bitmap page is allocated and
-appended to the chain.
+Bitmap pages have no `next` pointer — the header's `bitmap_dir` array is
+the authoritative chain. To find the bitmap bit for logical page N:
+`bitmap_index = N / 65536`, `bit_offset = N % 65536`. If `bitmap_index`
+exceeds the number of allocated bitmap pages, a new bitmap page is
+allocated and its index appended to the first zero slot in `bitmap_dir`.
+
+All pages, including the header block, use ping-pong (§3.6).
 
 ### 3.2 Initialization
 
@@ -150,11 +151,12 @@ file exists:
 **File does not exist or is empty:**
 1. Create the backing file.
 2. Allocate logical pages 0 (header) and 1 (first bitmap page).
-3. Write the header: `total_pages = 2`, `page_size = 8192`, `bitmap_page = 1`,
-   `first_data_page = 2`.
-4. Write the first bitmap page: `next = 0`, all bits set to `1` (free).
-   Pages 0 (header) and 1 (bitmap) are marked allocated (bits 0 and 1 = `0`).
-5. Return success. The VFS layer allocates logical page 2 for the superblock.
+3. Write the header: `total_pages = 2`, `page_size = 8192`, `first_data_page = 2`,
+   `flags = 0`. Write `1` to `bitmap_dir[0]`.
+4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header) and
+   1 (bitmap) as allocated (`0`).
+5. Return success. The VFS layer allocates `first_data_page` (page 2) for
+   the superblock.
 
 **File exists:**
 1. Read the header.
@@ -244,24 +246,21 @@ between "data" and "metadata" durability.
 The StorageBackend maintains a private free-page bitmap. One bit per
 allocatable logical page. `1` = free, `0` = allocated.
 
-**Layout.** The first bitmap page is always at logical page 1 (§3.1). Each
-page holds 65,536 bits (8,192 bytes of payload) and is linked via a `next`
-field. The chain is rooted at `bitmap_page` in the header.
-
-```
-bitmap_page → page 1 (pages 0..65535) → page N (pages 65536..131071) → ...
-```
+**Layout.** The header's `bitmap_dir` array (§3.1) lists bitmap page indices.
+Bitmap pages have no internal linking — the directory is authoritative. Each
+bitmap page holds 65,536 bits (a full 8,192-byte payload). Bit position `N`
+in page `bitmap_dir[M]` corresponds to logical page `M * 65536 + N`.
 
 **Growth.** When `Allocate` needs a page beyond the current bitmap capacity,
-a new bitmap page is allocated, populated, and appended to the end of the
-chain. The chain is persisted on `Flush`.
+a new bitmap page is allocated, zero-filled (all bits `0` = allocated), then
+its index is written to the first zero slot in `bitmap_dir`. The new page's
+bits are then set to `1` (free) for the newly covered range.
 
-**Mount.** On mount, the `bitmap_page` chain is walked from the header.
-The allocator is initialized with the free/allocated state from all pages.
+**Mount.** On mount, `bitmap_dir` is scanned. All referenced bitmap pages are
+read. The allocator is initialized with the free/allocated state.
 
-**GC.** The bitmap chain is rebuilt during the GC copy phase — only pages
-covering the new (logically smaller) page range need be written. Unused
-bitmap pages are freed.
+**GC.** The bitmap chain is rebuilt during the GC copy phase. Unused bitmap
+pages are freed.
 
 The VFS layer never accesses the bitmap directly.
 
