@@ -279,9 +279,11 @@ adjacent physical pages and returns a single logical page index. Both halves
 have full PageHeaders (§2). The active half is the one with the higher
 `generation` field. Cold start: half 0 is active.
 
-**Write:** read the inactive half's header. Increment its generation to
-`active.generation + 1`. Write the full page content. Compute CRC32C.
-The new page now has the higher generation — implicitly active.
+**Write:** read the active half's generation. Build the new payload in
+memory. Compute CRC32C of the payload. Write the PageHeader (with
+generation = active.generation + 1 and the computed CRC32C) followed by
+the payload to the inactive half. The inactive half now has the higher
+generation — implicitly active.
 
 **Read:** read both halves. Use the one with higher generation. Validate
 CRC32C. If the active half's CRC fails, try the backup half. If both fail,
