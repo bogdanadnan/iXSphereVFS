@@ -118,14 +118,14 @@ Offset  Size  Field
  8       8    page_size         (int64 — payload size in bytes, default 8192)
 16       8    first_data_page   (int64 — logical page index of first allocatable page)
 24       8    flags             (int64 — reserved for future use)
-32      96    reserved
-128     ...   bitmap_dir[]      (array of int64 logical page indices; zero-terminated)
+32      32    reserved
+64     ...   bitmap_dir[]      (array of int64 logical page indices; zero-terminated)
 ```
 
 The header is zero-filled at allocation. `bitmap_dir` is a compact array of
-bitmap page indices. Since newly allocated pages are zero-filled, unused
-entries are 0. The number of bitmap pages is the count of non-zero entries
-starting at offset 128. The first entry is always 1 (the first bitmap page).
+bitmap page indices starting at offset 64. Since newly allocated pages are
+zero-filled, unused entries are 0. The number of bitmap pages is the count
+of non-zero entries. The first entry is always 1 (the first bitmap page).
 
 **Bitmap page layout (8,192-byte payload):**
 
