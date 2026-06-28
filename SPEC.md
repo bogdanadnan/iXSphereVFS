@@ -143,9 +143,10 @@ Offset  Size  Field
 
 Bitmap pages have no `next` pointer — the header's `bitmap_dir` array is
 the authoritative chain. To find the bitmap bit for logical page N:
-`bitmap_index = N / (page_size * 8)`, `bit_offset = N % (page_size * 8)`. If `bitmap_index`
-exceeds the number of allocated bitmap pages, a new bitmap page is
-allocated and its index appended to the first zero slot in `bitmap_dir`.
+`bitmap_index = N / (page_size * 8)`, `bit_offset = N % (page_size * 8)`.
+Allocation scans across all bitmap pages via zone cursors; freed pages are
+reused regardless of which bitmap page they reside on. New bitmap pages are
+appended to `bitmap_dir` only when the last existing page is exhausted.
 
 All pages, including the header block, use ping-pong §3.7.
 
