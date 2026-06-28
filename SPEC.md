@@ -69,7 +69,7 @@ at 0, then `ComputeAndWriteChecksum` computes and stores it. On read:
 Type   Name        Purpose
 ────   ────        ───────
 0x00   Superblock  Tree root and epoch state (§4)
-0x01   Bitmap      Free-page bitmap page (§3.7)
+0x01   Bitmap      Free-page bitmap page §3.8
 0x02   TreeNode    Directory, file, or section node (§5)
 0x03   PoolPage    Version node pool (§5.4)
 0x04   MapperPage  Epoch mapper (§8.5)
@@ -147,7 +147,7 @@ the authoritative chain. To find the bitmap bit for logical page N:
 exceeds the number of allocated bitmap pages, a new bitmap page is
 allocated and its index appended to the first zero slot in `bitmap_dir`.
 
-All pages, including the header block, use ping-pong (§3.6).
+All pages, including the header block, use ping-pong §3.7.
 
 ### 3.2 Initialization
 
@@ -179,7 +179,7 @@ void    FreePage(int64_t logicalPage);
 ```
 
 - `Allocate(count)`: reserves `count` contiguous logical pages. Each logical
-  page is internally backed by a ping-pong physical pair (§3.6). Returns the
+  page is internally backed by a ping-pong physical pair §3.7. Returns the
   first logical page index, or -1 if no space.
 - `FreePage(logicalPage)`: marks the logical page as free, releasing the
   underlying ping-pong pair. GC is the primary caller; normal VFS operations
@@ -203,7 +203,7 @@ When no free pages exist in any zone, a new bitmap page must be allocated.
 The StorageBackend extends the backing file, allocates the new bitmap page,
 zero-fills it, and appends its index to the first zero slot in `bitmap_dir`
 via CAS. Then it updates `total_pages` in the header via CAS. The header
-page is ping-pong backed (§3.6) — the CAS on `bitmap_dir` entries and
+page is ping-pong backed §3.8  — the CAS on `bitmap_dir` entries and
 `total_pages` is safe because the underlying page write is crash-safe.
 
 ### 3.4 Page I/O
@@ -219,18 +219,51 @@ void     WritePage(int64_t logicalPage, uint8_t* data);
 void     Flush(void);
 ```
 
-- `ReadPage`: checks the unified page cache (§3.5) first. On cache hit,
+- `ReadPage`: checks the unified page cache §3.7  first. On cache hit,
   returns the cached buffer immediately (CRC32C was validated on initial
   load). On cache miss, reads the physical page pair from disk, validates
   the active half via generation, validates CRC32C on the payload, and
   inserts into the cache. Returns NULL if the page has never been written.
 - `WritePage`: accepts a page_size-byte payload buffer. The StorageBackend
   writes it to the inactive physical half with incremented generation and
-  computed CRC32C (§3.6). Marks the page dirty but does not write to disk.
+  computed CRC32C §3.7. Marks the page dirty but does not write to disk.
 - `Flush`: writes all dirty pages to the backing file and fsyncs. Marks
   them clean. Clean pages remain cached.
 
-### 3.5 Unified Page Cache
+### 3.5 Flush Ordering
+
+`Flush` writes dirty pages in a specific order to guarantee crash safety.
+If a crash occurs mid-flush, the on-disk state must always be consistent —
+either the pre-flush state or a recoverable partial state.
+
+**Write order (must be followed strictly):**
+
+1. **Data pages.** User file content — the leaves of the dependency tree.
+   Nothing references these except version nodes.
+2. **Pool pages.** Version nodes that reference data pages via `physicalPage`.
+3. **Section pages.** Slot arrays that reference pool pages via VirtualPtr.
+4. **Directory and file node pages.** Entries that reference section pages,
+   child nodes, and FileSize entries.
+5. **Mapper pages.** Epoch mapping entries.
+6. **Bitmap pages.** Free-page bitmap state.
+7. **Superblock.** Written last. This is the atomic commit point.
+
+**Crash during flush:**
+
+- Crash before step 7 (superblock not written): on remount, the old
+  superblock still points to the old tree. Any pages written in steps 1–6
+  are unreachable zombies — wasted space reclaimed by the next GC. No
+  corruption.
+- Crash after step 7 (superblock written): all preceding pages are on disk.
+  Mount loads the new state. The flush is complete from the reader's
+  perspective even if `fsync` was interrupted — the superblock ping-pong
+  mechanism §3.8  ensures the active half points to a consistent state.
+
+**Fsync:** after writing all dirty pages, `fsync` is called on the backing
+file. If the OS or drive reorders writes, `fsync` acts as a barrier —
+pages written before the fsync are durable before pages written after.
+
+### 3.6 Unified Page Cache
 
 Pages in the cache are in one of two states: clean (read from disk,
 unmodified) or dirty (written via `WritePage`, not yet flushed). Eviction:
@@ -238,7 +271,7 @@ when a configurable memory budget is exceeded (default 256 MB, ~32,768
 pages), evict clean pages via LRU. Dirty pages are never evicted. The
 cache is thread-safe (concurrent reads/writes).
 
-### 3.6 Ping-Pong Pages
+### 3.7 Ping-Pong Pages
 
 Every logical page is backed by two physical pages for crash-safe writes.
 When `Allocate` is called, the StorageBackend internally reserves two
@@ -260,7 +293,7 @@ visible. All page types — superblock, bitmap, tree nodes, pool pages,
 mapper pages, and data pages — share this mechanism. There is no distinction
 between "data" and "metadata" durability.
 
-### 3.7 Free-Page Bitmap (Internal)
+### 3.8 Free-Page Bitmap (Internal)
 
 The StorageBackend maintains a private free-page bitmap. One bit per
 allocatable logical page. `1` = free, `0` = allocated.
@@ -340,7 +373,7 @@ during GC (which rebuilds and flushes the superblock). Between GC cycles:
   stale. This is safe — pool pages are also reachable via VirtualPtrs in
   section slots. GC walks the tree and rebuilds the complete pool list.
 - `treeLockState` is always 0 at flush time (no operations in flight during
-  a flush), so recovery zeros it unconditionally ping-pong (§3.6).
+  a flush), so recovery zeros it unconditionally ping-pong §3.7.
 
 ---
 
@@ -368,7 +401,7 @@ Offset  Size  Field
 **Section entries (type=0x04):** `nameLen` is repurposed as `sectionIdx`
 (uint16), identifying which 1021-page segment of the file this section
 page covers (0, 1, 2... up to 65,535 → 535 GB max logical file size).
-With ping-pong page backing (§3.6), physical storage is up to ~1.1 TB for a
+With ping-pong page backing §3.7, physical storage is up to ~1.1 TB for a
 fully written 535 GB logical file. No name bytes follow. `childOffset` is
 the section page index.
 
@@ -409,7 +442,7 @@ The `dataCrc32c` field stores the CRC32C of the physical data page's content
 
 On write: compute CRC32C of the new content, store via `atomic_store_release`.
 On read: recompute the data page's CRC32C. If it matches `dataCrc32c`, the
-page is valid. If not, the ping-pong mechanism (§3.6) tries the backup half.
+page is valid. If not, the ping-pong mechanism §3.8  tries the backup half.
 If both halves fail CRC, fall back to the previous version in the chain.
 
 This provides defense-in-depth against silent corruption (SSD bit rot, memory
@@ -656,7 +689,7 @@ Given file node F, logical page P, offset O within page, data D, write epoch E:
 2. Read `vp = section[P]` (the VirtualPtr, 0 if never written).
 3. Walk the version chain starting at `vp`. Find any existing version node
    with `epoch == E`.
-   - **FOUND** → in-place write. Ping-pong write to the data page ping-pong (§3.6):
+   - **FOUND** → in-place write. Ping-pong write to the data page ping-pong §3.7:
      write new content to inactive half, increment generation.
      Update `version.dataCrc32c` via `atomic_store_release`.
    - **NOT FOUND, vp == 0 (first-ever write):** Allocate new data page Q
@@ -1056,7 +1089,7 @@ committed snapshot epochs before invoking GC.
 ### 11.1 Page Durability
 
 All pages — superblock, bitmap, tree nodes, pool pages, mapper pages, and
-data pages — are backed by ping-pong physical pairs (§3.6). A crash
+data pages — are backed by ping-pong physical pairs §3.7. A crash
 mid-write leaves the old half intact (generation not updated) or the new
 half intact (CRC32C valid — generation was written last). No torn page is
 ever visible. The reader picks the half with higher generation; if its CRC
@@ -1094,7 +1127,7 @@ new logical state — never a torn page.
      Logical pages whose chain head is elsewhere but whose chain passes
      through a node in the corrupt page lose history below the corrupt
      entry but retain the head — the chain terminates at the corrupt node.
-   - Data page: ping-pong handles CRC failure on read (§3.6). No mount-time
+   - Data page: ping-pong handles CRC failure on read §3.7. No mount-time
      scan needed.
 
 All corruption is detected and handled at read time, not mount time.
@@ -1105,7 +1138,7 @@ Pages that are never read after a crash need no validation.
 
 Estimated per-operation cost for a single page_size-byte page write on the hot path.
 Timings assume warm cache — pages resident in the unified page cache
-(§3.5), no disk I/O:
+§3.6, no disk I/O:
 
 | Operation | Cost |
 |---|---|
