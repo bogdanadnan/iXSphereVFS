@@ -37,8 +37,11 @@ databases, file storage, content-addressable data, and internal service state.
 
 ## 2. Page Format
 
-Every page in the VFS is 8KB (configurable). The first 12 bytes are a
-fixed header. The remainder is page-type-specific.
+Every page consists of a 12-byte PageHeader followed by an 8,192-byte
+payload (8,204 bytes total per logical page, doubled to 16,408 bytes with
+ping-pong). The header is transparent to the VFS layer — `ReadPage` and
+`WritePage` operate on the payload only. A 12-byte header + 8,192-byte
+payload means standard SQLite page sizes (4,096, 8,192) fit without waste.
 
 ### 2.1 PageHeader (12 bytes)
 
@@ -105,9 +108,11 @@ H + 16KB      Logical page 1 (superblock ping-pong alternate)
 ```
 
 The header size H is an implementation detail. Each logical page is backed
-internally by a ping-pong physical pair (§3.7); the StorageBackend allocates
-the pair, stores both halves contiguously, and exposes a single logical page
-index.
+internally by a ping-pong physical pair (§3.6); the StorageBackend allocates
+the pair and stores a 12-byte PageHeader followed by 8,192 bytes of payload
+(total 8,204 bytes per half). The VFS and upper layers see the full 8,192-byte
+payload; the header is transparent. An 8,192-byte SQLite page fits exactly;
+a 4,096-byte page fits with 4,096 bytes to spare.
 
 ### 3.2 Initialization
 
@@ -246,19 +251,18 @@ layer (not the StorageBackend) on first use after a fresh StorageBackend
 initialization (§3.2). The StorageBackend provides the blank page; the VFS
 writes the initial superblock values.
 
-### 4.1 Layout (page 0, 8KB)
+### 4.1 Layout (8192-byte payload)
 
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0      12    PageHeader      (type = Superblock, §2)
-12       8    rootNodeOffset  (int64 — byte offset of tree root node)
-20       8    currentEpoch    (int64 — latest epoch counter)
-28       8    epochMapperPage (int64 — page index of first epoch mapper page, 0 if none)
-36       8    poolListHead    (int64 — head of pool page flat list, 0 if none)
-44       8    treeLockState   (int64 — §9.6 bit layout)
-52      16    reserved
-68    8124    reserved / future use
+ 0       8    rootNodeOffset  (int64 — byte offset of tree root node)
+ 8       8    currentEpoch    (int64 — latest epoch counter)
+16       8    epochMapperPage (int64 — page index of first epoch mapper page, 0 if none)
+24       8    poolListHead    (int64 — head of pool page flat list, 0 if none)
+32       8    treeLockState   (int64 — §9.6 bit layout)
+40      16    reserved
+56    8136    reserved / future use
 ```
 
 ### 4.2 Atomic Root Swap
@@ -369,8 +373,8 @@ This provides defense-in-depth against silent corruption (SSD bit rot, memory
 errors) beyond the ping-pong torn-write protection. The CRC is checked on
 every read, so corruption is detected immediately, not at mount time.
 
-Total: 24 bytes. Available payload in a pool page: 8192 − 28 (header + nextPoolPage
-+ poolState + reserved) = 8164 bytes. ⌊8164 / 24⌋ = 340 per pool page.
+Total: 24 bytes. Available payload in a pool page: 8,192 − 16 (nextPoolPage
++ poolState + reserved) = 8,176 bytes. ⌊8,176 / 24⌋ = 340 per pool page.
 
 ### 5.4 Pool Page
 
@@ -379,11 +383,10 @@ An 8KB page storing up to 340 version nodes in a contiguous array.
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0      12    PageHeader     (type = PoolPage, generation)
-12       8    nextPoolPage   (int64 — next pool page in flat list; write-once, immutable after insertion)
-20       4    poolState      (uint32 — packed: bits 0–15 = firstFreeSlot, bits 16–31 = freeCount)
-24       4    reserved       (uint32)
-28    8160    slots[340]     (340 × 24 bytes version nodes)
+ 0       8    nextPoolPage   (int64 — next pool page in flat list; write-once, immutable after insertion)
+ 8       4    poolState      (uint32 — packed: bits 0–15 = firstFreeSlot, bits 16–31 = freeCount)
+12       4    reserved       (uint32)
+16    8160    slots[340]     (340 × 24 bytes version nodes; 8,160 + 16 overhead = 8,176 ≤ 8,192)
 ```
 
 `poolState` packs `freeCount` and `firstFreeSlot` into a single 32-bit word
@@ -442,13 +445,12 @@ a version chain for that logical page.
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0      12    PageHeader     (type = TreeNode)
-12       8    fileNodePage   (int64 — page index of this file's node, for GC back-ref)
-20       4    reserved
-24    8168    slots[1021]    (1021 × 8 bytes, 8-byte aligned)
+ 0       8    fileNodePage   (int64 — page index of this file's node, for GC back-ref)
+ 8       4    reserved
+12    8168    slots[1021]    (1021 × 8 bytes, 8-byte aligned)
 ```
 
-Total: 12 + 8 + 4 + 8168 = 8192 bytes (exactly one page).
+Total: 8 + 4 + 8,168 = 8,180 bytes payload; 12 bytes padding to 8,192.
 
 `slots[P] = 0` means the page has never been written. Non-zero means follow
 the version chain starting at that pool slot. A slot value of 0 is the null
@@ -520,10 +522,10 @@ page has a 12-byte PageHeader (type `TreeNode`), then:
 ```
 Offset  Size  Field
 ──────  ────  ─────
-12       8    headOffset     (int64 — byte offset of first entry in this page)
-20       2    entryCount     (uint16)
-22       6    reserved
-28      ...   entries        (variable-length, linked via nextOffset)
+ 0       8    headOffset     (int64 — byte offset of first entry in this page)
+ 8       2    entryCount     (uint16)
+10       6    reserved
+16      ...   entries        (variable-length, linked via nextOffset)
 ```
 
 If entries overflow one page, allocate a new overflow page. The directory
@@ -532,10 +534,10 @@ node header is only on the first page. Overflow pages have this layout:
 ```
 Offset  Size  Field
 ──────  ────  ─────
-12       8    nextOverflow   (int64 — page index of next overflow page, 0 = end)
-20       2    entryCount     (uint16 — entries in this overflow page)
+ 0       8    nextOverflow   (int64 — page index of next overflow page, 0 = end)
+ 8       2    entryCount     (uint16 — entries in this overflow page)
 22       2    reserved
-24    8168    entries        (variable-length, linked via nextOffset)
+12    8168    entries        (variable-length, linked via nextOffset)
 ```
 
 **Entry traversal across pages:** `nextOffset` points to the byte offset of
@@ -723,9 +725,8 @@ up to 680 entries. When full, a new page is allocated and linked via
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0      12    PageHeader     (type = MapperPage, generation)
-12       8    nextMapperPage (int64 — page index of next mapper page, 0 = end)
-20       2    entryCount     (uint16 — entries in this page, max ~680)
+ 0       8    nextMapperPage (int64 — page index of next mapper page, 0 = end)
+ 8       2    entryCount     (uint16 — entries in this page, max ~680)
 22       2    reserved
 24    8168    entries[]      (12 bytes each)
 ```
