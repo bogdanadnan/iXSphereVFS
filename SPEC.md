@@ -235,10 +235,12 @@ void     Flush(void);
   layer at commit boundaries — this is the durability barrier.
 - **Write-back:** the StorageBackend may proactively write dirty pages to
   disk (without fsync) when the dirty page count exceeds a configurable
-  threshold. Write-back is non-blocking and does not mark pages clean —
-  it only reduces the data loss window between explicit Flush calls.
-  Crashes between write-back and Flush may lose un-fsynced data but
-  cannot corrupt pages (all writes are ping-pong atomic).
+  threshold. Write-back follows the same ordering as Flush (§3.5) to
+  maintain on-disk consistency. It is non-blocking and does not mark pages
+  clean — it only reduces the data loss window between explicit Flush
+  calls. Crashes between write-back and Flush may lose un-fsynced data
+  but cannot corrupt pages (ordering is preserved; ping-pong protects
+  individual writes).
 
 ### 3.5 Flush Ordering
 
