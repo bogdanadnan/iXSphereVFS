@@ -231,7 +231,14 @@ void     Flush(void);
   writes it to the inactive physical half with incremented generation and
   computed CRC32C §3.7. Marks the page dirty but does not write to disk.
 - `Flush`: writes all dirty pages to the backing file and fsyncs. Marks
-  them clean. Clean pages remain cached.
+  them clean. Clean pages remain cached. Called explicitly by the VFS
+  layer at commit boundaries — this is the durability barrier.
+- **Write-back:** the StorageBackend may proactively write dirty pages to
+  disk (without fsync) when the dirty page count exceeds a configurable
+  threshold. Write-back is non-blocking and does not mark pages clean —
+  it only reduces the data loss window between explicit Flush calls.
+  Crashes between write-back and Flush may lose un-fsynced data but
+  cannot corrupt pages (all writes are ping-pong atomic).
 
 ### 3.5 Flush Ordering
 
