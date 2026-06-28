@@ -96,23 +96,30 @@ never performs logical-to-physical translation.
 ### 3.1 File Layout
 
 The backing file begins with a StorageBackend header, followed by logical
-page data:
+page data. The header is exactly 8,204 bytes (12-byte internal header +
+8,192-byte inline free bitmap).
 
 ```
-Offset        Content
-──────        ───────
-0             StorageBackend header (contains inline free bitmap for first 65,536 pages, config)
-H             Logical page 0 (superblock, ping-pong pair)
-H + 16KB      Logical page 1 (superblock ping-pong alternate)
-...           remaining logical pages
+Offset        Size   Content
+──────        ────   ───────
+0               12   Internal header (type = 0xFF, reserved for StorageBackend use)
+12               8   total_pages       (int64 — highest allocated logical page + 1)
+20               8   page_size         (int64 — payload size in bytes, default 8192)
+28               8   bitmap_overflow   (int64 — page index of first bitmap overflow page, 0 if none)
+36               8   reserved
+44            8160   inline_bitmap     (8,160 bytes = 65,280 bits, covering pages 0–65,279)
+             ─────
+             8,204   total header size
 ```
 
-The header size H is an implementation detail. Each logical page is backed
-internally by a ping-pong physical pair (§3.6); the StorageBackend allocates
-the pair and stores a 12-byte PageHeader followed by 8,192 bytes of payload
-(total 8,204 bytes per half). The VFS and upper layers see the full 8,192-byte
-payload; the header is transparent. An 8,192-byte SQLite page fits exactly;
-a 4,096-byte page fits with 4,096 bytes to spare.
+The `inline_bitmap` covers the first 65,280 logical pages (~510 MB at 8,192
+bytes/page). For instances that grow beyond this, `bitmap_overflow` points to
+the first overflow page (§3.7). The `total_pages` field tracks the highest
+allocated logical page index + 1, used to compute the backing file size and
+detect when overflow pages need allocation.
+
+The header is followed by logical page data. Logical page 0 is the superblock
+(ping-pong pair). Logical page 1 is reserved for superblock ping-pong swap.
 
 ### 3.2 Initialization
 
@@ -214,18 +221,17 @@ between "data" and "metadata" durability.
 The StorageBackend maintains a private free-page bitmap. One bit per
 allocatable logical page. `1` = free, `0` = allocated.
 
-**Layout.** The header region (§3.1) contains an inline bitmap covering the
-first 65,536 pages (512 MB at 8KB). This inline bitmap is 8KB — exactly one
-page worth of bits, stored directly in the header. For VFS instances that
-grow beyond 65,536 pages, the StorageBackend allocates ordinary logical
-overflow pages. Each overflow page holds 65,536 bits (8KB of bitmap data)
-and is chained from the header via a `bitmap_overflow_page` pointer
-(0 = end of chain).
+**Layout.** The StorageBackend header (§3.1) contains an inline bitmap
+covering the first 65,280 pages (65,280 bits = 8,160 bytes, stored
+inline in the header). For instances that grow beyond this, the
+StorageBackend allocates overflow pages. Each overflow page holds 65,536
+bits (8,192 bytes of bitmap data, one full payload) and is chained from
+the header via the `bitmap_overflow` field (0 = end of chain).
 
 ```
-Header inline:    bits[0..65535]     ← pages 0..65535
-Overflow page 1:  bits[0..65535]     ← pages 65536..131071
-Overflow page 2:  bits[0..65535]     ← pages 131072..196607
+Header inline:    bits[0..65279]       ← pages 0..65279
+Overflow page 1:  bits[0..65535]      ← pages 65280..130815
+Overflow page 2:  bits[0..65535]      ← pages 130816..196351
 ...
 ```
 
