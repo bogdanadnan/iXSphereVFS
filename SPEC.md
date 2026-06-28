@@ -118,23 +118,15 @@ file exists:
 1. Create the backing file.
 2. Write the StorageBackend header with an initialized free bitmap (all pages
    free) and chain of bitmap overflow pages (none, covering 0 pages).
-3. Allocate logical page 0 (ping-pong pair) for the superblock.
-4. Initialize the superblock (§4): `rootNodeOffset = 0` (empty tree),
-   `currentEpoch = 0`, `epochMapperPage = 0` (no mapper yet),
-   `poolListHead = 0` (no pool pages yet), `treeLockState = 0`.
-5. Flush. The instance is ready.
+3. Return success. The VFS layer is responsible for allocating and
+   initializing the superblock (§4) on first use.
 
 **File exists:**
 1. Read the header.
 2. Load the free bitmap from the header and any overflow pages.
-3. Read the superblock (logical page 0, ping-pong active half).
-4. Validate CRC32C. If invalid, try the alternate superblock half and the
-   ping-pong alternate page (logical page 1, reserved for superblock swap).
-5. Initialize the in-memory pool list head and tree lock state from the
-   superblock fields.
-6. Walk the epoch mapper chain from `epochMapperPage`. Build in-memory
-   mapping dictionary.
-7. The instance is ready. All other pages are validated lazily on first read.
+3. Validate the header CRC32C. If invalid, the file is corrupt.
+4. Return success. The VFS layer reads and validates the superblock from
+   logical page 0 at mount time (§11.2).
 
 ### 3.3 Page Allocation
 
@@ -249,7 +241,10 @@ The VFS layer never accesses the bitmap directly.
 
 The first page (page 0) of the VFS backing file is a superblock containing
 the tree root pointer and epoch state. It is the single entry point for
-mount and recovery.
+mount and recovery. The superblock is allocated and initialized by the VFS
+layer (not the StorageBackend) on first use after a fresh StorageBackend
+initialization (§3.2). The StorageBackend provides the blank page; the VFS
+writes the initial superblock values.
 
 ### 4.1 Layout (page 0, 8KB)
 
