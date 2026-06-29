@@ -1013,11 +1013,11 @@ After GC completes:
   pages belonging exclusively to that epoch are permanently removed.
   Reading the deleted epoch returns the base state (what existed before the
   snapshot was taken).
-- **Committed snapshots:** the mapping is collapsed. Version nodes from the
-  snapshot epoch are relabeled to the live head epoch at commit time.
-  Original live-head pages overwritten by snapshot variants are freed.
-  Reading the committed epoch returns the live head state as it existed at
-  commit time — not subsequent live head changes.
+- **Committed snapshots:** during normal operation, the mapping `S→E` makes
+  snapshot data visible at epoch S as the commit-time live head. After GC
+  collapses the mapping and relabels version nodes, the mapping is dropped.
+  Reading epoch S then returns the pre-snapshot base (same as soft-delete).
+  Callers must not query committed snapshots after GC.
 
 Callers must ensure no active readers or queries depend on deleted or
 committed snapshot epochs before invoking GC.
