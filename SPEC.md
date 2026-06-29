@@ -41,7 +41,7 @@ only.
 Offset  Size  Field
 ──────  ────  ─────
  0       2    pageType       (uint16 — type code from PageType enum)
- 2       2    flags          (uint16 — per-type flags; StorageHdr uses 0x5346 for 'FS' magic)
+ 2       2    flags          (uint16 — bits 0–1 = flush priority (0=data, 1=pool, 2=bitmap, 3=superblock); bits 2–15 per-type reserved; StorageHdr uses 0x5346 for 'FS' magic)
  4       4    checksum       (uint32 — CRC32C of payload bytes)
  8       4    generation     (uint32 — incremented on each write; higher = active)
 12       4    mirrorPage     (int32 — logical page index of mirror sibling; -1 = none)
@@ -237,7 +237,7 @@ validating CRC32C on the payload on every I/O operation.
 
 ```
 uint8_t* Read(int64_t logicalPage);
-void     Write(int64_t logicalPage, uint8_t* data, int priority);
+void     Write(int64_t logicalPage, uint8_t* data);
 void     Flush(int64_t logicalPage);
 ```
 
@@ -245,11 +245,10 @@ void     Flush(int64_t logicalPage);
   the unified page cache (§3.6) first. Returns a pointer to a page_size-byte
   buffer containing the payload only. Returns NULL if the page has never
   been written.
-- `Write(logicalPage, data, priority)`: accepts a page_size-byte payload
-  buffer and a flush priority (0–3, lower = flushed first). Priority 0 =
-  data pages, 1 = pool pages, 2 = bitmap pages, 3 = superblock. The
-  StorageBackend maintains per-priority dirty lists. Handles the lazy
-  mirror lifecycle (§3.7). Marks the page dirty but does not write to disk.
+- `Write(logicalPage, data)`: accepts a page_size-byte payload buffer.
+  Handles the lazy mirror lifecycle (§3.7). Marks the page dirty but does
+  not write to disk. The flush priority (0–3) is read from the page header's
+  `flags` bits 0–1, which were set at allocation time by the VFS layer.
 - `Flush(logicalPage)`: if `logicalPage < 0`, writes all dirty pages to the
   backing file and fsyncs — the durability barrier, called at commit
   boundaries. If a specific page index is given, writes only that page
@@ -266,11 +265,11 @@ void     Flush(int64_t logicalPage);
 
 ### 3.5 Flush Ordering
 
-`Flush` writes dirty pages in priority order (0 first, 3 last) — data pages
-before pool pages, bitmap pages before the superblock. Within each priority,
-write order is unspecified (pages are independent). After writing, `fsync`
-is called if `logicalPage < 0`. The priority is specified at `Write` time
-by the VFS layer based on the page type being written.
+The StorageBackend reads the flush priority from each dirty page's
+PageHeader `flags` field (§2.1). `Flush(-1)` writes pages in priority
+order: 0 (data) first, 3 (superblock) last. Within each priority, write
+order is unspecified. The VFS sets the priority in `flags` at allocation
+time; the StorageBackend never modifies it.
 
 **Write order (enforced by the StorageBackend via flush priority):**
 
