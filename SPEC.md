@@ -367,9 +367,8 @@ The VFS layer never accesses the bitmap directly.
 
 ## 4. Superblock
 
-The first page (page 0) of the VFS backing file is a superblock containing
-the tree root pointer and epoch state. It is the single entry point for
-mount and recovery. The superblock is allocated by the VFS layer at logical page 2 via
+The superblock lives at logical page 2. It contains the tree root pointer
+and epoch state — the single entry point for mount and recovery. It is allocated by the VFS layer at logical page 2 via
 `Acquire` after StorageBackend initialization. Like every other page, it
 uses standard lazy mirror (§3.7) — there is no separate superblock alternate
 page or special swap protocol. The VFS writes superblock updates via
