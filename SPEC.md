@@ -285,7 +285,7 @@ either the pre-flush state or a recoverable partial state.
 **Crash during flush:**
 
 - Crash before step 4 (superblock not written): on remount, the old
-  superblock still points to the old tree. Any pages written in steps 1–6
+  superblock still points to the old tree. Any pages written in steps 1–3
   are unreachable zombies — wasted space reclaimed by the next GC. No
   corruption.
 - Crash after step 4 (superblock written): all preceding pages are on disk.
@@ -486,6 +486,15 @@ prepend to the global list via `poolListHead` CAS. If the CAS fails
 its allocated page to the updated `poolListHead` — the page is valid and
 must not be abandoned. Individual slots are never freed — GC rebuilds pool
 pages from scratch.
+
+**Arena optimization (optional):** under high thread counts, contention on
+the head page's `poolState` can be reduced by maintaining per-thread or
+per-CPU arena cursors. Each arena has a preferred active pool page;
+threads allocated to arena N CAS only on that arena's page. When the arena
+page is exhausted, a new page is allocated and prepended globally with the
+arena ID recorded in a reserved field, so other arenas skip it during their
+scans. This bounds global CAS to page-exhaustion events (~once per 255
+allocations) rather than every slot allocation.
 
 ### 5.4 Name Entries
 
