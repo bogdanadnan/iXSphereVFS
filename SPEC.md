@@ -1056,15 +1056,16 @@ int64_t   vfs_file_size(vfs_t* vfs, int64_t file, int64_t epoch);
 int64_t   vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch);
 int64_t   vfs_file_ctime(vfs_t* vfs, int64_t file);
 
-int       vfs_lock(vfs_t* vfs, int64_t file);
-int       vfs_unlock(vfs_t* vfs, int64_t file);
+int       vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch);
+int       vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch);
 ```
 
-- `vfs_lock`/`vfs_unlock`: explicit per-file locking. All internal write
-  operations acquire the lock automatically; these calls allow callers to
-  hold the lock across multiple operations for atomic bulk changes. Locks
-  are exclusive — only one thread may hold a given file's lock at a time.
-  Read operations remain lock-free and do not require the lock.
+- `vfs_lock`/`vfs_unlock`: explicit per-file, per-epoch locking. Passing
+  `epoch = 0` acquires the **global** file lock — all writes to this file
+  are serialized regardless of epoch (SQLite compatibility). Passing a
+  specific epoch acquires the per-epoch lock — only same-epoch writes block;
+  cross-epoch writes proceed concurrently. Internal write operations
+  acquire the per-epoch lock automatically. Reads remain lock-free.
 
 - `vfs_create`: returns the nodeId of the created file, or -1 on error.
 - `vfs_open_file`: resolves a path to a file nodeId. Returns -1 if not found.
