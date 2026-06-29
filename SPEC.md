@@ -248,7 +248,7 @@ void     Flush(void);
   maintain on-disk consistency. It is non-blocking and does not mark pages
   clean — it only reduces the data loss window between explicit Flush
   calls. Crashes between write-back and Flush may lose un-fsynced data
-  but cannot corrupt pages (ordering is preserved; ping-pong protects
+  but cannot corrupt pages (ordering is preserved; lazy mirror protects
   individual writes).
 
 ### 3.5 Flush Ordering
@@ -277,7 +277,7 @@ either the pre-flush state or a recoverable partial state.
   corruption.
 - Crash after step 7 (superblock written): all preceding pages are on disk.
   Mount loads the new state. The flush is complete from the reader's
-  perspective even if `fsync` was interrupted — the superblock ping-pong
+  perspective even if `fsync` was interrupted — the superblock lazy mirror
   mechanism §3.8  ensures the active half points to a consistent state.
 
 **Fsync:** after writing all dirty pages, `fsync` is called on the backing
@@ -336,8 +336,9 @@ Page: [PageHeader: 16 bytes | payload: page_size bytes]
 **Storage savings:** pages written only once (the common case for data pages
 filled by INSERT and metadata pages created during tree growth) consume
 `page_size + 16` bytes instead of `2 × (page_size + 16)`. For a typical
-database where 90% of pages are write-once, physical storage is ~55% of the
-eager ping-pong model.
+For a typical database where 90% of pages are write-once, physical storage is
+dominated by the single-page case rather than mirror pairs, saving significant
+space over always-allocated mirror pairs.
 
 ### 3.8 Free-Page Bitmap (Internal)
 
@@ -370,7 +371,7 @@ The first page (page 0) of the VFS backing file is a superblock containing
 the tree root pointer and epoch state. It is the single entry point for
 mount and recovery. The superblock is allocated by the VFS layer at logical page 2 via
 `Acquire` after StorageBackend initialization. Like every other page, it
-uses standard ping-pong (§3.7) — there is no separate superblock alternate
+uses standard lazy mirror (§3.7) — there is no separate superblock alternate
 page or special swap protocol. The VFS writes superblock updates via
 `Write`, which writes to the inactive half and increments generation
 atomically. Mount reads both headers and picks the active half (§3.7).
@@ -404,7 +405,7 @@ during GC (which rebuilds and flushes the superblock). Between GC cycles:
   stale. This is safe — pool pages are also reachable via VirtualPtrs in
   section slots. GC walks the tree and rebuilds the complete pool list.
 - `treeLockState` is always 0 at flush time (no operations in flight during
-  a flush), so recovery zeros it unconditionally ping-pong §3.7.
+  a flush), so recovery zeros it unconditionally lazy mirror (§3.7).
 
 ---
 
@@ -432,7 +433,7 @@ Offset  Size  Field
 **Section entries (type=0x04):** `nameLen` is repurposed as `sectionIdx`
 (uint16), identifying which 1021-page segment of the file this section
 page covers (0, 1, 2... up to 65,535 → 535 GB max logical file size).
-With ping-pong page backing §3.7, physical storage is up to ~1.1 TB for a
+With lazy mirror backing §3.7, physical storage is up to ~1.1 TB for a
 fully written 535 GB logical file. No name bytes follow. `childOffset` is
 the section page index.
 
@@ -473,11 +474,11 @@ The `dataCrc32c` field stores the CRC32C of the physical data page's content
 
 On write: compute CRC32C of the new content, store via `atomic_store_release`.
 On read: recompute the data page's CRC32C. If it matches `dataCrc32c`, the
-page is valid. If not, the ping-pong mechanism §3.8  tries the backup half.
+page is valid. If not, the lazy mirror mechanism §3.8  tries the backup half.
 If both halves fail CRC, fall back to the previous version in the chain.
 
 This provides defense-in-depth against silent corruption (SSD bit rot, memory
-errors) beyond the ping-pong torn-write protection. The CRC is checked on
+errors) beyond the lazy mirror torn-write protection. The CRC is checked on
 every read, so corruption is detected immediately, not at mount time.
 
 Total: 24 bytes. Available payload in a pool page: page_size − 16 (nextPoolPage
@@ -720,11 +721,11 @@ Given file node F, logical page P, offset O within page, data D, write epoch E:
 2. Read `vp = section[P]` (the VirtualPtr, 0 if never written).
 3. Walk the version chain starting at `vp`. Find any existing version node
    with `epoch == E`.
-   - **FOUND** → in-place write. Ping-pong write to the data page ping-pong §3.7:
+   - **FOUND** → in-place write. Lazy mirror write to the data page lazy mirror (§3.7):
      write new content to inactive half, increment generation.
      Update `version.dataCrc32c` via `atomic_store_release`.
    - **NOT FOUND, vp == 0 (first-ever write):** Allocate new data page Q
-     (two physical pages for ping-pong). Write content to Q.half[0],
+     (one page (mirror allocated on second write)). Write content to Q.half[0],
      set generation=1. Compute CRC32C. Allocate pool slot. Write version
      node `{epoch=E, physicalPage=Q, next=0, dataCrc32c=...}`.
      CAS `section[P]` from 0 to new VirtualPtr.
@@ -980,7 +981,7 @@ locks simultaneously.
 
 Snapshot (`epoch += 2`) increments the epoch counter. **Before any write
 at the new epoch proceeds, `currentEpoch` MUST be persisted to the superblock.**
-The superblock page (two physical ping-pong pages) is written and fsync'd
+The superblock page (a single page with lazy mirror) is written and fsync'd
 directly — this is a targeted superblock flush, not a full dirty-cache flush.
 Write the superblock bytes to the inactive physical half via Write,
 then Flush only that page range. One fsync per snapshot. If the process
@@ -1076,10 +1077,10 @@ prevents concurrent modifications during the copy phase.
    page, and new `poolListHead` pointing to the first page of the rebuilt
    pool list.
 5. **fsync** the new superblock.
-6. **Atomically swap** the superblock pointer (ping-pong, §4.2).
+6. **Atomically swap** the superblock pointer (lazy mirror (§3.7)).
 7. **Release tree lock.**
 8. **Free old pages.** Walk the old tree, free all pages not reachable from
-   the new root. Every logical page freed releases its underlying ping-pong
+   the new root. Every logical page freed releases its underlying lazy mirror
    physical pair internally. This phase runs in the background and does not
    block normal operations.
 
@@ -1130,7 +1131,7 @@ This eliminates the need for separate "torn-CAS recovery" for metadata
 pages. The CAS-based updates to directory/file node `headOffset` and section
 slot arrays are crash-safe because the underlying page write is ping-pong
 protected. A CAS that succeeds logically but whose page write is torn on
-disk is recovered by the ping-pong mechanism on the next read: the backup
+disk is recovered by the lazy mirror mechanism on the next read: the backup
 half still holds the pre-CAS state, and the reader sees either the old or
 new logical state — never a torn page.
 
@@ -1158,7 +1159,7 @@ new logical state — never a torn page.
      Logical pages whose chain head is elsewhere but whose chain passes
      through a node in the corrupt page lose history below the corrupt
      entry but retain the head — the chain terminates at the corrupt node.
-   - Data page: ping-pong handles CRC failure on read §3.7. No mount-time
+   - Data page: lazy mirror handles CRC failure on read §3.7. No mount-time
      scan needed.
 
 All corruption is detected and handled at read time, not mount time.
@@ -1175,7 +1176,7 @@ Timings assume warm cache — pages resident in the unified page cache
 |---|---|
 | Section array lookup + VirtualPtr decode | ~1 µs |
 | Version chain walk (typical: 2 hops) | ~0.1 µs |
-| Data page write (ping-pong: a page to inactive half, generation flip, CRC32C) | ~40 µs |
+| Data page write (lazy mirror: a page to inactive half, generation flip, CRC32C) | ~40 µs |
 | Pool slot allocation (per-page CAS) | ~0.1 µs |
 | Section slot CAS | ~0.1 µs |
 | **Total per page write** | **~42 µs** |
