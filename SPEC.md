@@ -449,10 +449,20 @@ never freed — GC rebuilds pool pages from scratch.
 
 ### 5.4 Name Entries
 
-Names are stored in separate pool entries, padded to a multiple of 32 bytes.
-A name of length N occupies `ceil((N + 1) / 32) * 32` bytes as one or more
-contiguous pool slots. The name is UTF-8, zero-padded. A `VirtualPtr` in a
-`DirContent` references the first slot of the name.
+Names are stored as chained pool entries, each holding 24 bytes of UTF-8
+data and an 8-byte `nextPtr` to the next slot in the chain:
+
+```
+Offset  Size  Field
+──────  ────  ─────
+ 0      24    data           (UTF-8 bytes, zero-padded if shorter than 24)
+24       8    nextPtr        (VirtualPtr — next NameSlot, 0 = end of name)
+```
+
+A name of length N occupies `ceil(N / 24)` pool slots linked via `nextPtr`.
+The DirContent entry's `namePtr` points to the first slot. No multi-slot
+reservation is needed — each slot is individually allocated from the pool.
+GC traverses the chain to free all slots.
 
 ---
 
