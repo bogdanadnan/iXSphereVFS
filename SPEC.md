@@ -669,9 +669,22 @@ read rule (§7.2) on the `sizePtr` chain.
 
 ### 7.2 Read Rule
 
-To resolve a query at epoch R:
-1. Apply epoch mapper (§8): `R' = mapper.resolve(R)`.
-2. Walk the chain from the head pointer.
+The epoch mapper (§8) affects traversal in two ways:
+
+1. **Query resolution:** the requested epoch R is mapped to `R' = mapper.resolve(R)`.
+   This always applies — if a mapping `S→E` exists, requesting epoch S returns
+   data from epoch E.
+2. **Traversal remapping:** when `traversalApply = true` for a mapping `S→E`,
+   entries with `epoch == S` encountered during chain walking are treated as
+   `epoch == E`. When `traversalApply = false`, entries with `epoch == S` are
+   skipped (the snapshot's changes are invisible).
+
+To resolve a chain at mapped epoch R':
+1. Walk from the head pointer.
+2. If `traversalApply` is true for the entry's epoch mapping: treat the entry
+   as if its epoch were the mapped `toEpoch`, then apply steps 3–6.
+3. If `traversalApply` is false for the entry's epoch mapping: skip the entry.
+4. If no mapping exists for the entry's epoch: proceed to steps 3–6 directly.
 3. If entry.epoch == R' → use it (exact match, regardless of even/odd).
 4. If entry.epoch > R' → skip.
 5. If entry.epoch < R' AND even → use it (committed base). Stop.
@@ -746,6 +759,18 @@ Offset  Size  Field
 **Resolution is single-hop.** Mappings must not chain. Commit adds a mapping
 with `traversalApply = true`. Soft-delete adds a mapping with `traversalApply
 = false`. GC drops old mappings and compacts the chain.
+
+**Query resolution:** `mapper.resolve(R)` returns `toEpoch` if a mapping
+exists for `R`, or `R` itself if no mapping exists. This ALWAYS applies.
+
+**Traversal remapping:** the `traversalApply` flag controls how entries
+with `epoch == fromEpoch` are treated during chain walking (§7.2).
+- `traversalApply = true` (commit): entries with `epoch == S` are
+  reinterpreted as `epoch == E`, making the snapshot's data visible to
+  live-head readers as if it had been written directly at epoch E.
+- `traversalApply = false` (soft-delete): entries with `epoch == S` are
+  skipped entirely. The snapshot's changes become invisible to all readers.
+  Querying epoch S returns the pre-snapshot base (highest even < S).
 
 ---
 
