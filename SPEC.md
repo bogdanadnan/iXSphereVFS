@@ -16,7 +16,7 @@ directories, or file nodes.
 **Key properties:**
 
 - **Universal pool.** One page type for all metadata. Fixed 32-byte slots:
-  255 usable entries + 1 chain link per 8KB page. Predictable allocation,
+  255 entries per 8KB page. Predictable allocation,
   simple free list.
 - **Epoch-keyed.** Even epochs = live head, odd epochs = snapshots.
 - **O(1) snapshots.** Increment a counter. No page writes.
@@ -437,7 +437,7 @@ A `VirtualPtr` is an 8-byte packed value referencing a pool entry:
 VirtualPtr = (poolPageIndex << 8) | (slotIndex & 0xFF)
 ```
 
-- Bits 0–7: slot index within the pool page (0–254; 255 is the link slot)
+- Bits 0–7: slot index within the pool page (0–254)
 - Bits 8–63: logical page index of the pool page
 
 `VirtualPtr` of 0 means null. Logical page 0 is the StorageBackend header
@@ -448,22 +448,19 @@ and is never a pool page, so `(page=0, slot=0)` is never a valid reference.
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0       8    nextPoolPage   (int64 — next pool page in list; write-once)
+ 0       8    nextPoolPage   (int64 — next pool page in global allocator list; write-once)
  8       4    poolState      (uint32 — packed freeCount|firstFreeSlot)
 12       4    reserved
 16    8160    slots[255]     (255 × 32 bytes entries)
-8176     16    link           (MetaPoolLink: next page index + reserved)
+8176     16    reserved       (padding)
 ```
 
-The last 16 bytes are the MetaPoolLink:
-```
-Offset  Size  Field
-──────  ────  ─────
- 0       8    nextMetaPage   (int64 — next pool page in chain, 0 = end)
- 8       8    reserved
-```
+Total: 8192 bytes, 255 usable entries per page.
 
-Total: 8192 bytes. 255 usable metadata entries, 1 link entry.
+`nextPoolPage` links pool pages into the global allocator chain rooted at
+`poolListHead`. Set once when the page enters the list, never modified. GC
+builds new pool pages and atomically swaps `poolListHead` — no second chain
+pointer is needed.
 
 ### 5.3 Pool Allocation
 
