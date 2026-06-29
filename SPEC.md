@@ -375,7 +375,7 @@ Offset  Size  Field
 ──────  ────  ─────
  0       8    rootNodeOffset  (int64 — byte offset of tree root node)
  8       8    currentEpoch    (int64 — latest epoch counter)
-16       8    epochMapperPage (int64 — page index of first epoch mapper page, 0 if none)
+16       8    epochMapperPtr  (VirtualPtr — first epoch mapper entry, 0 if none)
 24       8    poolListHead    (int64 — head of pool page flat list, 0 if none)
 32       8    treeLockState   (int64 — §9.6 bit layout)
 40       4    nextNodeId      (uint32 — next available node identifier)
@@ -446,6 +446,12 @@ Offset  Size  Field
 Total: 8192 bytes. 255 usable metadata entries, 1 link entry.
 
 ### 5.3 Pool Allocation
+
+When a slot is free, bytes 0–1 store the uint16 index of the next
+free slot (0xFFFF = terminal sentinel). All other bytes are undefined.
+
+On a freshly allocated pool page: `slot[i].bytes[0:2] = i+1` for `i < 254`,
+`slot[254].bytes[0:2] = 0xFFFF`, `poolState = (255 << 16) | 0`.
 
 **Allocation:** CAS on `poolState` (packed `freeCount | firstFreeSlot`) to
 allocate a free slot. When `freeCount == 0`, allocate a new pool page and
@@ -538,8 +544,8 @@ Offset  Size  Field
 
 A FileContent groups consecutive logical pages into segments. The segment
 size determines the fan-out: N pages per FileContent means 1 FileContent per
-N pages. At page_size=8192, a segment size of 1024 pages (~8 MB) is
-recommended. `pageRootPtr` points to the first `PageNode` for this segment.
+N pages. At page_size=8192, the segment size is fixed at 1,024 pages (~8 MB). This value is
+hardcoded and not stored on disk. `pageRootPtr` points to the first `PageNode` for this segment.
 
 `FileContent` entries are NOT epoch-keyed — they form a permanent linked list
 of segments that grows as the file expands. The `nextPtr` links to the next
@@ -588,6 +594,24 @@ mechanism.
 
 ---
 
+
+### 6.7 FileSize
+
+```
+Offset  Size  Field
+──────  ────  ─────
+ 0       4    epoch          (uint32)
+ 4       4    reserved
+ 8       8    fileSize       (int64 — file size in bytes)
+16       8    nextPtr        (VirtualPtr — next FileSize entry)
+24       8    reserved
+```
+
+FileSize entries are epoch-keyed and hang off the FileNode's `headPtr` chain
+alongside FileContent entries. They are distinguished from FileContent by
+a type tag in bytes 0–1 (type 0x05, stored in the same position as the
+implicit type of FileContent/PageNode/VersionPage entries). Stat() resolves
+the file size via the read rule (§7.1) on this chain.
 ## 7. Tree Traversal
 
 ### 7.1 Read Rule
@@ -645,8 +669,8 @@ To write to logical page P of file F at epoch E:
 ## 8. Epoch Mapping
 
 Epoch mappings are stored as pool entries in a dedicated chain. The superblock
-holds `epochMapperPage` — the page index of the pool page containing the first
-mapper entry. The entry is always at slot 0 of that page. The mapper chain is
+holds `epochMapperPtr` — a VirtualPtr pointing to the first mapper entry
+in any pool page. The mapper chain is
 walked via VirtualPtr `nextPtr` within pool pages. Each mapping is a pool entry:
 
 ```
@@ -691,9 +715,7 @@ per-file serialization (§9.3) but is retained as a correctness invariant
 and for future lock-free operation.
 
 After a successful CAS on PageNode.versionRootPtr, the the pool page must be `Write`'d
-to the dirty cache so the updated slot is persisted on flush. Similarly,
-after an in-place `dataCrc32c` update via `atomic_store_release`, the pool page
-containing that version node must be `Write`'d.
+to the dirty cache so the updated slot is persisted on flush.
 
 Pool allocation (§5.2) uses a per-pool-page CAS on `freeCount`/`firstFreeSlot`.
 
@@ -730,14 +752,6 @@ guarantee publication ordering:
 The lock-free reader uses **acquire loads** (`atomic_load_acquire`) when
 following a VirtualPtr chain. This ensures all fields in the newly linked
 slot are visible before the reader dereferences them.
-
-**In-place CRC32C ordering:** When a writer does an in-place data page write
-(version node already exists for this epoch), it must complete the data page
-write BEFORE updating `dataCrc32c` in the existing version node, using a
-release store (`atomic_store_release`). The lock-free reader must use an acquire
-load (`atomic_load_acquire`) on `dataCrc32c`. If a CRC check fails (possible torn
-read caught mid-write), the reader retries once before falling back to the
-previous version in the chain.
 
 ### 9.3 Write Serialization (Per-File Locking)
 
@@ -869,16 +883,15 @@ prevents concurrent modifications during the copy phase.
      deleted epochs. Collapse committed mappings (remove the mapping entry
      — the data has already been adjusted in step 2). Write new mapper
      pages. Free old mapper pages.
-3. **Write new tree pages** — section, pool, directory, file, and mapper
+3. **Write new tree pages** — pool pages and data pages
    pages. Old pages are NOT freed until the swap is complete.
 4. **Write new superblock** with the new root offset, `currentEpoch`, and new `poolListHead` pointing to the first page of the rebuilt
    pool list.
 4. **Write new superblock** with the new root offset, `currentEpoch`,
-   and new `poolListHead`.
-5. **fsync** the new superblock.
-6. **Atomically swap** the superblock pointer (lazy mirror (§3.7)).
-7. **Release tree lock.**
-8. **Free old pages.** Walk the old tree, free all pages not reachable from
+   and new `poolListHead`. fsync.
+5. **Atomically swap** the superblock pointer (lazy mirror (§3.7)).
+6. **Release tree lock.**
+7. **Free old pages.** Walk the old tree, free all pages not reachable from
    the new root. Every logical page freed releases its underlying lazy mirror
    physical pair internally. This phase runs in the background and does not
    block normal operations.
@@ -927,7 +940,7 @@ ever visible. The reader picks the half with higher generation; if its CRC
 fails, the backup half is used.
 
 This eliminates the need for separate "torn-CAS recovery" for metadata
-pages. The CAS-based updates to directory/file node `headOffset` and section
+pages. The CAS-based updates to directory/file node `headPtr` and PageNode
 slot arrays are crash-safe because the underlying page write is ping-pong
 protected. A CAS that succeeds logically but whose page write is torn on
 disk is recovered by the lazy mirror mechanism on the next read: the backup
@@ -939,7 +952,7 @@ new logical state — never a torn page.
 1. Read both superblock pages (page 0 and page 1).
 2. Select the active one: higher PageHeader generation wins (§3.7 — Lazy Mirror).
    Validate its CRC32C. If invalid, try the other page.
-3. Read `rootNodeOffset`, `currentEpoch`, `epochMapperPage`, `poolListHead`.
+3. Read `rootNodeOffset`, `currentEpoch`, `epochMapperPtr`, `poolListHead`.
 4. Read the first epoch mapper page. Validate CRC32C. Walk the chain via
    `nextMapperPage`. Rebuild in-memory mapper dictionary.
 5. Zero `treeLockState` reader count (in-memory only — the on-disk field
