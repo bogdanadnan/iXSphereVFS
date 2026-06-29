@@ -1,567 +1,223 @@
 # Phase 1: Platform & Primitives
 
 ## Goal
-Establish cross-platform foundation: CRC32C, atomics, memory ordering, page buffer helpers.
-All code must compile and run on: Linux x86_64, Linux aarch64, macOS x86_64, macOS aarch64, Windows x86_64.
-No external dependencies beyond libc and compiler builtins.
+Establish the cross-platform foundation: compiler and architecture detection,
+hardware-accelerated CRC32C, atomic operations with memory ordering, fast
+page-buffer serialization, and basic error/logging infrastructure.
+
+All code must compile and run on Linux x86_64, Linux aarch64, macOS x86_64,
+macOS aarch64, and Windows x86_64. No dependencies beyond libc and compiler
+builtins. No allocations on the hot path.
 
 ---
 
-## 1.1 Project Skeleton
+## Workload 1.1 — Project Skeleton
 
-### Directory structure
-```
-src/
-  crc32c.c
-  platform.h
-  page_buf.h          (header-only)
-include/
-  ixsphere_vfs.h      (stub — just error codes for now)
-  vfs_internal.h      (stub)
-test/
-  test_runner.c
-  test_crc32c.c
-  test_atomics.c
-  test_page_buf.c
-CMakeLists.txt
-```
+**What:** Create the CMake build system and directory layout for the library
+and test suite.
 
-### CMakeLists.txt
-```cmake
-cmake_minimum_required(VERSION 3.16)
-project(iXSphereVFS VERSION 0.1.0 LANGUAGES C)
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_C_FLAGS "-O3 -march=native -Wall -Wextra -Wpedantic")
+**Why:** Every subsequent phase adds source files and tests. A consistent
+build structure from the start eliminates integration friction.
 
-add_library(ixsphere_vfs STATIC
-    src/crc32c.c
-)
-target_include_directories(ixsphere_vfs PUBLIC include src)
+**How:**
+- `CMakeLists.txt` at the project root. Set C11 standard, `-O3 -march=native`,
+  and strict warnings (`-Wall -Wextra -Wpedantic`).
+- Static library target `ixsphere_vfs` built from `src/`.
+- Test executable `vfs_test` linked against the library and `pthread`.
+- Directory structure: `src/` for library code, `include/` for public headers,
+  `test/` for test files.
+- Public header `include/ixsphere_vfs.h` starts as a stub — it will grow
+  with each phase.
+- Internal header `include/vfs_internal.h` starts as a placeholder.
+- Test harness in `test/test_runner.c`: a `main()` that calls individual test
+  functions and reports total passed vs failed. A `CHECK(expr)` macro that
+  increments counters and prints failures with file and line.
 
-enable_testing()
-add_executable(vfs_test
-    test/test_runner.c
-    test/test_crc32c.c
-    test/test_atomics.c
-    test/test_page_buf.c
-)
-target_link_libraries(vfs_test ixsphere_vfs pthread)
-add_test(NAME vfs_test COMMAND vfs_test)
-```
-
-### Test harness (`test/test_runner.c`)
-```c
-#include <stdio.h>
-#include <stdlib.h>
-
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define CHECK(expr) do { \
-    tests_run++; \
-    if (expr) { tests_passed++; } \
-    else { fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #expr); } \
-} while(0)
-
-#define CHECK_EQ(a, b) CHECK((a) == (b))
-#define CHECK_NEQ(a, b) CHECK((a) != (b))
-
-extern void test_crc32c(void);
-extern void test_atomics(void);
-extern void test_page_buf(void);
-
-int main(void) {
-    printf("=== iXSphereVFS Phase 1 Tests ===\n\n");
-    test_crc32c();
-    test_atomics();
-    test_page_buf();
-    printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
-    return tests_passed == tests_run ? 0 : 1;
-}
-```
+**Acceptance:** `cmake .. && cmake --build . && ctest` succeeds with zero
+tests (empty test suite is fine for this workload). The build compiles
+without warnings on all target platforms.
 
 ---
 
-## 1.2 Platform Detection
+## Workload 1.2 — Platform Detection
 
-File: `src/platform.h`
+**What:** A single header `src/platform.h` that detects the compiler,
+architecture, and operating system at compile time and defines consistent
+macros used by the rest of the codebase.
 
-### Compiler detection
-```c
-#if defined(__GNUC__) || defined(__clang__)
-  #define VFS_COMPILER_GCC 1
-#elif defined(_MSC_VER)
-  #define VFS_COMPILER_MSVC 1
-#else
-  #error "Unsupported compiler"
-#endif
-```
+**Why:** CRC32C, atomics, memory barriers, and SIMD optimizations all require
+platform-specific intrinsics or builtins. Centralizing detection avoids
+`#ifdef` sprawl in every source file.
 
-### Architecture detection
-```c
-#if defined(__x86_64__) || defined(_M_X64)
-  #define VFS_ARCH_X86_64 1
-#elif defined(__aarch64__) || defined(_M_ARM64)
-  #define VFS_ARCH_AARCH64 1
-#else
-  #error "Unsupported architecture"
-#endif
-```
+**How:**
+- Detect compiler: GCC, Clang, or MSVC. Define `VFS_COMPILER_GCC` or
+  `VFS_COMPILER_MSVC` accordingly. Emit `#error` for unsupported compilers.
+- Detect architecture: x86_64 or aarch64. Define `VFS_ARCH_X86_64` or
+  `VFS_ARCH_AARCH64`. Emit `#error` for unsupported architectures.
+- Define utility macros: `VFS_INLINE` (always `static inline`), `VFS_LIKELY`
+  and `VFS_UNLIKELY` (branch prediction hints), `VFS_RESTRICT` (aliasing hint).
+- Define `VFS_CACHELINE`: 64 on x86_64, 128 on Apple Silicon (aarch64 macOS),
+  64 on Linux aarch64.
+- Define `VFS_PAGE_SIZE` as 8192 — the fixed page size for this VFS.
+- Detect OS: Linux, macOS, Windows. Define `VFS_OS_LINUX`, `VFS_OS_MACOS`,
+  `VFS_OS_WINDOWS`.
 
-### Platform macros
-```c
-#define VFS_INLINE      static inline
-#define VFS_LIKELY(x)   __builtin_expect(!!(x), 1)
-#define VFS_UNLIKELY(x) __builtin_expect(!!(x), 0)
-#define VFS_RESTRICT     __restrict__
-
-#if VFS_ARCH_AARCH64 && defined(__APPLE__)
-  #define VFS_CACHELINE 128
-#else
-  #define VFS_CACHELINE 64
-#endif
-
-#define VFS_PAGE_SIZE   8192
-```
-
-### Tests (in `test/test_platform.c` or embedded in test_runner)
-- Verify `VFS_PAGE_SIZE == 8192`
-- Verify `VFS_CACHELINE` is a power of 2 ≥ 64
+**Acceptance:** A test that asserts `VFS_PAGE_SIZE == 8192` and verifies
+`VFS_CACHELINE` is a power of two ≥ 64. The header compiles cleanly on
+all target platforms.
 
 ---
 
-## 1.3 CRC32C
+## Workload 1.3 — CRC32C
 
-File: `src/crc32c.c` + declaration in `include/ixsphere_vfs.h`
+**What:** A hardware-accelerated CRC-32C (Castagnoli) checksum function.
 
-### Public API
-```c
-#include <stdint.h>
-#include <stddef.h>
+**Why:** Every page in the VFS carries a CRC32C checksum in its header.
+CRC validation runs on every disk read and is the primary corruption
+detection mechanism. Software CRC32C on 8KB pages costs ~250 microseconds;
+hardware CRC32C costs ~2 microseconds — a 100× difference that directly
+impacts read throughput.
 
-/* Compute CRC-32C (Castagnoli) over data. Hardware-accelerated on x86_64 and aarch64. */
-uint32_t vfs_crc32c(const uint8_t* data, size_t len);
-```
+**How:**
+- Public API: `uint32_t vfs_crc32c(const uint8_t* data, size_t len)`.
+  Returns `0x00000000` for zero-length input.
+- Software fallback: a 256-entry lookup table using the reversed Castagnoli
+  polynomial `0x82F63B78`. Table is computed once at first call. Algorithm:
+  initialize `crc = 0xFFFFFFFF`, process each byte as `crc = table[(crc ^
+  byte) & 0xFF] ^ (crc >> 8)`, finalize with `crc ^ 0xFFFFFFFF`.
+- x86_64 hardware path: use SSE4.2 `_mm_crc32_u64`, `_mm_crc32_u32`, and
+  `_mm_crc32_u8` intrinsics. Process data in descending chunk sizes: 8-byte
+  chunks first, then 4-byte, then individual bytes.
+- aarch64 hardware path: use ARMv8 CRC32 intrinsics `__crc32cd` (8-byte),
+  `__crc32cw` (4-byte), `__crc32cb` (1-byte).
+- Runtime dispatch: on x86_64, always use the hardware path (SSE4.2 is
+  guaranteed on x86_64). On aarch64, always use the hardware path (CRC32 is
+  mandatory in ARMv8.1-A). On other architectures, use the software fallback.
+- The function must handle unaligned input at all alignments. Use `memcpy`
+  to load chunks (the compiler optimizes this to direct loads on platforms
+  that support unaligned access).
 
-### Software fallback
-```c
-static const uint32_t crc32c_table[256]; // precomputed
-
-static void crc32c_init_table(void) {
-    const uint32_t poly = 0x82F63B78u;
-    for (uint32_t i = 0; i < 256; i++) {
-        uint32_t c = i;
-        for (int j = 0; j < 8; j++)
-            c = (c & 1) ? poly ^ (c >> 1) : c >> 1;
-        crc32c_table[i] = c;
-    }
-}
-
-static uint32_t crc32c_software(const uint8_t* data, size_t len) {
-    uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; i++)
-        crc = crc32c_table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-    return crc ^ 0xFFFFFFFFu;
-}
-```
-
-### x86_64 hardware path (SSE4.2)
-```c
-#if VFS_ARCH_X86_64
-#include <nmmintrin.h>  // SSE4.2
-
-static uint32_t crc32c_hw_x86(const uint8_t* data, size_t len) {
-    uint32_t crc = 0xFFFFFFFFu;
-    /* Process 8-byte chunks where possible */
-    while (len >= 8) {
-        uint64_t chunk;
-        memcpy(&chunk, data, 8);   /* unaligned read */
-        crc = (uint32_t)_mm_crc32_u64(crc, chunk);
-        data += 8; len -= 8;
-    }
-    /* Process 4-byte chunk */
-    if (len >= 4) {
-        uint32_t chunk;
-        memcpy(&chunk, data, 4);
-        crc = _mm_crc32_u32(crc, chunk);
-        data += 4; len -= 4;
-    }
-    /* Process remaining bytes */
-    while (len > 0) {
-        crc = _mm_crc32_u8(crc, *data);
-        data++; len--;
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
-#endif
-```
-
-### aarch64 hardware path (ARMv8 CRC32)
-```c
-#if VFS_ARCH_AARCH64
-#include <arm_acle.h>
-
-static uint32_t crc32c_hw_arm(const uint8_t* data, size_t len) {
-    uint32_t crc = 0xFFFFFFFFu;
-    while (len >= 8) {
-        crc = __crc32cd(crc, *(const uint64_t*)data);
-        data += 8; len -= 8;
-    }
-    while (len >= 4) {
-        crc = __crc32cw(crc, *(const uint32_t*)data);
-        data += 4; len -= 4;
-    }
-    while (len > 0) {
-        crc = __crc32cb(crc, *data);
-        data++; len--;
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
-#endif
-```
-
-### Runtime dispatch
-```c
-uint32_t vfs_crc32c(const uint8_t* data, size_t len) {
-    if (len == 0) return 0x00000000u;
-#if VFS_ARCH_X86_64
-    return crc32c_hw_x86(data, len);
-#elif VFS_ARCH_AARCH64
-    return crc32c_hw_arm(data, len);
-#else
-    static int table_ready = 0;
-    if (!table_ready) { crc32c_init_table(); table_ready = 1; }
-    return crc32c_software(data, len);
-#endif
-}
-```
-
-### Known test vectors (CRC-32C / Castagnoli / iSCSI)
-| Input | CRC32C |
-|-------|--------|
-| `""` (0 bytes) | `0x00000000` |
-| `"123456789"` (9 bytes) | `0xE3069283` |
-| 8,192 zero bytes | `0x8A9136AA` (verify by computing once) |
-
-### Test file (`test/test_crc32c.c`)
-```c
-void test_crc32c(void) {
-    printf("1.3 CRC32C...\n");
-
-    /* Empty input */
-    CHECK_EQ(vfs_crc32c(NULL, 0), 0x00000000u);
-
-    /* Known vector: "123456789" */
-    CHECK_EQ(vfs_crc32c((const uint8_t*)"123456789", 9), 0xE3069283u);
-
-    /* 4-byte aligned */
-    uint32_t val = 0xDEADBEEF;
-    uint32_t c1 = vfs_crc32c((const uint8_t*)&val, 4);
-    CHECK_NEQ(c1, 0x00000000u);
-
-    /* Unaligned: offset by 1 byte */
-    uint8_t buf[9] = {0};
-    for (int i = 0; i < 9; i++) buf[i] = (uint8_t)i;
-    uint32_t c2 = vfs_crc32c(buf + 1, 8);
-    CHECK_NEQ(c2, 0x00000000u);
-
-    /* 8KB page of zeros — must match on every run */
-    static uint8_t zero_page[8192];
-    uint32_t c3 = vfs_crc32c(zero_page, 8192);
-    uint32_t c4 = vfs_crc32c(zero_page, 8192);
-    CHECK_EQ(c3, c4);
-
-    /* 8KB page of ones */
-    static uint8_t ones_page[8192];
-    memset(ones_page, 0xFF, 8192);
-    uint32_t c5 = vfs_crc32c(ones_page, 8192);
-    CHECK_NEQ(c5, c3);  /* different from zeros */
-
-    /* Large input: 64KB of ascending bytes */
-    static uint8_t asc[65536];
-    for (int i = 0; i < 65536; i++) asc[i] = (uint8_t)i;
-    uint32_t c6 = vfs_crc32c(asc, 65536);
-    uint32_t c7 = vfs_crc32c(asc, 65536);
-    CHECK_EQ(c6, c7);   /* deterministic */
-}
-```
+**Acceptance:** Known test vectors produce correct results:
+  - Empty input → `0x00000000`
+  - `"123456789"` (9 bytes) → `0xE3069283`
+  - 8KB of zeros → deterministic, repeatable value
+  - 8KB of `0xFF` bytes → different from zeros
+  - 64KB of ascending bytes → deterministic, repeatable value
+  - The same input always produces the same output on all platforms.
 
 ---
 
-## 1.4 Atomics & Memory Ordering
+## Workload 1.4 — Atomics & Memory Ordering
 
-File: `src/platform.h` (header-only inline functions)
+**What:** Cross-platform atomic operations with acquire/release semantics
+for 32-bit integers, 64-bit integers, and pointer-sized values. Includes
+compare-and-swap (CAS), atomic add, and memory barriers.
 
-### API surface
-```c
-/* 64-bit operations */
-int64_t  vfs_atomic_load_i64(const int64_t* ptr);
-void     vfs_atomic_store_i64(int64_t* ptr, int64_t val);
-int64_t  vfs_atomic_add_i64(int64_t* ptr, int64_t delta);
-int64_t  vfs_cas_i64(int64_t* ptr, int64_t expected, int64_t desired);
-          /* returns old value; if old == expected, *ptr = desired */
+**Why:** The VFS uses lock-free CAS extensively — pool slot allocation,
+version chain head updates, directory entry prepends, and the tree lock
+all rely on atomic operations. Correct memory ordering prevents torn reads
+and ensures writes are visible across threads.
 
-/* 32-bit operations */
-int32_t  vfs_atomic_load_i32(const int32_t* ptr);
-void     vfs_atomic_store_i32(int32_t* ptr, int32_t val);
-int32_t  vfs_atomic_add_i32(int32_t* ptr, int32_t delta);
-int32_t  vfs_cas_i32(int32_t* ptr, int32_t expected, int32_t desired);
+**How:**
+- Public API, all declared in `src/platform.h` as inline functions:
+  - `vfs_atomic_load_i64(ptr)` — acquire load, returns value
+  - `vfs_atomic_store_i64(ptr, val)` — release store
+  - `vfs_atomic_add_i64(ptr, delta)` — atomic add, returns new value
+  - `vfs_cas_i64(ptr, expected, desired)` — strong CAS, returns the old
+    value (caller compares against expected to determine success)
+  - Same four operations for `int32_t` (suffix `_i32`).
+  - Same four operations for `void*` (suffix `_ptr`).
+  - `vfs_mb_acquire()` — acquire fence (LoadLoad + LoadStore)
+  - `vfs_mb_release()` — release fence (LoadStore + StoreStore)
+  - `vfs_mb_full()` — sequential consistency fence
+- GCC/Clang implementation: use `__atomic` builtins with explicit memory
+  order arguments.
+- MSVC implementation: use `Interlocked*` intrinsics with `_ReadWriteBarrier`
+  and `_mm_mfence` for barriers.
+- CAS semantics: if `*ptr == expected`, atomically sets `*ptr = desired` and
+  returns `expected`. If `*ptr != expected`, does not modify `*ptr` and
+  returns the actual value. This is the "strong" variant — it will not
+  spuriously fail.
+- All functions are marked `VFS_INLINE` (force-inlined) — they compile to
+  single instructions on x86_64 (`lock cmpxchg`, `mfence`, etc.) and
+  aarch64 (`ldaxr`/`stlxr` pairs).
 
-/* Pointer-sized operations */
-void*    vfs_atomic_load_ptr(void* const* ptr);
-void     vfs_atomic_store_ptr(void** ptr, void* val);
-void*    vfs_cas_ptr(void** ptr, void* expected, void* desired);
-
-/* Memory barriers */
-void     vfs_mb_acquire(void);   /* #LoadLoad + #LoadStore barrier */
-void     vfs_mb_release(void);   /* #LoadStore + #StoreStore barrier */
-void     vfs_mb_full(void);      /* full sequential consistency */
-```
-
-### Implementation (GCC/Clang)
-```c
-#if VFS_COMPILER_GCC
-  #define VFS_ATOMIC_LOAD(ptr)     __atomic_load_n(ptr, __ATOMIC_ACQUIRE)
-  #define VFS_ATOMIC_STORE(ptr,v)  __atomic_store_n(ptr, v, __ATOMIC_RELEASE)
-  #define VFS_ATOMIC_ADD(ptr,v)    __atomic_add_fetch(ptr, v, __ATOMIC_ACQ_REL)
-  #define VFS_CAS(ptr,exp,des)     ({ typeof(exp) _e = (exp); \
-      __atomic_compare_exchange_n(ptr, &_e, des, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE); \
-      _e; })
-
-  VFS_INLINE int64_t vfs_atomic_load_i64(const int64_t* p) { return VFS_ATOMIC_LOAD(p); }
-  VFS_INLINE void    vfs_atomic_store_i64(int64_t* p, int64_t v) { VFS_ATOMIC_STORE(p, v); }
-  VFS_INLINE int64_t vfs_atomic_add_i64(int64_t* p, int64_t v) { return VFS_ATOMIC_ADD(p, v); }
-  VFS_INLINE int64_t vfs_cas_i64(int64_t* p, int64_t e, int64_t d) { return VFS_CAS(p, e, d); }
-  /* similarly for i32 and ptr variants */
-  VFS_INLINE void vfs_mb_acquire(void) { __atomic_thread_fence(__ATOMIC_ACQUIRE); }
-  VFS_INLINE void vfs_mb_release(void) { __atomic_thread_fence(__ATOMIC_RELEASE); }
-  VFS_INLINE void vfs_mb_full(void)    { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
-#endif
-```
-
-### Implementation (MSVC)
-```c
-#if VFS_COMPILER_MSVC
-  #include <intrin.h>
-  VFS_INLINE int64_t vfs_atomic_load_i64(const volatile int64_t* p) {
-      return _InterlockedCompareExchange64((volatile int64_t*)p, 0, 0); }
-  VFS_INLINE void vfs_atomic_store_i64(volatile int64_t* p, int64_t v) {
-      _InterlockedExchange64(p, v); }
-  VFS_INLINE int64_t vfs_cas_i64(volatile int64_t* p, int64_t e, int64_t d) {
-      return _InterlockedCompareExchange64(p, d, e); }
-  /* ... */
-#endif
-```
-
-### Tests (`test/test_atomics.c`)
-```c
-#include <pthread.h>
-
-static int64_t g_counter = 0;
-
-static void* thread_inc(void* arg) {
-    int n = *(int*)arg;
-    for (int i = 0; i < n; i++)
-        vfs_atomic_add_i64(&g_counter, 1);
-    return NULL;
-}
-
-void test_atomics(void) {
-    printf("1.4 Atomics...\n");
-
-    /* Basic CAS */
-    int64_t val = 42;
-    int64_t old = vfs_cas_i64(&val, 42, 99);
-    CHECK_EQ(old, 42);
-    CHECK_EQ(val, 99);
-
-    /* Failed CAS */
-    old = vfs_cas_i64(&val, 42, 77);
-    CHECK_EQ(old, 99);   /* val unchanged, old value returned */
-    CHECK_EQ(val, 99);
-
-    /* CAS loop (compare-and-swap retry) */
-    val = 0;
-    int64_t cur;
-    do { cur = vfs_atomic_load_i64(&val); }
-    while (vfs_cas_i64(&val, cur, cur + 1) != cur);
-    CHECK_EQ(val, 1);
-
-    /* Concurrent increment: 4 threads × 100000 */
-    g_counter = 0;
-    pthread_t t[4];
-    int n = 100000;
-    for (int i = 0; i < 4; i++) pthread_create(&t[i], NULL, thread_inc, &n);
-    for (int i = 0; i < 4; i++) pthread_join(t[i], NULL);
-    CHECK_EQ(g_counter, 400000);
-
-    /* Load/store ordering (basic — won't catch subtle bugs, but verifies API works) */
-    int64_t x = 0;
-    vfs_atomic_store_i64(&x, 7);
-    CHECK_EQ(vfs_atomic_load_i64(&x), 7);
-
-    /* Pointer CAS */
-    int a = 1, b = 2;
-    int* ptr = &a;
-    void* oldp = vfs_cas_ptr((void**)&ptr, &a, &b);
-    CHECK_EQ(oldp, &a);
-    CHECK_EQ(ptr, &b);
-}
-```
+**Acceptance:**
+  - CAS with matching expected value succeeds and returns the old value.
+  - CAS with non-matching expected value fails and returns the current value
+    without modifying it.
+  - CAS retry loop correctly increments a counter to a known value.
+  - Four threads each increment a shared counter 100,000 times using
+    `vfs_atomic_add_i64`. The final value is exactly 400,000.
+  - `vfs_atomic_store_i64` followed by `vfs_atomic_load_i64` returns the
+    stored value (single-threaded sanity check).
 
 ---
 
-## 1.5 Page Buffer Helpers
+## Workload 1.5 — Page Buffer Helpers
 
-File: `src/page_buf.h` (header-only inline)
+**What:** Inline functions for reading and writing integers at arbitrary
+byte offsets within an 8KB page buffer, plus zero-fill and page-copy
+operations.
 
-### API
-```c
-#include <string.h>
+**Why:** Every page in the VFS is an 8KB byte buffer. Fields within a page
+are accessed by byte offset, not by C struct. These helpers centralize the
+memcpy-based read/write pattern and provide a fast zero-fill path using SIMD
+where available. Defined in `src/page_buf.h` as static inline functions.
 
-/* Read integers from byte buffer at given offset (unaligned-safe) */
-VFS_INLINE int64_t vfs_rd8(const uint8_t* buf, int offset) {
-    int64_t v;
-    memcpy(&v, buf + offset, 8);
-    return v;
-}
-VFS_INLINE int32_t vfs_rd4(const uint8_t* buf, int offset) {
-    int32_t v;
-    memcpy(&v, buf + offset, 4);
-    return v;
-}
-VFS_INLINE int16_t vfs_rd2(const uint8_t* buf, int offset) {
-    int16_t v;
-    memcpy(&v, buf + offset, 2);
-    return v;
-}
+**How:**
+- `vfs_rd8(buf, offset)` — read 8-byte signed integer at `offset` within
+  `buf`. Uses `memcpy` for unaligned-safe access.
+- `vfs_rd4(buf, offset)` — read 4-byte signed integer.
+- `vfs_rd2(buf, offset)` — read 2-byte signed integer.
+- `vfs_wr8(buf, offset, val)` — write 8-byte integer.
+- `vfs_wr4(buf, offset, val)` — write 4-byte integer.
+- `vfs_wr2(buf, offset, val)` — write 2-byte integer.
+- `vfs_zero_page(buf)` — fill all 8192 bytes with zero. On x86_64, use
+  SSE2 128-bit stores (`_mm_store_si128` in a loop over 16-byte chunks)
+  for 2–3× faster zeroing. Falls back to `memset` on other platforms.
+- `vfs_copy_page(dst, src)` — copy 8192 bytes from `src` to `dst`.
+  Uses `memcpy`; the compiler will optimize to `rep movsb` or equivalent.
+- All functions operate on `uint8_t*` buffers. No bounds checking — the
+  caller must ensure `offset + size ≤ VFS_PAGE_SIZE`.
 
-/* Write integers to byte buffer at given offset (unaligned-safe) */
-VFS_INLINE void vfs_wr8(uint8_t* buf, int offset, int64_t val) {
-    memcpy(buf + offset, &val, 8);
-}
-VFS_INLINE void vfs_wr4(uint8_t* buf, int offset, int32_t val) {
-    memcpy(buf + offset, &val, 4);
-}
-VFS_INLINE void vfs_wr2(uint8_t* buf, int offset, int16_t val) {
-    memcpy(buf + offset, &val, 2);
-}
-
-/* Zero-fill and copy */
-VFS_INLINE void vfs_zero_page(uint8_t* buf) {
-    memset(buf, 0, VFS_PAGE_SIZE);
-}
-VFS_INLINE void vfs_copy_page(uint8_t* VFS_RESTRICT dst,
-                               const uint8_t* VFS_RESTRICT src) {
-    memcpy(dst, src, VFS_PAGE_SIZE);
-}
-
-/* Fast zero-fill using SIMD when available */
-#if VFS_ARCH_X86_64
-#include <emmintrin.h>
-VFS_INLINE void vfs_zero_page_fast(uint8_t* buf) {
-    __m128i z = _mm_setzero_si128();
-    for (int i = 0; i < VFS_PAGE_SIZE; i += 16)
-        _mm_store_si128((__m128i*)(buf + i), z);
-}
-#else
-#define vfs_zero_page_fast vfs_zero_page
-#endif
-```
-
-### Tests (`test/test_page_buf.c`)
-```c
-void test_page_buf(void) {
-    printf("1.5 Page Buffer...\n");
-
-    uint8_t buf[8192];
-
-    /* Write/read int64 at various offsets */
-    vfs_wr8(buf, 0, 0x1122334455667788LL);
-    CHECK_EQ(vfs_rd8(buf, 0), 0x1122334455667788LL);
-
-    vfs_wr8(buf, 8184, -1);  /* last 8 bytes */
-    CHECK_EQ(vfs_rd8(buf, 8184), -1);
-
-    /* Write/read int32 */
-    vfs_wr4(buf, 100, 0x7FFFFFFF);
-    CHECK_EQ(vfs_rd4(buf, 100), 0x7FFFFFFF);
-
-    /* Write/read int16 */
-    vfs_wr2(buf, 200, (int16_t)0x7FFF);
-    CHECK_EQ(vfs_rd2(buf, 200), (int16_t)0x7FFF);
-
-    /* Zero-fill */
-    vfs_zero_page(buf);
-    for (int i = 0; i < VFS_PAGE_SIZE; i++) CHECK_EQ(buf[i], 0);
-
-    /* Copy */
-    uint8_t src[8192], dst[8192];
-    for (int i = 0; i < VFS_PAGE_SIZE; i++) src[i] = (uint8_t)(i & 0xFF);
-    vfs_copy_page(dst, src);
-    CHECK_EQ(memcmp(src, dst, VFS_PAGE_SIZE), 0);
-
-    /* Fast zero-fill matches slow */
-    uint8_t buf2[8192];
-    memset(buf2, 0xFF, VFS_PAGE_SIZE);
-    vfs_zero_page_fast(buf2);
-    for (int i = 0; i < VFS_PAGE_SIZE; i++) CHECK_EQ(buf2[i], 0);
-}
-```
+**Acceptance:**
+  - Write then read an int64 at offset 0 returns the same value.
+  - Write then read at offset 8184 (last 8 bytes of a page) works correctly.
+  - Write then read int32 and int16 at various offsets round-trip correctly.
+  - `vfs_zero_page` fills the entire buffer with zeros.
+  - `vfs_copy_page` produces a byte-identical copy.
+  - Fast zero-fill (`vfs_zero_page_fast`) produces the same result as
+    `memset` on an all-0xFF buffer.
 
 ---
 
-## 1.6 Error & Logging
+## Workload 1.6 — Error Codes & Debug Logging
 
-File: `include/ixsphere_vfs.h` (stub section)
+**What:** A small error-handling enum and a compile-time-optional debug
+logging macro.
 
-### Error codes
-```c
-typedef enum {
-    VFS_OK = 0,
-    VFS_ERR_IO = -1,
-    VFS_ERR_NOTFOUND = -2,
-    VFS_ERR_EXISTS = -3,
-    VFS_ERR_NOTDIR = -4,
-    VFS_ERR_NOTEMPTY = -5,
-    VFS_ERR_CONFLICT = -6,
-    VFS_ERR_FULL = -7,
-    VFS_ERR_NOMEM = -8,
-} vfs_error_t;
+**Why:** Every VFS function needs to return success/failure with a
+descriptive code. The error enum provides a single source of truth for all
+error values. The debug macro allows tracing during development without
+runtime overhead in release builds.
 
-const char* vfs_error_string(vfs_error_t err);
-```
+**How:**
+- Define `vfs_error_t` enum in `include/ixsphere_vfs.h` with codes: `VFS_OK`,
+  `VFS_ERR_IO`, `VFS_ERR_NOTFOUND`, `VFS_ERR_EXISTS`, `VFS_ERR_NOTDIR`,
+  `VFS_ERR_NOTEMPTY`, `VFS_ERR_CONFLICT`, `VFS_ERR_FULL`, `VFS_ERR_NOMEM`.
+- Implement `vfs_error_string(vfs_error_t)` in `src/error.c` — returns a
+  human-readable string for each code.
+- Define `VFS_DEBUG(fmt, ...)` in `src/platform.h`:
+  - When `VFS_DEBUG_ENABLED` is not defined, expands to `((void)0)` — zero
+    runtime cost.
+  - When defined, prints to stderr with file and line prefix.
+- Define `VFS_TRACE(fmt, ...)` similarly, intended for per-call tracing.
 
-### Implementation (`src/error.c`)
-```c
-const char* vfs_error_string(vfs_error_t err) {
-    switch (err) {
-        case VFS_OK:        return "OK";
-        case VFS_ERR_IO:    return "I/O error";
-        case VFS_ERR_NOTFOUND: return "Not found";
-        case VFS_ERR_EXISTS:   return "Already exists";
-        case VFS_ERR_NOTDIR:   return "Not a directory";
-        case VFS_ERR_NOTEMPTY: return "Directory not empty";
-        case VFS_ERR_CONFLICT: return "Conflict";
-        case VFS_ERR_FULL:     return "No space left";
-        case VFS_ERR_NOMEM:    return "Out of memory";
-        default:            return "Unknown error";
-    }
-}
-```
-
-### Debug logging macro (compile-time optional)
-```c
-/* In platform.h */
-#ifndef VFS_DEBUG_ENABLED
-  #define VFS_DEBUG(fmt, ...)  ((void)0)
-  #define VFS_TRACE(fmt, ...)  ((void)0)
-#else
-  #define VFS_DEBUG(fmt, ...) fprintf(stderr, "[DEBUG] " fmt "\n", ##__VA_ARGS__)
-  #define VFS_TRACE(fmt, ...) fprintf(stderr, "[TRACE] %s:%d " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__)
-#endif
-```
+**Acceptance:** `vfs_error_string(VFS_ERR_NOTFOUND)` returns `"Not found"`.
+Compiling without `VFS_DEBUG_ENABLED` produces no debug output even when
+`VFS_DEBUG` is called. Compiling with `VFS_DEBUG_ENABLED` prints messages
+to stderr.
 
 ---
 
@@ -569,20 +225,21 @@ const char* vfs_error_string(vfs_error_t err) {
 
 | File | Purpose |
 |------|---------|
-| `src/platform.h` | Compiler/arch detection, macros, inline atomics |
-| `src/crc32c.c` | CRC32C with hardware dispatch |
-| `src/page_buf.h` | Integer read/write, zero-fill, copy (header-only) |
+| `CMakeLists.txt` | Build system, static library, test target |
+| `src/platform.h` | Compiler/arch/OS detection, macros, atomics, logging |
+| `src/crc32c.c` | CRC32C implementation with hardware dispatch |
+| `src/page_buf.h` | Integer read/write, zero-fill, page copy |
 | `src/error.c` | Error string conversion |
 | `include/ixsphere_vfs.h` | `vfs_error_t`, `vfs_crc32c`, `vfs_error_string` |
-| `include/vfs_internal.h` | Placeholder for Phase 2+ |
-| `test/test_runner.c` | Test harness |
+| `include/vfs_internal.h` | Placeholder for Phase 2 |
+| `test/test_runner.c` | Test harness with `CHECK` macro |
 | `test/test_crc32c.c` | CRC32C tests with known vectors |
-| `test/test_atomics.c` | CAS, concurrent increment, ordering |
-| `test/test_page_buf.c` | Read/write helpers, zero-fill, copy |
-| `CMakeLists.txt` | Build + test targets |
+| `test/test_atomics.c` | CAS and concurrent increment tests |
+| `test/test_page_buf.c` | Read/write, zero-fill, copy tests |
 
 ## Success Criteria
-- `cmake --build . && ctest` — all tests pass
-- CRC32C returns 0xE3069283 for "123456789" on all platforms
-- 4-thread concurrent increment reaches exactly 400,000
-- Page buffer read/write round-trips all values correctly
+- `cmake --build . && ctest` passes all tests
+- CRC32C returns `0xE3069283` for `"123456789"` on all platforms
+- Four-thread concurrent counter reaches exactly 400,000
+- Page buffer helpers round-trip all values correctly
+- Zero warnings at `-Wall -Wextra -Wpedantic`
