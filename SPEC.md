@@ -143,7 +143,7 @@ Entries: (2 × page_size − 32) / 8 = 2,044 at default page_size.
 The header is zero-filled at allocation. `bitmap_dir` is a compact array of
 bitmap page indices starting at offset 32. Since newly allocated pages are
 zero-filled, unused entries are 0. The number of bitmap pages is the count
-of non-zero entries. The first entry is always 1 (the first bitmap page).
+of non-zero entries. The first entry is always 2 (the first bitmap page).
 
 **Bitmap page layout (page_size-byte payload):**
 
@@ -284,11 +284,11 @@ either the pre-flush state or a recoverable partial state.
 
 **Crash during flush:**
 
-- Crash before step 7 (superblock not written): on remount, the old
+- Crash before step 4 (superblock not written): on remount, the old
   superblock still points to the old tree. Any pages written in steps 1–6
   are unreachable zombies — wasted space reclaimed by the next GC. No
   corruption.
-- Crash after step 7 (superblock written): all preceding pages are on disk.
+- Crash after step 4 (superblock written): all preceding pages are on disk.
   Mount loads the new state. The flush is complete from the reader's
   perspective even if `fsync` was interrupted — the superblock lazy mirror
   mechanism §3.7  ensures the active half points to a consistent state.
@@ -345,6 +345,13 @@ Page: [PageHeader: 16 bytes | payload: page_size bytes]
   → lone page, old data intact. Sibling is a zombie (unreachable). Safe.
 - After atomic store of `mirrorPage` on the original: both linked. Reader
   compares gens (2 > 1), picks sibling. Write #2 survived. Safe.
+
+**Shared pool page writes:** pool pages contain entries from multiple files.
+Writing to one file may update a slot on a page that also hosts metadata
+for another file. When the StorageBackend mirrors this page, it writes the
+entire payload — including unrelated entries. This is safe: those entries
+haven't changed, and the generation increment on the pool page is a side
+effect of the mirror write, not a logical change to the other file's state.
 
 **Storage savings:** pages written only once (the common case for data pages
 filled by INSERT and metadata pages created during tree growth) consume
@@ -474,8 +481,11 @@ On a freshly allocated pool page: `slot[i].bytes[0:2] = i+1` for `i < 254`,
 
 **Allocation:** CAS on `poolState` (packed `freeCount | firstFreeSlot`) to
 allocate a free slot. When `freeCount == 0`, allocate a new pool page and
-prepend to the global list via `poolListHead` CAS. Individual slots are
-never freed — GC rebuilds pool pages from scratch.
+prepend to the global list via `poolListHead` CAS. If the CAS fails
+(another thread prepended first), the losing thread retries by prepending
+its allocated page to the updated `poolListHead` — the page is valid and
+must not be abandoned. Individual slots are never freed — GC rebuilds pool
+pages from scratch.
 
 ### 5.4 Name Entries
 
@@ -684,8 +694,14 @@ To write to logical page P of file F at epoch E:
 - **Rename (same dir, same epoch):** update `namePtr` in-place on the existing
   DirContent entry to point to a new NameEntry.
 - **Rename (new epoch or cross-dir):** create new DirContent at destination
-  with `childPtr` and `childNodeId` from source. Create tombstone (namePtr=0)
+  with `childPtr` and `childNodeId` from source. Create delete entry (namePtr=0)
   at source.
+
+Directory listing is accelerated by an in-memory dentry cache built on
+first read of a directory. The cache maps `(childNodeId → name, childPtr)`
+and is invalidated when a new DirContent is prepended to the directory chain.
+Subsequent listings use the cache, avoiding raw pool chain traversal for
+hot-path lookups.
 
 ---
 
@@ -966,7 +982,7 @@ new logical state — never a torn page.
 
 ### 11.2 Mount (No Recovery Needed)
 
-1. Read both superblock pages (page 0 and page 1).
+1. Read both superblock pages (logical page 3 and its lazy mirror sibling).
 2. Select the active one: higher PageHeader generation wins (§3.7 — Lazy Mirror).
    Validate its CRC32C. If invalid, try the other page.
 3. Read `rootNodeOffset`, `currentEpoch`, `epochMapperPtr`, `poolListHead`.
@@ -978,17 +994,13 @@ new logical state — never a torn page.
    superblock per §9.6.
 6. System is ready. Tree pages are validated **lazily** on first access:
    - Directory/file page: CRC32C on header. If invalid, the last CAS was
-     torn — skip the torn entry, continue from headOffset.
-   - Pool page: CRC32C on header. If invalid, all entries in that page are treated as unallocated
-     (never written). — reclaimed
-     on next GC.
-   - Pool page: CRC32C on header. If invalid, version nodes in that page
-     are lost. Logical pages whose chain head (the PageNode.versionRootPtr) points
-     into the corrupt pool page appear as never written (slot treated as 0).
-     Logical pages whose chain head is elsewhere but whose chain passes
-     through a node in the corrupt page lose history below the corrupt
-     entry but retain the head — the chain terminates at the corrupt node.
-   - Data page: lazy mirror handles CRC failure on read §3.7. No mount-time
+     torn — skip the torn entry, continue from headPtr.
+   - Pool page: CRC32C on header. If invalid, all entries in that page are
+     treated as unallocated. Logical pages whose chain head points into the
+     corrupt page appear as never written. Chains whose head is elsewhere
+     but pass through a node in the corrupt page lose history below the
+     corrupt entry but retain the head.
+   - Data page: lazy mirror handles CRC failure on read (§3.7). No mount-time
      scan needed.
 
 All corruption is detected and handled at read time, not mount time.
@@ -1017,6 +1029,10 @@ multiple writes within a transaction, throughput scales linearly with batch size
 The in-memory page array reduces per-page lookup from a chain walk to a
 single indexed read (O(1)). Version chains are maintained in descending
 epoch order; the latest live-head version is always the first entry.
+
+PageNode metadata overhead: 32 bytes per logical page per segment, or
+~0.39% of file size (32 KB per 8 MB segment). For a 1 TB file system,
+~4 GB of PageNode entries — acceptable for O(1) lookup performance.
 
 Epoch counter is an `int64_t`. At 2 snapshots per second, overflow occurs in
 ~146 billion years — practically unbounded.
