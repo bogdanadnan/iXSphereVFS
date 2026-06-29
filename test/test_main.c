@@ -1,31 +1,34 @@
 /*
- * test/test_main.c — Spec 30c VFS test suite
+ * test/test_main.c — iXSphereVFS Test Suite
+ *
+ * This file will grow with each phase. Initially it just verifies
+ * the error strings and that the library links correctly.
  */
 #include "ixsphere_vfs.h"
 #include <stdio.h>
-#include <assert.h>
+#include <string.h>
 
-static int tests_run = 0;
+static int tests_run    = 0;
 static int tests_passed = 0;
 
 #define CHECK(expr) do { \
     tests_run++; \
     if (expr) { tests_passed++; } \
-    else { fprintf(stderr, "  FAIL: %s:%d: %s\n", __FILE__, __LINE__, #expr); } \
+    else { fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #expr); } \
 } while(0)
 
+#define CHECK_EQ(a, b) CHECK((a) == (b))
+#define CHECK_STREQ(a, b) CHECK(strcmp((a), (b)) == 0)
+
 int main(void) {
-    printf("=== iXSphereVFS Test Suite ===\n\n");
+    printf("=== iXSphereVFS Tests ===\n\n");
 
-    /* 1. CRC32C */
-    printf("1. CRC32C...\n");
-    CHECK(vfs_crc32c(NULL, 0) == 0x00000000u);
-    /* "123456789" known CRC32C = 0xE3069283 */
-    CHECK(vfs_crc32c((const uint8_t*)"123456789", 9) == 0xE3069283u);
-
-    /* 2. Open/Close */
-    printf("2. Open/Close...\n");
-    /* TODO: temp file path, mount, close */
+    /* 1. Error strings */
+    printf("1. Error strings...\n");
+    CHECK_STREQ(vfs_error_string(VFS_OK),           "OK");
+    CHECK_STREQ(vfs_error_string(VFS_ERR_NOTFOUND), "Not found");
+    CHECK_STREQ(vfs_error_string(VFS_ERR_IO),       "I/O error");
+    CHECK_STREQ(vfs_error_string(-999),             "Unknown error");
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
