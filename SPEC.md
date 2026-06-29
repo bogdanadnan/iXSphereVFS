@@ -124,9 +124,12 @@ Offset  Size  Field
  0       8    total_pages       (int64 — highest allocated logical page + 1)
  8       8    page_size         (int64 — payload size in bytes, default 8192)
 16       8    flags             (int64 — reserved for future use)
-32      32    reserved
+24      40    reserved
 64     ...   bitmap_dir[]      (array of int64 logical page indices; zero-terminated)
 ```
+
+Config area: 8 + 8 + 8 + 40 = 64 bytes. `bitmap_dir` starts at offset 64.
+Entries: (page_size − 64) / 8 = 1,016 at default page_size.
 
 The header is zero-filled at allocation. `bitmap_dir` is a compact array of
 bitmap page indices starting at offset 64. Since newly allocated pages are
@@ -200,7 +203,7 @@ All newly allocated pages are zero-filled before returning.
 of `(page_size − 64) / 8` entries. When all entries are non-zero and no
 further bitmap pages can be allocated, the instance has reached its maximum
 logical page count. `Allocate` returns -1. The maximum at page_size = 8192
-is 1,017 bitmap pages covering 66,570,496 logical pages (~545 GB).
+is 1,016 bitmap pages covering 66,570,496 logical pages (~545 GB).
 
 **Thread safety.** `Allocate` is thread-safe. Allocation is zone-based: the
 logical page space is divided into zones of 1M pages. `Allocate` picks a
