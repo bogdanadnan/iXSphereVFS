@@ -123,15 +123,15 @@ Offset  Size  Field
 ──────  ────  ─────
  0       8    total_pages       (int64 — highest allocated logical page + 1)
  8       8    page_size         (int64 — payload size in bytes, default 8192)
-16      48    reserved
-64     ...   bitmap_dir[]      (array of int64 logical page indices; zero-terminated)
+16      16    reserved
+32     ...   bitmap_dir[]      (array of int64 logical page indices; zero-terminated)
 ```
 
-Config area: 8 + 8 + 48 = 64 bytes. `bitmap_dir` starts at offset 64.
-Entries: (page_size − 64) / 8 = 1,016 at default page_size.
+Config area: 8 + 8 + 16 = 32 bytes. `bitmap_dir` starts at offset 64.
+Entries: (page_size − 32) / 8 = 1,020 at default page_size.
 
 The header is zero-filled at allocation. `bitmap_dir` is a compact array of
-bitmap page indices starting at offset 64. Since newly allocated pages are
+bitmap page indices starting at offset 32. Since newly allocated pages are
 zero-filled, unused entries are 0. The number of bitmap pages is the count
 of non-zero entries. The first entry is always 1 (the first bitmap page).
 
@@ -198,10 +198,10 @@ void    Free(int64_t logicalPage);
 All newly allocated pages are zero-filled before returning.
 
 **Capacity limit.** The `bitmap_dir` array in the header has a fixed capacity
-of `(page_size − 64) / 8` entries. When all entries are non-zero and no
+of `(page_size − 32) / 8` entries. When all entries are non-zero and no
 further bitmap pages can be allocated, the instance has reached its maximum
 logical page count. `Allocate` returns -1. The maximum at page_size = 8192
-is 1,016 bitmap pages covering 66,570,496 logical pages (~545 GB).
+is 1,020 bitmap pages covering 66,570,496 logical pages (~545 GB).
 
 **Thread safety.** `Allocate` is thread-safe. Allocation is zone-based: the
 logical page space is divided into zones of 1M pages. `Allocate` picks a
