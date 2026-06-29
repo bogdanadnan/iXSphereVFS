@@ -676,8 +676,10 @@ The epoch mapper (§8) affects traversal in two ways:
    data from epoch E.
 2. **Traversal remapping:** when `traversalApply = true` for a mapping `S→E`,
    entries with `epoch == S` encountered during chain walking are treated as
-   `epoch == E`. When `traversalApply = false`, entries with `epoch == S` are
-   skipped (the snapshot's changes are invisible).
+   `epoch == E` before applying steps 3–6. When `traversalApply = false`,
+   entries are NOT remapped — their original epoch is used and the default
+   read rules apply (odd epochs are skipped per step 6, which is the desired
+   behavior for soft-deleted snapshots).
 
 To resolve a chain at mapped epoch R':
 1. Walk from the head pointer.
@@ -768,9 +770,10 @@ with `epoch == fromEpoch` are treated during chain walking (§7.2).
 - `traversalApply = true` (commit): entries with `epoch == S` are
   reinterpreted as `epoch == E`, making the snapshot's data visible to
   live-head readers as if it had been written directly at epoch E.
-- `traversalApply = false` (soft-delete): entries with `epoch == S` are
-  skipped entirely. The snapshot's changes become invisible to all readers.
-  Querying epoch S returns the pre-snapshot base (highest even < S).
+- `traversalApply = false` (soft-delete): entries with `epoch == S` are NOT
+  remapped. The default read rules apply — odd epochs are skipped per §7.2
+  step 6, making the snapshot's changes invisible. Querying epoch S returns
+  the pre-snapshot base (highest even < S).
 
 ---
 
