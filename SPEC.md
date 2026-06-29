@@ -123,12 +123,11 @@ Offset  Size  Field
 ──────  ────  ─────
  0       8    total_pages       (int64 — highest allocated logical page + 1)
  8       8    page_size         (int64 — payload size in bytes, default 8192)
-16       8    flags             (int64 — reserved for future use)
-24      40    reserved
+16      48    reserved
 64     ...   bitmap_dir[]      (array of int64 logical page indices; zero-terminated)
 ```
 
-Config area: 8 + 8 + 8 + 40 = 64 bytes. `bitmap_dir` starts at offset 64.
+Config area: 8 + 8 + 48 = 64 bytes. `bitmap_dir` starts at offset 64.
 Entries: (page_size − 64) / 8 = 1,016 at default page_size.
 
 The header is zero-filled at allocation. `bitmap_dir` is a compact array of
@@ -163,8 +162,7 @@ file exists:
 2. Bootstrap: reserve logical pages 0 (header) and 1 (first bitmap page)
    directly — `Allocate` cannot be used yet because no bitmap exists. Both
    are zero-filled and use lazy mirror backing.
-3. Write the header: `total_pages = 2`, `page_size = 8192` (default),
-   `flags = 0`. Write `1` to `bitmap_dir[0]`.
+3. Write the header: `total_pages = 2`, `page_size = 8192` (default). Write `1` to `bitmap_dir[0]`.
 4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header)
    and 1 (bitmap) as allocated (`0`).
 5. Return success. The VFS layer calls `Acquire(2)` for the superblock
