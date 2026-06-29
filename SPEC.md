@@ -1046,7 +1046,16 @@ int       vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
 int64_t   vfs_file_size(vfs_t* vfs, int64_t file, int64_t epoch);
 int64_t   vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch);
 int64_t   vfs_file_ctime(vfs_t* vfs, int64_t file);
+
+int       vfs_lock(vfs_t* vfs, int64_t file);
+int       vfs_unlock(vfs_t* vfs, int64_t file);
 ```
+
+- `vfs_lock`/`vfs_unlock`: explicit per-file locking. All internal write
+  operations acquire the lock automatically; these calls allow callers to
+  hold the lock across multiple operations for atomic bulk changes. Locks
+  are exclusive — only one thread may hold a given file's lock at a time.
+  Read operations remain lock-free and do not require the lock.
 
 - `vfs_create`: returns the nodeId of the created file, or -1 on error.
 - `vfs_open_file`: resolves a path to a file nodeId. Returns -1 if not found.
