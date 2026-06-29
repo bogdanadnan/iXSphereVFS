@@ -118,7 +118,8 @@ Offset  Size  Field
 ──────  ────  ─────
  0       8    total_pages       (int64 — highest allocated logical page + 1)
  8       8    page_size         (int64 — payload size in bytes, default 8192)
-16      16    reserved
+16       4    segment_size    (uint32 — pages per segment, default 1024)
+20      12    reserved
 32     ...   bitmap_dir[]      (array of int64; continued on page 1)
 ```
 
@@ -132,7 +133,7 @@ Offset  Size  Field
 
 Page 1 has the standard 16-byte PageHeader physically; its payload contains
 no configuration fields — it is a pure continuation of the `bitmap_dir`
-array. The 16-byte header is transparent to the array indexing.
+array. The 16-byte header uses `pageType = 0x02` (PoolPage) with `flags = 0`; it is transparent to array indexing.
 
 The `bitmap_dir` array spans both pages. Entry N lives at:
 - If `N < (page_size − 32) / 8`: page 0, offset `32 + N × 8`
@@ -397,8 +398,10 @@ The VFS layer never accesses the bitmap directly.
 
 ## 4. Superblock
 
-The superblock lives at logical page 3. It contains the tree root pointer
-and epoch state — the single entry point for mount and recovery. It is allocated by the VFS layer at logical page 3 via
+The superblock lives at logical page 3. It is initialized on first use with
+`rootNodeOffset = 0` (empty tree), `currentEpoch = 2` (first live head;
+0 is reserved as sentinel), and all other fields zero. On subsequent mounts,
+the existing superblock is read from page 3. allocated by the VFS layer at logical page 3 via
 `Acquire` after StorageBackend initialization. Like every other page, it
 uses standard lazy mirror (§3.7) — there is no separate superblock alternate
 page or special swap protocol. The VFS writes superblock updates via
@@ -522,7 +525,7 @@ Offset  Size  Field
 A name of length N occupies `ceil(N / 24)` pool slots linked via `nextPtr`.
 The DirContent entry's `namePtr` points to the first slot. No multi-slot
 reservation is needed — each slot is individually allocated from the pool.
-GC traverses the chain to free all slots.
+GC traverses the chain; all name slots are reclaimed when the pool page is rebuilt during GC.
 
 ---
 
@@ -541,7 +544,8 @@ Offset  Size  Field
  2       2    reserved
  4       4    nodeId         (uint32 — unique identifier, sequential)
  8       8    headPtr        (VirtualPtr — first DirContent entry)
-16      16    reserved
+16       4    segment_size    (uint32 — pages per segment, default 1024)
+20      12    reserved
 ```
 
 A DirNode is the head of a directory. `headPtr` points to the most recent
@@ -593,7 +597,8 @@ Offset  Size  Field
 ──────  ────  ─────
  0       8    pageRootPtr    (VirtualPtr — first PageNode for this segment)
  8       8    nextPtr        (VirtualPtr — next FileContent, or epoch-keyed next)
-16      16    reserved
+16       4    segment_size    (uint32 — pages per segment, default 1024)
+20      12    reserved
 ```
 
 A FileContent groups consecutive logical pages into segments. The segment
@@ -623,7 +628,8 @@ Offset  Size  Field
 ──────  ────  ─────
  0       8    versionRootPtr (VirtualPtr — first VersionPage for this page)
  8       8    nextPtr        (VirtualPtr — next PageNode in segment)
-16      16    reserved
+16       4    segment_size    (uint32 — pages per segment, default 1024)
+20      12    reserved
 ```
 
 One `PageNode` per logical page within a FileContent segment. Forms a linked
@@ -794,8 +800,8 @@ with `epoch == fromEpoch` are treated during chain walking (§7.2).
 
 ### 9.1 Version Chain Head CAS
 
-Section page slots are 8-byte aligned `long` values. Updates use native
-64-bit CAS (`atomic_compare_exchange_strong`):
+Pool page slots containing PageNode.versionRootPtr fields are 8-byte aligned `long` values. Updates use native
+64-bit CAS (`CAS`):
 
 ```
 long oldVal, newVal;
@@ -804,7 +810,7 @@ do {
     // Build version node in pool slot with next = oldVal (current chain head)
     UpdateVersionNode(newPoolSlot, next: oldVal);
     newVal = PackVirtualPtr(newPoolPage, newPoolSlot);
-} while (atomic_compare_exchange_strong(ref PageNode.versionRootPtr, newVal, oldVal) != oldVal);
+} while (CAS(ref PageNode.versionRootPtr, newVal, oldVal) != oldVal);
 ```
 
 The `oldVal` read and version node construction MUST be inside the loop:
@@ -832,12 +838,12 @@ do {
     // newEntry already allocated in pool; set its nextPtr = oldHead
     newEntry.nextPtr = oldHead;
     newEntryPtr = PackVirtualPtr(newEntryPage, newEntrySlot);
-} while (CAS(ref headPtr, newEntryPtr, oldHead) != oldHead);
+} while ((current = CAS(ref headPtr, newEntryPtr, oldHead)) != oldHead);
 ```
 
 CAS retries are rare — contention is only on creates/deletes in the same
 directory. Data writes go through VersionPage CAS (§9.1) on different
-section chains, with no contention between different files.
+version chains, with no contention between different files.
 
 ### 9.2.1 Pool Slot Publication Fences
 
@@ -912,11 +918,25 @@ epoch is lost (zombie) and reclaimed on the next GC cycle. Data written
 at the new epoch that hasn't been flushed is also lost, same as any
 unflushed write.
 
-### 9.5 Conflict Detection (Commit)
+### 9.5 TouchedFile Entry
+
+```
+Offset  Size  Field
+──────  ────  ─────
+ 0       4    epoch          (uint32 — snapshot epoch)
+ 4       4    nodeId         (uint32 — file node identifier)
+ 8       8    nextPtr        (VirtualPtr — next TouchedFile entry)
+16       4    segment_size    (uint32 — pages per segment, default 1024)
+20      12    reserved
+```
+
+### 9.5.1 Conflict Detection (Commit)
 
 Commit must detect whether the same logical page was modified in both the
-snapshot epoch S and the live head E (E = S+1) — a conflict that prevents
-commit. To avoid scanning all version chains on every commit, a per-epoch
+snapshot epoch S and any live-head epoch between S and the current live head.
+Since sibling snapshots (multiple active snapshots taken before any commit)
+advance the live head, the check walks all even epochs in [S+1, current_live_head]
+looking for pages modified at both S and any live-head epoch. To avoid scanning all version chains on every commit, a per-epoch
 **touched-files list** is maintained:
 
 - When a VersionPage is first written at epoch S for a file F, the VFS
@@ -1002,7 +1022,9 @@ prevents concurrent modifications during the copy phase.
 3. **Write new tree pages** — pool pages and data pages. Old pages are NOT
    freed until the swap is complete.
 4. **Write new superblock** with the new root offset, `currentEpoch`,
-   and new `poolListHead`. fsync.
+   `treeLockState = 0`, and new `poolListHead`. fsync. The superblock
+   is always written with the lock released, so any on-disk bit-63=1 can
+   only appear on a pre-swap generation — safe to discard.
 5. **Atomically swap** the superblock pointer (lazy mirror (§3.7)).
 6. **Release tree lock.**
 7. **Deferred free.** Pages from the old tree are placed into a deferred-free
@@ -1094,7 +1116,7 @@ Pages that are never read after a crash need no validation.
 ## 12. Filesystem API
 
 The VFS exposes a POSIX-like interface to callers. All operations accept an
-optional `epoch` parameter: passing 0 or -1 uses the current live head epoch.
+optional `epoch` parameter: passing -1 uses the current live head epoch.
 Passing a specific epoch provides snapshot isolation for that point in time.
 
 ### 12.1 Instance
@@ -1133,7 +1155,8 @@ int       vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch);
   cross-epoch writes proceed concurrently. Internal write operations
   acquire the per-epoch lock automatically. Reads remain lock-free.
 
-- `vfs_create`: returns the nodeId of the created file, or -1 on error.
+- `vfs_create`: returns the nodeId of the created file. Node handles use `int64_t` for API consistency
+  but on-disk `nodeId` is `uint32`; the upper 32 bits are always zero., or -1 on error.
 - `vfs_open_file`: resolves a path to a file nodeId. Returns -1 if not found.
 - `vfs_read`/`vfs_write`: return bytes transferred, or -1 on error. Short
   reads/writes are possible at file boundaries.
@@ -1224,7 +1247,7 @@ The in-memory page array reduces per-page lookup from a chain walk to a
 single indexed read (O(1)). Version chains are maintained in descending
 epoch order; the latest live-head version is always the first entry.
 
-PageNode metadata overhead: 32 bytes per logical page per segment, or
+PageNode plus VersionPage metadata overhead: 64 bytes per logical page minimum (32+32), or
 ~0.39% of file size (32 KB per 8 MB segment). For a 1 TB file system,
 ~4 GB of PageNode entries — acceptable for O(1) lookup performance.
 
