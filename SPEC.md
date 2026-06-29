@@ -385,8 +385,7 @@ Offset  Size  Field
 16       8    epochMapperPage (int64 — page index of first epoch mapper page, 0 if none)
 24       8    poolListHead    (int64 — head of pool page flat list, 0 if none)
 32       8    treeLockState   (int64 — §9.6 bit layout)
-40      16    reserved
-56    8136    reserved / future use
+40    8152    reserved
 ```
 
 ### 4.2 Tree Lock
