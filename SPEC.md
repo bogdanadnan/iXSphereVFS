@@ -238,7 +238,7 @@ validating CRC32C on the payload on every I/O operation.
 ```
 uint8_t* Read(int64_t logicalPage);
 void     Write(int64_t logicalPage, uint8_t* data);
-void     Flush(void);
+void     Flush(int64_t logicalPage);
 ```
 
 - `Read`: resolves the page via the lazy mirror mechanism (§3.7). Checks
@@ -250,11 +250,11 @@ void     Flush(void);
   page directly; on second write, allocates a mirror sibling and links it;
   on subsequent writes, alternates between the two pages. Marks the page
   dirty but does not write to disk.
-- `FlushPage(logicalPage)`: writes a single dirty page to the backing file
-  (without fsync). Used for targeted flushes like superblock updates.
-- `Flush`: writes all dirty pages to the backing file and fsyncs. Marks
-  them clean. Clean pages remain cached. Called explicitly by the VFS
-  layer at commit boundaries — this is the durability barrier.
+- `Flush(logicalPage)`: if `logicalPage < 0`, writes all dirty pages to the
+  backing file and fsyncs — the durability barrier, called at commit
+  boundaries. If a specific page index is given, writes only that page
+  without fsync. Used for targeted flushes like superblock updates (§9.4).
+  Marks flushed pages clean; clean pages remain cached.
 - **Write-back:** the StorageBackend may proactively write dirty pages to
   disk (without fsync) when the dirty page count exceeds a configurable
   threshold. Write-back follows the same ordering as Flush (§3.5) to
