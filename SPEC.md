@@ -118,7 +118,7 @@ Offset  Size  Field
 32     ...   bitmap_dir[]      (array of int64 logical page indices; zero-terminated)
 ```
 
-Config area: 8 + 8 + 16 = 32 bytes. `bitmap_dir` starts at offset 64.
+Config area: 8 + 8 + 16 = 32 bytes. `bitmap_dir` starts at offset 32.
 Entries: (page_size − 32) / 8 = 1,020 at default page_size.
 
 The header is zero-filled at allocation. `bitmap_dir` is a compact array of
@@ -163,7 +163,7 @@ file exists:
 1. Read logical page 0 (header block). Validate: `pageType == 0x5658 &&
    flags == 0x5346` (the "XVFS" magic) and CRC32C is valid. If any check
    fails, the file is not a valid iXSphereVFS instance.
-2. Read `total_pages`, `page_size`, `first_data_page`. Load the `bitmap_dir`
+2. Read `total_pages` and `page_size`. Load the `bitmap_dir`
    array (all non-zero entries). Read all referenced bitmap pages.
 
 ### 3.3 Page Allocation
@@ -230,6 +230,8 @@ void     Flush(void);
   page directly; on second write, allocates a mirror sibling and links it;
   on subsequent writes, alternates between the two pages. Marks the page
   dirty but does not write to disk.
+- `FlushPage(logicalPage)`: writes a single dirty page to the backing file
+  (without fsync). Used for targeted flushes like superblock updates.
 - `Flush`: writes all dirty pages to the backing file and fsyncs. Marks
   them clean. Clean pages remain cached. Called explicitly by the VFS
   layer at commit boundaries — this is the durability barrier.
@@ -376,7 +378,9 @@ Offset  Size  Field
 16       8    epochMapperPage (int64 — page index of first epoch mapper page, 0 if none)
 24       8    poolListHead    (int64 — head of pool page flat list, 0 if none)
 32       8    treeLockState   (int64 — §9.6 bit layout)
-40    8152    reserved
+40       4    nextNodeId      (uint32 — next available node identifier)
+44       4    reserved
+48    8144    reserved
 ```
 
 ### 4.2 Tree Lock
@@ -416,7 +420,8 @@ VirtualPtr = (poolPageIndex << 8) | (slotIndex & 0xFF)
 - Bits 0–7: slot index within the pool page (0–254; 255 is the link slot)
 - Bits 8–63: logical page index of the pool page
 
-`VirtualPtr` of 0 means null.
+`VirtualPtr` of 0 means null. Logical page 0 is the StorageBackend header
+and is never a pool page, so `(page=0, slot=0)` is never a valid reference.
 
 ### 5.2 Pool Page Layout
 
@@ -539,7 +544,16 @@ recommended. `pageRootPtr` points to the first `PageNode` for this segment.
 `FileContent` entries are NOT epoch-keyed — they form a permanent linked list
 of segments that grows as the file expands. The `nextPtr` links to the next
 FileContent (higher logical page range). On first access, the VFS walks this
-chain and builds an in-memory array for O(1) lookups.
+chain and builds an in-memory array of pointers to the live `versionRootPtr`
+fields within the pool page buffers. This ensures reads always see the
+current version chain head via `atomic_load_acquire`, even after concurrent
+writes CAS the `versionRootPtr`. The array persists until the file is closed
+or the pool page backing the array entries is evicted.
+
+A reader at any epoch walks the full FileContent chain, including segments
+added in later epochs. This is safe: VersionPage epoch filtering (§7.1) makes
+pages in future segments resolve as "never written." FileSize entries bound
+which segments are logically valid for a given epoch.
 
 ### 6.5 PageNode
 
@@ -581,10 +595,13 @@ mechanism.
 To resolve a query at epoch R:
 1. Apply epoch mapper (§8): `R' = mapper.resolve(R)`.
 2. Walk the chain from the head pointer.
-3. First entry with `epoch ≤ R'` AND `epoch` is even → use it.
-4. If `epoch` is odd → skip, continue. If `epoch > R'` → skip, continue.
-   (Chains are descending by epoch, so the first valid match is the most
-   recent committed state at or before R'.)
+3. If entry.epoch == R' → use it (exact match, regardless of even/odd).
+4. If entry.epoch > R' → skip.
+5. If entry.epoch < R' AND even → use it (committed base). Stop.
+6. If entry.epoch < R' AND odd → skip (unrelated snapshot).
+
+(Chains are descending by epoch, so the first match at step 3 or 5 is the
+most recent committed state at or before R'.)
 
 ### 7.2 File Read
 
@@ -627,8 +644,10 @@ To write to logical page P of file F at epoch E:
 
 ## 8. Epoch Mapping
 
-Epoch mappings are stored in a separate pool chain with its own head pointer
-in the superblock (`epochMapperPage`). Each mapping is a pool entry:
+Epoch mappings are stored as pool entries in a dedicated chain. The superblock
+holds `epochMapperPage` — the page index of the pool page containing the first
+mapper entry. The entry is always at slot 0 of that page. The mapper chain is
+walked via VirtualPtr `nextPtr` within pool pages. Each mapping is a pool entry:
 
 ```
 Offset  Size  Field
@@ -649,7 +668,7 @@ with `traversalApply = true`. Soft-delete adds a mapping with `traversalApply
 
 ## 9. Concurrency
 
-### 9.1 Section Slot CAS
+### 9.1 Version Chain Head CAS
 
 Section page slots are 8-byte aligned `long` values. Updates use native
 64-bit CAS (`atomic_compare_exchange_strong`):
@@ -680,40 +699,37 @@ Pool allocation (§5.2) uses a per-pool-page CAS on `freeCount`/`firstFreeSlot`.
 
 ### 9.2 Directory Node CAS
 
-Directory and file node entry insertions use CAS on the node's `headOffset`
-(8-byte aligned, native CAS). The `oldHead` read and `newEntry.next`
+Directory and file node entry insertions CAS on the node's `headPtr`
+(VirtualPtr, 8 bytes). The `oldHead` read and `newEntry.nextPtr`
 assignment MUST be inside the retry loop:
 
 ```
-long oldHead, newEntryOffset;
+VirtualPtr oldHead, newEntryPtr;
 do {
-    oldHead = atomic_load_acquire(ref headOffset);
-    // newEntry already allocated; set its nextOffset = oldHead
-    newEntry.nextOffset = oldHead;
-    newEntryOffset = offset_of(newEntry);
-} while (atomic_compare_exchange_strong(ref headOffset, newEntryOffset, oldHead) != oldHead);
+    oldHead = atomic_load_acquire(ref headPtr);
+    // newEntry already allocated in pool; set its nextPtr = oldHead
+    newEntry.nextPtr = oldHead;
+    newEntryPtr = PackVirtualPtr(newEntryPage, newEntrySlot);
+} while (CAS(ref headPtr, newEntryPtr, oldHead) != oldHead);
 ```
 
 CAS retries are rare — contention is only on creates/deletes in the same
 directory. Data writes go through VersionPage CAS (§9.1) on different
 section chains, with no contention between different files.
 
-### 9.2.1 Overflow Page Memory Fences
+### 9.2.1 Pool Slot Publication Fences
 
-When appending a directory or file node overflow page (§5.8), the writer
-must guarantee publication ordering so lock-free readers never observe
-uninitialized memory:
+When a writer allocates a new pool slot and links it into a chain (e.g.,
+prepending a VersionPage to a PageNode.versionRootPtr), the writer must
+guarantee publication ordering:
 
-1. Allocate and fully populate the new overflow page buffer.
-2. Compute its CRC32C and commit to the dirty cache via `Write`.
-3. Emit a **release memory barrier** (e.g., `Thread.MemoryBarrier` or a
-   volatile store) before linking the new page to the preceding page's
-   `nextOverflow` or `nextOffset` pointer.
+1. Allocate the pool slot and write all fields into the slot buffer.
+2. Emit a **release memory barrier** before CAS-linking the slot into the
+   chain via the parent's VirtualPtr field.
 
-The lock-free reader must use an **acquire load** (`atomic_load_acquire`) when
-following a non-zero `nextOverflow` or cross-page `nextOffset`. This
-ensures all bytes inside the newly linked page are visible before
-dereferencing the pointer.
+The lock-free reader uses **acquire loads** (`atomic_load_acquire`) when
+following a VirtualPtr chain. This ensures all fields in the newly linked
+slot are visible before the reader dereferences them.
 
 **In-place CRC32C ordering:** When a writer does an in-place data page write
 (version node already exists for this epoch), it must complete the data page
@@ -738,8 +754,7 @@ mutex_lock(lock);
 mutex_unlock(lock);
 ```
 
-- The lock is stored in a thread-safe hash table keyed by file node page
-  index (logical page, §3). Locks are created lazily on first access to a
+- The lock is stored in a thread-safe hash table keyed by file nodeId (§6.3). Locks are created lazily on first access to a
   file and never removed.
 - Same-file concurrent writes are serialized: only one thread may modify a
   given file's data at a time. This prevents races between COW version
@@ -834,7 +849,7 @@ prevents concurrent modifications during the copy phase.
 
 1. **Acquire exclusive tree lock.**
 2. **Walk the live tree** from the current root. Process ALL node types:
-   - **Section pages:** scan all 1021 slots. Follow each version chain.
+   - **Version chains:** walk PageNode entries within each FileContent segment. Follow each version chain.
      Drop version nodes belonging to soft-deleted epochs (per epoch mapper
      with `traversalApply = false`). Collapse committed mappings: if a
      version's epoch equals a committed snapshot epoch S, adjust to the
@@ -856,9 +871,10 @@ prevents concurrent modifications during the copy phase.
      pages. Free old mapper pages.
 3. **Write new tree pages** — section, pool, directory, file, and mapper
    pages. Old pages are NOT freed until the swap is complete.
-4. **Write new superblock** with the new root offset, `currentEpoch`
-   page, and new `poolListHead` pointing to the first page of the rebuilt
+4. **Write new superblock** with the new root offset, `currentEpoch`, and new `poolListHead` pointing to the first page of the rebuilt
    pool list.
+4. **Write new superblock** with the new root offset, `currentEpoch`,
+   and new `poolListHead`.
 5. **fsync** the new superblock.
 6. **Atomically swap** the superblock pointer (lazy mirror (§3.7)).
 7. **Release tree lock.**
@@ -876,7 +892,7 @@ possible.
 
 ### 10.5 Page Pinning
 
-Direct page access (§10.5) pins pages. Pin count
+Direct page access (external API, pins pages for the duration of a direct I/O operation) pins pages. Pin count
 is tracked in an in-memory `thread-safe hash table<long, int>` keyed by page
 index. Pinned pages are skipped during step 8 freeing.
 
@@ -921,7 +937,7 @@ new logical state — never a torn page.
 ### 11.2 Mount (No Recovery Needed)
 
 1. Read both superblock pages (page 0 and page 1).
-2. Select the active one: higher PageHeader generation wins (§4.2).
+2. Select the active one: higher PageHeader generation wins (§3.7 — Lazy Mirror).
    Validate its CRC32C. If invalid, try the other page.
 3. Read `rootNodeOffset`, `currentEpoch`, `epochMapperPage`, `poolListHead`.
 4. Read the first epoch mapper page. Validate CRC32C. Walk the chain via
@@ -966,7 +982,7 @@ Timings assume warm cache — pages resident in the unified page cache
 
 At ~9 page writes per individual statement, predicted throughput is ~2,600
 operations/second. For batched writes where metadata is amortized across
-multiple writes within a transaction, throughput exceeds 80,000 rows/second.
+multiple writes within a transaction, throughput scales linearly with batch size.
 
 The section array reduces per-page lookup from a linked-list scan to a
 single indexed read (O(1)). Version chains are maintained in descending
