@@ -815,31 +815,48 @@ slot are visible before the reader dereferences them.
 
 ### 9.3 Write Serialization (Per-File Locking)
 
-Each file node has an associated lock. Before any write that modifies the
-file's version chains, version chains, or file node entries, the writer
-acquires the file's lock. The lock is released after all modifications
-for that operation complete.
+Two lock modes: **global** (epoch 0) serializes all writes to a file across
+all epochs; **per-epoch** (specific epoch) serializes only same-epoch writes,
+allowing cross-epoch concurrency. Internal writes acquire the per-epoch lock
+for the write's epoch automatically.
 
 **Lock acquisition:**
 ```
-mutex_t* lock = file_locks_get_or_create(fileNodeId, epoch);
+mutex_t* lock = file_locks_get_or_create(nodeId, epoch);
 mutex_lock(lock);
 // ... perform writes ...
 mutex_unlock(lock);
 ```
 
-- The lock is stored in a thread-safe hash table keyed by `(nodeId, epoch)`.
-  Locks are created lazily and never removed.
-- Same-epoch concurrent writes to the same file are serialized — this
-  prevents races when multiple threads write to the same file at the same
-  epoch. Cross-epoch writes to the same file proceed concurrently: they
-  operate on independent version chains and the CAS on `versionRootPtr`
-  resolves ordering.
-- Different files have independent locks regardless of epoch.
-- Read operations do NOT acquire any lock. Reads are lock-free.
-- Directory operations (create, delete, rename) CAS on the parent directory
-  node's `headPtr` (§9.2). No file lock is involved — directory mutations
-  are serialized by the CAS retry loop itself.
+**Lock compatibility rules:**
+
+- Per-epoch locks with different epochs are compatible — they do not block
+  each other. Writers at epoch 1 and epoch 2 to the same file proceed
+  concurrently.
+- The global lock (epoch 0) is incompatible with all other locks on the
+  same file — it serializes everything.
+- A global lock request waits for all active per-epoch locks on that file
+  to drain before proceeding. New per-epoch lock requests block while a
+  global lock is held or pending.
+
+**Implementation sketch:**
+```
+struct file_lock_state {
+    int epoch_lock_count;     // active per-epoch locks
+    bool global_held;          // global lock is held
+    bool global_pending;       // global lock is waiting to acquire
+};
+
+global_lock_acquire:
+    global_pending = true;
+    while (epoch_lock_count > 0) spin/yield;
+    global_held = true;
+    global_pending = false;
+
+epoch_lock_acquire(epoch):
+    if (global_held || global_pending) block;
+    epoch_lock_count++;
+```
 
 The lock is held for the duration of a single `WriteFile` call — typically
 tens of microseconds — so contention is negligible. Deadlock is impossible
