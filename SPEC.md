@@ -37,31 +37,32 @@ databases, file storage, content-addressable data, and internal service state.
 
 ## 2. Page Format
 
-Every page consists of a 12-byte PageHeader followed by a page_size-byte
-payload (page_size + 12 bytes total per logical page, doubled to 2 × (page_size + 12) bytes with
-ping-pong). The header is transparent to the VFS layer — `Read` and
-`Write` operate on the payload only.
+Every page consists of a 16-byte PageHeader followed by a page_size-byte
+payload (page_size + 16 bytes total per logical page). A mirror sibling
+may be allocated lazily on the second write (§3.7). The header is
+transparent to the VFS layer — `Read` and `Write` operate on the payload
+only.
 
-### 2.1 PageHeader (12 bytes)
+### 2.1 PageHeader (16 bytes)
 
 ```
 Offset  Size  Field
 ──────  ────  ─────
  0       2    pageType       (uint16 — type code from PageType enum)
- 2       2    flags          (uint16 — per-type flags)
- 4       4    checksum       (uint32 — CRC32C of bytes [12..end))
- 8       4    generation     (uint32 — incremented by allocator on every allocation of this page slot)
+ 2       2    flags          (uint16 — per-type flags; StorageHdr uses 0x5346 for 'FS' magic)
+ 4       4    checksum       (uint32 — CRC32C of payload bytes)
+ 8       4    generation     (uint32 — incremented on each write; higher = active)
+12       4    mirrorPage     (int32 — logical page index of mirror sibling; -1 = none)
 ```
 
-`generation` catches stale reads: if a page is freed then reallocated, a
-reader holding an old page index will see a different generation. Combined
-with CRC32C validation, this prevents use-after-free.
+`generation` catches stale reads and picks the active page when a mirror
+exists. `mirrorPage` is -1 after first allocation; on the second write to
+the page, a mirror sibling is allocated and both pages are linked via this
+field. See §3.7 for the write lifecycle.
 
-Checksum covers bytes 12 to end of page. Computed via CRC32C (Castagnoli,
-hardware-accelerated when SSE4.2 or ARMv8 CRC32 is available, software
-fallback otherwise). On write: `PageHeader.WriteHeader` leaves checksum
-at 0, then `ComputeAndWriteChecksum` computes and stores it. On read:
-`ValidateHeader` reads the header, recomputes CRC, compares.
+The 16-byte header is power-of-2 aligned. All page types use this layout.
+The StorageBackend header (logical page 0) uses `pageType=0x5658, flags=0x5346`
+to form the 4-byte "XVFS" magic in little-endian byte order.
 
 ### 2.2 Page Types
 
@@ -102,7 +103,7 @@ never performs logical-to-physical translation.
 ### 3.1 File Layout
 
 The backing file begins with a StorageBackend header block (at logical page 0,
-ping-pong backed), followed by free-bitmap pages, followed by allocatable data
+lazy mirror backed), followed by free-bitmap pages, followed by allocatable data
 pages.
 
 ```
@@ -110,7 +111,7 @@ Logical page   Content
 ────────────   ───────
 0              StorageBackend header (magic "XVFS" at pageType+flags, config + bitmap directory)
 1..B           Free-bitmap pages (chained via bitmap directory in header)
-B+1            First allocatable page — superblock (ping-pong pair)
+B+1            First allocatable page — superblock (lazy mirror pair)
 B+2            Superblock alternate
 ...            remaining logical pages
 ```
@@ -148,7 +149,7 @@ Allocation scans across all bitmap pages via zone cursors; freed pages are
 reused regardless of which bitmap page they reside on. New bitmap pages are
 appended to `bitmap_dir` only when the last existing page is exhausted.
 
-All pages, including the header block, use ping-pong §3.7.
+All pages, including the header block, use the lazy mirror mechanism (§3.7).
 
 ### 3.2 Initialization
 
@@ -159,7 +160,7 @@ file exists:
 1. Create the backing file.
 2. Bootstrap: reserve logical pages 0 (header) and 1 (first bitmap page)
    directly — `Allocate` cannot be used yet because no bitmap exists. Both
-   are zero-filled and use ping-pong backing.
+   are zero-filled and use lazy mirror backing.
 3. Write the header: `total_pages = 2`, `page_size = 8192` (default),
    `first_data_page = 2`, `flags = 0`. Write `1` to `bitmap_dir[0]`.
 4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header)
@@ -182,16 +183,17 @@ bool    Acquire(int64_t logicalPage);
 void    Free(int64_t logicalPage);
 ```
 
-- `Allocate(count)`: reserves `count` contiguous logical pages. Each logical
-  page is internally backed by a ping-pong physical pair §3.7. Returns the
-  first logical page index, or -1 if no space.
+- `Allocate(count)`: reserves `count` contiguous logical pages. Returns the
+  first logical page index, or -1 if no space. Each page starts with
+  `mirrorPage = -1` (no mirror sibling); a mirror is allocated lazily on
+  the second write (§3.7).
 - `Acquire(logicalPage)`: atomically checks whether `logicalPage` is
   free. If yes, marks it allocated and returns true. If already allocated,
   returns false. This is a CAS on the bitmap bit — no scanning, O(1).
   Used for fixed-location allocations (superblock, GC target pages).
-- `Free(logicalPage)`: marks the logical page as free, releasing the
-  underlying ping-pong pair. GC is the primary caller; normal VFS operations
-  never free individual pages.
+- `Free(logicalPage)`: marks the logical page as free. If a mirror sibling
+  exists (`mirrorPage != -1`), the sibling is also freed. GC is the primary
+  caller; normal VFS operations never free individual pages.
 
 All newly allocated pages are zero-filled before returning.
 
@@ -211,14 +213,14 @@ When no free pages exist in any zone, a new bitmap page must be allocated.
 The StorageBackend extends the backing file, allocates the new bitmap page,
 zero-fills it, and appends its index to the first zero slot in `bitmap_dir`
 via CAS. Then it updates `total_pages` in the header via CAS. The header
-page is ping-pong backed §3.8  — the CAS on `bitmap_dir` entries and
+page is lazy mirror backed §3.8  — the CAS on `bitmap_dir` entries and
 `total_pages` is safe because the underlying page write is crash-safe.
 
 ### 3.4 Page I/O
 
-The StorageBackend manages the 12-byte PageHeader transparently. Callers
+The StorageBackend manages the 16-byte PageHeader transparently. Callers
 pass and receive page_size-byte payload buffers. The StorageBackend reads and
-writes the full page_size + 12 bytes (header + payload) internally, computing and
+writes the full page_size + 16 bytes (header + payload) internally, computing and
 validating CRC32C on the payload on every I/O operation.
 
 ```
@@ -227,14 +229,15 @@ void     Write(int64_t logicalPage, uint8_t* data);
 void     Flush(void);
 ```
 
-- `Read`: checks the unified page cache §3.7  first. On cache hit,
-  returns the cached buffer immediately (CRC32C was validated on initial
-  load). On cache miss, reads the physical page pair from disk, validates
-  the active half via generation, validates CRC32C on the payload, and
-  inserts into the cache. Returns NULL if the page has never been written.
+- `Read`: resolves the page via the lazy mirror mechanism (§3.7). Checks
+  the unified page cache (§3.6) first. Returns a pointer to a page_size-byte
+  buffer containing the payload only. Returns NULL if the page has never
+  been written.
 - `Write`: accepts a page_size-byte payload buffer. The StorageBackend
-  writes it to the inactive physical half with incremented generation and
-  computed CRC32C §3.7. Marks the page dirty but does not write to disk.
+  handles the lazy mirror lifecycle (§3.7): on first write, writes to the
+  page directly; on second write, allocates a mirror sibling and links it;
+  on subsequent writes, alternates between the two pages. Marks the page
+  dirty but does not write to disk.
 - `Flush`: writes all dirty pages to the backing file and fsyncs. Marks
   them clean. Clean pages remain cached. Called explicitly by the VFS
   layer at commit boundaries — this is the durability barrier.
@@ -288,45 +291,52 @@ when a configurable memory budget is exceeded (default 256 MB, ~32,768
 pages), evict clean pages via LRU. Dirty pages are never evicted. The
 cache is thread-safe (concurrent reads/writes).
 
-### 3.7 Ping-Pong Pages
+### 3.7 Lazy Mirror Pages
 
-Every logical page is backed by two physical pages for crash-safe writes.
-When `Allocate` is called, the StorageBackend internally reserves two
-adjacent physical pages and returns a single logical page index. Both halves
-have full PageHeaders (§2). The active half is the one with the higher
-`generation` field. Cold start: half 0 is active.
+Most pages are write-once, read-many. Allocating a full mirror pair for every
+page would waste storage. Instead, a mirror sibling is allocated lazily on
+the **second write** to the page.
 
-**Physical layout.** Each logical page is stored as one contiguous block of
-`2 × (page_size + 12)` bytes:
+**Write lifecycle:**
+
+1. **First allocation:** `Allocate` or `Acquire` returns a single logical page.
+   `mirrorPage = -1`, `generation = 0`.
+2. **First write:** write payload, then write PageHeader with `generation = 1`,
+   `mirrorPage = -1`. No mirror needed — this is the only copy. One page
+   occupies `page_size + 16` bytes of physical storage.
+3. **Second write:** allocate a new logical page (the mirror sibling). Write
+   the new payload to the sibling with `generation = 2`, `mirrorPage = original`.
+   Then atomically store `mirrorPage = sibling` on the original page (8-byte
+   aligned write). From this point forward, writes alternate between the two
+   pages, each with an incremented generation.
+4. **Subsequent writes:** read both headers, find the inactive one (lower
+   generation), write to it with `generation = active.generation + 1`.
+
+**Physical layout.** Each page is independent:
 
 ```
-Offset                Size   Content
-──────                ────   ───────
-0                      12    PageHeader for half 0
-12                     12    PageHeader for half 1
-24                page_size  Payload for half 0
-24 + page_size    page_size  Payload for half 1
+Page: [PageHeader: 16 bytes | payload: page_size bytes]
 ```
 
-Both headers are adjacent — a single 24-byte read fetches both generations.
-The winning half's payload follows at a known offset.
+**Read:**
+1. Read the page header. If `mirrorPage == -1`: use this page directly.
+   Validate CRC32C on the payload. Done. (Most pages — O(1).)
+2. If `mirrorPage != -1`: read the sibling's header. Compare generations.
+   Use the page with the higher generation. Validate CRC32C. If CRC fails,
+   try the other page.
 
-**Write:** read the active half's generation. Build the new payload in
-memory. Compute CRC32C of the payload. Write the payload to the inactive
-half, then write the PageHeader with generation = active.generation + 1
-and the computed CRC32C. The header write is the atomic commit point —
-the generation increment makes this half active.
+**Crash safety at mirror allocation (the critical moment):**
+- Sibling allocated, written with gen=2, mirrorPage=original.
+- Original's mirrorPage is still -1. Reader sees gen=1, mirrorPage=-1
+  → lone page, old data intact. Sibling is a zombie (unreachable). Safe.
+- After atomic store of `mirrorPage` on the original: both linked. Reader
+  compares gens (2 > 1), picks sibling. Write #2 survived. Safe.
 
-**Read:** read both PageHeaders (24 contiguous bytes at offset 0). Use the
-half with higher generation. Read its payload at offset `24 + (half * page_size)`.
-Validate CRC32C. If CRC fails, read the other half's payload as fallback.
-If both fail, the page is unrecoverable.
-
-**Crash safety:** a crash mid-write leaves the old half intact (generation
-not updated) or the new half intact (CRC valid). No torn page is ever
-visible. All page types — superblock, bitmap, tree nodes, pool pages,
-mapper pages, and data pages — share this mechanism. There is no distinction
-between "data" and "metadata" durability.
+**Storage savings:** pages written only once (the common case for data pages
+filled by INSERT and metadata pages created during tree growth) consume
+`page_size + 16` bytes instead of `2 × (page_size + 16)`. For a typical
+database where 90% of pages are write-once, physical storage is ~55% of the
+eager ping-pong model.
 
 ### 3.8 Free-Page Bitmap (Internal)
 
@@ -613,7 +623,7 @@ epoch order.)
 ### 5.8 Directory Node Header & Page Chaining
 
 Directory nodes use the linked-list entry format (§5.1). Each directory node
-page has a 12-byte PageHeader (type `TreeNode`), then:
+page has a 16-byte PageHeader (type `TreeNode`), then:
 
 ```
 Offset  Size  Field
@@ -1109,7 +1119,7 @@ committed snapshot epochs before invoking GC.
 ### 11.1 Page Durability
 
 All pages — superblock, bitmap, tree nodes, pool pages, mapper pages, and
-data pages — are backed by ping-pong physical pairs §3.7. A crash
+data pages — are backed by lazy mirror pairs §3.7. A crash
 mid-write leaves the old half intact (generation not updated) or the new
 half intact (CRC32C valid — generation was written last). No torn page is
 ever visible. The reader picks the half with higher generation; if its CRC
