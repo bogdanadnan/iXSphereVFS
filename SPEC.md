@@ -1014,9 +1014,10 @@ After GC completes:
   Reading the deleted epoch returns the base state (what existed before the
   snapshot was taken).
 - **Committed snapshots:** the mapping is collapsed. Version nodes from the
-  snapshot epoch are relabeled to the live head epoch. Original live-head
-  pages that were overwritten by snapshot variants are freed. Reading the
-  committed epoch returns the live head state.
+  snapshot epoch are relabeled to the live head epoch at commit time.
+  Original live-head pages overwritten by snapshot variants are freed.
+  Reading the committed epoch returns the live head state as it existed at
+  commit time — not subsequent live head changes.
 
 Callers must ensure no active readers or queries depend on deleted or
 committed snapshot epochs before invoking GC.
