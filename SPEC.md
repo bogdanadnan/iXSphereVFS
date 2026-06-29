@@ -192,7 +192,7 @@ All newly allocated pages are zero-filled before returning.
 of `(page_size − 32) / 8` entries. When all entries are non-zero and no
 further bitmap pages can be allocated, the instance has reached its maximum
 logical page count. `Allocate` returns -1. The maximum at page_size = 8192
-is 1,020 bitmap pages covering 66,570,496 logical pages (~545 GB).
+is 1,020 bitmap pages covering 66,846,720 logical pages (~547 GB at default page_size).
 
 **Thread safety.** `Allocate` is thread-safe. Allocation is zone-based: the
 logical page space is divided into zones of 1M pages. `Allocate` picks a
