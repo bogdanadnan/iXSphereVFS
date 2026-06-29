@@ -1016,7 +1016,104 @@ All corruption is detected and handled at read time, not mount time.
 Pages that are never read after a crash need no validation.
 
 
-## 12. Performance Model
+## 12. Filesystem API
+
+The VFS exposes a POSIX-like interface to callers. All operations are
+tagged with an epoch for snapshot isolation.
+
+### 12.1 Instance
+
+```
+vfs_t*    vfs_open(const char* path);
+void      vfs_close(vfs_t* vfs);
+int       vfs_flush(vfs_t* vfs);
+```
+
+### 12.2 File Operations
+
+```
+int       vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
+int       vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
+int       vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
+                     int64_t dst_parent, const char* dst, int64_t epoch);
+
+int64_t   vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
+int       vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
+                   int64_t count, int64_t epoch);
+int       vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
+                    int64_t count, int64_t epoch);
+int64_t   vfs_file_size(vfs_t* vfs, int64_t file, int64_t epoch);
+int64_t   vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch);
+int64_t   vfs_file_ctime(vfs_t* vfs, int64_t file);
+```
+
+- `vfs_create`: returns the nodeId of the created file, or -1 on error.
+- `vfs_open_file`: resolves a path to a file nodeId. Returns -1 if not found.
+- `vfs_read`/`vfs_write`: return bytes transferred, or -1 on error. Short
+  reads/writes are possible at file boundaries.
+- `vfs_file_size`/`mtime`/`ctime`: stat-like queries at a given epoch.
+
+### 12.3 Directory Operations
+
+```
+int       vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
+int       vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
+
+typedef struct { int64_t nodeId; char name[256]; bool isDir; } vfs_dirent_t;
+int       vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
+                      int max, int64_t epoch);
+```
+
+- `vfs_readdir`: fills `entries` with up to `max` directory entries.
+  Returns the number written. At `epoch`, only non-deleted children visible
+  at that epoch are returned. The caller iterates by calling repeatedly.
+
+### 12.4 Snapshot & Commit
+
+```
+int64_t   vfs_snapshot(vfs_t* vfs);
+int       vfs_commit(vfs_t* vfs, int64_t snapshot_epoch);
+int       vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch);
+```
+
+- `vfs_snapshot`: increments the epoch counter and returns the new snapshot
+  epoch (always odd). The caller writes at the previous live-head or the new
+  snapshot epoch.
+- `vfs_commit`: commits a snapshot to the live head. Fails if the same page
+  was modified in both the snapshot and live head since the snapshot was taken.
+- `vfs_delete_snapshot`: soft-deletes a snapshot. GC later reclaims space.
+
+### 12.5 Manual GC
+
+```
+int       vfs_gc(vfs_t* vfs);
+```
+
+Shadow-compacts the tree, removing soft-deleted epochs and freeing
+unreachable pages. Blocks all other operations while running.
+
+### 12.6 Error Handling
+
+```
+typedef enum {
+    VFS_OK = 0,
+    VFS_ERR_IO = -1,
+    VFS_ERR_NOTFOUND = -2,
+    VFS_ERR_EXISTS = -3,
+    VFS_ERR_NOTDIR = -4,
+    VFS_ERR_NOTEMPTY = -5,
+    VFS_ERR_CONFLICT = -6,
+    VFS_ERR_FULL = -7,
+    VFS_ERR_NOMEM = -8,
+} vfs_error_t;
+
+vfs_error_t vfs_last_error(vfs_t* vfs);
+const char* vfs_error_string(vfs_error_t err);
+```
+
+---
+
+## 13. Performance Model
 
 Estimated per-operation cost for a single page_size-byte page write on the hot path.
 Timings assume warm cache — pages resident in the unified page cache
