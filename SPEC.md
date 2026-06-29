@@ -354,10 +354,10 @@ effect of the mirror write, not a logical change to the other file's state.
 
 **Storage savings:** pages written only once (the common case for data pages
 filled by INSERT and metadata pages created during tree growth) consume
-`page_size + 16` bytes instead of `2 × (page_size + 16)`. For a typical
-For a typical database where 90% of pages are write-once, physical storage is
-dominated by the single-page case rather than mirror pairs, saving significant
-space over always-allocated mirror pairs.
+`page_size + 16` bytes instead of `2 × (page_size + 16)`. For a typical database
+where 90% of pages are write-once, physical storage is dominated by the single-page
+case rather than mirror pairs, saving significant space over always-allocated mirror
+pairs.
 
 ### 3.8 Free-Page Bitmap (Internal)
 
@@ -1113,8 +1113,10 @@ int       vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch);
 ```
 
 - `vfs_snapshot`: increments the epoch counter and returns the new snapshot
-  epoch (always odd). The caller writes at the previous live-head or the new
-  snapshot epoch.
+  epoch (always odd). Snapshots are always taken from the **current live
+  head** — not from another snapshot. Multiple active snapshots may coexist
+  as siblings (all children of the live head at different times), but they
+  never form a nested chain.
 - `vfs_commit`: commits a snapshot to the live head. Fails if the same page
   was modified in both the snapshot and live head since the snapshot was taken.
 - `vfs_delete_snapshot`: soft-deletes a snapshot. GC later reclaims space.
