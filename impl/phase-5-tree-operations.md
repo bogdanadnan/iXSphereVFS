@@ -21,7 +21,7 @@ created before any file or directory operations.
 - After StorageBackend initialization and `Acquire(3)` for the superblock
   page, the VFS layer initializes the superblock payload with `rootNodeOffset
   = 0` (empty tree), `currentEpoch = 0` (first live head), `nextNodeId = 1`
-  (nodeId 0 is about to be allocated), and all other fields zero.
+  (nodeId 0 is about to be allocated), `touchedFilesPtr = 0`, `epochMapperPtr = 0`, and all other fields zero.
 - Allocate a DirNode via the pool allocator. Assign it nodeId 0 (the root).
   Set `type = 0x01` (DirNode), `headPtr = 0` (no children yet). Write it
   to its pool slot.

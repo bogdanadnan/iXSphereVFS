@@ -126,6 +126,19 @@ Contention on the pool allocator directly limits write throughput.
   - CAS retry: if two threads race on the same `poolState`, exactly one wins
     and the other retries successfully on the updated state.
 
+**Arena optimization (optional):** under high thread counts (8+), CAS
+contention on the head page's `poolState` can become measurable. An arena
+scheme reduces this by partitioning threads across multiple preferred pool
+pages. Each arena has an active pool page; threads in arena N preferentially
+allocate from that arena's page, falling back to any page with free slots
+when the arena page is full. When an arena page is exhausted, a new page is
+allocated, tagged with the arena ID in a reserved field (e.g. a byte in the
+pool page header or derived from the arena index), and prepended globally.
+This bounds global CAS contention to page-exhaustion events (~once per 255
+allocations per arena) rather than every slot allocation. The arena count
+is configurable: default 1 (disabled), recommended 4–8 for multi-threaded
+workloads.
+
 ---
 
 ## Workload 3.4 — VirtualPtr

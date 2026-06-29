@@ -8,7 +8,38 @@ visibility of committed and deleted snapshots during reads.
 
 ---
 
-## Workload 6.1 — Snapshot
+## Workload 6.2 — Snapshot
+## Workload 6.1 — Valid Epochs
+
+**What:** Enforce write restrictions on epochs. Only the current live head
+(highest even epoch) and active (uncommitted, undeleted) snapshots are
+writable. All other epochs are read-only.
+
+**Why:** Historical epochs are immutable — they represent committed or frozen
+state. Allowing writes to them would corrupt snapshot data and break the
+version chain model.
+
+**How:**
+- Track which epochs are writable. The current live head (the highest even
+  epoch from the superblock) is always writable. Active snapshots are odd
+  epochs that have neither a commit mapping (traversalApply=true) nor a
+  soft-delete mapping (traversalApply=false) in the epoch mapper.
+- Before any `vfs_write` or directory mutation at a given epoch, validate:
+  - If `epoch` is the current live head: allowed.
+  - If `epoch` is odd AND not in the mapper: allowed (active snapshot).
+  - All other epochs: rejected. Return `VFS_ERR_IO` or a dedicated error.
+- Reads have no epoch restriction — any epoch is valid for reading.
+- This check runs once per API call, early in the function, before any
+  pool allocations or chain walks.
+
+**Acceptance:**
+  - Write to current live head (epoch 0): succeeds.
+  - Take snapshot (now live head=2, snapshot=1). Write to epoch 1: succeeds.
+  - Commit epoch 1. Write to epoch 1 again: rejected (committed).
+  - Soft-delete epoch 3. Write to epoch 3: rejected.
+  - Write to epoch 2 (an older even epoch, not the live head): rejected.
+  - Read from any epoch: always succeeds.
+
 
 **What:** Take a snapshot by incrementing the epoch counter. The new epoch
 is odd (snapshot), the previous epoch becomes frozen live-head history.
@@ -49,7 +80,7 @@ transactional safety, backups, and point-in-time queries.
 
 ---
 
-## Workload 6.2 — Commit
+## Workload 6.3 — Commit
 
 **What:** Commit a snapshot epoch to the live head. The snapshot's changes
 become visible to all readers. If the same page was modified in both the
@@ -99,7 +130,7 @@ touch the same logical page.
 
 ---
 
-## Workload 6.3 — Soft-Delete Snapshot
+## Workload 6.4 — Soft-Delete Snapshot
 
 **What:** Mark a snapshot as deleted without physically removing its data.
 The snapshot's changes become invisible to all readers. GC later reclaims
@@ -136,7 +167,7 @@ The heavy work (page reclamation, version node removal) is deferred to GC.
 
 ---
 
-## Workload 6.4 — Epoch Mapper
+## Workload 6.5 — Epoch Mapper
 
 **What:** A pool-allocated chain of MapperEntry nodes that translates epoch
 numbers during reads. Two operations: query resolution (always applies) and
@@ -181,7 +212,7 @@ still be visible. The single-hop constraint keeps resolution O(1).
 
 ---
 
-## Workload 6.5 — TouchedFile Tracking
+## Workload 6.6 — TouchedFile Tracking
 
 **What:** Maintain a per-epoch list of files that were modified in that
 snapshot. Used exclusively by commit for conflict detection.
