@@ -406,7 +406,8 @@ Offset  Size  Field
 32       8    treeLockState   (int64 — §9.6 bit layout)
 40       4    nextNodeId      (uint32 — next available node identifier)
 44       4    reserved
-48    8144    reserved
+48       8    touchedFilesPtr (VirtualPtr — touched-files chain for conflict detection, 0 if none)
+56    8136    reserved
 ```
 
 ### 4.2 Tree Lock
@@ -905,12 +906,22 @@ because the new snapshot data was never committed to disk.
 
 ### 9.5 Conflict Detection (Commit)
 
-Commit scans version chains of all files modified in the snapshot epoch.
-This is a read-only scan of the snapshot's dirty set — a `HashSet<long>`
-of modified FileNode pool entries per epoch, maintained in-memory. On crash
-before commit, the dirty set is lost; the next commit re-scans (safe:
-over-scan finds no false conflicts, under-scan is impossible because
-there's no commit to re-attempt after crash).
+Commit must detect whether the same logical page was modified in both the
+snapshot epoch S and the live head E (E = S+1) — a conflict that prevents
+commit. To avoid scanning all version chains on every commit, a per-epoch
+**touched-files list** is maintained:
+
+- When a VersionPage is first written at epoch S for a file F, the VFS
+  CAS-prepends a `TouchedFile` pool entry {epoch=S, nodeId=F, nextPtr=...}
+  to the epoch's chain, rooted at `touchedFilesPtr` in the superblock.
+- At commit: walk the `TouchedFile` chain for epoch S. For each file,
+  scan its version chains. If any logical page has VersionPage entries at
+  BOTH epoch S and epoch E → conflict → abort.
+- After commit or soft-delete: the chain is dropped. GC reclaims the entries.
+
+The chain is persisted to disk on every write that touches a new file in
+the epoch, so crash recovery does not require a full tree scan. The superblock
+gains a `touchedFilesPtr` field (VirtualPtr, 0 if none).
 
 ### 9.6 Tree Lock (GC Exclusion)
 
