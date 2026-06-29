@@ -399,9 +399,9 @@ The VFS layer never accesses the bitmap directly.
 ## 4. Superblock
 
 The superblock lives at logical page 3. It is initialized on first use with
-`rootNodeOffset = 0` (empty tree), `currentEpoch = 2` (first live head;
-0 is reserved as sentinel), and all other fields zero. On subsequent mounts,
-the existing superblock is read from page 3. allocated by the VFS layer at logical page 3 via
+`rootNodeOffset = 0` (empty tree), `currentEpoch = 0`, and all other fields
+zero. The sentinel -1 means "current live head" in the API; internally the
+current epoch value from the superblock is used. allocated by the VFS layer at logical page 3 via
 `Acquire` after StorageBackend initialization. Like every other page, it
 uses standard lazy mirror (§3.7) — there is no separate superblock alternate
 page or special swap protocol. The VFS writes superblock updates via
