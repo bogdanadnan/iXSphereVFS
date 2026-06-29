@@ -27,21 +27,377 @@ directories, or file nodes.
 
 ---
 
-## 2. Shared Infrastructure
+## 2. Page Format
 
-§2–§4 (Page Format, StorageBackend, Superblock) are unchanged from the
-v1 specification (SPEC.v1.md). Key points:
+Every page consists of a 16-byte PageHeader followed by a page_size-byte
+payload (page_size + 16 bytes total per logical page). A mirror sibling
+may be allocated lazily on the second write (§3.7). The header is
+transparent to the VFS layer — `Read` and `Write` operate on the payload
+only.
 
-- **PageHeader:** 16 bytes (§2.1). pageType + flags + checksum + generation + mirrorPage.
-- **StorageBackend:** §3. Allocate/Acquire/Read/Write/Flush, unified page cache,
-  lazy mirror pages (§3.7), 32-byte config header, bitmap_dir at offset 32.
-- **Superblock:** §4. At logical page 2. Holds rootNodeOffset, currentEpoch,
-  epochMapperPage, poolListHead, treeLockState. Lazy mirror backed.
+### 2.1 PageHeader (16 bytes)
 
-All references to StorageBackend APIs and page layout in this document use the
-definitions from SPEC.v1.md §2–§4.
+```
+Offset  Size  Field
+──────  ────  ─────
+ 0       2    pageType       (uint16 — type code from PageType enum)
+ 2       2    flags          (uint16 — per-type flags; StorageHdr uses 0x5346 for 'FS' magic)
+ 4       4    checksum       (uint32 — CRC32C of payload bytes)
+ 8       4    generation     (uint32 — incremented on each write; higher = active)
+12       4    mirrorPage     (int32 — logical page index of mirror sibling; -1 = none)
+```
+
+`generation` catches stale reads and picks the active page when a mirror
+exists. `mirrorPage` is -1 after first allocation; on the second write to
+the page, a mirror sibling is allocated and both pages are linked via this
+field. See §3.7 for the write lifecycle.
+
+The 16-byte header is power-of-2 aligned. All page types use this layout.
+The StorageBackend header (logical page 0) uses `pageType=0x5658, flags=0x5346`
+to form the 4-byte "XVFS" magic in little-endian byte order.
+
+### 2.2 Page Types
+
+```
+Type   Name        Purpose
+────   ────        ───────
+0x00   Superblock  Tree root and epoch state (§4)
+0x01   Bitmap      Free-page bitmap page §3.7
+0x03   PoolPage    Version node pool (§5.2)
+0x04   MapperPage  Epoch mapper (§8)
+0x05   Data        User file content
+```
+
+The StorageBackend header page (logical page 0) uses a special pageType value
+of `0x5658` and flags of `0x5346` — the ASCII string `"XVFS"` in little-endian
+byte order. This serves as the VFS file magic number. On mount, the
+StorageBackend reads logical page 0 and validates: `pageType == 0x5658 &&
+flags == 0x5346 && CRC32C valid`. If any check fails, the file is not a valid
+iXSphereVFS instance.
+
+### 2.3 Bit-Set Helper
+
+`R8(p, o)` / `R2(p, o)` / `W8(p, o, v)` / `W2(p, o, v)` read/write
+integers from byte arrays at given offsets. `BitConverter` equivalents
+in C. Used throughout for page-level serialization.
 
 ---
+
+## 3. StorageBackend
+
+The StorageBackend is the sole owner of page-level I/O, allocation, and free-list
+management. All page indices used by the VFS data structures (version chain heads,
+version node `physicalPage` fields, directory entries, superblock pointers) are
+**logical page indices** allocated by and opaque to the StorageBackend. The VFS
+never performs logical-to-physical translation.
+
+### 3.1 File Layout
+
+The backing file begins with a StorageBackend header block (at logical page 0,
+lazy mirror backed), followed by free-bitmap pages, followed by allocatable data
+pages.
+
+```
+Logical page   Content
+────────────   ───────
+0              StorageBackend header (magic "XVFS" at pageType+flags, config + bitmap directory)
+1..B           Free-bitmap pages (chained via bitmap directory in header)
+B+1            First allocatable page — superblock (lazy mirror pair)
+B+2            Superblock alternate
+...            remaining logical pages
+```
+
+**Header page layout (page_size-byte payload):**
+
+```
+Offset  Size  Field
+──────  ────  ─────
+ 0       8    total_pages       (int64 — highest allocated logical page + 1)
+ 8       8    page_size         (int64 — payload size in bytes, default 8192)
+16      16    reserved
+32     ...   bitmap_dir[]      (array of int64 logical page indices; zero-terminated)
+```
+
+Config area: 8 + 8 + 16 = 32 bytes. `bitmap_dir` starts at offset 64.
+Entries: (page_size − 32) / 8 = 1,020 at default page_size.
+
+The header is zero-filled at allocation. `bitmap_dir` is a compact array of
+bitmap page indices starting at offset 32. Since newly allocated pages are
+zero-filled, unused entries are 0. The number of bitmap pages is the count
+of non-zero entries. The first entry is always 1 (the first bitmap page).
+
+**Bitmap page layout (page_size-byte payload):**
+
+```
+Offset  Size  Field
+──────  ────  ─────
+ 0    page_size  bits[]          (page_size bytes = page_size × 8 bits, covering that many logical pages)
+```
+
+Bitmap pages have no `next` pointer — the header's `bitmap_dir` array is
+the authoritative chain. To find the bitmap bit for logical page N:
+`bitmap_index = N / (page_size * 8)`, `bit_offset = N % (page_size * 8)`.
+Allocation scans across all bitmap pages via zone cursors; freed pages are
+reused regardless of which bitmap page they reside on. New bitmap pages are
+appended to `bitmap_dir` only when the last existing page is exhausted.
+
+All pages, including the header block, use the lazy mirror mechanism (§3.7).
+
+### 3.2 Initialization
+
+When opening a VFS instance, the StorageBackend checks whether the backing
+file exists:
+
+**File does not exist or is empty:**
+1. Create the backing file.
+2. Bootstrap: reserve logical pages 0 (header) and 1 (first bitmap page)
+   directly — `Allocate` cannot be used yet because no bitmap exists. Both
+   are zero-filled and use lazy mirror backing.
+3. Write the header: `total_pages = 2`, `page_size = 8192` (default). Write `1` to `bitmap_dir[0]`.
+4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header)
+   and 1 (bitmap) as allocated (`0`).
+5. Return success. The VFS layer calls `Acquire(2)` for the superblock
+   and initializes it (§4).
+
+**File exists:**
+1. Read logical page 0 (header block). Validate: `pageType == 0x5658 &&
+   flags == 0x5346` (the "XVFS" magic) and CRC32C is valid. If any check
+   fails, the file is not a valid iXSphereVFS instance.
+2. Read `total_pages`, `page_size`, `first_data_page`. Load the `bitmap_dir`
+   array (all non-zero entries). Read all referenced bitmap pages.
+
+### 3.3 Page Allocation
+
+```
+int64_t Allocate(int count);
+bool    Acquire(int64_t logicalPage);
+void    Free(int64_t logicalPage);
+```
+
+- `Allocate(count)`: reserves `count` contiguous logical pages. Returns the
+  first logical page index, or -1 if no `count` contiguous pages exist.
+  Multi-page allocations are rare (most callers use `Allocate(1)` or
+  `Acquire`). If a contiguous block cannot be found, the caller may fall
+  back to individual `Acquire` calls for each needed page.
+- `Acquire(logicalPage)`: atomically checks whether `logicalPage` is
+  free. If yes, marks it allocated and returns true. If already allocated,
+  returns false. This is a CAS on the bitmap bit — no scanning, O(1).
+  Used for fixed-location allocations (superblock, GC target pages).
+- `Free(logicalPage)`: marks the logical page as free. If a mirror sibling
+  exists (`mirrorPage != -1`), the sibling is also freed. GC is the primary
+  caller; normal VFS operations never free individual pages.
+
+All newly allocated pages are zero-filled before returning.
+
+**Capacity limit.** The `bitmap_dir` array in the header has a fixed capacity
+of `(page_size − 32) / 8` entries. When all entries are non-zero and no
+further bitmap pages can be allocated, the instance has reached its maximum
+logical page count. `Allocate` returns -1. The maximum at page_size = 8192
+is 1,020 bitmap pages covering 66,570,496 logical pages (~545 GB).
+
+**Thread safety.** `Allocate` is thread-safe. Allocation is zone-based: the
+logical page space is divided into zones of 1M pages. `Allocate` picks a
+zone by thread ID, scans from a per-zone hint cursor for `count` consecutive
+free bits using atomic bit operations. Falls back to adjacent zones if the
+home zone is full.
+
+When no free pages exist in any zone, a new bitmap page must be allocated.
+The StorageBackend extends the backing file, allocates the new bitmap page,
+zero-fills it, and appends its index to the first zero slot in `bitmap_dir`
+via CAS. Then it updates `total_pages` in the header via CAS. The header
+page is lazy mirror backed §3.7  — the CAS on `bitmap_dir` entries and
+`total_pages` is safe because the underlying page write is crash-safe.
+
+### 3.4 Page I/O
+
+The StorageBackend manages the 16-byte PageHeader transparently. Callers
+pass and receive page_size-byte payload buffers. The StorageBackend reads and
+writes the full page_size + 16 bytes (header + payload) internally, computing and
+validating CRC32C on the payload on every I/O operation.
+
+```
+uint8_t* Read(int64_t logicalPage);
+void     Write(int64_t logicalPage, uint8_t* data);
+void     Flush(void);
+```
+
+- `Read`: resolves the page via the lazy mirror mechanism (§3.7). Checks
+  the unified page cache (§3.6) first. Returns a pointer to a page_size-byte
+  buffer containing the payload only. Returns NULL if the page has never
+  been written.
+- `Write`: accepts a page_size-byte payload buffer. The StorageBackend
+  handles the lazy mirror lifecycle (§3.7): on first write, writes to the
+  page directly; on second write, allocates a mirror sibling and links it;
+  on subsequent writes, alternates between the two pages. Marks the page
+  dirty but does not write to disk.
+- `Flush`: writes all dirty pages to the backing file and fsyncs. Marks
+  them clean. Clean pages remain cached. Called explicitly by the VFS
+  layer at commit boundaries — this is the durability barrier.
+- **Write-back:** the StorageBackend may proactively write dirty pages to
+  disk (without fsync) when the dirty page count exceeds a configurable
+  threshold. Write-back follows the same ordering as Flush (§3.5) to
+  maintain on-disk consistency. It is non-blocking and does not mark pages
+  clean — it only reduces the data loss window between explicit Flush
+  calls. Crashes between write-back and Flush may lose un-fsynced data
+  but cannot corrupt pages (ordering is preserved; lazy mirror protects
+  individual writes).
+
+### 3.5 Flush Ordering
+
+`Flush` writes dirty pages in a specific order to guarantee crash safety.
+If a crash occurs mid-flush, the on-disk state must always be consistent —
+either the pre-flush state or a recoverable partial state.
+
+**Write order (must be followed strictly):**
+
+1. **Data pages.** User file content — the leaves of the dependency tree.
+   Nothing references these except version nodes.
+2. **Pool pages.** Version nodes that reference data pages via `physicalPage`.
+3. **Section pages.** Slot arrays that reference pool pages via VirtualPtr.
+4. **Pool entries (directory/file content).** Entries that reference section pages,
+   child nodes, and FileSize entries.
+5. **Mapper pages.** Epoch mapping entries.
+6. **Bitmap pages.** Free-page bitmap state.
+7. **Superblock.** Written last. This is the atomic commit point.
+
+**Crash during flush:**
+
+- Crash before step 7 (superblock not written): on remount, the old
+  superblock still points to the old tree. Any pages written in steps 1–6
+  are unreachable zombies — wasted space reclaimed by the next GC. No
+  corruption.
+- Crash after step 7 (superblock written): all preceding pages are on disk.
+  Mount loads the new state. The flush is complete from the reader's
+  perspective even if `fsync` was interrupted — the superblock lazy mirror
+  mechanism §3.7  ensures the active half points to a consistent state.
+
+**Fsync:** after writing all dirty pages, `fsync` is called on the backing
+file. If the OS or drive reorders writes, `fsync` acts as a barrier —
+pages written before the fsync are durable before pages written after.
+
+### 3.6 Unified Page Cache
+
+Pages in the cache are in one of two states: clean (read from disk,
+unmodified) or dirty (written via `Write`, not yet flushed). Eviction:
+when a configurable memory budget is exceeded (default 256 MB, ~32,768
+pages), evict clean pages via LRU. Dirty pages are never evicted. The
+cache is thread-safe (concurrent reads/writes).
+
+### 3.7 Lazy Mirror Pages
+
+Most pages are write-once, read-many. Allocating a full mirror pair for every
+page would waste storage. Instead, a mirror sibling is allocated lazily on
+the **second write** to the page.
+
+**Write lifecycle:**
+
+1. **First allocation:** `Allocate` or `Acquire` returns a single logical page.
+   `mirrorPage = -1`, `generation = 0`.
+2. **First write:** write payload, then write PageHeader with `generation = 1`,
+   `mirrorPage = -1`. No mirror needed — this is the only copy. One page
+   occupies `page_size + 16` bytes of physical storage.
+3. **Second write:** allocate a new logical page (the mirror sibling). Write
+   the new payload to the sibling with `generation = 2`, `mirrorPage = original`.
+   Then atomically store `mirrorPage = sibling` on the original page (8-byte
+   aligned write). From this point forward, writes alternate between the two
+   pages, each with an incremented generation.
+4. **Subsequent writes:** read both headers, find the inactive one (lower
+   generation), write to it with `generation = active.generation + 1`.
+
+**Physical layout.** Each page is independent:
+
+```
+Page: [PageHeader: 16 bytes | payload: page_size bytes]
+```
+
+**Read:**
+1. Read the page header. If `mirrorPage == -1`: use this page directly.
+   Validate CRC32C on the payload. Done. (Most pages — O(1).)
+2. If `mirrorPage != -1`: read the sibling's header. Compare generations.
+   Use the page with the higher generation. Validate CRC32C. If CRC fails,
+   try the other page.
+
+**Crash safety at mirror allocation (the critical moment):**
+- Sibling allocated, written with gen=2, mirrorPage=original.
+- Original's mirrorPage is still -1. Reader sees gen=1, mirrorPage=-1
+  → lone page, old data intact. Sibling is a zombie (unreachable). Safe.
+- After atomic store of `mirrorPage` on the original: both linked. Reader
+  compares gens (2 > 1), picks sibling. Write #2 survived. Safe.
+
+**Storage savings:** pages written only once (the common case for data pages
+filled by INSERT and metadata pages created during tree growth) consume
+`page_size + 16` bytes instead of `2 × (page_size + 16)`. For a typical
+For a typical database where 90% of pages are write-once, physical storage is
+dominated by the single-page case rather than mirror pairs, saving significant
+space over always-allocated mirror pairs.
+
+### 3.8 Free-Page Bitmap (Internal)
+
+The StorageBackend maintains a private free-page bitmap. One bit per
+allocatable logical page. `1` = free, `0` = allocated.
+
+**Layout.** The header's `bitmap_dir` array (§3.1) lists bitmap page indices.
+Bitmap pages have no internal linking — the directory is authoritative. Each
+bitmap page holds page_size * 8 bits (a full page_size-byte payload). Bit position `N`
+in page `bitmap_dir[M]` corresponds to logical page `M * page_size * 8 + N`.
+
+**Growth.** When `Allocate` needs a page beyond the current bitmap capacity,
+a new bitmap page is allocated, zero-filled (all bits `0` = allocated), then
+its index is written to the first zero slot in `bitmap_dir`. The new page's
+bits are then set to `1` (free) for the newly covered range.
+
+**Mount.** On mount, `bitmap_dir` is scanned. All referenced bitmap pages are
+read. The allocator is initialized with the free/allocated state.
+
+**GC.** The bitmap chain is rebuilt during the GC copy phase. Unused bitmap
+pages are freed.
+
+The VFS layer never accesses the bitmap directly.
+
+---
+
+## 4. Superblock
+
+The superblock lives at logical page 2. It contains the tree root pointer
+and epoch state — the single entry point for mount and recovery. It is allocated by the VFS layer at logical page 2 via
+`Acquire` after StorageBackend initialization. Like every other page, it
+uses standard lazy mirror (§3.7) — there is no separate superblock alternate
+page or special swap protocol. The VFS writes superblock updates via
+`Write`, which writes to the inactive half and increments generation
+atomically. Mount reads both headers and picks the active half (§3.7).
+
+### 4.1 Layout (page_size-byte payload)
+
+```
+Offset  Size  Field
+──────  ────  ─────
+ 0       8    rootNodeOffset  (int64 — byte offset of tree root node)
+ 8       8    currentEpoch    (int64 — latest epoch counter)
+16       8    epochMapperPage (int64 — page index of first epoch mapper page, 0 if none)
+24       8    poolListHead    (int64 — head of pool page flat list, 0 if none)
+32       8    treeLockState   (int64 — §9.6 bit layout)
+40    8152    reserved
+```
+
+### 4.2 Tree Lock
+
+`treeLockState` gates GC: shared lock for normal operations, exclusive for
+GC. Bit layout and crash recovery semantics are in §9.6.
+
+### 4.3 Mutable Field Persistence
+
+`poolListHead` and `treeLockState` are CAS'd on **in-memory copies**, not
+directly on the on-disk superblock byte array. They are written to disk
+during GC (which rebuilds and flushes the superblock). Between GC cycles:
+
+- `poolListHead` is purely in-memory. On crash, the on-disk value may be
+  stale. This is safe — pool pages are also reachable via VirtualPtrs in
+  PageNode.versionRootPtr entries. GC walks the tree and rebuilds the complete pool list.
+- `treeLockState` is always 0 at flush time (no operations in flight during
+  a flush), so recovery zeros it unconditionally lazy mirror (§3.7).
+
+---
+
 
 ## 5. Metadata Pool
 
@@ -86,10 +442,10 @@ Total: 8192 bytes. 255 usable metadata entries, 1 link entry.
 
 ### 5.3 Pool Allocation
 
-Same algorithm as v1 §5.4: CAS on `poolState` to allocate a free slot. When
-`freeCount == 0`, allocate a new pool page and prepend to the global list via
-`poolListHead` CAS. Individual slots are never freed — GC rebuilds pool pages
-from scratch.
+**Allocation:** CAS on `poolState` (packed `freeCount | firstFreeSlot`) to
+allocate a free slot. When `freeCount == 0`, allocate a new pool page and
+prepend to the global list via `poolListHead` CAS. Individual slots are
+never freed — GC rebuilds pool pages from scratch.
 
 ### 5.4 Name Entries
 
@@ -283,59 +639,328 @@ with `traversalApply = true`. Soft-delete adds a mapping with `traversalApply
 
 ## 9. Concurrency
 
-### 9.1 Pool Slot CAS
+### 9.1 Section Slot CAS
 
-Section slot CAS uses native 64-bit CAS (§7.1 of v1). Same retry loop.
+Section page slots are 8-byte aligned `long` values. Updates use native
+64-bit CAS (`atomic_compare_exchange_strong`):
 
-### 9.2 In-Memory Array Access
+```
+long oldVal, newVal;
+do {
+    oldVal = atomic_load_acquire(ref PageNode.versionRootPtr);
+    // Build version node in pool slot with next = oldVal (current chain head)
+    UpdateVersionNode(newPoolSlot, next: oldVal);
+    newVal = PackVirtualPtr(newPoolPage, newPoolSlot);
+} while (atomic_compare_exchange_strong(ref PageNode.versionRootPtr, newVal, oldVal) != oldVal);
+```
 
-After initial load (under file lock), the in-memory FileContent → PageNode
-array is accessed lock-free. Writes CAS the `versionRootPtr` on the PageNode
-pool entry; no lock on the array itself.
+The `oldVal` read and version node construction MUST be inside the loop:
+a concurrent CAS by another writer changes the chain head between attempts,
+and the new version node's `next` field must point to the currently active
+head at the moment of the successful CAS. The CAS is uncontested under
+per-file serialization (§9.3) but is retained as a correctness invariant
+and for future lock-free operation.
 
-### 9.3 File Locking
+After a successful CAS on PageNode.versionRootPtr, the the pool page must be `Write`'d
+to the dirty cache so the updated slot is persisted on flush. Similarly,
+after an in-place `dataCrc32c` update via `atomic_store_release`, the pool page
+containing that version node must be `Write`'d.
 
-Per-file write serialization (§9.3 of v1). Same mechanism — lock per file
-node before modifying version chains or directory entries for that file.
+Pool allocation (§5.2) uses a per-pool-page CAS on `freeCount`/`firstFreeSlot`.
+
+### 9.2 Directory Node CAS
+
+Directory and file node entry insertions use CAS on the node's `headOffset`
+(8-byte aligned, native CAS). The `oldHead` read and `newEntry.next`
+assignment MUST be inside the retry loop:
+
+```
+long oldHead, newEntryOffset;
+do {
+    oldHead = atomic_load_acquire(ref headOffset);
+    // newEntry already allocated; set its nextOffset = oldHead
+    newEntry.nextOffset = oldHead;
+    newEntryOffset = offset_of(newEntry);
+} while (atomic_compare_exchange_strong(ref headOffset, newEntryOffset, oldHead) != oldHead);
+```
+
+CAS retries are rare — contention is only on creates/deletes in the same
+directory. Data writes go through VersionPage CAS (§9.1) on different
+section chains, with no contention between different files.
+
+### 9.2.1 Overflow Page Memory Fences
+
+When appending a directory or file node overflow page (§5.8), the writer
+must guarantee publication ordering so lock-free readers never observe
+uninitialized memory:
+
+1. Allocate and fully populate the new overflow page buffer.
+2. Compute its CRC32C and commit to the dirty cache via `Write`.
+3. Emit a **release memory barrier** (e.g., `Thread.MemoryBarrier` or a
+   volatile store) before linking the new page to the preceding page's
+   `nextOverflow` or `nextOffset` pointer.
+
+The lock-free reader must use an **acquire load** (`atomic_load_acquire`) when
+following a non-zero `nextOverflow` or cross-page `nextOffset`. This
+ensures all bytes inside the newly linked page are visible before
+dereferencing the pointer.
+
+**In-place CRC32C ordering:** When a writer does an in-place data page write
+(version node already exists for this epoch), it must complete the data page
+write BEFORE updating `dataCrc32c` in the existing version node, using a
+release store (`atomic_store_release`). The lock-free reader must use an acquire
+load (`atomic_load_acquire`) on `dataCrc32c`. If a CRC check fails (possible torn
+read caught mid-write), the reader retries once before falling back to the
+previous version in the chain.
+
+### 9.3 Write Serialization (Per-File Locking)
+
+Each file node has an associated lock. Before any write that modifies the
+file's version chains, version chains, or file node entries, the writer
+acquires the file's lock. The lock is released after all modifications
+for that operation complete.
+
+**Lock acquisition:**
+```
+mutex_t* lock = file_locks_get_or_create(fileNodePage);
+mutex_lock(lock);
+// ... perform writes ...
+mutex_unlock(lock);
+```
+
+- The lock is stored in a thread-safe hash table keyed by file node page
+  index (logical page, §3). Locks are created lazily on first access to a
+  file and never removed.
+- Same-file concurrent writes are serialized: only one thread may modify a
+  given file's data at a time. This prevents races between COW version
+  chain prepends on the same section slot.
+- Different files have independent locks — no contention between writers
+  to different tables or database files.
+- Read operations do NOT acquire the file lock. Reads are lock-free: they
+  traverse the version chain via `atomic_load_acquire` on the PageNode.versionRootPtr and
+  pool `next` pointers. The VersionPage CAS (§9.1) ensures a reader sees
+  either the old chain head (before the write) or the new chain head (after
+  the write) — never a torn intermediate state.
+- Directory operations (create, delete, rename) CAS on the parent directory
+  node's `headOffset` (§9.2). No file lock is involved — directory mutations
+  are serialized by the CAS retry loop itself.
+
+The lock is held for the duration of a single `WriteFile` call — typically
+tens of microseconds — so contention is negligible. Deadlock is impossible
+because each lock protects one file; no operation acquires multiple file
+locks simultaneously.
 
 ### 9.4 Snapshot
 
-`epoch += 2`. Atomic increment. No page writes.
+Snapshot (`epoch += 2`) increments the epoch counter. **Before any write
+at the new epoch proceeds, `currentEpoch` MUST be persisted to the superblock.**
+The superblock page (a single page with lazy mirror) is written and fsync'd
+directly — this is a targeted superblock flush, not a full dirty-cache flush.
+Write the superblock bytes to the inactive physical half via Write,
+then Flush only that page range. One fsync per snapshot. If the process
+crashes before the flush, the on-disk superblock retains the old epoch.
+On remount, the system re-uses that epoch — any previously written snapshot
+data is unreachable via the old superblock pointer, but no corruption occurs
+because the new snapshot data was never committed to disk.
 
-### 9.5 Tree Lock (GC)
+### 9.5 Conflict Detection (Commit)
 
-Same as v1 §9.6.
+Commit scans version chains of all files modified in the snapshot epoch.
+This is a read-only scan of the snapshot's dirty set — a `HashSet<long>`
+of modified FileNode pool entries per epoch, maintained in-memory. On crash
+before commit, the dirty set is lost; the next commit re-scans (safe:
+over-scan finds no false conflicts, under-scan is impossible because
+there's no commit to re-attempt after crash).
+
+### 9.6 Tree Lock (GC Exclusion)
+
+The global `treeLockState` in the superblock (§4.1) gates GC:
+
+- Normal operations (read, write, snapshot, commit) acquire a **shared**
+  read lock. Multiple operations proceed concurrently.
+- GC acquires an **exclusive** write lock. All normal operations block
+  until GC completes and releases the lock.
+
+**Bit layout:**
+
+```
+bit 63           exclusive write lock (1 = GC active)
+bits 32–62       reader count (max ~2 billion concurrent readers)
+bits 0–31        reserved
+```
+
+**Reader acquisition:** before incrementing the reader count, check bit 63.
+If set → GC is active → block (spin or sleep) until bit 63 clears. If clear
+→ CAS-increment bits 32–62. This prevents new readers from starting after GC
+has begun acquiring the write lock.
+
+**Writer acquisition (GC):** CAS-set bit 63. After setting bit 63, spin until
+bits 32–62 reach 0 (all pre-existing readers have exited). Then proceed with
+GC. New reader acquisitions fail while bit 63 is set.
+
+**Crash recovery:** on mount, if bit 63 is set, GC was interrupted — release
+the lock and use the alternate superblock. If bit 63 is clear, unconditionally
+zero bits 32–62 (all prior readers have exited).
 
 ---
 
 ## 10. Garbage Collection
 
-Shadow compaction (same as v1 §10). GC walks the tree, copies surviving
-entries into new pool pages sequentially, drops entries from deleted epochs,
-collapses committed mappings, and atomically swaps the superblock.
+GC is a manual, heavy operation that physically removes entries from deleted
+epochs and frees data pages. **GC does not modify the live tree in-place.**
+It builds a new, cleaned tree and swaps the root atomically via the superblock.
+
+### 10.1 Trigger
+
+Called explicitly after one or more epoch soft-deletes. Not automatic.
+
+### 10.2 Tree Lock
+
+Before starting, GC acquires the exclusive write lock via `treeLockState`
+(layout in §9.6). All normal operations block until GC completes. This
+prevents concurrent modifications during the copy phase.
+
+### 10.3 Process
+
+1. **Acquire exclusive tree lock.**
+2. **Walk the live tree** from the current root. Process ALL node types:
+   - **Section pages:** scan all 1021 slots. Follow each version chain.
+     Drop version nodes belonging to soft-deleted epochs (per epoch mapper
+     with `traversalApply = false`). Collapse committed mappings: if a
+     version's epoch equals a committed snapshot epoch S, adjust to the
+     live head epoch S+1. Build new version chains with surviving nodes,
+     allocated sequentially into new pool pages.
+   - **Directory and file nodes:** scan all linked-list entries. Drop
+     Tombstone entries from deleted epochs. Drop Section/DirChild/FileChild
+     entries from deleted epochs.
+     - **FileSize, epoch S being soft-deleted:** completely DROP all FileSize
+       entries belonging to S. The file falls back to the highest surviving
+       baseline size entry at or below S−1.
+     - **FileSize, epoch S being committed to live head E (E = S+1):** retain
+       the highest FileSize entry within the snapshot range, rewrite its
+       epoch to E, and discard all older FileSize entries.
+     Build new directory/FileNode pool entries with surviving entries.
+   - **Epoch mapper:** rebuild from surviving epochs. Drop mappings for
+     deleted epochs. Collapse committed mappings (remove the mapping entry
+     — the data has already been adjusted in step 2). Write new mapper
+     pages. Free old mapper pages.
+3. **Write new tree pages** — section, pool, directory, file, and mapper
+   pages. Old pages are NOT freed until the swap is complete.
+4. **Write new superblock** with the new root offset, `currentEpoch`
+   page, and new `poolListHead` pointing to the first page of the rebuilt
+   pool list.
+5. **fsync** the new superblock.
+6. **Atomically swap** the superblock pointer (lazy mirror (§3.7)).
+7. **Release tree lock.**
+8. **Free old pages.** Walk the old tree, free all pages not reachable from
+   the new root. Every logical page freed releases its underlying lazy mirror
+   physical pair internally. This phase runs in the background and does not
+   block normal operations.
+
+### 10.4 Crash During GC
+
+If a crash occurs before step 6, the old superblock and old tree remain
+intact. Recovery mounts the old state. The partially-written new tree pages
+are unreachable and will be reclaimed on the next GC cycle. No corruption
+possible.
+
+### 10.5 Page Pinning
+
+Direct page access (§10.5) pins pages. Pin count
+is tracked in an in-memory `thread-safe hash table<long, int>` keyed by page
+index. Pinned pages are skipped during step 8 freeing.
+
+### 10.6 History Removal
+
+GC is a destructive operation from the perspective of historical snapshots.
+After GC completes:
+
+- **Soft-deleted snapshots:** all version nodes, directory entries, and data
+  pages belonging exclusively to that epoch are permanently removed.
+  Reading the deleted epoch returns the base state (what existed before the
+  snapshot was taken).
+- **Committed snapshots:** the mapping is collapsed. Version nodes from the
+  snapshot epoch are relabeled to the live head epoch. Original live-head
+  pages that were overwritten by snapshot variants are freed. Reading the
+  committed epoch returns the live head state.
+
+Callers must ensure no active readers or queries depend on deleted or
+committed snapshot epochs before invoking GC.
 
 ---
 
 ## 11. Crash Consistency
 
-Lazy mirror pages (§3.7 of v1) handle crash safety for all pages including
-pool pages. Mount is O(1) (§11.2 of v1).
+### 11.1 Page Durability
 
----
+All pages — superblock, bitmap, FileNode/DirNode pool entries, pool pages, mapper pages, and
+data pages — are backed by lazy mirror pairs §3.7. A crash
+mid-write leaves the old half intact (generation not updated) or the new
+half intact (CRC32C valid — generation was written last). No torn page is
+ever visible. The reader picks the half with higher generation; if its CRC
+fails, the backup half is used.
+
+This eliminates the need for separate "torn-CAS recovery" for metadata
+pages. The CAS-based updates to directory/file node `headOffset` and section
+slot arrays are crash-safe because the underlying page write is ping-pong
+protected. A CAS that succeeds logically but whose page write is torn on
+disk is recovered by the lazy mirror mechanism on the next read: the backup
+half still holds the pre-CAS state, and the reader sees either the old or
+new logical state — never a torn page.
+
+### 11.2 Mount (No Recovery Needed)
+
+1. Read both superblock pages (page 0 and page 1).
+2. Select the active one: higher PageHeader generation wins (§4.2).
+   Validate its CRC32C. If invalid, try the other page.
+3. Read `rootNodeOffset`, `currentEpoch`, `epochMapperPage`, `poolListHead`.
+4. Read the first epoch mapper page. Validate CRC32C. Walk the chain via
+   `nextMapperPage`. Rebuild in-memory mapper dictionary.
+5. Zero `treeLockState` reader count (in-memory only — the on-disk field
+   is read only to check bit 63 for GC interruption; its reader count is
+   always stale). If bit 63 is set, GC was interrupted; use the alternate
+   superblock per §9.6.
+6. System is ready. Tree pages are validated **lazily** on first access:
+   - Directory/file page: CRC32C on header. If invalid, the last CAS was
+     torn — skip the torn entry, continue from headOffset.
+   - Section page: CRC32C on header. If invalid, treat all slots as 0
+     (never written). Affected data pages become unreachable — reclaimed
+     on next GC.
+   - Pool page: CRC32C on header. If invalid, version nodes in that page
+     are lost. Logical pages whose chain head (the PageNode.versionRootPtr) points
+     into the corrupt pool page appear as never written (slot treated as 0).
+     Logical pages whose chain head is elsewhere but whose chain passes
+     through a node in the corrupt page lose history below the corrupt
+     entry but retain the head — the chain terminates at the corrupt node.
+   - Data page: lazy mirror handles CRC failure on read §3.7. No mount-time
+     scan needed.
+
+All corruption is detected and handled at read time, not mount time.
+Pages that are never read after a crash need no validation.
+
 
 ## 12. Performance Model
 
-Estimated per-operation cost for a single 8KB page write:
+Estimated per-operation cost for a single page_size-byte page write on the hot path.
+Timings assume warm cache — pages resident in the unified page cache
+§3.6, no disk I/O:
 
 | Operation | Cost |
 |---|---|
-| In-memory array lookup (cached segment) | ~0.1 µs |
-| Pool slot allocation | ~0.1 µs |
-| VersionPage CAS | ~0.1 µs |
-| Data page write (lazy mirror) | ~40 µs |
-| **Total per page write** | **~40 µs** |
+| In-memory page array lookup + VirtualPtr decode | ~1 µs |
+| Version chain walk (typical: 2 hops) | ~0.1 µs |
+| Data page write (lazy mirror: a page to inactive half, generation flip, CRC32C) | ~40 µs |
+| Pool slot allocation (per-page CAS) | ~0.1 µs |
+| Section slot CAS | ~0.1 µs |
+| **Total per page write** | **~42 µs** |
 
-Version chains average ~2 entries for a live-head lookup. In-memory arrays
-eliminate chain walks after first access to a segment. Segment granularity
-(1024 pages) bounds initial load cost to ~128 pool reads (~13 KB) per 8 MB
-of file accessed.
+At ~9 page writes per individual statement, predicted throughput is ~2,600
+operations/second. For batched writes where metadata is amortized across
+multiple writes within a transaction, throughput exceeds 80,000 rows/second.
+
+The section array reduces per-page lookup from a linked-list scan to a
+single indexed read (O(1)). Version chains are maintained in descending
+epoch order; the latest live-head version is always the first entry.
+
+Epoch counter is an `int64_t`. At 2 snapshots per second, overflow occurs in
+~146 billion years — practically unbounded.
