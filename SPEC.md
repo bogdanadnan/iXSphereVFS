@@ -417,8 +417,10 @@ during GC (which rebuilds and flushes the superblock). Between GC cycles:
 - `poolListHead` is purely in-memory. On crash, the on-disk value may be
   stale. This is safe — pool pages are also reachable via VirtualPtrs in
   PageNode.versionRootPtr entries. GC walks the tree and rebuilds the complete pool list.
-- `treeLockState` is always 0 at flush time (no operations in flight during
-  a flush), so recovery zeros it unconditionally lazy mirror (§3.7).
+- `treeLockState` is always 0 at flush time under normal operation. If GC
+  sets bit 63 and crashes before completion, the on-disk superblock retains
+  bit 63 from the partially-written GC output. Recovery handles this case
+  (§11.2 step 5).
 
 ---
 
