@@ -99,14 +99,19 @@ pages.
 ```
 Logical page   Content
 ────────────   ───────
-0              StorageBackend header (magic "XVFS" at pageType+flags, config + bitmap directory)
-1..B           Free-bitmap pages (chained via bitmap directory in header)
-B+1            First allocatable page — superblock (lazy mirror pair)
-B+2            Superblock alternate
+0              StorageBackend header page 0 (magic "XVFS", config + first ~1K bitmap_dir entries)
+1              StorageBackend header page 1 (continuation of bitmap_dir array)
+2..B           Free-bitmap pages
+B+1            First allocatable page — superblock
 ...            remaining logical pages
 ```
 
-**Header page layout (page_size-byte payload):**
+The header spans two logical pages (0 and 1). Page 0 holds the config
+fields and the first portion of `bitmap_dir`. Page 1 continues the
+`bitmap_dir` array — it is a pure array of int64 entries with no header
+fields. Both pages are lazy mirror backed (§3.7).
+
+**Header page 0 layout (page_size-byte payload):**
 
 ```
 Offset  Size  Field
@@ -114,11 +119,26 @@ Offset  Size  Field
  0       8    total_pages       (int64 — highest allocated logical page + 1)
  8       8    page_size         (int64 — payload size in bytes, default 8192)
 16      16    reserved
-32     ...   bitmap_dir[]      (array of int64 logical page indices; zero-terminated)
+32     ...   bitmap_dir[]      (array of int64; continued on page 1)
 ```
 
-Config area: 8 + 8 + 16 = 32 bytes. `bitmap_dir` starts at offset 32.
-Entries: (page_size − 32) / 8 = 1,020 at default page_size.
+**Header page 1 layout (page_size-byte payload):**
+
+```
+Offset  Size  Field
+──────  ────  ─────
+ 0     ...   bitmap_dir[]      (continuation of the int64 array from page 0)
+```
+
+The `bitmap_dir` array spans both pages. Entry N lives at:
+- If `N < (page_size − 32) / 8`: page 0, offset `32 + N × 8`
+- Otherwise: page 1, offset `(N − ((page_size − 32) / 8)) × 8`
+
+Total entries: `(2 × page_size − 32) / 8` = 2,044 at default page_size.
+Maximum logical pages: 2,044 × 65,536 = ~134M pages (~1.1 TB logical).
+
+Config area: 32 bytes. `bitmap_dir` starts at offset 32, spans pages 0 and 1.
+Entries: (2 × page_size − 32) / 8 = 2,044 at default page_size.
 
 The header is zero-filled at allocation. `bitmap_dir` is a compact array of
 bitmap page indices starting at offset 32. Since newly allocated pages are
@@ -149,14 +169,15 @@ file exists:
 
 **File does not exist or is empty:**
 1. Create the backing file.
-2. Bootstrap: reserve logical pages 0 (header) and 1 (first bitmap page)
-   directly — `Allocate` cannot be used yet because no bitmap exists. Both
+2. Bootstrap: reserve logical pages 0–3 directly — `Allocate` cannot be used
+   yet because no bitmap exists. Pages 0–1 are the StorageBackend header,
+   page 2 is the first bitmap page, page 3 is the superblock. All four
    are zero-filled and use lazy mirror backing.
-3. Write the header: `total_pages = 2`, `page_size = 8192` (default). Write `1` to `bitmap_dir[0]`.
-4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header)
-   and 1 (bitmap) as allocated (`0`).
-5. Return success. The VFS layer calls `Acquire(2)` for the superblock
-   and initializes it (§4).
+3. Write header page 0: `total_pages = 4`, `page_size = 8192` (default).
+   Write `2` to `bitmap_dir[0]`.
+4. Write bitmap page 2: all bits set to `1` (free). Mark bits 0–3 (header
+   pages, bitmap, superblock) as allocated (`0`).
+5. Return success. The VFS layer initializes the superblock (§4) on page 3.
 
 **File exists:**
 1. Read logical page 0 (header block). Validate: `pageType == 0x5658 &&
@@ -192,7 +213,7 @@ All newly allocated pages are zero-filled before returning.
 of `(page_size − 32) / 8` entries. When all entries are non-zero and no
 further bitmap pages can be allocated, the instance has reached its maximum
 logical page count. `Allocate` returns -1. The maximum at page_size = 8192
-is 1,020 bitmap pages covering 66,846,720 logical pages (~547 GB at default page_size).
+is 2,044 bitmap pages covering 134M logical pages (~1.1 TB at default page_size).
 
 **Thread safety.** `Allocate` is thread-safe. Allocation is zone-based: the
 logical page space is divided into zones of 1M pages. `Allocate` picks a
@@ -359,8 +380,8 @@ The VFS layer never accesses the bitmap directly.
 
 ## 4. Superblock
 
-The superblock lives at logical page 2. It contains the tree root pointer
-and epoch state — the single entry point for mount and recovery. It is allocated by the VFS layer at logical page 2 via
+The superblock lives at logical page 3. It contains the tree root pointer
+and epoch state — the single entry point for mount and recovery. It is allocated by the VFS layer at logical page 3 via
 `Acquire` after StorageBackend initialization. Like every other page, it
 uses standard lazy mirror (§3.7) — there is no separate superblock alternate
 page or special swap protocol. The VFS writes superblock updates via
