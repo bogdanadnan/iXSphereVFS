@@ -453,36 +453,24 @@ A `VirtualPtr` of 0 means null (end of chain or unallocated).
 Pool pages are never allocated at page index 0 (reserved for the
 superblock), so `(poolPage=0, slot=0)` is never a valid reference.
 
-### 5.3 Version Node (24 bytes, stored in Pool pages)
+### 5.3 Version Node (20 bytes)
 
 Each version node records one epoch of one logical page's history.
-They are packed 340 per pool page and linked via `next` VirtualPtrs.
 
 ```
 Offset  Size  Field
 ──────  ────  ─────
  0       4    epoch          (uint32)
- 4       4    dataCrc32c     (uint32 — CRC32C of the data page; 0xFFFFFFFF if unknown)
- 8       8    physicalPage   (int64  — data page index)
-16       8    next           (VirtualPtr — next version in chain, 0 = end)
+ 4       8    physicalPage   (int64)
+12       8    next           (VirtualPtr)
 ```
 
-The `dataCrc32c` field stores the CRC32C of the physical data page's content
-(excluding the page header). The sentinel value 0xFFFFFFFF means "unknown."
-
-On write: compute CRC32C of the new content, store via `atomic_store_release`.
-On read: recompute the data page's CRC32C. If it matches `dataCrc32c`, the
-page is valid. If not, the lazy mirror mechanism §3.8  tries the backup half.
-If both halves fail CRC, fall back to the previous version in the chain.
-
-This provides defense-in-depth against silent corruption (SSD bit rot, memory
-errors) beyond the lazy mirror torn-write protection. The CRC is checked on
-every read, so corruption is detected immediately, not at mount time.
-
-Total: 24 bytes. Available payload in a pool page: page_size − 16 (nextPoolPage
-+ poolState + reserved) = page_size − 16 bytes. ⌊8,176 / 24⌋ = 340 per pool page.
+Total: 20 bytes. Integrity is covered by the data page's own PageHeader
+CRC32C and the lazy mirror mechanism (§3.7). A pool page holds
+⌊(page_size − 16) / 20⌋ = 408 version nodes at default page_size.
 
 ### 5.4 Pool Page
+
 
 An page_size-byte page storing up to 340 version nodes in a contiguous array.
 
@@ -492,7 +480,7 @@ Offset  Size  Field
  0       8    nextPoolPage   (int64 — next pool page in flat list; write-once, immutable after insertion)
  8       4    poolState      (uint32 — packed: bits 0–15 = firstFreeSlot, bits 16–31 = freeCount)
 12       4    reserved       (uint32)
-16    8160    slots[340]     (340 × 24 bytes version nodes; 8,160 + 16 overhead = 8,176 ≤ page_size)
+16    8160    slots[408]     (408 × 20 bytes version nodes)
 ```
 
 `poolState` packs `freeCount` and `firstFreeSlot` into a single 32-bit word
