@@ -270,17 +270,17 @@ void     Flush(int64_t logicalPage);
 If a crash occurs mid-flush, the on-disk state must always be consistent —
 either the pre-flush state or a recoverable partial state.
 
-**Write order (must be followed strictly):**
+**Write order (enforced by the VFS layer, not the StorageBackend):**
 
-1. **Data pages.** User file content. Nothing references these except
-   VersionPage entries in pool pages.
-2. **Pool pages.** All metadata — VersionPage, PageNode, FileContent,
-   DirContent, DirNode, FileNode, NameSlot, and mapper entries. A single
-   pool page contains a mix of these types. Data pages must be written
-   first (VersionPage.dataPage references them); pool pages must precede
-   the superblock (rootNodeOffset, poolListHead reference them).
-3. **Bitmap pages.** Free-page bitmap state.
-4. **Superblock.** Written last. This is the atomic commit point.
+The StorageBackend is type-agnostic — it does not know which pages are data,
+pool, bitmap, or superblock. The VFS layer enforces ordering by calling
+`Flush` in the correct sequence:
+
+1. **Data pages.** Flush all dirty data pages.
+2. **Pool pages.** Flush all dirty metadata pages.
+3. **Bitmap pages.** Flush dirty bitmap pages.
+4. **Superblock.** Flush the superblock with fsync. This is the atomic commit
+   point.
 
 **Crash during flush:**
 
