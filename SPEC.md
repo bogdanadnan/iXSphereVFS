@@ -261,13 +261,13 @@ void     Flush(int64_t logicalPage);
   Marks flushed pages clean; clean pages remain cached.
 - **Write-back:** the StorageBackend may proactively write dirty pages to
   disk (without fsync) when the dirty page count exceeds a configurable
-  threshold. Write-back follows the same ordering as Flush (§3.5) to
-  maintain on-disk consistency. Only pages belonging to committed epochs
-  (epoch ≤ on-disk `currentEpoch`) are eligible for write-back; pages with
-  uncommitted snapshot data are skipped — they must wait for an explicit
-  `Flush` at commit. This prevents stale uncommitted metadata from surviving
-  a crash and being misinterpreted as valid on remount when the epoch
-  counter rolls back to the last durable value.
+  threshold. Only pages at flush priority 0 (data pages) are eligible for
+  write-back — they contain user content with no epoch-tagged metadata.
+  Pool pages (priority 1), bitmap pages (priority 2), and the superblock
+  (priority 3) are never write-backed; they wait for an explicit `Flush`.
+  This prevents stale uncommitted metadata from surviving a crash and being
+  misinterpreted as valid after an epoch counter rollback. Write-back
+  follows the same ordering as Flush (§3.5) and does not mark pages clean.
 
 ### 3.5 Flush Ordering
 
