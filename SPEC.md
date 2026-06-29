@@ -810,26 +810,23 @@ for that operation complete.
 
 **Lock acquisition:**
 ```
-mutex_t* lock = file_locks_get_or_create(fileNodePage);
+mutex_t* lock = file_locks_get_or_create(fileNodeId, epoch);
 mutex_lock(lock);
 // ... perform writes ...
 mutex_unlock(lock);
 ```
 
-- The lock is stored in a thread-safe hash table keyed by file nodeId (§6.3). Locks are created lazily on first access to a
-  file and never removed.
-- Same-file concurrent writes are serialized: only one thread may modify a
-  given file's data at a time. This prevents races between COW version
-  chain prepends on the same section slot.
-- Different files have independent locks — no contention between writers
-  to different tables or database files.
-- Read operations do NOT acquire the file lock. Reads are lock-free: they
-  traverse the version chain via `atomic_load_acquire` on the PageNode.versionRootPtr and
-  pool `next` pointers. The VersionPage CAS (§9.1) ensures a reader sees
-  either the old chain head (before the write) or the new chain head (after
-  the write) — never a torn intermediate state.
+- The lock is stored in a thread-safe hash table keyed by `(nodeId, epoch)`.
+  Locks are created lazily and never removed.
+- Same-epoch concurrent writes to the same file are serialized — this
+  prevents races when multiple threads write to the same file at the same
+  epoch. Cross-epoch writes to the same file proceed concurrently: they
+  operate on independent version chains and the CAS on `versionRootPtr`
+  resolves ordering.
+- Different files have independent locks regardless of epoch.
+- Read operations do NOT acquire any lock. Reads are lock-free.
 - Directory operations (create, delete, rename) CAS on the parent directory
-  node's `headOffset` (§9.2). No file lock is involved — directory mutations
+  node's `headPtr` (§9.2). No file lock is involved — directory mutations
   are serialized by the CAS retry loop itself.
 
 The lock is held for the duration of a single `WriteFile` call — typically
