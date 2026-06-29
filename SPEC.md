@@ -237,7 +237,7 @@ validating CRC32C on the payload on every I/O operation.
 
 ```
 uint8_t* Read(int64_t logicalPage);
-void     Write(int64_t logicalPage, uint8_t* data);
+void     Write(int64_t logicalPage, uint8_t* data, int priority);
 void     Flush(int64_t logicalPage);
 ```
 
@@ -245,11 +245,11 @@ void     Flush(int64_t logicalPage);
   the unified page cache (§3.6) first. Returns a pointer to a page_size-byte
   buffer containing the payload only. Returns NULL if the page has never
   been written.
-- `Write`: accepts a page_size-byte payload buffer. The StorageBackend
-  handles the lazy mirror lifecycle (§3.7): on first write, writes to the
-  page directly; on second write, allocates a mirror sibling and links it;
-  on subsequent writes, alternates between the two pages. Marks the page
-  dirty but does not write to disk.
+- `Write(logicalPage, data, priority)`: accepts a page_size-byte payload
+  buffer and a flush priority (0–3, lower = flushed first). Priority 0 =
+  data pages, 1 = pool pages, 2 = bitmap pages, 3 = superblock. The
+  StorageBackend maintains per-priority dirty lists. Handles the lazy
+  mirror lifecycle (§3.7). Marks the page dirty but does not write to disk.
 - `Flush(logicalPage)`: if `logicalPage < 0`, writes all dirty pages to the
   backing file and fsyncs — the durability barrier, called at commit
   boundaries. If a specific page index is given, writes only that page
@@ -266,21 +266,18 @@ void     Flush(int64_t logicalPage);
 
 ### 3.5 Flush Ordering
 
-`Flush` writes dirty pages in a specific order to guarantee crash safety.
-If a crash occurs mid-flush, the on-disk state must always be consistent —
-either the pre-flush state or a recoverable partial state.
+`Flush` writes dirty pages in priority order (0 first, 3 last) — data pages
+before pool pages, bitmap pages before the superblock. Within each priority,
+write order is unspecified (pages are independent). After writing, `fsync`
+is called if `logicalPage < 0`. The priority is specified at `Write` time
+by the VFS layer based on the page type being written.
 
-**Write order (enforced by the VFS layer, not the StorageBackend):**
+**Write order (enforced by the StorageBackend via flush priority):**
 
-The StorageBackend is type-agnostic — it does not know which pages are data,
-pool, bitmap, or superblock. The VFS layer enforces ordering by calling
-`Flush` in the correct sequence:
-
-1. **Data pages.** Flush all dirty data pages.
-2. **Pool pages.** Flush all dirty metadata pages.
-3. **Bitmap pages.** Flush dirty bitmap pages.
-4. **Superblock.** Flush the superblock with fsync. This is the atomic commit
-   point.
+1. **Data pages** (priority 0). User file content.
+2. **Pool pages** (priority 1). All metadata.
+3. **Bitmap pages** (priority 2). Free-page bitmap state.
+4. **Superblock** (priority 3). Written last. This is the atomic commit point.
 
 **Crash during flush:**
 
