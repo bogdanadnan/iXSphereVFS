@@ -546,12 +546,12 @@ Offset  Size  Field
  4       4    nodeId         (uint32)
  8       8    headPtr        (VirtualPtr — first FileContent entry)
 16       8    sizePtr        (VirtualPtr — first FileSize entry, 0 if none)
-24       8    reserved
+24       8    createdAt      (int64 — Unix timestamp, set once at creation)
 ```
 
-`sizePtr` points to a separate chain of `FileSize` entries; the `headPtr`
-chain holds only `FileContent` entries. No type mixing — each chain serves
-one purpose.
+`createdAt` is immutable — written once when the file is created, never
+modified. `sizePtr` points to a separate chain of `FileSize` entries; the
+`headPtr` chain holds only `FileContent` entries.
 
 Same layout as DirNode, distinct type. FileNodes have no names — the name
 is in the parent directory's DirContent.
@@ -625,15 +625,16 @@ mechanism.
 Offset  Size  Field
 ──────  ────  ─────
  0       4    epoch          (uint32)
- 4       4    reserved
- 8       8    fileSize       (int64 — file size in bytes)
-16       8    nextPtr        (VirtualPtr — next FileSize entry)
-24       8    reserved
+ 4       8    modifiedAt     (int64 — Unix timestamp of this size change)
+12       8    fileSize       (int64 — file size in bytes)
+20       8    nextPtr        (VirtualPtr — next FileSize entry)
+28       4    reserved
 ```
 
-FileSize entries are epoch-keyed and hang off the FileNode's `sizePtr` chain
-(separate from the `headPtr` FileContent chain). Stat() resolves
-the file size via the read rule (§7.1) on the `sizePtr` chain.
+FileSize entries are epoch-keyed and hang off the FileNode's `sizePtr` chain.
+Each entry records the file size at a given epoch plus the modification
+timestamp. `stat()` resolves the file size and modification time via the
+read rule (§7.1) on the `sizePtr` chain.
 ## 7. Tree Traversal
 
 ### 7.1 Read Rule
