@@ -1018,8 +1018,9 @@ Pages that are never read after a crash need no validation.
 
 ## 12. Filesystem API
 
-The VFS exposes a POSIX-like interface to callers. All operations are
-tagged with an epoch for snapshot isolation.
+The VFS exposes a POSIX-like interface to callers. All operations accept an
+optional `epoch` parameter: passing 0 or -1 uses the current live head epoch.
+Passing a specific epoch provides snapshot isolation for that point in time.
 
 ### 12.1 Instance
 
