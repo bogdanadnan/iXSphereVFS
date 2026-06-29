@@ -123,8 +123,7 @@ Offset  Size  Field
 ──────  ────  ─────
  0       8    total_pages       (int64 — highest allocated logical page + 1)
  8       8    page_size         (int64 — payload size in bytes, default 8192)
-16       8    first_data_page   (int64 — logical page index of first allocatable page)
-24       8    flags             (int64 — reserved for future use)
+16       8    flags             (int64 — reserved for future use)
 32      32    reserved
 64     ...   bitmap_dir[]      (array of int64 logical page indices; zero-terminated)
 ```
@@ -162,7 +161,7 @@ file exists:
    directly — `Allocate` cannot be used yet because no bitmap exists. Both
    are zero-filled and use lazy mirror backing.
 3. Write the header: `total_pages = 2`, `page_size = 8192` (default),
-   `first_data_page = 2`, `flags = 0`. Write `1` to `bitmap_dir[0]`.
+   `flags = 0`. Write `1` to `bitmap_dir[0]`.
 4. Write bitmap page 1: all bits set to `1` (free). Mark bits 0 (header)
    and 1 (bitmap) as allocated (`0`).
 5. Return success. The VFS layer calls `Acquire(2)` for the superblock
@@ -201,7 +200,7 @@ All newly allocated pages are zero-filled before returning.
 of `(page_size − 64) / 8` entries. When all entries are non-zero and no
 further bitmap pages can be allocated, the instance has reached its maximum
 logical page count. `Allocate` returns -1. The maximum at page_size = 8192
-is 1,016 bitmap pages covering 66,570,496 logical pages (~545 GB).
+is 1,017 bitmap pages covering 66,570,496 logical pages (~545 GB).
 
 **Thread safety.** `Allocate` is thread-safe. Allocation is zone-based: the
 logical page space is divided into zones of 1M pages. `Allocate` picks a
