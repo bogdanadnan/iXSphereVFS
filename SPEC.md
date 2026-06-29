@@ -266,10 +266,13 @@ void     Flush(int64_t logicalPage);
 ### 3.5 Flush Ordering
 
 The StorageBackend reads the flush priority from each dirty page's
-PageHeader `flags` field (§2.1). `Flush(-1)` writes pages in priority
-order: 0 (data) first, 3 (superblock) last. Within each priority, write
-order is unspecified. The VFS sets the priority in `flags` at allocation
-time; the StorageBackend never modifies it.
+PageHeader `flags` field (§2.1). Logical pages 0 and 1 (the StorageBackend
+header) are always flushed at priority 3 (superblock-level) regardless of
+their `flags` value — the magic bytes in `flags` are only validated at
+mount, not during flush. For all other pages, `Flush(-1)` writes in
+priority order: 0 (data) first, 3 (superblock) last. Within each priority,
+write order is unspecified. The VFS sets the priority in `flags` at
+allocation time; the StorageBackend never modifies it.
 
 **Write order (enforced by the StorageBackend via flush priority):**
 
