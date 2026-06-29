@@ -1107,7 +1107,7 @@ int       vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch);
 
 - `vfs_lock`/`vfs_unlock`: explicit per-file, per-epoch locking. Passing
   `epoch = 0` acquires the **global** file lock — all writes to this file
-  are serialized regardless of epoch (SQLite compatibility). Passing a
+  are serialized regardless of epoch. Passing a
   specific epoch acquires the per-epoch lock — only same-epoch writes block;
   cross-epoch writes proceed concurrently. Internal write operations
   acquire the per-epoch lock automatically. Reads remain lock-free.
