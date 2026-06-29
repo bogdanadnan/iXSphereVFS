@@ -526,8 +526,13 @@ Offset  Size  Field
  2       2    reserved
  4       4    nodeId         (uint32)
  8       8    headPtr        (VirtualPtr — first FileContent entry)
-16      16    reserved
+16       8    sizePtr        (VirtualPtr — first FileSize entry, 0 if none)
+24       8    reserved
 ```
+
+`sizePtr` points to a separate chain of `FileSize` entries; the `headPtr`
+chain holds only `FileContent` entries. No type mixing — each chain serves
+one purpose.
 
 Same layout as DirNode, distinct type. FileNodes have no names — the name
 is in the parent directory's DirContent.
@@ -607,11 +612,9 @@ Offset  Size  Field
 24       8    reserved
 ```
 
-FileSize entries are epoch-keyed and hang off the FileNode's `headPtr` chain
-alongside FileContent entries. They are distinguished from FileContent by
-a type tag in bytes 0–1 (type 0x05, stored in the same position as the
-implicit type of FileContent/PageNode/VersionPage entries). Stat() resolves
-the file size via the read rule (§7.1) on this chain.
+FileSize entries are epoch-keyed and hang off the FileNode's `sizePtr` chain
+(separate from the `headPtr` FileContent chain). Stat() resolves
+the file size via the read rule (§7.1) on the `sizePtr` chain.
 ## 7. Tree Traversal
 
 ### 7.1 Read Rule
