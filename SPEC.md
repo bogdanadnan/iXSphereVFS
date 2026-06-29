@@ -558,7 +558,7 @@ VirtualPtr.
   that a new section was allocated. `childOffset` = page index of the section
   page. `nameLen` repurposed as `sectionIdx` (0, 1, 2...). type = 0x04.
 - **Section node:** fixed array of 1021 VirtualPtrs (§5.5). No linked list.
-- **Pool node:** fixed array of 340 version nodes (§5.4). Global, shared by
+- **Pool node:** fixed array of 408 version nodes (§5.4). Global, shared by
   all sections.
 
 Entry types (directory/file nodes only — section and pool nodes use
@@ -585,28 +585,43 @@ pg20 — docs (dir):
 pg30 — readme (file):                ← 2-page file, section 0
   [epoch=0, Section, sec=0, child=pg70]
 
-pg40 — rpt.txt (file):               ← single-page file, section 0
-  [epoch=0, Section, sec=0, child=pg71]
+pg40 — big.db (file):                ← 1,500-page file, two sections
+  [epoch=0, Section, sec=0, child=pg71]   ← pages 0–1020
+  [epoch=0, Section, sec=1, child=pg72]   ← pages 1021–1499
 
-pg70 — section 0 of readme:         pg71 — section 0 of rpt.txt:
-  slots[0] → 50:0                     slots[0] → 50:2
-  slots[1] → 50:1
+pg50 — rpt.txt (file):               ← single-page file
+  [epoch=0, Section, sec=0, child=pg73]
+
+pg70 — section 0 of readme:          pg71 — section 0 of big.db:
+  slots[0] → 50:0                      slots[0] → 50:2
+  slots[1] → 50:1                      slots[1] → 50:3
+                                       ... 1019 more slots ...
+
+pg72 — section 1 of big.db:          pg73 — section 0 of rpt.txt:
+  slots[0] → 50:4                      slots[0] → 50:5
+  ... 478 more slots ...
 
 Pool page 50:
   [0] {epoch=4, phys=301, next=0}
-  [1] {epoch=2, phys=200, next=50:3}
-  [2] {epoch=0, phys=500, next=0}
-  [3] {epoch=0, phys=100, next=0}
+  [1] {epoch=2, phys=200, next=50:6}
+  [2] {epoch=0, phys=100, next=0}
+  [3] {epoch=0, phys=101, next=0}
+  [4] {epoch=0, phys=500, next=0}
+  [5] {epoch=0, phys=600, next=0}
+  [6] {epoch=0, phys=100, next=0}
+  ...
 ```
 
-Read `readme` page 0 at epoch 4: `section[0]` → pool 50 slot 0 → version
-{epoch=4, phys=301}. Epoch matches exactly. ✓
+Read `big.db` page 0 at epoch 4: file node → sec=0 → pg71 → slot[0] → 50:2
+→ version {epoch=4, phys=301}. ✓
 
-Read `readme` page 1 at epoch 3: `section[1]` → pool 50 slot 1 → version
-{epoch=2}. Epoch 2 is the highest even ≤ 3. phys=200. ✓
-(If a next entry existed with a lower even epoch, it is ignored — first
-match with a valid epoch wins, because the chain is maintained in descending
-epoch order.)
+Read `big.db` page 1021 at epoch 0: file node → sec=1 → pg72 → slot[0] → 50:4
+→ version {epoch=0, phys=500}. ✓
+
+Section 0 covers 1,021 pages (slots 0–1020). Section 1 covers the next 1,021
+pages (slots 0–1020, starting at logical page 1021). The file node links both
+under the same epoch, each with a distinct `sectionIdx`. As the file grows,
+new sections are appended.
 
 ### 5.8 Directory Node Header & Page Chaining
 
