@@ -22,7 +22,7 @@ directories, or file nodes.
 - **O(1) snapshots.** Increment a counter. No page writes.
 - **Crash-safe.** Lazy mirror pages (§3) + pool CAS. Mount is O(1).
 - **Conditional COW.** First write per epoch = copy; same-epoch = in-place.
-- **In-memory arrays.** Section/page chains are loaded into arrays on first
+- **In-memory arrays.** Page chains are loaded into in-memory arrays on first
   access for O(1) subsequent lookups.
 
 ---
@@ -62,10 +62,9 @@ to form the 4-byte "XVFS" magic in little-endian byte order.
 Type   Name        Purpose
 ────   ────        ───────
 0x00   Superblock  Tree root and epoch state (§4)
-0x01   Bitmap      Free-page bitmap page §3.7
-0x03   PoolPage    Version node pool (§5.2)
-0x04   MapperPage  Epoch mapper (§8)
-0x05   Data        User file content
+0x01   Bitmap      Free-page bitmap page (§3.7)
+0x02   PoolPage    Metadata pool page (§5.2) — all VFS metadata
+0x03   Data        User file content
 ```
 
 The StorageBackend header page (logical page 0) uses a special pageType value
@@ -252,15 +251,15 @@ either the pre-flush state or a recoverable partial state.
 
 **Write order (must be followed strictly):**
 
-1. **Data pages.** User file content — the leaves of the dependency tree.
-   Nothing references these except version nodes.
-2. **Pool pages.** Version nodes that reference data pages via `physicalPage`.
-3. **Section pages.** Slot arrays that reference pool pages via VirtualPtr.
-4. **Pool entries (directory/file content).** Entries that reference section pages,
-   child nodes, and FileSize entries.
-5. **Mapper pages.** Epoch mapping entries.
-6. **Bitmap pages.** Free-page bitmap state.
-7. **Superblock.** Written last. This is the atomic commit point.
+1. **Data pages.** User file content. Nothing references these except
+   VersionPage entries in pool pages.
+2. **Pool pages.** All metadata — VersionPage, PageNode, FileContent,
+   DirContent, DirNode, FileNode, NameSlot, and mapper entries. A single
+   pool page contains a mix of these types. Data pages must be written
+   first (VersionPage.dataPage references them); pool pages must precede
+   the superblock (rootNodeOffset, poolListHead reference them).
+3. **Bitmap pages.** Free-page bitmap state.
+4. **Superblock.** Written last. This is the atomic commit point.
 
 **Crash during flush:**
 
@@ -965,8 +964,8 @@ new logical state — never a torn page.
 6. System is ready. Tree pages are validated **lazily** on first access:
    - Directory/file page: CRC32C on header. If invalid, the last CAS was
      torn — skip the torn entry, continue from headOffset.
-   - Section page: CRC32C on header. If invalid, treat all slots as 0
-     (never written). Affected data pages become unreachable — reclaimed
+   - Pool page: CRC32C on header. If invalid, all entries in that page are treated as unallocated
+     (never written). — reclaimed
      on next GC.
    - Pool page: CRC32C on header. If invalid, version nodes in that page
      are lost. Logical pages whose chain head (the PageNode.versionRootPtr) points
@@ -993,14 +992,14 @@ Timings assume warm cache — pages resident in the unified page cache
 | Version chain walk (typical: 2 hops) | ~0.1 µs |
 | Data page write (lazy mirror: a page to inactive half, generation flip, CRC32C) | ~40 µs |
 | Pool slot allocation (per-page CAS) | ~0.1 µs |
-| Section slot CAS | ~0.1 µs |
+| Version chain CAS | ~0.1 µs |
 | **Total per page write** | **~42 µs** |
 
 At ~9 page writes per individual statement, predicted throughput is ~2,600
 operations/second. For batched writes where metadata is amortized across
 multiple writes within a transaction, throughput scales linearly with batch size.
 
-The section array reduces per-page lookup from a linked-list scan to a
+The in-memory page array reduces per-page lookup from a chain walk to a
 single indexed read (O(1)). Version chains are maintained in descending
 epoch order; the latest live-head version is always the first entry.
 
