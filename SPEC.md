@@ -262,11 +262,12 @@ void     Flush(int64_t logicalPage);
 - **Write-back:** the StorageBackend may proactively write dirty pages to
   disk (without fsync) when the dirty page count exceeds a configurable
   threshold. Write-back follows the same ordering as Flush (§3.5) to
-  maintain on-disk consistency. It is non-blocking and does not mark pages
-  clean — it only reduces the data loss window between explicit Flush
-  calls. Crashes between write-back and Flush may lose un-fsynced data
-  but cannot corrupt pages (ordering is preserved; lazy mirror protects
-  individual writes).
+  maintain on-disk consistency. Only pages belonging to committed epochs
+  (epoch ≤ on-disk `currentEpoch`) are eligible for write-back; pages with
+  uncommitted snapshot data are skipped — they must wait for an explicit
+  `Flush` at commit. This prevents stale uncommitted metadata from surviving
+  a crash and being misinterpreted as valid on remount when the epoch
+  counter rolls back to the last durable value.
 
 ### 3.5 Flush Ordering
 
@@ -495,7 +496,10 @@ On a freshly allocated pool page: `slot[i].bytes[0:2] = i+1` for `i < 254`,
 
 **Allocation:** CAS on `poolState` (packed `freeCount | firstFreeSlot`) to
 allocate a free slot. When `freeCount == 0`, allocate a new pool page and
-prepend to the global list via `poolListHead` CAS. If the CAS fails
+immediately `Write` its initialized header (generation=1, mirrorPage=-1)
+before any slots are used — this transitions it out of the single-copy risk
+window before it holds multi-file metadata. Then prepend to the global list
+via `poolListHead` CAS. If the CAS fails
 (another thread prepended first), the losing thread retries by prepending
 its allocated page to the updated `poolListHead` — the page is valid and
 must not be abandoned. Individual slots are never freed — GC rebuilds pool
@@ -612,9 +616,10 @@ FileContent (higher logical page range). On first access, the VFS walks this
 chain and builds an in-memory array of `VirtualPtr` values pointing to each
 PageNode's `versionRootPtr` slot. Each access resolves the `VirtualPtr`
 through the unified page cache (§3.6) to get the live `versionRootPtr` value.
-If a pool page is evicted from the cache, the `VirtualPtr` resolves to NULL
-and the array entry is lazily rebuilt from disk. This prevents use-after-free
-on evicted cache buffers.
+If the pool page is not resident in the cache, the cache fetches it from
+disk transparently — the `VirtualPtr` remains valid and the array entry is
+never rebuilt. Only if a `VirtualPtr` points to a pool page that no longer
+exists (GC reclaimed it) does the array entry need lazy reconstruction.
 
 A reader at any epoch walks the full FileContent chain, including segments
 added in later epochs. This is safe: VersionPage epoch filtering (§7.2) makes
