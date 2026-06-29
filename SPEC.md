@@ -600,7 +600,7 @@ writes CAS the `versionRootPtr`. The array persists until the file is closed
 or the pool page backing the array entries is evicted.
 
 A reader at any epoch walks the full FileContent chain, including segments
-added in later epochs. This is safe: VersionPage epoch filtering (§7.1) makes
+added in later epochs. This is safe: VersionPage epoch filtering (§7.2) makes
 pages in future segments resolve as "never written." FileSize entries bound
 which segments are logically valid for a given epoch.
 
@@ -653,10 +653,22 @@ Offset  Size  Field
 FileSize entries are epoch-keyed and hang off the FileNode's `sizePtr` chain.
 Each entry records the file size at a given epoch plus the modification
 timestamp. `stat()` resolves the file size and modification time via the
-read rule (§7.1) on the `sizePtr` chain.
+read rule (§7.2) on the `sizePtr` chain.
 ## 7. Tree Traversal
 
-### 7.1 Read Rule
+### 7.1 Valid Epochs
+
+- **Reads:** any epoch — even (live head, committed base) or odd (active
+  snapshot). The read rule (§7.2) resolves the correct version chain entry.
+- **Writes:** restricted to **current live head** (the highest even epoch)
+  and **active snapshots** (odd epochs that have not been committed or
+  soft-deleted). Writing to a committed or deleted snapshot is an error.
+  Writing to an older even epoch is an error — only the current live head
+  is writable among even epochs.
+- A snapshot becomes inactive when `vfs_commit` or `vfs_delete_snapshot`
+  is called. Epoch mapping entries (§8) track which snapshots are active.
+
+### 7.2 Read Rule
 
 To resolve a query at epoch R:
 1. Apply epoch mapper (§8): `R' = mapper.resolve(R)`.
@@ -669,7 +681,7 @@ To resolve a query at epoch R:
 (Chains are descending by epoch, so the first match at step 3 or 5 is the
 most recent committed state at or before R'.)
 
-### 7.2 File Read
+### 7.3 File Read
 
 To read logical page P of file F at epoch E:
 1. Resolve FileNode → walk FileContent chain → find the segment containing P.
@@ -680,7 +692,7 @@ To read logical page P of file F at epoch E:
 After first access to a segment, the FileContent → PageNode chain is cached
 in an in-memory array. Subsequent reads are `array[P_in_segment] → versionRootPtr`.
 
-### 7.3 File Write
+### 7.4 File Write
 
 To write to logical page P of file F at epoch E:
 1. Resolve to the PageNode (via in-memory array or chain walk).
@@ -693,7 +705,7 @@ To write to logical page P of file F at epoch E:
    - Allocate new pool slot for VersionPage {epoch=E, dataPage=Q, nextPtr=oldHead}.
    - CAS `PageNode.versionRootPtr` to the new pool slot.
 
-### 7.4 Directory Operations
+### 7.5 Directory Operations
 
 - **Create:** allocate DirNode or FileNode, create DirContent in parent with
   `namePtr` pointing to a new NameEntry, `childPtr` to the new node.
