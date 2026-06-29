@@ -886,30 +886,24 @@ prevents concurrent modifications during the copy phase.
 
 1. **Acquire exclusive tree lock.**
 2. **Walk the live tree** from the current root. Process ALL node types:
-   - **Version chains:** walk PageNode entries within each FileContent segment. Follow each version chain.
-     Drop version nodes belonging to soft-deleted epochs (per epoch mapper
+   - **Version chains:** walk PageNode entries within each FileContent segment.
+     Drop VersionPage entries belonging to soft-deleted epochs (per epoch mapper
      with `traversalApply = false`). Collapse committed mappings: if a
      version's epoch equals a committed snapshot epoch S, adjust to the
      live head epoch S+1. Build new version chains with surviving nodes,
      allocated sequentially into new pool pages.
-   - **Directory and file nodes:** scan all linked-list entries. Drop
-     Tombstone entries from deleted epochs. Drop Section/DirChild/FileChild
-     entries from deleted epochs.
-     - **FileSize, epoch S being soft-deleted:** completely DROP all FileSize
-       entries belonging to S. The file falls back to the highest surviving
-       baseline size entry at or below S−1.
-     - **FileSize, epoch S being committed to live head E (E = S+1):** retain
-       the highest FileSize entry within the snapshot range, rewrite its
-       epoch to E, and discard all older FileSize entries.
-     Build new directory/FileNode pool entries with surviving entries.
+   - **Directory entries:** scan DirContent chains per directory. Drop entries
+     where the entry's epoch belongs to a deleted epoch AND no surviving
+     entry for the same `childNodeId` exists. For deletions (`namePtr = 0`)
+     in deleted epochs, drop the entry.
+   - **FileSize:** drop entries from soft-deleted epochs (file falls back to
+     baseline). Retain and rewrite entries from committed epochs. Drop
+     FileContent segments beyond the highest surviving FileSize bound.
    - **Epoch mapper:** rebuild from surviving epochs. Drop mappings for
-     deleted epochs. Collapse committed mappings (remove the mapping entry
-     — the data has already been adjusted in step 2). Write new mapper
-     pages. Free old mapper pages.
-3. **Write new tree pages** — pool pages and data pages
-   pages. Old pages are NOT freed until the swap is complete.
-4. **Write new superblock** with the new root offset, `currentEpoch`, and new `poolListHead` pointing to the first page of the rebuilt
-   pool list.
+     deleted epochs. Collapse committed mappings. Write new mapper entries
+     into new pool pages.
+3. **Write new tree pages** — pool pages and data pages. Old pages are NOT
+   freed until the swap is complete.
 4. **Write new superblock** with the new root offset, `currentEpoch`,
    and new `poolListHead`. fsync.
 5. **Atomically swap** the superblock pointer (lazy mirror (§3.7)).
@@ -930,7 +924,7 @@ possible.
 
 Direct page access (external API, pins pages for the duration of a direct I/O operation) pins pages. Pin count
 is tracked in an in-memory `thread-safe hash table<long, int>` keyed by page
-index. Pinned pages are skipped during step 8 freeing.
+index. Pinned pages are skipped during step 7 freeing.
 
 ### 10.6 History Removal
 
