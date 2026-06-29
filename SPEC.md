@@ -184,9 +184,10 @@ void    Free(int64_t logicalPage);
 ```
 
 - `Allocate(count)`: reserves `count` contiguous logical pages. Returns the
-  first logical page index, or -1 if no space. Each page starts with
-  `mirrorPage = -1` (no mirror sibling); a mirror is allocated lazily on
-  the second write (§3.7).
+  first logical page index, or -1 if no `count` contiguous pages exist.
+  Multi-page allocations are rare (most callers use `Allocate(1)` or
+  `Acquire`). If a contiguous block cannot be found, the caller may fall
+  back to individual `Acquire` calls for each needed page.
 - `Acquire(logicalPage)`: atomically checks whether `logicalPage` is
   free. If yes, marks it allocated and returns true. If already allocated,
   returns false. This is a CAS on the bitmap bit — no scanning, O(1).
