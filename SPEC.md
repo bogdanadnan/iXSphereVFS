@@ -130,6 +130,10 @@ Offset  Size  Field
  0     ...   bitmap_dir[]      (continuation of the int64 array from page 0)
 ```
 
+Page 1 has the standard 16-byte PageHeader physically; its payload contains
+no configuration fields — it is a pure continuation of the `bitmap_dir`
+array. The 16-byte header is transparent to the array indexing.
+
 The `bitmap_dir` array spans both pages. Entry N lives at:
 - If `N < (page_size − 32) / 8`: page 0, offset `32 + N × 8`
 - Otherwise: page 1, offset `(N − ((page_size − 32) / 8)) × 8`
@@ -344,6 +348,13 @@ Page: [PageHeader: 16 bytes | payload: page_size bytes]
   → lone page, old data intact. Sibling is a zombie (unreachable). Safe.
 - After atomic store of `mirrorPage` on the original: both linked. Reader
   compares gens (2 > 1), picks sibling. Write #2 survived. Safe.
+
+**Single-copy risk:** before a mirror exists, the page has only one physical
+copy. A crash during any write to a single-copy page may corrupt that page.
+This is inherent to the lazy-mirror model and is the same risk as writing
+to any file before its first mirror allocation. Once the mirror exists,
+subsequent writes are crash-safe. The risk window is exactly one write per
+page — second write onward is protected.
 
 **Shared pool page writes:** pool pages contain entries from multiple files.
 Writing to one file may update a slot on a page that also hosts metadata
@@ -593,11 +604,12 @@ hardcoded and not stored on disk. `pageRootPtr` points to the first `PageNode` f
 `FileContent` entries are NOT epoch-keyed — they form a permanent linked list
 of segments that grows as the file expands. The `nextPtr` links to the next
 FileContent (higher logical page range). On first access, the VFS walks this
-chain and builds an in-memory array of pointers to the live `versionRootPtr`
-fields within the pool page buffers. This ensures reads always see the
-current version chain head via `atomic_load_acquire`, even after concurrent
-writes CAS the `versionRootPtr`. The array persists until the file is closed
-or the pool page backing the array entries is evicted.
+chain and builds an in-memory array of `VirtualPtr` values pointing to each
+PageNode's `versionRootPtr` slot. Each access resolves the `VirtualPtr`
+through the unified page cache (§3.6) to get the live `versionRootPtr` value.
+If a pool page is evicted from the cache, the `VirtualPtr` resolves to NULL
+and the array entry is lazily rebuilt from disk. This prevents use-after-free
+on evicted cache buffers.
 
 A reader at any epoch walks the full FileContent chain, including segments
 added in later epochs. This is safe: VersionPage epoch filtering (§7.2) makes
@@ -893,16 +905,12 @@ locks simultaneously.
 
 ### 9.4 Snapshot
 
-Snapshot (`epoch += 2`) increments the epoch counter. **Before any write
-at the new epoch proceeds, `currentEpoch` MUST be persisted to the superblock.**
-The superblock page (a single page with lazy mirror) is written and fsync'd
-directly — this is a targeted superblock flush, not a full dirty-cache flush.
-Write the superblock bytes to the inactive physical half via Write,
-then Flush only that page range. One fsync per snapshot. If the process
-crashes before the flush, the on-disk superblock retains the old epoch.
-On remount, the system re-uses that epoch — any previously written snapshot
-data is unreachable via the old superblock pointer, but no corruption occurs
-because the new snapshot data was never committed to disk.
+Snapshot (`epoch += 2`) is a single atomic increment. Zero contention.
+Zero page writes. No fsync required — the epoch counter is in-memory.
+If the process crashes before any data is written at the new epoch, the
+epoch is lost (zombie) and reclaimed on the next GC cycle. Data written
+at the new epoch that hasn't been flushed is also lost, same as any
+unflushed write.
 
 ### 9.5 Conflict Detection (Commit)
 
@@ -997,10 +1005,12 @@ prevents concurrent modifications during the copy phase.
    and new `poolListHead`. fsync.
 5. **Atomically swap** the superblock pointer (lazy mirror (§3.7)).
 6. **Release tree lock.**
-7. **Free old pages.** Walk the old tree, free all pages not reachable from
-   the new root. Every logical page freed releases its underlying lazy mirror
-   physical pair internally. This phase runs in the background and does not
-   block normal operations.
+7. **Deferred free.** Pages from the old tree are placed into a deferred-free
+   queue — they are marked for deletion but not yet returned to the allocator.
+   This phase does not block normal operations. Once GC confirms no active
+   traversals reference any queued page, the pages are freed via `Free`.
+   The allocator skips pages in the deferred-free queue when scanning for
+   free pages.
 
 ### 10.4 Crash During GC
 
