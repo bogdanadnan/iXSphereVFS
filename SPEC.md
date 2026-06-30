@@ -97,16 +97,16 @@ pages.
 ```
 Logical page   Content
 ────────────   ───────
-0              StorageBackend header page 0 (magic "XVFS", config + first ~1K indirection_dir entries)
-1              StorageBackend header page 1 (continuation of indirection_dir array)
+0              StorageBackend header page 0 (magic "XVFS", config + first ~1K indirection directory entries)
+1              StorageBackend header page 1 (later pages of indirection directory array)
 2..B           Free-indirection pages
 B+1            First allocatable page — superblock
 ...            remaining logical pages
 ```
 
 The header spans two logical pages (0 and 1). Page 0 holds the config
-fields and the first portion of `indirection_dir`. Page 1 continues the
-`indirection_dir` array — it is a pure array of int64 entries with no header
+fields and the first page of `indirection directory`. Page 1 continues the
+`indirection directory` array — it is a pure array of int64 entries with no header
 fields. Both pages are lazy mirror backed (§3.7).
 
 **Header page 0 layout (page_size-byte payload):**
@@ -126,27 +126,18 @@ Offset  Size  Field
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0     ...   indirection_head chain      (continuation of the int64 array from page 0)
+ 0     ...   indirection_head chain      (later pages of the int64 array from page 0)
 ```
 
 Page 1 has the standard 16-byte PageHeader physically; its payload contains
-no configuration fields — it is a pure continuation of the `indirection_dir`
+no configuration fields — it is a pure later pages of the `indirection directory`
 array. The 16-byte header uses `flags = 0`; it is transparent to array indexing.
 
-The `indirection_dir` array spans both pages. Entry N lives at:
-- If `N < (page_size − 32) / 8`: page 0, offset `32 + N × 8`
-- Otherwise: page 1, offset `(N − ((page_size − 32) / 8)) × 8`
+The directory chain has unlimited capacity — new pages are allocated and appended as the table grows.
 
-Total entries: `(2 × page_size − 32) / 8` = 2,044 at default page_size.
-Maximum logical pages: 2,044 × 65,536 = ~134M pages (~1.1 TB logical).
+Config area: 40 bytes. `indirection_head` at offset 32, points to the first directory page.
 
-Config area: 32 bytes. `indirection_dir` starts at offset 32, spans pages 0 and 1.
-Entries: (2 × page_size − 32) / 8 = 2,044 at default page_size.
-
-The header is zero-filled at allocation. `indirection_dir` is a compact array of
-indirection page indices starting at offset 32. Since newly allocated pages are
-zero-filled, unused entries are 0. The number of indirection pages is the count
-of non-zero entries. The first entry is always 2 (the first indirection page).
+The header is zero-filled at allocation. `indirection_head` initially points to page 2.
 
 **Indirection page layout (page_size-byte payload):**
 
@@ -156,12 +147,12 @@ Offset  Size  Field
  0    page_size  bits[]          (page_size bytes = page_size × 8 bits, covering that many logical pages)
 ```
 
-Indirection pages have no `next` pointer — the header's `indirection_dir` array is
+Indirection pages have no `next` pointer — the header's `indirection directory` array is
 the authoritative chain. To find the indirection entry for logical page N:
 `table_index = N / (page_size / 8)`.
 Allocation scans across all indirection pages linearly; freed pages are
 reused regardless of which indirection page they reside on. New indirection pages are
-appended to `indirection_dir` only when the last existing page is exhausted.
+appended to `indirection directory` only when the last existing page is exhausted.
 
 All pages, including the header block, use the lazy mirror mechanism (§3.7).
 
@@ -178,7 +169,7 @@ file exists:
    superblock. All four are zero-filled and use lazy mirror backing.
 3. Write header page 0: `total_pages = 4`, `page_size` (caller-specified,
    default 8192), `physical_tail = 4 * (page_size + 16)` (pages 0–3 consume
-   this much physical space). Write `2` to `indirection_dir[0]`.
+   this much physical space). Set `indirection_head = 2`.
 4. Write indirection directory page 2: `next = 0`, set entries 0, 1, 2, 3
    to their computed physical offsets (0, page_size+16, 2*(page_size+16),
    3*(page_size+16)). All other entries remain 0 (free / never-written).
@@ -188,8 +179,8 @@ file exists:
 1. Read logical page 0 (header block) via the indirection entry for page 0.
    Validate: `flags == 0x56585346` (the "XVFS" magic) and CRC32C is valid. If any check
    fails, the file is not a valid iXSphereVFS instance.
-2. Read `total_pages` and `page_size`. Load the `indirection_dir`
-   array (all non-zero entries). Read all referenced indirection pages.
+2. Read `total_pages` and `page_size`. Load the `indirection directory`
+   array (all entries). Read all referenced indirection pages.
 
 ### 3.3 Page Allocation
 
@@ -214,22 +205,20 @@ void    Free(int64_t logicalPage);
 
 All newly allocated pages are zero-filled before returning.
 
-**Capacity limit.** The indirection directory has a fixed capacity
+**Capacity limit.** The indirection directory grows dynamically
 of `(page_size − 32) / 8` entries. When all entries are non-zero and no
 further indirection pages can be allocated, the instance has reached its maximum
 logical page count. `Allocate` returns -1. The maximum at page_size = 8192
-is 2,044 indirection pages covering 134M logical pages (~1.1 TB at default page_size).
+is dynamically-growing chain covering 134M logical pages (~1.1 TB at default page_size).
 
 **Thread safety.** `Allocate` is thread-safe via a single atomic CAS on
 `physical_tail`. There are no zones, no scanning, and no per-thread cursors.
 When no free logical pages exist in the current indirection table capacity,
 a new indirection page is allocated and appended to `indirection_head chain` via
 CAS, and `total_pages` is updated via CAS.
-The StorageBackend extends the backing file, allocates the new indirection page,
-zero-fills it, and appends its index to the first zero slot in `indirection_dir`
-via CAS. Then it updates `total_pages` in the header via CAS. The header
-page is lazy mirror backed §3.7  — the CAS on `indirection_dir` entries and
-`total_pages` is safe because the underlying page write is crash-safe.
+The StorageBackend extends the backing file, allocates the new directory page
+via `Allocate(1)`, zero-fills it, sets its `next` to 0, and CAS-appends it
+to the last page in the chain. Then it updates `total_pages` in the header via CAS.
 
 ### 3.4 Page I/O
 
@@ -375,17 +364,17 @@ pairs.
 The StorageBackend maintains a private indirection table. One bit per
 allocatable logical page. `1` = free, `0` = allocated.
 
-**Layout.** The header's `indirection_dir` array (§3.1) lists indirection page indices.
+**Layout.** The header's `indirection directory` array (§3.1) lists indirection page indices.
 Indirection pages have no internal linking — the directory is authoritative. Each
 indirection page holds page_size * 8 bits (a full page_size-byte payload). Bit position `N`
-in page `indirection_dir[M]` corresponds to logical page `M * page_size * 8 + N`.
+in page `indirection directory[M]` corresponds to logical page `M * page_size * 8 + N`.
 
 **Growth.** When `Allocate` needs a page beyond the current indirection table capacity,
 a new indirection page is allocated, zero-filled (all bits `0` = allocated), then
-its index is written to the first zero slot in `indirection_dir`. The new page's
+its index is written to the end of the chain in `indirection directory`. The new page's
 bits are then set to `1` (free) for the newly covered range.
 
-**Mount.** On mount, `indirection_dir` is scanned. All referenced indirection pages are
+**Mount.** On mount, `indirection directory` is scanned. All referenced indirection pages are
 read. The allocator is initialized with the free/allocated state.
 
 **GC.** The indirection table is rebuilt during the GC copy phase. Unused indirection
