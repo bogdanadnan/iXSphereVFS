@@ -163,18 +163,16 @@ file exists:
 
 **File does not exist or is empty:**
 1. Create the backing file.
-2. Bootstrap: reserve logical pages 0–2 directly — `Allocate` cannot be used
+2. Bootstrap: reserve logical pages 0–1 directly — `Allocate` cannot be used
    yet because no indirection table exists. Page 0 is the StorageBackend
-   header (config + inline indirection entries), page 1 is reserved for the
-   first overflow indirection page (not yet allocated), page 2 is the
-   superblock. All three are zero-filled and use lazy mirror backing.
-3. Write header page 0: `total_pages = 3`, `page_size` (caller-specified,
-   default 8192), `physical_tail = 3 * (page_size + 16)` (pages 0–3 consume
-   this much physical space). Set initial inline entries 0 and 1 to their physical offsets (header page itself). `indirection_head = 0`.
-4. Write indirection directory page 2: `next = 0`, set entries 0, 1, 2, 3
-   to their computed physical offsets (0, page_size+16, 2*(page_size+16),
-   3*(page_size+16)). All other entries remain 0 (free / never-written).
-5. Return success. The VFS layer calls `Acquire(2)` for the superblock and initializes it.
+   header (config + inline indirection entries), page 1 is the
+   superblock. Both are zero-filled and use lazy mirror backing.
+3. Write header page 0: `total_pages = 2`, `page_size` (caller-specified,
+   default 8192), `physical_tail = 2 * (page_size + 16)`. Set inline
+   entries 0 and 1 to their computed physical offsets (0, page_size + 16).
+   `indirection_head = 0`.
+5. Return success. The VFS layer calls `Acquire(1)` for the superblock
+   and initializes it.
 
 **File exists:**
 1. Read logical page 0 (header block) via the indirection entry for page 0.
@@ -387,10 +385,10 @@ The VFS layer never accesses the indirection table directly.
 
 ## 4. Superblock
 
-The superblock lives at logical page 2. It is initialized on first use with
+The superblock lives at logical page 1. It is initialized on first use with
 `rootNodeOffset = 0` (empty tree), `currentEpoch = 0`, and all other fields
 zero. The sentinel -1 means "current live head" in the API; internally the
-current epoch value from the superblock is used. allocated by the VFS layer at logical page 2 via
+current epoch value from the superblock is used. allocated by the VFS layer at logical page 1 via
 `Acquire` after StorageBackend initialization. Like every other page, it
 uses standard lazy mirror (§3.7) — there is no separate superblock alternate
 page or special swap protocol. The VFS writes superblock updates via
@@ -1086,7 +1084,7 @@ new logical state — never a torn page.
 
 ### 11.2 Mount (No Recovery Needed)
 
-1. Read both superblock pages (logical page 2 and its lazy mirror sibling).
+1. Read both superblock pages (logical page 1 and its lazy mirror sibling).
 2. Select the active one: higher PageHeader generation wins (§3.7 — Lazy Mirror).
    Validate its CRC32C. If invalid, try the other page.
 3. Read `rootNodeOffset`, `currentEpoch`, `epochMapperPtr`, `poolListHead`.
