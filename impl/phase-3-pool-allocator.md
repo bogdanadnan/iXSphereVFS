@@ -1,246 +1,255 @@
 # Phase 3: Pool Allocator
 
 ## Goal
-A fixed-size 32-byte slot allocator backed by 8KB pool pages. All metadata
-in the VFS — directory entries, file nodes, version chains, names, mapper
-entries — is stored in this single pool. The allocator must be lock-free on
-the hot path and support thread-safe concurrent allocations.
+A fixed-size 32-byte slot allocator backed by 8KB pool pages. Every metadata
+entry in the VFS — directory entries, file nodes, version chains, names,
+mapper entries — comes from this single pool. The allocator must be lock-free
+on the hot path and must never fragment.
+
+## Non-Negotiable Constraints
+
+- **No individual slot freeing.** Slots are never freed during normal operation.
+  Only GC rebuilds pool pages from scratch. This simplifies concurrency.
+- **CAS-based, no mutexes.** Slot allocation uses `vfs_cas_i32` on `poolState`.
+  Page creation uses `vfs_cas_i64` on `poolListHead`. No pthread mutex anywhere.
+- **VirtualPtr must be 8 bytes.** Must fit in pool entries alongside other fields.
+- **Page 0 is never a pool page.** It is the StorageBackend header. This makes
+  `VirtualPtr = 0` safely mean "null."
+- **The pool page header must be written BEFORE linking into the list.** This
+  closes the single-copy risk window before the page holds multi-file metadata.
+
+## File Organization
+
+| File | Purpose |
+|------|---------|
+| `src/pool.c` | Pool page init, slot allocation, VirtualPtr helpers |
+| `src/pool.h` | Pool page layout constants, VirtualPtr macros |
+| `test/test_pool.c` | Allocation, CAS retry, VirtualPtr round-trip, list walk |
 
 ---
 
 ## Workload 3.1 — Pool Page Layout
 
-**What:** Define the on-disk layout of a pool page. Each page holds exactly
-255 usable 32-byte slots plus a small header for allocation tracking.
+### What
+Define the exact byte layout of a pool page payload (8,192 bytes). Every
+pool page in the system follows this layout.
 
-**Why:** The pool is the only metadata page type in the VFS. A fixed slot size
-simplifies the free list (no fragmentation, constant-time allocation) and
-makes GC compaction trivial (just copy surviving slots sequentially).
+### Layout
+```
+Offset  Size  Type     Name           Description
+──────  ────  ───────  ──────         ───────────
+  0      8    int64_t  nextPoolPage   Logical page of next pool page in allocator list. Write-once.
+  8      4    uint32_t poolState      Packed: bits 16-31 = freeCount, bits 0-15 = firstFreeSlot
+ 12      4    —        reserved       Zero-filled
+ 16   8160    —        slots[255]     255 entries, each exactly 32 bytes
+8176     16    —        padding        Zero-filled, reserved
+```
 
-**How:**
-- Pool page payload (8192 bytes): starts with a header, followed by 255
-  slots of exactly 32 bytes each, followed by trailing padding.
-- Header fields within the payload: `nextPoolPage` (8 bytes, offset 0) is
-  the logical page index of the next pool page in the global allocator list.
-  Set once when the page enters the list, never modified. `poolState`
-  (4 bytes, offset 8) packs two 16-bit values: `freeCount` in bits 16–31
-  and `firstFreeSlot` in bits 0–15. `reserved` (4 bytes, offset 12).
-- Slots start at offset 16. Slot N occupies bytes `[16 + N*32, 16 + (N+1)*32)`.
-  Slot indices range from 0 to 254.
-- Trailing 16 bytes at offset 8176 are reserved padding — no special link
-  slot, no MetaPoolLink. The old v1 design had a second chain pointer here;
-  v2 uses only `nextPoolPage` for chaining.
-- The pool page itself is a logical page with a standard 16-byte PageHeader
-  before the payload. The PageHeader `flags` field encodes the flush priority in
-  bits 0–1 (priority 1 for pool pages).
+- Slots are indexed 0 through 254. Slot N occupies bytes `[16 + N*32, 16 + (N+1)*32)`.
+- The trailing 16 bytes are unused padding. No link pointer there — the single
+  `nextPoolPage` at offset 0 is the only chain pointer this page needs.
+- The PageHeader (outside the payload) has `flags` bits 0-1 set to 1 (pool priority).
 
-**Acceptance:**
-  - A freshly allocated pool page has `freeCount = 255`, `firstFreeSlot = 0`.
-  - The total payload size (header + 255×32 + padding) equals exactly 8192.
-  - Slot 254 is at the highest valid offset; reading beyond it is out of bounds.
+### Macros in pool.h
+```c
+#define VFS_POOL_SLOTS         255
+#define VFS_POOL_SLOT_SIZE      32
+#define VFS_POOL_HEADER_SIZE    16   // nextPoolPage + poolState + reserved
+#define VFS_POOL_ENTRIES_OFFSET 16   // slots start here
+#define VFS_POOL_FREE_TERMINAL  0xFFFF
+```
+
+### Acceptance
+- [ ] Fresh page: `freeCount` = 255, `firstFreeSlot` = 0
+- [ ] Total payload: 8 + 4 + 4 + 255×32 + 16 = 8192
+- [ ] Slot 254 is at highest valid offset; slot 255 does not exist
 
 ---
 
 ## Workload 3.2 — Free List Initialization
 
-**What:** Initialize the free list of a freshly allocated pool page so that
-slots 0 through 254 form a singly-linked chain of available slots.
+### What
+Initialize a freshly allocated pool page so all 255 slots form a linked free
+list. Must be done BEFORE the page is linked into the global list.
 
-**Why:** The allocator needs to find free slots in O(1) time without scanning.
-A linked list of free slots embedded within the free slots themselves provides
-this — the allocator reads `firstFreeSlot` to get the next available slot,
-and the slot itself stores the index of the next free slot.
+### Step-by-Step
 
-**How:**
-- When a slot is free, bytes 0–1 of that slot store the index of the next
-  free slot as a `uint16_t`. The remaining 30 bytes are undefined and may
-  contain garbage from a previous allocation — they will be overwritten
-  when the slot is allocated.
-- The terminal sentinel is `0xFFFF` (slot index 65535, which exceeds the
-  maximum valid index of 254).
-- On a freshly allocated pool page, initialize:
-  - `slot[0].bytes[0:2] = 1`
-  - `slot[1].bytes[0:2] = 2`
-  - `...`
-  - `slot[253].bytes[0:2] = 254`
-  - `slot[254].bytes[0:2] = 0xFFFF`
-  - `poolState = (255 << 16) | 0` — 255 free slots, first free is slot 0.
-- This initialization must run before the page is linked into the global
-  pool list, so no other thread can observe an uninitialized page.
-- The pool page header (generation=1, mirrorPage=-1) must also be written
-  before linking, so the page is crash-safe from its first use.
+1. Zero the entire page payload first (`vfs_zero_page`).
+2. For slot `i` from 0 to 253: write `(uint16_t)(i + 1)` into bytes 0–1 of the slot.
+3. For slot 254: write `0xFFFF` into bytes 0–1 of the slot (terminal sentinel).
+4. Set `poolState`: `vfs_wr4(payload, 8, (255 << 16) | 0)`.
+5. Write the PageHeader with `generation = 1` and `mirrorPage = -1` via
+   `storage_write`. This transitions the page out of the single-copy risk window
+   BEFORE any operational slots are allocated.
 
-**Acceptance:**
-  - After initialization, the first allocation returns slot 0.
-  - After allocating slot 0, the next allocation returns slot 1.
-  - After allocating all 255 slots, `freeCount` is 0 and the next allocation
-    triggers creation of a new pool page.
-  - A pool page that survived a crash can be reopened and its free list
-    is still consistent (slots allocated before the crash remain allocated;
-    slots that were free remain free).
+### How the Free List Works
+
+When a slot is free, its bytes 0–1 hold the index of the next free slot.
+The remaining 30 bytes are garbage and will be overwritten when the slot is
+allocated. `poolState` contains:
+- `freeCount` in bits 16–31: how many slots are free (255 → 0)
+- `firstFreeSlot` in bits 0–15: index of the first free slot to allocate
+
+To allocate: read `firstFreeSlot`. Take that slot. Read its bytes 0–1 to get
+the NEXT free slot index. CAS `poolState` to `((freeCount-1) << 16) | nextFreeSlot`.
+
+### Acceptance
+- [ ] After init: first allocation returns slot 0
+- [ ] After allocating slot 0: next allocation returns slot 1
+- [ ] After 255 allocations: `freeCount` is 0
+- [ ] Pool page reopened after crash: free list is consistent (allocated slots
+  remain allocated, free slots remain free)
 
 ---
 
 ## Workload 3.3 — Slot Allocation
 
-**What:** A lock-free algorithm to allocate a single 32-byte slot from a pool
-page, returning a VirtualPtr. When a page is exhausted, a new page is
-allocated and prepended to the global list.
+### What
+The actual allocation algorithm — the hot path for every VFS write.
 
-**Why:** Pool slot allocation is on the critical path for every VFS write —
-creating a VersionPage, prepending a DirContent entry, adding a name slot.
-Contention on the pool allocator directly limits write throughput.
+### `pool_alloc(pool_state) → VirtualPtr`
 
-**How:**
-- Read `poolState` from the pool page. Extract `freeCount` (bits 16–31) and
-  `firstFreeSlot` (bits 0–15).
-- If `freeCount == 0`: this page is full. Allocate a new pool page from the
-  StorageBackend via `Allocate(1)`. Initialize its free list (Workload 3.2).
-  Write its PageHeader (gen=1, mirror=-1) before publishing. Set its
-  `nextPoolPage` to the current value of `poolListHead` in the superblock.
-  CAS `poolListHead` from the old value to the new page index. If the CAS
-  fails, retry — another thread prepended a page first; re-read `poolListHead`
-  and try again with your allocated page (never abandon it). Then restart
-  allocation from the newly active page.
-- If `freeCount > 0`: take the slot at `firstFreeSlot`. Read the next free
-  slot index from that slot's bytes 0–1. CAS `poolState` to decrement
-  `freeCount` and set `firstFreeSlot` to the next index. If the CAS fails,
-  retry from the beginning (re-read `poolState` — another thread may have
-  consumed a different slot, changing both fields).
-- On successful CAS: the slot is allocated. Write the caller's data into
-  the slot's 32 bytes. Return a `VirtualPtr` encoding the pool page index
-  and the slot index.
-- The CAS retry loop is uncontended in steady state because each successful
-  allocation advances `firstFreeSlot` to a different value — threads rarely
-  collide on the same slot.
-- For a page with only a few free slots remaining, threads may converge on
-  the same `poolState` value. This is expected and handled by the CAS retry.
+```
+1. Read poolState = atomic_load_i32(&page->poolState)
+2. Extract freeCount = poolState >> 16
+3. If freeCount == 0:
+   a. Allocate a new pool page via Allocate(1)  (StorageBackend)
+   b. Initialize its free list (Workload 3.2)
+   c. Write its PageHeader (gen=1, mirror=-1) via storage_write
+   d. Set new page's nextPoolPage = current poolListHead
+   e. CAS poolListHead from old value to new page index
+   f. If CAS fails: another thread added a page first. Retry with the NEW
+      poolListHead value — never abandon your allocated page.
+   g. Go to step 1 with the new page.
+4. If freeCount > 0:
+   a. firstFreeSlot = poolState & 0xFFFF
+   b. Read nextFreeSlot = vfs_rd2(page->slots[firstFreeSlot], 0)
+   c. newPoolState = ((freeCount - 1) << 16) | nextFreeSlot
+   d. If CAS(&page->poolState, poolState, newPoolState) != poolState:
+      // Another thread raced — the poolState changed. Retry from step 1.
+      goto 1
+   e. Return VirtualPtr = (page_index << 8) | firstFreeSlot
+```
 
-**Acceptance:**
-  - Allocate one slot: `freeCount` decrements by 1, `firstFreeSlot` advances.
-  - Allocate 255 slots from one page: all succeed, page is now full.
-  - Allocate 256 slots: triggers creation of a second pool page.
-  - Four concurrent threads each allocate 100 slots: total allocated is 400,
-    no double-allocations. All VirtualPtrs are unique.
-  - CAS retry: if two threads race on the same `poolState`, exactly one wins
-    and the other retries successfully on the updated state.
+### `pool_resolve(VirtualPtr vp) → uint8_t* pointer to slot`
 
-**Arena optimization (optional):** under high thread counts (8+), CAS
-contention on the head page's `poolState` can become measurable. An arena
-scheme reduces this by partitioning threads across multiple preferred pool
-pages. Each arena has an active pool page; threads in arena N preferentially
-allocate from that arena's page, falling back to any page with free slots
-when the arena page is full. When an arena page is exhausted, a new page is
-allocated, tagged with the arena ID in a reserved field (e.g. a byte in the
-pool page header or derived from the arena index), and prepended globally.
-This bounds global CAS contention to page-exhaustion events (~once per 255
-allocations per arena) rather than every slot allocation. The arena count
-is configurable: default 1 (disabled), recommended 4–8 for multi-threaded
-workloads.
+```
+page_index = vp >> 8
+slot_index = vp & 0xFF
+page_buffer = cache_find(page_index) or read from StorageBackend
+return page_buffer + VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE
+```
+
+### Arena Optimization (Optional, Deferred)
+If CAS retry rate exceeds 10% at 8+ threads, implement arenas:
+- Reserve one byte in the pool page header (currently `reserved` at offset 12)
+  as `arena_id`. Default 0 means "any arena."
+- Thread T picks `arena_id = T % arena_count`. On allocation, prefer pages
+  with matching `arena_id`, falling back to any page with `freeCount > 0`.
+- New pages are tagged with the allocating thread's arena ID.
+
+### Acceptance
+- [ ] Allocate 1 slot: freeCount decrements, firstFreeSlot advances
+- [ ] Allocate 255 slots: all succeed, page is full
+- [ ] 256th allocation creates a second pool page
+- [ ] 4 threads × 100 allocations each: all VirtualPtrs unique, no double-allocations
+- [ ] CAS retry: two threads racing on same poolState → exactly one wins, other retries
+- [ ] VirtualPtr for slot 0 is `(page << 8) | 0`, for slot 254 is `(page << 8) | 254`
 
 ---
 
 ## Workload 3.4 — VirtualPtr
 
-**What:** An 8-byte packed value that uniquely identifies a specific slot in
-a specific pool page. Used throughout the VFS as the universal reference
-for metadata entries.
+### What
+An 8-byte packed reference used everywhere to link pool entries into chains.
 
-**Why:** Metadata entries are linked together in chains (DirContent → next
-DirContent, VersionPage → next VersionPage, etc.). These chain links must
-fit within the 32-byte slot. An 8-byte VirtualPtr packs both the pool page
-index and the slot index, leaving 24 bytes free for other fields. This is
-the sole chain-linking mechanism — there are no raw pointers.
+### Encoding/Decoding (Macros in pool.h)
+```c
+#define VFS_VPTR_NULL         ((int64_t)0)
+#define VFS_VPTR_MAKE(pg, sl) (((int64_t)(pg) << 8) | ((sl) & 0xFF))
+#define VFS_VPTR_PAGE(vp)     ((int64_t)((vp) >> 8))
+#define VFS_VPTR_SLOT(vp)     ((int)((vp) & 0xFF))
+```
 
-**How:**
-- Encoding: `VirtualPtr = (poolPageIndex << 8) | (slotIndex & 0xFF)`. The
-  pool page index occupies bits 8–63. The slot index occupies bits 0–7
-  (range 0–254, with 255 being unused).
-- Decoding: `poolPageIndex = vp >> 8`, `slotIndex = vp & 0xFF`.
-- Null value: `VirtualPtr = 0` means null (end of chain or unallocated).
-  Logical page 0 is the StorageBackend header and is never a pool page,
-  so `(page=0, slot=0)` naturally encodes as 0 — safely colliding with null.
-- Resolution: to access the data at a VirtualPtr, first resolve the pool
-  page index to a cached page buffer via the unified page cache, then index
-  into the slots array at `slots[slotIndex]`. This is typically done inline
-  by a helper function.
-- Helper macros or inline functions:
-  - `VFS_VPTR_NULL` = 0
-  - `VFS_VPTR_PAGE(vp)` — extract page index
-  - `VFS_VPTR_SLOT(vp)` — extract slot index
-  - `VFS_VPTR_MAKE(page, slot)` — encode
-- The VirtualPtr is stored as an 8-byte aligned `int64_t` in pool entries.
-  This enables native 64-bit CAS on chain heads.
+### Requirements
+- The page index can be up to 2^56 - 1 (fits in 56 bits). Slot index is 0–254
+  (fits in 8 bits).
+- `VFS_VPTR_NULL` is 0. Logical page 0 is the StorageBackend header — never a
+  pool page — so `(0, 0)` is safely null.
+- VirtualPtr is stored as `int64_t` in pool entries at 8-byte aligned offsets.
+  This enables 64-bit CAS on chain heads.
+- `pool_resolve(vp)` is the only way to turn a VirtualPtr into a usable pointer.
+  No raw pointer arithmetic on VirtualPtr values.
 
-**Acceptance:**
-  - `VFS_VPTR_MAKE(42, 7)` → `VFS_VPTR_PAGE` = 42, `VFS_VPTR_SLOT` = 7.
-  - `VFS_VPTR_NULL` → `VFS_VPTR_PAGE` = 0, `VFS_VPTR_SLOT` = 0.
-  - A round-trip through encode → write to slot → read slot → decode
-    preserves the original page and slot values.
-  - Maximum page index (2^56 - 1) and maximum slot index (254) encode and
-    decode correctly.
-  - Attempting to encode a slot index > 254 is a programmer error (assert
-    in debug builds).
+### Acceptance
+- [ ] `VFS_VPTR_MAKE(42, 7)` → PAGE=42, SLOT=7
+- [ ] `VFS_VPTR_MAKE(1, 0)` round-trips through pool_resolve correctly
+- [ ] Maximum page (2^56 - 1) and max slot (254) encode/decode without
+  overflow
+- [ ] Slot index 255 is rejected (assert in debug, error in release)
+- [ ] `VFS_VPTR_NULL` → PAGE=0, SLOT=0
 
 ---
 
 ## Workload 3.5 — Global Pool List
 
-**What:** A singly-linked list of all pool pages, rooted at the superblock's
-`poolListHead` field. Used by the allocator to find pages with free slots
-and rebuilt by GC during shadow compaction.
+### What
+A singly-linked list of all pool pages, rooted at `poolListHead` in the
+superblock. The allocator walks this list to find a page with free slots.
 
-**Why:** The allocator needs to find any page with `freeCount > 0`. Walking
-a global list is simple and lock-free: following `nextPoolPage` pointers
-requires no synchronization because the field is write-once. Pages are
-never removed from the list except by GC, which operates under the tree lock.
+### How It Works
 
-**How:**
-- The superblock field `poolListHead` (8 bytes, VirtualPtr-compatible page
-  index) points to the most recently added pool page.
-- Each pool page's `nextPoolPage` field points to the next older page.
-  The list is in LIFO order (newest at head). This is a write-once field:
-  set when the page enters the list, never modified afterward.
-- To find a page with free slots: start at `poolListHead`. Walk via
-  `nextPoolPage`. Read each page's `poolState.freeCount`. Use the first
-  page with free slots. In steady state, the head page has free slots
-  (it was just added or still has capacity), making this O(1).
-- The scan may traverse multiple full pages if the head page has been
-  exhausted by other threads. This is bounded by the number of pool pages,
-  which is proportional to metadata volume. GC resets the list to compact
-  form, removing full pages from the chain.
-- On mount, if `poolListHead` is stale (from a crash before a GC completed),
-  the list is rebuilt lazily: the first allocation that finds no free slots
-  in the chain triggers a tree walk to collect all pool page indices from
-  VirtualPtrs in the tree. This is O(metadata pages), not O(total pages).
-- GC builds a new pool list from scratch and atomically swaps `poolListHead`
-  in the superblock during the commit phase.
+- `poolListHead` is an `int64_t` in the superblock. It holds the logical page
+  index of the most recently added pool page.
+- Each pool page's `nextPoolPage` points to the next older page. LIFO order.
+- Set once when the page enters the list. Never modified. This is what makes
+  the list lock-free — `nextPoolPage` writes are uncontended after insertion.
+- To allocate: start at `poolListHead`, follow `nextPoolPage`. Read each
+  page's `freeCount`. Use the first page with `freeCount > 0`.
+- In steady state, the head page has free slots → O(1).
+- Pages with `freeCount == 0` remain in the list. They are skipped. GC removes
+  them when rebuilding.
 
-**Acceptance:**
-  - New pool pages appear at the head of the list.
-  - Walking the list reaches all pool pages that were added.
-  - A page with `freeCount == 0` is skipped by the allocator scan.
-  - After GC, the list contains only pages with free slots (all dead pages
-    are removed).
-  - After a simulated crash with a stale `poolListHead`, the lazy rebuild
-    correctly reconstructs the list from tree VirtualPtrs.
+### `pool_list_add(new_page_index)`
+```
+new_page->nextPoolPage = atomic_load_i64(&superblock->poolListHead)
+CAS(&superblock->poolListHead, old_value, new_page_index)
+If CAS fails: re-read poolListHead, update new_page->nextPoolPage, retry
+```
+
+### `pool_list_find_free() → page_index`
+```
+page = poolListHead
+while page != 0:
+    freeCount = atomic_load_i32(&page->poolState) >> 16
+    if freeCount > 0:
+        return page
+    page = page->nextPoolPage
+return 0  // all pages full — trigger new page allocation
+```
+
+### Lazy Rebuild on Mount
+If `poolListHead` is stale after a crash, the list is rebuilt lazily:
+- When `pool_list_find_free()` returns 0 and the list is non-empty, walk the
+  tree from the root, collect all pool page indices from VirtualPtrs, build a
+  new list. This is O(metadata pages). GC also does this during compaction.
+
+### Acceptance
+- [ ] New pool pages appear at head of list
+- [ ] `pool_list_find_free()` returns a page with free slots
+- [ ] After consuming all 255 slots of head page: next call returns the next
+  page in the list (or allocates a new one)
+- [ ] After GC: list contains only pages with free slots
+- [ ] Simulated stale poolListHead → lazy rebuild produces correct list
 
 ---
 
-## Deliverables
+## Final Phase 3 Checklist
 
-| File | Purpose |
-|------|---------|
-| `src/pool.c` | Pool page initialization, slot allocation, CAS retry loop |
-| `src/pool.h` | `VirtualPtr` macros, pool state helpers |
-| `test/test_pool.c` | Allocation, CAS retry, VirtualPtr round-trip, list walking |
-
-## Success Criteria
-- 255 slots can be allocated from a single pool page without error.
-- The 256th allocation triggers creation of a second page.
-- Four concurrent threads allocating 100 slots each produce unique VirtualPtrs.
-- `VirtualPtr` encode/decode round-trips correctly for all valid inputs.
-- After a simulated crash during allocation, the free list is consistent
-  (no double-allocations, no leaked slots). This is verified by allocating
-  a few slots, killing the process without flushing, reopening, and verifying
-  all previously-allocated slots remain allocated.
+- [ ] 255 slots allocated from single page without error
+- [ ] 256th allocation creates second page
+- [ ] 4 threads × 100 slots: 400 unique VirtualPtrs, no double-allocations
+- [ ] VirtualPtr encode/decode round-trips for edge values
+- [ ] Pool page crash recovery: open after `kill -9`, free list still consistent
+- [ ] Global list walk reaches all pages
+- [ ] No mutexes in pool allocation path
