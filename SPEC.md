@@ -348,6 +348,14 @@ that are 0 represent free pages.
 for pages in the new tree are set to their physical offsets; entries for
 unreachable pages are set to 0. Unused overflow pages are freed.
 
+**Deferred optimization — physical reuse.** Between GC cycles, `Free` sets
+the indirection entry to 0 but the physical space is not reclaimed. A future
+optimization may maintain a free-offset stack (per size class, trivially one
+class since all pages are `page_size + 16` bytes). `Free` pushes the offset;
+`Allocate` pops from the stack when non-empty, falling back to advancing
+`physical_tail`. This eliminates physical file growth between GC cycles
+without requiring a full compaction pass.
+
 The VFS layer never accesses the indirection table directly.
 
 ---
