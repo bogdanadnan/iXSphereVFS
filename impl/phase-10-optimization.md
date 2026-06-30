@@ -3,298 +3,427 @@
 ## Goal
 Profile the VFS under realistic workloads, tune the page cache and allocator
 for throughput, analyze lock contention, harden crash recovery, and validate
-correctness across the full platform matrix. This phase is about measurement,
-not feature development.
+correctness across the full platform matrix. This phase is about measurement
+and validation — no new features.
+
+## Non-Negotiable Constraints
+
+- **Every optimization must be backed by measurement.** Before and after
+  numbers for throughput, latency, and contention. No "seems faster."
+- **Crash recovery must be empirically validated.** Not reasoned about.
+  100 iterations per scenario, zero corruption.
+- **CI must pass on all five platforms.** Linux x86_64, Linux aarch64,
+  macOS x86_64, macOS aarch64, Windows x86_64.
+- **Sanitizers must be clean.** AddressSanitizer + UndefinedBehaviorSanitizer
+  on Linux. No leaks, no buffer overflows, no use-after-free.
+
+## File Organization
+
+| File | Purpose |
+|------|---------|
+| `bench/bench.c` | Benchmark harness |
+| `test/test_crash.c` | Crash recovery test harness |
+| `test/test_fuzz.c` | Fuzzing harness |
+| `docs/API.md` | API reference |
+| `README.md` | Build instructions + quick-start |
 
 ---
 
-## Workload 10.1 — Benchmark Harness & Profiling Setup
+## Workload 10.1 — Benchmark Harness
 
-**What:** Build a configurable benchmark tool and integrate platform profilers
-to measure throughput, latency, and cache behavior.
+### What
+A CLI tool `vfs_bench` that measures throughput and latency for configurable
+workloads.
 
-**Why:** Optimization without measurement is guesswork. A repeatable benchmark
-with clear metrics (operations/second, microseconds/operation, cache hit rate,
-lock contention percentage) identifies the real bottlenecks.
+### Command-Line Interface
+```
+vfs_bench --workload <name> [options]
 
-**How:**
-- Create `bench/bench.c`: a command-line tool that accepts parameters for
-  workload type, thread count, operation count, and page size.
-- Supported workloads:
-  - **Individual INSERTs:** single-row auto-commit INSERTs via SQLite with the
-    CowVfs backend. This is the primary benchmark from the original Phase 13b
-    performance investigation.
-  - **Batched INSERTs:** multi-row transactions. Measures metadata amortization.
-  - **Random reads:** read random pages from a pre-populated file.
-  - **Sequential scan:** read all pages of a file in order.
-  - **Mixed read/write:** configurable ratio of reads to writes.
-  - **Directory operations:** create, list, delete cycles.
-- Output metrics per run: total time, operations per second, average latency,
-  min/max latency, percentiles (p50, p95, p99).
-- Integrate platform profilers:
-  - Linux: `perf record` / `perf report` for CPU sampling and cache misses.
-  - macOS: `Instruments` (Time Profiler template) or `sample` command.
-- The benchmark harness is built as a separate executable (`bench/vfs_bench`)
-  linked against the VFS library and SQLite.
+Workloads:
+  insert     Individual auto-commit INSERTs via SQLite
+  batch      Multi-row batched INSERTs
+  read       Random reads from pre-populated file
+  scan       Sequential full-file scan
+  mixed      Configurable read/write mix
+  dir        Directory create/list/delete cycles
 
-**Acceptance:**
-  - `vfs_bench --workload insert --threads 4 --count 10000` runs and prints
-    ops/sec and latency distribution.
-  - Profiler output identifies the top 5 functions by CPU time.
-  - Cache miss rate is measurable and reported.
+Options:
+  --threads N       Thread count (default 1)
+  --count N         Operations per thread (default 10000)
+  --page-size N     Page size in bytes (default 8192)
+  --cache-mb N      Page cache size in MB (default 256)
+  --output FILE     Write CSV results to FILE
+```
+
+### Required Output Metrics
+- Total wall time (seconds)
+- Operations per second
+- Average latency (microseconds)
+- p50, p95, p99 latency
+- Cache hit rate (for read-heavy workloads)
+- If multiple threads: per-thread breakdown
+
+### Structure
+```c
+int main(int argc, char** argv) {
+    parse_args();
+    vfs_t* vfs = vfs_open("bench.vfs");
+    // Setup: create tables, pre-populate data
+    // Run benchmark
+    start_timer();
+    for (i = 0; i < thread_count; i++)
+        spawn_thread(worker, workload, ops_per_thread);
+    wait_all_threads();
+    stop_timer();
+    print_results();
+    vfs_close(vfs);
+}
+```
+
+### Acceptance
+- [ ] `vfs_bench --workload insert --threads 4 --count 10000` runs and prints
+  ops/sec, avg latency, p99
+- [ ] Results are deterministic across runs (±5% at same thread count on
+  same hardware)
+- [ ] Profiler integration: running under `perf record` produces usable callgraphs
 
 ---
 
 ## Workload 10.2 — Hot Path Analysis
 
-**What:** Profile the individual INSERT workload (the original bottleneck from
-Phase 13b) and identify the top CPU consumers.
+### What
+Profile the individual INSERT workload and identify top CPU consumers.
+Compare measured per-page-write time against the predicted ~42 µs.
 
-**Why:** Understanding where time is spent in the hot path determines which
-optimizations will have the greatest impact. The spec predicts ~42 µs per
-page write; measurement validates or refutes this.
+### Required Measurements
 
-**How:**
-- Run the individual INSERT benchmark from Workload 10.1 with 4 threads and
-  2,000 rows per thread.
-- Collect a CPU profile using `perf` or `Instruments`.
-- The expected hot path: version chain walk → CAS on `poolState` → CRC32C →
-  `Write` to StorageBackend (lazy mirror) → CAS on `versionRootPtr`.
-- Specific items to measure:
-  - CRC32C time per 8KB page (should be ~2 µs with hardware, ~250 µs without).
-  - Pool slot allocation time (CAS retry rate, average attempts).
-  - Page cache lookup time (should be O(1) with hash table).
-  - Version chain walk depth (should average ~2 entries for live-head reads).
-- Compare measured per-page-write time against the ~42 µs prediction from
-  the performance model.
+1. **CRC32C time per 8KB page.** Expected: ~2 µs hardware, ~250 µs software.
+   If software path is active on hardware that supports CRC32C → bug.
+2. **Pool `pool_alloc` time.** Expected: dominated by one CAS (5–20ns) plus
+   slot initialization (100–200ns). Total ~0.3 µs.
+3. **Lazy mirror `storage_write` time.** Expected: ~40 µs (memcpy 8KB +
+   CRC32C + PageHeader update).
+4. **Version chain walk depth.** Expected: average 2 entries for live-head
+   reads, 1 entry for reads at the current epoch.
+5. **Page cache lookup time.** Expected: O(1) hash table, ~50ns.
+6. **Total per-page-write time.** Sum of: cache lookup + version chain walk
+   + pool alloc + data page write + VersionPage CAS.
 
-**Acceptance:**
-  - Profile output maps at least 80% of CPU time to known functions.
-  - CRC32C time is within 2× of the predicted hardware-accelerated value.
-  - Pool CAS retry rate is measured (expected: <5% under 4 threads).
-  - A summary document lists the top 5 bottlenecks with measured times.
+### What to Fix (Based on Measurements)
+
+| Issue | Fix |
+|-------|-----|
+| CRC32C > 10 µs on x86_64 | Hardware path not active — check `#if` guards |
+| pool_alloc > 2 µs | CAS contention too high — check retry rate, consider arenas |
+| storage_write > 100 µs | Disk I/O during write — cache miss, check flush behavior |
+| Version chain > 10 entries | Too many versions per page — need GC more frequently |
+| Cache hit rate < 80% | Cache too small for working set — increase budget |
+
+### Acceptance
+- [ ] Top 5 functions by CPU time identified and documented
+- [ ] Per-page-write time measured and compared to model
+- [ ] Any function exceeding 2× its predicted time has an explanation or fix
+- [ ] Summary document in `docs/PERFORMANCE.md`
 
 ---
 
 ## Workload 10.3 — Cache Tuning
 
-**What:** Experiment with page cache sizes and eviction policies to find the
-optimal configuration for OLTP workloads.
+### What
+Find the optimal page cache size for OLTP workloads.
 
-**Why:** The page cache absorbs repeated reads of hot metadata pages (pool
-pages, directory nodes). Too small a cache causes thrashing; too large wastes
-memory.
+### Test Matrix
+Run `vfs_bench --workload insert --threads 4 --count 10000` at each
+cache size:
+- 32 MB (4,096 pages)
+- 64 MB (8,192 pages)
+- 128 MB (16,384 pages)
+- 256 MB (32,768 pages) ← default
+- 512 MB (65,536 pages)
+- 1 GB (131,072 pages)
 
-**How:**
-- Run the individual INSERT benchmark at cache sizes: 32 MB, 64 MB, 128 MB,
-  256 MB (default), 512 MB, 1 GB.
-- Measure cache hit rate at each size. The hit rate should plateau when the
-  working set fits entirely in the cache.
-- Measure the LRU eviction rate (pages evicted per second). High eviction at
-  small cache sizes correlates with performance degradation.
-- Tune the LRU eviction batch size (currently unspecified). Larger batches
-  amortize the eviction overhead but may delay allocation.
-- If hit rates are low even at large cache sizes, investigate cache pollution
-  from sequential scans (e.g., a full table scan should not evict hot metadata
-  pages). Consider a two-queue or LRU-K policy if simple LRU is insufficient.
-- Default configuration: 256 MB, LRU eviction, single-queue. Update only if
-  measurement shows a clear win from a different policy.
+### Required Measurements per Size
+- Cache hit rate (%)
+- Operations/second
+- Average latency
+- LRU eviction rate (pages evicted per second)
 
-**Acceptance:**
-  - Cache hit rate is ≥95% at the default 256 MB for the individual INSERT
-    workload.
-  - Throughput at 128 MB is within 10% of throughput at 512 MB (diminishing
-    returns).
-  - Document the recommended cache size for OLTP workloads.
+### Expected Results
+- Hit rate should reach ≥95% at some size and plateau
+- Throughput should plateau within 10% of the peak
+- Eviction rate should drop as cache grows
+
+### What to Document
+- Recommended default size with justification
+- Memory-constrained minimum (where throughput drops <10% from peak)
+- Whether LRU is sufficient or a 2-queue/LRU-K policy is needed
+
+### Acceptance
+- [ ] Cache hit rate ≥95% at default 256 MB for INSERT workload
+- [ ] Peak throughput identified (the cache size after which more memory
+  doesn't help)
+- [ ] Document with charts in `docs/CACHE.md`
 
 ---
 
 ## Workload 10.4 — Lock Contention Analysis
 
-**What:** Measure contention on per-epoch file locks and pool `poolState` CAS
-under increasing thread counts.
+### What
+Measure contention under increasing thread counts.
 
-**Why:** Lock contention limits scalability. The spec claims per-epoch locks
-allow cross-epoch concurrency and pool CAS retries are rare. Measurement
-validates these claims.
+### Test Matrix
+Run `vfs_bench --workload insert --threads N --count 10000` for
+N = 1, 2, 4, 8, 16.
 
-**How:**
-- Run the individual INSERT benchmark at thread counts: 1, 2, 4, 8, 16.
-- Measure:
-  - Per-epoch lock wait time (average and p99).
-  - Global lock wait time (when SQLite global locking is active).
-  - Pool `poolState` CAS retry rate (per allocation attempt).
-  - `poolListHead` CAS retry rate (per new page creation).
-  - `versionRootPtr` CAS retry rate (per version chain prepend).
-- Expected results:
-  - Per-epoch lock wait should be near zero for different-file workloads.
-  - Pool CAS retry rate should be <10% at 8 threads, <20% at 16 threads.
-  - `versionRootPtr` CAS retries should be zero under per-file locking (only
-    one writer per file per epoch).
-- If pool CAS retry rate exceeds 30%: consider enabling arena-based allocation
-  (already spec'd as optional in Phase 3). Measure the improvement.
-- If `poolListHead` contention is high (many new pages being created): consider
-  a larger initial pool page pre-allocation or batch allocation.
+### Required Measurements per Thread Count
 
-**Acceptance:**
-  - Throughput scales roughly linearly from 1 to 4 threads (within 20% of
-    linear).
-  - Pool CAS retry rate documented for each thread count.
-  - Arena-based allocation, if enabled, reduces pool CAS retry rate by at
-    least 50% at 8+ threads.
-  - Lock wait times are negligible (<1% of total operation time) for
-    different-file workloads.
+1. **Throughput scaling.** Ideal: linear (N× throughput at N threads).
+   Realistic: 0.7×–0.9× per doubling.
+2. **Per-epoch lock wait time.** Average and p99. Should be near zero for
+   different-file workloads.
+3. **Pool `poolState` CAS retry rate.** Percentage of CAS calls that fail
+   (retry). Expected: <5% at 4 threads, <10% at 8, <20% at 16.
+4. **`poolListHead` CAS retry rate.** Expected: near zero (only fires once
+   per 255 allocations).
+5. **`versionRootPtr` CAS retry rate.** Expected: zero under per-file locking.
+
+### What to Fix
+
+| Issue | Fix |
+|-------|-----|
+| poolState CAS retry > 20% at 8 threads | Enable arena allocation (Phase 3 optional) |
+| Throughput doesn't scale past 4 threads | Identify bottleneck (lock, CAS, cache, disk) |
+| Lock wait time significant | Check global lock not held unnecessarily |
+
+### Acceptance
+- [ ] Throughput scaling documented for 1–16 threads
+- [ ] CAS retry rates documented
+- [ ] Arena allocation enabled if retry rate exceeds 30%, with before/after comparison
+- [ ] Summary in `docs/CONTENTION.md`
 
 ---
 
 ## Workload 10.5 — Crash Recovery Testing
 
-**What:** Systematically test crash recovery by killing the process at various
-points during writes and GC, then remounting and verifying data integrity.
+### What
+Systematically `kill -9` the process at various points and verify data
+integrity on remount.
 
-**Why:** The VFS claims crash safety via lazy mirror and shadow-compaction GC.
-This must be empirically validated, not just reasoned about.
+### Test Harness: `test/test_crash.c`
 
-**How:**
-- Test harness: `test/test_crash.c`. Spawns a child process that performs VFS
-  operations, then kills it with `SIGKILL` at a random or controlled point.
-  The parent remounts the backing file and verifies consistency.
-- Crash scenarios:
-  1. **Mid-write to single-copy page:** write 8KB, kill before `mirrorPage`
-     link. Remount: page is either intact (old data) or lost (CRC failure →
-     NULL). No corruption of other pages.
-  2. **Mid-write to mirrored page:** write to a page that already has a mirror.
-     Kill mid-write. Remount: data is either old or new, never torn.
-  3. **During GC (before swap):** kill after GC has written new pool pages
-     but before superblock swap. Remount: old tree intact, no data loss.
-  4. **During GC (after swap, before deferred-free):** kill after swap but
-     before old pages freed. Remount: new tree active, old pages in deferred-
-     free queue or reclaimed.
-  5. **During snapshot (epoch increment):** kill before any write at new epoch.
-     Remount: old epoch, no corruption.
-  6. **During commit:** kill after TouchedFile scan but before mapper write.
-     Remount: snapshot still uncommitted, data intact.
-- For each scenario, run at least 100 iterations to catch low-probability
-  races.
-- Verify: no double-allocated pages, no dangling VirtualPtrs, no corrupted
-  file data. The verification reads every file in the tree and compares
-  against expected content.
+```
+for each scenario:
+    for iteration = 1..100:
+        child = fork()
+        if child == 0:
+            // CHILD PROCESS
+            vfs_open("crash.vfs")
+            perform scenario-specific operations
+            // NO explicit flush (except where scenario requires it)
+            // PARENT kills at random or controlled point:
+            usleep(random_delay)
+            // child exits or is killed
+        else:
+            // PARENT PROCESS
+            wait for child to finish or kill it
+            vfs_open("crash.vfs")  // remount
+            validate_tree()         // walk all files, verify content
+            vfs_close()
+```
 
-**Acceptance:**
-  - All crash scenarios pass 100 iterations without data corruption.
-  - Mid-write crashes never corrupt pages other than the one being written.
-  - GC crashes never leave the tree in an inconsistent state.
-  - Documentation of any scenarios where data loss is possible (single-copy
-    page write is the only known case).
+### Crash Scenarios (All 100 iterations Each)
+
+1. **Mid-write, single-copy page.** Write to a page that has never been
+   written before. Kill before the PageHeader is written. Remount: page
+   is NULL (never written) or intact (old data). Never torn.
+2. **Mid-write, mirrored page.** Write to a page that already has a mirror.
+   Kill at random offset within the write. Remount: page is either old or
+   new. Never torn — CRC validates on one half.
+3. **During mirror allocation.** Write to a page for the second time. Kill
+   between sibling write and original's `mirrorPage` update. Remount:
+   original intact (gen=1, mirror=-1). Sibling is zombie.
+4. **During GC, before swap.** Kill after GC has written new pool pages but
+   before superblock swap. Remount: old tree intact.
+5. **During GC, after swap, before deferred-free.** Kill after swap but
+   before old pages freed. Remount: new tree active.
+6. **During snapshot.** Kill after `currentEpoch += 2` but before any write
+   at new epoch. Remount: old epoch, no corruption.
+7. **During commit.** Kill after TouchedFile scan but before mapper write.
+   Remount: snapshot still uncommitted, data intact.
+8. **Power loss during flush.** Kill during `storage_flush(-1)`. Remount:
+   superblock may be old or new. Lazy mirror ensures whichever superblock
+   is active points to a consistent tree.
+
+### Validation Function
+
+```c
+void validate_tree(vfs_t* vfs) {
+    // Walk entire tree from root
+    // For each file: read every page, verify CRC, verify content matches
+    // expected (pre-recorded before the crash test)
+    // Report any mismatches
+}
+```
+
+### Acceptance
+- [ ] All 8 scenarios × 100 iterations = 800 crash tests pass
+- [ ] No data corruption in any scenario
+- [ ] Single-copy write loss is the ONLY acceptable data loss
+- [ ] Document any scenarios where data loss occurred (even if acceptable)
 
 ---
 
 ## Workload 10.6 — Fuzzing
 
-**What:** Inject random bit flips into page data and verify that CRC32C
-detection catches the corruption and the system degrades gracefully.
+### What
+Inject random bit flips into the backing file and verify the VFS detects
+all corruption and degrades gracefully (no crashes, no panics, no assertion
+failures).
 
-**Why:** Silent data corruption from storage media (bit rot, SSD errors) must
-be detected, not silently propagated. The CRC32C on every page is the primary
-defense.
+### Test Harness: `test/test_fuzz.c`
 
-**How:**
-- Test harness: read a pool page or data page from the backing file, flip
-  one or more bits in the payload, write it back, then attempt to read via
-  the VFS. Verify:
-  - The corrupt page is detected (CRC32C mismatch).
-  - For data pages: the lazy mirror fallback returns the other half.
-  - For pool pages: the entry is treated as unallocated (chain terminates).
-- Test corner cases:
-  - Corrupt the PageHeader itself (generation field, mirrorPage field,
-    checksum field). Verify the page is rejected.
-  - Corrupt a VirtualPtr in a pool entry (point to a non-existent page).
-    Verify the chain terminates or the reference is treated as null.
-  - Corrupt the superblock. Verify mount detects it and falls back to the
-    alternate half.
-- Run fuzzing for at least 10,000 random corruptions across different page
-  types and offsets.
+```
+for iteration = 1..10000:
+    vfs_open("fuzz.vfs")
+    // populate with known data
+    create files, write data
+    vfs_close()
 
-**Acceptance:**
-  - All corruptions are detected (no silent data corruption passes through).
-  - The VFS never crashes on corrupted input (graceful degradation).
-  - Lazy mirror fallback works for data page corruption.
-  - Superblock fallback works for superblock corruption.
+    // Corrupt the backing file
+    fd = open("fuzz.vfs", O_RDWR)
+    // pick random page, random offset, flip 1-8 random bits
+    offset = random_page_offset()
+    byte = random_byte()
+    bitmask = random_bitmask()
+    pread(fd, &original, 1, offset)
+    pwrite(fd, &(original ^ bitmask), 1, offset)
+    close(fd)
+
+    // Remount and verify
+    vfs_open("fuzz.vfs")
+    walk tree, read all files
+    // Expect: some reads fail (CRC mismatch), but NO crashes, NO hangs
+    vfs_close()
+```
+
+### Expected Behaviors Under Corruption
+
+| Corruption Location | Expected Behavior |
+|---------------------|-------------------|
+| PageHeader checksum | Page rejected (CRC mismatch) |
+| PageHeader generation | Page rejected or alternate half used |
+| PageHeader mirrorPage | Lazy mirror fallback fails → page lost |
+| Data page payload | CRC mismatch → fallback to mirror half |
+| Pool page payload | Entry treated as unallocated → chain terminates |
+| VirtualPtr in chain | Points to garbage → treated as null (0) |
+| Superblock | Mount detects → falls back to alternate superblock half |
+| StorageBackend header | Mount rejects → file not a valid VFS |
+
+### Acceptance
+- [ ] 10,000 corruptions, zero crashes
+- [ ] All corruptions detected (no silent data corruption)
+- [ ] Lazy mirror fallback works for data page corruption
+- [ ] Superblock fallback works for superblock corruption
+- [ ] Summary in `docs/FUZZING.md`
 
 ---
 
 ## Workload 10.7 — Platform Matrix & CI
 
-**What:** Ensure the VFS compiles and passes all tests on every supported
-platform. Set up continuous integration.
+### What
+Continuous integration that builds and tests on all 5 platforms.
 
-**Why:** The VFS uses platform-specific intrinsics (SSE4.2, ARMv8 CRC32) and
-atomics. It must work correctly on Linux x86_64, Linux aarch64, macOS x86_64,
-macOS aarch64, and Windows x86_64.
+### GitHub Actions Workflow (`.github/workflows/ci.yml`)
+```yaml
+name: CI
+on: [push, pull_request]
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        arch: [x86_64]
+        include:
+          - os: ubuntu-latest
+            arch: aarch64
+          - os: macos-latest
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: cd build && ctest --output-on-failure
+```
 
-**How:**
-- CI pipeline (GitHub Actions or similar): on each push, build and test on
-  all five platforms.
-- Build matrix: `cmake -DCMAKE_BUILD_TYPE=Release .. && cmake --build .`
-- Test matrix: `ctest --output-on-failure`
-- Sanitizer builds (optional, slower): add `-fsanitize=address,undefined` to
-  debug builds on Linux. Run the test suite under AddressSanitizer and
-  UndefinedBehaviorSanitizer. No leaks, no buffer overflows, no use-after-free.
-- Valgrind (optional, Linux): `valgrind --leak-check=full ./vfs_test`. No
-  memory leaks.
-- Performance is NOT tested in CI (hardware-dependent). Only correctness.
+### Sanitizer Build (Linux only, manual trigger)
+```yaml
+  sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure with sanitizers
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug
+             -DCMAKE_C_FLAGS="-fsanitize=address,undefined"
+      - name: Build & Test
+        run: cmake --build build && cd build && ctest
+```
 
-**Acceptance:**
-  - All tests pass on all five platforms.
-  - ASan/UBSan clean on Linux x86_64.
-  - Valgrind reports no leaks.
-  - CI badge in the repository README shows passing status.
+### Valgrind (Linux only, manual trigger)
+```bash
+valgrind --leak-check=full --track-origins=yes ./vfs_test
+```
+
+### Acceptance
+- [ ] All tests pass on all 5 platforms in CI
+- [ ] ASan/UBSan clean (zero errors)
+- [ ] Valgrind reports no leaks, no use-after-free, no uninitialized reads
+- [ ] CI badge in README shows passing
 
 ---
 
 ## Workload 10.8 — Documentation
 
-**What:** Write a user-facing README and API reference.
+### What
+User-facing `README.md` and `docs/API.md`.
 
-**Why:** The spec and implementation phases are internal. External consumers
-need a concise document describing how to build, link, and use the library.
+### README.md Sections Required
+1. What is iXSphereVFS (2-3 sentences)
+2. Quick-start: build + example code (open, create file, write, read, close)
+3. Build requirements (CMake 3.16+, C11 compiler, pthreads)
+4. Platform support table
+5. Link to full API reference
+6. CI badge
 
-**How:**
-- `README.md`: project overview, build instructions (`cmake .. && make`),
-  quick-start example (open, create file, write, read, close), link to the
-  full API reference.
-- `docs/API.md`: one section per API function, describing parameters, return
-  values, error codes, and thread safety. Generated from the public header
-  comments or written manually.
-- Document the epoch model: what epochs are, how snapshots work, how commit
-  and soft-delete behave, and when to call GC.
-- Document platform support and known limitations (single-copy write risk,
-  maximum file size, manual GC requirement).
+### docs/API.md Sections Required
+- Instance management: `vfs_open`, `vfs_close`, `vfs_flush`
+- File operations: `vfs_create`, `vfs_open_file`, `vfs_read`, `vfs_write`,
+  `vfs_delete`, `vfs_file_size`, `vfs_file_mtime`, `vfs_file_ctime`
+- Directory operations: `vfs_mkdir`, `vfs_rmdir`, `vfs_readdir`, `vfs_rename`
+- Locking: `vfs_lock`, `vfs_unlock` with locking rules
+- Snapshot & commit: `vfs_snapshot`, `vfs_commit`, `vfs_delete_snapshot`
+- GC: `vfs_gc`
+- Error handling: `vfs_last_error`, `vfs_error_string`, error code table
+- Thread safety notes
+- Known limitations: single-copy write risk, manual GC, max file size
 
-**Acceptance:**
-  - A developer unfamiliar with the VFS can build and run the quick-start
-    example in under 5 minutes.
-  - API reference covers every public function.
-  - Platform support table lists all five platforms with build status.
+### Acceptance
+- [ ] New developer can build and run quick-start in under 5 minutes
+- [ ] API reference covers every public function
+- [ ] Platform table lists all 5 platforms with build status
+- [ ] Known limitations documented
 
 ---
 
-## Deliverables
+## Final Phase 10 Checklist
 
-| File | Purpose |
-|------|---------|
-| `bench/bench.c` | Benchmark harness with configurable workloads |
-| `test/test_crash.c` | Crash recovery test harness (fork/kill/verify) |
-| `test/test_fuzz.c` | Fuzzing harness for corruption detection |
-| `docs/API.md` | API reference documentation |
-| `README.md` | Updated with build instructions and quick-start |
-
-## Success Criteria
-- Benchmark tool produces repeatable, documented results.
-- Hot path analysis identifies top CPU consumers matching the performance model.
-- Cache hit rate ≥95% at default 256 MB for OLTP workload.
-- Throughput scales to 4 threads with minimal lock contention.
-- Crash recovery passes 100 iterations per scenario without corruption.
-- Fuzzing detects 100% of injected corruptions.
-- CI passes on all five platforms.
-- Sanitizers and Valgrind report no errors.
+- [ ] Benchmark produces repeatable results; hot path analyzed and documented
+- [ ] Cache hit rate ≥95% at default 256 MB
+- [ ] Throughput scales to 4 threads within 20% of linear
+- [ ] 800 crash tests (8 scenarios × 100) pass without corruption
+- [ ] 10,000 fuzz iterations detect 100% of corruptions, zero crashes
+- [ ] CI green on all 5 platforms
+- [ ] Sanitizers and Valgrind clean
+- [ ] Documentation complete (README + API reference + performance/cache/contention/fuzzing reports)
