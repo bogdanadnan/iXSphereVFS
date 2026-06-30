@@ -31,9 +31,8 @@ makes GC compaction trivial (just copy surviving slots sequentially).
   slot, no MetaPoolLink. The old v1 design had a second chain pointer here;
   v2 uses only `nextPoolPage` for chaining.
 - The pool page itself is a logical page with a standard 16-byte PageHeader
-  before the payload. The PageHeader's `pageType` is `0x02` (PoolPage) and
-  `flags` is 0. The flush priority bits in `flags` are set by the VFS layer
-  according to the page's role (priority 1 for pool pages).
+  before the payload. The PageHeader `flags` field encodes the flush priority in
+  bits 0–1 (priority 1 for pool pages).
 
 **Acceptance:**
   - A freshly allocated pool page has `freeCount = 255`, `firstFreeSlot = 0`.
