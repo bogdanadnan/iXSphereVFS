@@ -2,250 +2,526 @@
 
 ## Goal
 Page-level allocation with a dynamic indirection table, lazy mirror crash-safety,
-file I/O with a unified page cache, and ordered flush with priority-based
-write-back. All page indices seen by upper layers are logical — the StorageBackend
-owns the physical backing file and the logical-to-physical mapping.
+file I/O with a unified page cache, and ordered flush. Every other phase depends
+on the StorageBackend for page allocation and I/O. This phase must be rock-solid
+before Phase 3 begins.
+
+## Non-Negotiable Constraints
+
+- **All APIs blocking or return-ready.** No callbacks, no async I/O, no
+  completion ports. Every function blocks until done.
+- **The VFS layer never sees a PageHeader.** `Read` and `Write` operate on
+  payload buffers only. The 16-byte header is added/stripped transparently
+  by the StorageBackend.
+- **Thread safety.** `Allocate`, `Acquire`, `Read`, `Write`, and the page
+  cache must be safe for concurrent use. Use the atomics from Phase 1.
+  No global mutex — per-bucket or per-structure locking only.
+- **Crash safety.** A `SIGKILL` at any point must leave the backing file in
+  a recoverable state. Test this. Do not assume it works — prove it.
+- **No leaks.** Every allocated page must be trackable. The test suite's
+  Valgrind/ASan run must be clean.
+
+---
+
+## File Organization
+
+Before starting, create these files (empty stubs compile against Phase 1):
+
+| File | Purpose |
+|------|---------|
+| `src/storage.h` | Internal header shared by storage `.c` files |
+| `src/storage.c` | File layout, bootstrap, mount, Allocate/Acquire/Free |
+| `src/indirection.c` | Indirection table: lookup, growth, overflow chain |
+| `src/lazy_mirror.c` | Lazy mirror read/write logic |
+| `src/page_cache.c` | Unified page cache with LRU eviction |
+| `test/test_storage.c` | All tests for this phase |
 
 ---
 
 ## Workload 2.1 — File Layout & XVFS Magic
 
-**What:** Define the structure of the backing file: a header page that doubles
-as the first indirection directory page, followed by dynamically chained
-indirection overflow pages and physical page data. Encode a 4-byte "XVFS"
-magic number for file identification on mount.
+### What
+Define the exact byte layout of the StorageBackend header page. This is the
+first 8KB of the backing file and must be self-describing.
 
-**Why:** The backing file must be self-describing. On mount, the system needs
-to verify it is opening a valid iXSphereVFS file — not arbitrary data — and
-read the configuration needed to initialize the allocator.
+### The Header Page (Logical Page 0)
 
-**How:**
-- Logical page 0 is the StorageBackend header. Its PageHeader `flags` field
-  carries `0x56585346` — the ASCII string "XVFS" in little-endian byte order.
-  This is the magic number.
-- The header page payload serves double duty: the first 40 bytes are
-  configuration fields; the remainder (~1,020 entries at page_size=8192) is
-  inline indirection entries. Small files never need a separate indirection
-  page.
-- Config fields (offset 0): `total_pages` (8 bytes, highest allocated logical
-  page + 1), `page_size` (8 bytes, default 8192, caller-configurable at
-  creation time), `segment_size` (4 bytes, uint32_t, default 1024 — pages
-  per FileContent segment), `reserved` (4 bytes), `physical_tail` (8 bytes —
-  next available physical byte offset).
-- Inline indirection entries start at offset 40. Each entry is an `int64_t`:
-  0 = free / never-written. Non-zero = physical byte offset within the
-  backing file. A physical page at offset O occupies `page_size + 16` bytes
-  (16-byte PageHeader + payload).
-- On mount: read logical page 0, validate `flags == 0x56585346` and CRC32C
-  on the payload. If either check fails, reject — not a valid VFS file.
-- On create: write header page 0 with `total_pages = 2`, `page_size = 8192`,
-  `segment_size = 1024`, `physical_tail = 2 * (page_size + 16)`. Set inline
-  entries 0 and 1 to their computed physical offsets (0, page_size + 16).
-  All other inline entries remain 0 (free). `indirection_head = 0` (no
-  overflow pages yet).
+Every field is little-endian. Offsets are from the start of the payload
+(after the 16-byte PageHeader).
 
-**Acceptance:**
-  - A freshly created backing file passes the magic + CRC validation on open.
-  - Opening a file that lacks the magic fails with `VFS_ERR_IO`.
-  - `total_pages`, `page_size`, `segment_size`, `physical_tail` read back
-    correctly after creation.
+```
+Offset  Size  Type     Name             Description
+──────  ────  ───────  ────────         ───────────
+  0      8    int64_t  total_pages      Highest allocated logical page + 1. Starts at 2 (pages 0 and 1).
+  8      8    int64_t  page_size        Payload size in bytes. Default 8192. Read from header at mount.
+ 16      4    uint32_t segment_size     Pages per FileContent segment. Default 1024. Read from header at mount.
+ 20      4    —        reserved         Zero-filled, reserved for future use.
+ 24      8    int64_t  physical_tail    Next available physical byte offset. Advance by (page_size + 16) per allocation.
+ 32      8    int64_t  indirection_head Logical page index of first overflow indirection page. 0 if none.
+ 40   ~8160   int64_t  entries[]        Inline indirection entries. 0 = free. Non-zero = physical byte offset.
+```
+
+### The PageHeader for Logical Page 0
+
+The `flags` field must be `0x56585346`. This is the ASCII string `"XVFS"`
+in little-endian. This is the ONLY magic check. No separate `pageType` field.
+
+### Step-by-Step: Create a New Backing File
+
+1. `fd = open(path, O_RDWR | O_CREAT, 0644)`. If the file already exists,
+   this is an OPEN, not a create — see Workload 2.6.
+2. Reserve logical pages 0 and 1. These are special: you cannot use `Allocate`
+   because the indirection table IS what `Allocate` uses. Directly compute
+   their physical offsets:
+   - Page 0 offset = 0
+   - Page 1 offset = page_size + 16
+3. Prepare the header page 0 payload in an 8KB buffer:
+   - `total_pages = 2`
+   - `page_size = 8192` (or caller-specified value)
+   - `segment_size = 1024`
+   - `physical_tail = 2 * (page_size + 16)` (pages 0 and 1 consumed)
+   - `indirection_head = 0` (no overflow pages)
+   - Set entry[0] = 0 (physical offset of page 0)
+   - Set entry[1] = page_size + 16 (physical offset of page 1)
+   - All other entries = 0 (free)
+4. Write the header page: `Write(0, buffer)`. The StorageBackend adds the
+   16-byte PageHeader with `flags = 0x56585346`, computes CRC32C, and writes.
+5. Page 1 is the superblock. The VFS layer (Phase 5) will call `Acquire(1)`
+   to reserve it and write the superblock payload.
+
+### Step-by-Step: Open an Existing Backing File
+
+1. `fd = open(path, O_RDWR)`. Fail if the file does not exist.
+2. Read the header page: `payload = Read(0)`. This validates CRC32C.
+3. Check `flags == 0x56585346` on the PageHeader. If not, this is not a
+   valid iXSphereVFS file — close the fd and return NULL.
+4. Read `total_pages`, `page_size`, `segment_size`, `physical_tail`,
+   `indirection_head` from the header payload.
+5. Load the inline entries from offset 40.
+6. If `indirection_head != 0`, walk the overflow chain and load additional
+   entries (Workload 2.2).
+7. Build the in-memory logical-to-physical mapping. This is a dynamic array
+   or hash table mapping `logical_page → physical_offset`.
+
+### Structs to Define in `storage.h`
+
+```c
+typedef struct {
+    int64_t total_pages;
+    int64_t page_size;
+    uint32_t segment_size;
+    int64_t physical_tail;
+    int64_t indirection_head;
+    int64_t* inline_entries;        // points into the header page buffer
+    int     inline_entry_count;     // (page_size - 40) / 8
+    // overflow chain info filled in Workload 2.2
+} StorageHeader;
+```
+
+### Acceptance (Checklist)
+- [ ] Create a new file → open it → `total_pages` is 2, `page_size` is 8192
+- [ ] Open a non-VFS file → fails with error
+- [ ] Open a VFS file with corrupted CRC → fails with error
+- [ ] Open a VFS file with wrong magic → fails with error
+- [ ] Create → close → reopen → `physical_tail` reads back correctly
+- [ ] `segment_size` reads back as 1024
 
 ---
 
 ## Workload 2.2 — Indirection Table
 
-**What:** An indirection table mapping logical page indices to physical byte
-offsets. The header page provides inline entries for the first ~1,020 logical
-pages. Overflow pages are allocated dynamically and chained via a `next`
-pointer. Allocation is sequential via an atomic `physical_tail` counter —
-no bitmap, no zone scanning.
+### What
+A mapping from logical page index to physical byte offset. Inline entries in
+the header cover pages 0..~1019. Overflow pages are dynamically allocated and
+chained via `indirection_head`.
 
-**Why:** Physical contiguity produces sequential disk I/O even under concurrent
-writers. An atomic tail is O(1) per allocation with a single CAS. The inline
-header entries eliminate a separate page allocation for small files.
+### Data Structures
 
-**How:**
-- The header page holds inline entries starting at offset 40, covering the
-  first `(page_size - 40) / 8` logical pages.
-- Additional logical pages are covered by overflow pages, chained from
-  `indirection_head` (offset 32 of the header, 0 if no overflow). Each
-  overflow page layout: `next` (8 bytes at offset 0, logical page index
-  of next overflow page, 0 = end of chain), then entries (int64_t array
-  filling the rest of the page — `(page_size / 8) - 1` entries per page).
-- To find the indirection entry for logical page N: if N < inline_capacity,
-  read `header_payload[40 + N * 8]`. Otherwise, walk the overflow chain,
-  tracking entries_so_far, until reaching the page containing N. The entry
-  is at offset `8 + (N - entries_so_far) * 8` within that page.
-- `Allocate(count)`: find `count` consecutive logical pages whose indirection
-  entries are 0. For each, atomically advance `physical_tail` by
-  `page_size + 16` via CAS, and write the old tail value into the entry.
-  Returns the first logical page index, or -1 if out of space in the
-  StorageBackend. Multi-page allocations are physically contiguous.
-- `Acquire(page)`: CAS-set a specific indirection entry from 0 to an
-  allocated physical offset via `physical_tail`. Returns true on success.
-  Used for fixed-location reservations (superblock at page 1).
-- `Free(page)`: set the indirection entry to 0. Physical space is not
-  reclaimed — it becomes unreachable and is compacted by GC. If the
-  page has a mirror sibling, free the sibling too.
-- Thread safety: a single atomic CAS on `physical_tail` replaces zone-based
-  scanning. Contention only at the tail counter.
-- When the indirection table capacity is exhausted (no free logical pages
-  within the current inline + overflow range), allocate a new overflow page
-  via `Allocate(1)`, zero-fill it, and CAS-append it to the end of the
-  overflow chain.
+```c
+// One overflow page in the chain
+typedef struct IndirPage {
+    int64_t next;            // logical page index of next overflow page, 0 = end
+    int64_t entries[];       // (page_size / 8) - 1 entries
+} IndirPage;
 
-**Acceptance:**
-  - Allocate 1 page: entry becomes non-zero, page is zero-filled.
-  - Allocate 10 pages: entries are sequential physical offsets, returned
-    index is the first.
-  - Acquire a specific page that is free: returns true, entry is non-zero.
-  - Acquire an already-allocated page: returns false.
-  - Free a page: entry returns to 0, physical space not reclaimed.
-  - Allocate beyond the inline entry count: an overflow page is created and
-    chained via `next`.
-  - Four concurrent threads allocate 10,000 pages each: physical offsets are
-    sequential, no double-allocations, total matches 40,000 allocated.
+// In-memory state for the indirection table
+typedef struct {
+    int64_t* inline_entries; // points into header page buffer
+    int     inline_count;    // (page_size - 40) / 8
+    // dynamically-grown array of overflow page pointers
+    IndirPage** overflow_pages;
+    int     overflow_count;
+} IndirectionTable;
+```
+
+### Lookup: `indirection_lookup(logical_page) → physical_offset`
+
+```
+if logical_page < inline_count:
+    return inline_entries[logical_page]   // 0 = free
+else:
+    remaining = logical_page - inline_count
+    entries_per_overflow = (page_size / 8) - 1
+    overflow_idx = remaining / entries_per_overflow
+    entry_idx = remaining % entries_per_overflow
+    return overflow_pages[overflow_idx]->entries[entry_idx]
+```
+
+### Allocation: `Allocate(count)`
+
+```
+1. Scan inline_entries for 'count' consecutive zeros.
+2. If found:
+   a. For each page: CAS advance physical_tail by (page_size + 16).
+      old_tail = CAS(&header->physical_tail, current, current + (page_size + 16))
+      If CAS fails, retry with new current value.
+   b. Write old_tail into the inline entry.
+   c. Return the first logical page index.
+3. If not found in inline entries, scan overflow pages.
+4. If not found anywhere:
+   a. Allocate a new overflow page via Allocate(1) (yes, this recurse — the
+      new page needs its own indirection entry; see bootstrap below).
+   b. Zero-fill the new overflow page.
+   c. Append it to the overflow chain: walk to the end, CAS-append.
+   d. Now entries are available in the new page — resume scan from step 3.
+```
+
+### Bootstrap Note for Overflow Pages
+When `Allocate(1)` is called and the indirection table has no room, the new
+overflow page ITSELF needs an indirection entry. This is a chicken-and-egg
+problem. Solve it: before scanning for `count` entries, ensure the indirection
+table has capacity for at least `count` more entries. If not, allocate the
+overflow page directly (reserve a physical slot via `physical_tail`, write
+both the page's own entry AND make room in the overflow chain). This is the
+only place `Allocate` calls itself — and it's exactly once per overflow page
+creation.
+
+### Acquire: `Acquire(logical_page) → bool`
+
+```
+1. Find the indirection entry for logical_page.
+2. If entry != 0: return false (already allocated).
+3. CAS advance physical_tail by (page_size + 16).
+4. CAS-set the entry from 0 to the old tail value.
+   If CAS fails (another thread acquired this page in the meantime):
+   return false.
+5. Return true.
+```
+
+### Free: `Free(logical_page)`
+
+```
+1. Find the indirection entry.
+2. Set it to 0. (Atomic store, release semantics.)
+3. If the PageHeader for this logical page has mirrorPage != -1:
+   set the mirror's indirection entry to 0 as well.
+4. Physical space is NOT reclaimed. Future optimization: push old offset
+   onto a free stack (deferred).
+```
+
+### Thread Safety Rules
+- `physical_tail` uses `vfs_cas_i64`
+- Indirection entry writes use `vfs_atomic_store_i64`
+- Overflow chain append uses `vfs_cas_i64` on the last page's `next` field
+- `total_pages` header field uses `vfs_cas_i64` for updates
+- NO scanning of bitmaps, NO zone cursors, NO per-thread state
+
+### Acceptance
+- [ ] `Allocate(1)` returns page 2 (pages 0–1 reserved)
+- [ ] `Allocate(10)` returns sequential pages, all entries are non-zero with
+  incremental physical offsets
+- [ ] `Allocate(1)` 1,020 times (exhausting inline entries) → next allocation
+  creates an overflow page and succeeds
+- [ ] `Acquire(5)` on a free page returns true; second `Acquire(5)` returns false
+- [ ] `Free(page)` sets entry to 0; `Read(page)` returns NULL
+- [ ] 4 threads × 10,000 allocations each: total allocated = 40,000, no
+  double-allocations, physical offsets are sequential within each thread's call window
+- [ ] After exhausting inline entries + one overflow page, the overflow chain
+  contains the correct number of pages
 
 ---
 
 ## Workload 2.3 — Lazy Mirror Pages
 
-**What:** Crash-safe page writes using a lazy mirror scheme. Every logical
-page is a single copy on first write; a mirror sibling is allocated only
-on the second write. The PageHeader's `mirrorPage` and `generation` fields
-track the mirror state.
+### What
+Every `Write` to a logical page goes through the lazy mirror mechanism:
+- First write: gen=1, mirrorPage=-1. Single copy.
+- Second write: allocates a sibling page, links them.
+- Subsequent writes: alternate between the two pages.
 
-**Why:** Eagerly allocating two physical pages for every logical page doubles
-storage. Most pages are write-once. Deferring the mirror allocation saves
-significant space.
+### Required Function Signatures
 
-**How:**
-- Every logical page is backed by `page_size + 16` bytes of physical storage
-  (16-byte PageHeader + `page_size`-byte payload). The physical offset comes
-  from the indirection table entry.
-- PageHeader fields: `flags` (4 bytes, priority in bits 0–1), `checksum` (4),
-  `generation` (4), `mirrorPage` (4, signed, -1 = no mirror).
-- First write: build payload, compute CRC32C, write PageHeader with
-  `generation = 1`, `mirrorPage = -1`. This is the only copy.
-- Second write: allocate a new logical page (the mirror sibling). Build the
-  new payload, set its `generation = 2`, `mirrorPage = original`. Write the
-  sibling page. Then atomically write `mirrorPage = sibling` on the original
-  page header. The sibling is now reachable and has the higher generation.
-- Subsequent writes: read both headers, find the inactive one (lower
-  generation), write to it with `generation = active.generation + 1`.
-- Read: check `mirrorPage`. If -1, this is a single-copy page — read the
-  payload and validate CRC32C. If not -1, read both headers, compare
-  generations, read the payload from the higher-generation page, validate
-  CRC32C. If CRC fails, try the other page.
-- Crash at mirror allocation: the original is intact (gen=1, mirror=-1).
-  The sibling is an unreachable zombie — harmless, reclaimed by GC.
-- Single-copy risk: before a mirror exists, a crash during any write may
-  corrupt the sole copy. This risk window is exactly one write per page.
-  Once the mirror exists, subsequent writes are protected.
+```c
+// Internal to storage.c — called by Read/Write
+int     mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload);
+int     mirror_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload);
+```
 
-**Acceptance:**
-  - Write page, read back: payload matches.
-  - Second write to same page triggers mirror allocation: verify both pages
-    exist and links are correct.
-  - Kill process during mirror creation (before `mirrorPage` write): on
-    remount, original is intact, sibling is a zombie.
+### mirror_write Logic
+
+```
+1. Look up the indirection entry for logical_page → get physical_offset.
+2. Read the PageHeader at physical_offset (16 bytes).
+3. If mirrorPage == -1 AND generation == 0:
+   // never written — first write
+   compute CRC32C of payload
+   write PageHeader {flags preserved, checksum, generation=1, mirrorPage=-1}
+   write payload at physical_offset + 16
+4. If mirrorPage == -1 AND generation >= 1:
+   // second write — allocate mirror
+   sibling = Allocate(1)
+   compute CRC32C of payload
+   write sibling's PageHeader {flags, checksum, generation=2, mirrorPage=logical_page}
+   write payload at sibling_offset + 16
+   // link original to sibling
+   atomically write mirrorPage = sibling on original PageHeader at offset 12
+5. If mirrorPage != -1:
+   // mirror exists — alternate write
+   read both headers, find the one with LOWER generation
+   new_gen = active_gen + 1
+   compute CRC32C of payload
+   write PageHeader {flags, checksum, generation=new_gen, mirrorPage preserved}
+   write payload
+```
+
+### mirror_read Logic
+
+```
+1. Look up indirection entry → get physical_offset.
+2. Read PageHeader at physical_offset.
+3. If mirrorPage == -1:
+   validate CRC32C on payload
+   if valid: copy payload to out_buffer, return 0
+   if invalid: return -1 (single copy is corrupt)
+4. If mirrorPage != -1:
+   read sibling's PageHeader
+   pick the page with HIGHER generation
+   validate CRC32C on its payload
+   if valid: copy to out_buffer, return 0
+   if invalid: try the other page
+   if both invalid: return -1
+```
+
+### Crash Safety Requirement
+The mirror allocation is the critical moment. If the process is killed after
+writing the sibling but BEFORE writing `mirrorPage` on the original, the
+original must be intact (gen=1, mirror=-1) on remount. The sibling is
+unreachable (no indirection entry for the mirror yet). Test this by writing
+a page, then writing it again, and `kill -9` during the second write's mirror
+allocation.
+
+### Acceptance
+- [ ] First write → read back → payload matches
+- [ ] Second write to same page → read back → new payload
+- [ ] Third write → read back → third payload
+- [ ] `kill -9` during mirror allocation → remount → original gen=1 intact
+- [ ] `kill -9` during mirrored write → remount → page is either old or new,
+  never torn, CRC always valid on the active half
+- [ ] `Read` on a never-written page returns NULL (indirection entry is 0)
 
 ---
 
-## Workload 2.4 — File I/O
+## Workload 2.4 — File I/O (Read, Write, Flush)
 
-**What:** `Read` and `Write` operations on logical pages, with transparent
-PageHeader management, CRC32C validation, and a `Flush` function for
-durability. A per-page write-back mechanism reduces the data loss window
-without blocking writers.
+### What
+The public I/O API. Thin wrappers around the indirection table + lazy mirror
++ page cache.
 
-**Why:** The VFS layer must never see PageHeaders or deal with physical
-addressing. The StorageBackend provides a clean `Read(page) → payload`,
-`Write(page, payload)` interface.
+### Read
 
-**How:**
-- `Read(logicalPage)`: look up the physical offset from the indirection
-  table. Check the unified page cache (Workload 2.5). On hit, return the
-  cached payload. On miss, apply lazy mirror logic to pick the correct
-  physical page, validate CRC32C on the payload, insert into the cache as
-  clean, and return the payload buffer. Returns NULL if the indirection
-  entry is 0 (never written).
-- `Write(logicalPage, data)`: accept a `page_size`-byte payload buffer.
-  Apply lazy mirror logic. The page is marked dirty in the cache — NOT
-  written to disk.
-- `Flush(logicalPage)`: if `logicalPage < 0`, write ALL dirty pages to the
-  backing file in priority order and call `fsync`. If `logicalPage >= 0`,
-  write only that single page without fsync.
-- The flush priority (0=data, 1=pool, 2=indirection, 3=superblock) is read
-  from the PageHeader `flags` bits 0–1 of each dirty page. The VFS layer sets
-  these bits at allocation time. The StorageBackend maintains separate dirty
-  lists per priority.
-- Write-back: priority 0 (data pages) only — pool, indirection, and superblock
-  pages are never write-backed and must wait for explicit Flush.
+```c
+uint8_t* storage_read(StorageBackend* sb, int64_t logical_page);
+```
 
-**Acceptance:**
-  - Write payload, Read back: payload matches, CRC32C is valid.
-  - Read a never-written page: returns NULL.
-  - Write, Flush(-1), kill process, remount, Read: payload survives.
+1. Check the page cache (Workload 2.5). On hit, return cached payload.
+2. Look up indirection entry. If 0 → return NULL (never written).
+3. Call `mirror_read` to get the payload into a cache buffer.
+4. Insert buffer into cache as clean.
+5. Return buffer pointer.
+
+### Write
+
+```c
+void storage_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload);
+```
+
+1. Call `mirror_write`.
+2. Mark the page dirty in the page cache. DO NOT write to disk.
+3. The flush priority (0=data, 1=pool, 2=indirection, 3=superblock) is read
+   from the PageHeader `flags` bits 0–1. The VFS set these at allocation time.
+   Maintain per-priority dirty lists for Flush.
+
+### Flush
+
+```c
+void storage_flush(StorageBackend* sb, int64_t logical_page);
+```
+
+1. If `logical_page < 0`: write ALL dirty pages, in priority order (0 first,
+   3 last), to the backing file. Call `fsync`. Mark pages clean.
+2. If `logical_page >= 0`: write only that page (no fsync). Mark it clean.
+
+### Write-Back (Automatic)
+- Only flush priority 0 (data pages). Pool, indirection, and superblock pages
+  are NEVER write-backed — they wait for explicit `Flush`.
+- Triggered when dirty page count crosses a configurable threshold.
+- Non-blocking. Does not fsync. Does not mark pages clean.
+
+### Acceptance
+- [ ] Write page 5 with a known payload → Read page 5 → same payload
+- [ ] Read never-written page → returns NULL
+- [ ] Write, Flush(-1), `kill -9`, remount, Read → payload survives
+- [ ] Write data page (priority 0) + pool page (priority 1) → Flush(-1) →
+    data page written before pool page (verify by inspecting the order of
+    writes to the backing file or by checking file offsets)
+- [ ] Write-back fires when dirty count exceeds threshold (set threshold to
+    2 for testing)
 
 ---
 
 ## Workload 2.5 — Unified Page Cache
 
-**What:** An in-memory cache of page payloads with LRU eviction for clean
-pages. Dirty pages are never evicted. Thread-safe.
+### What
+An in-memory cache of page payloads. Hash table, LRU eviction, thread-safe.
 
-**Why:** Repeated reads of hot metadata pages should not re-read from disk.
+### Data Structures
 
-**How:**
-- Cache entries keyed by logical page index. Each entry holds the
-  `page_size`-byte payload and a state: clean or dirty.
-- Hash table with per-bucket mutexes for thread safety. Default bucket count
-  is 16,384.
-- `Read` checks the cache first. On hit, returns the cached payload
-  immediately. On miss, reads from the backing file via the indirection table,
-  validates CRC32C, inserts into cache as clean.
-- `Write` inserts or updates the cache entry, marks it dirty.
-- `Flush` writes dirty pages to disk in priority order, marks them clean.
-- Eviction: when the total cached page count exceeds the configured budget
-  (default 256 MB = 32,768 pages), evict clean pages via LRU. Dirty pages
-  are skipped.
-- LRU tracking: each entry has a position in a doubly-linked list. On access,
-  the entry moves to the front. Eviction scans from the back.
+```c
+typedef struct CacheEntry {
+    int64_t  logical_page;
+    uint8_t* payload;        // malloc'd, size page_size
+    bool     dirty;
+    // LRU list pointers
+    struct CacheEntry* lru_prev;
+    struct CacheEntry* lru_next;
+    // Hash table chain
+    struct CacheEntry* hash_next;
+} CacheEntry;
 
-**Acceptance:**
-  - Read same page twice: first hits disk, second hits cache.
-  - Fill cache beyond budget: clean pages evicted, dirty pages remain.
+typedef struct {
+    CacheEntry** buckets;    // hash table, size power of 2, default 16384
+    int         bucket_count;
+    pthread_mutex_t* bucket_locks; // one mutex per bucket
+    CacheEntry* lru_head;    // most recently used
+    CacheEntry* lru_tail;    // least recently used
+    int         entry_count;
+    int         max_entries; // default 32768 (256 MB / 8KB)
+} PageCache;
+```
+
+### Cache Lookup: `cache_find(logical_page) → payload or NULL`
+
+```
+bucket = hash(logical_page) % bucket_count
+lock bucket
+walk hash chain in that bucket
+if found:
+    move entry to LRU head
+    unlock bucket
+    return entry->payload
+unlock bucket
+return NULL
+```
+
+### Cache Insert: `cache_insert(logical_page, payload, dirty)`
+
+```
+bucket = hash(logical_page) % bucket_count
+lock bucket
+if entry already exists (race): update payload, set dirty flag, move to LRU head, unlock, return
+allocate CacheEntry, copy payload
+insert into hash chain
+insert at LRU head
+entry_count++
+if entry_count > max_entries:
+    evict clean entries from LRU tail until entry_count <= max_entries
+unlock bucket
+```
+
+### Eviction: `cache_evict()`
+Only evict CLEAN pages. Start at LRU tail, move backward:
+- If entry is dirty: skip.
+- If entry is clean: remove from hash chain, free payload, free entry,
+  decrement entry_count.
+- Stop when `entry_count <= max_entries`.
+
+### Thread Safety
+- One mutex per hash bucket. Write/Read on different buckets proceed
+  concurrently.
+- The LRU list is NOT separately locked — it is modified only while holding
+  the bucket lock of the entry being inserted or accessed. The eviction scan
+  at LRU tail locks buckets one at a time.
+
+### Acceptance
+- [ ] Read same page twice: second call hits cache (no disk I/O, measurable
+  by mocking the backing store)
+- [ ] Write page, Read page: returns dirty value without disk I/O
+- [ ] Fill cache to capacity: evicts only clean pages, dirty pages remain
+- [ ] Flush then fill beyond capacity: previously-dirty pages are now clean
+  and evictable
+- [ ] 4 threads reading and writing different pages concurrently: no crashes,
+  no lost data
 
 ---
 
 ## Workload 2.6 — Bootstrap & Mount
 
-**What:** The sequence for creating a new VFS backing file and for opening
-an existing one. Includes the superblock reservation at logical page 1.
+### What
+The `storage_open` and `storage_close` functions that wrap all of the above.
 
-**Why:** The VFS must start from an empty file and also reopen existing files.
+### storage_open(path, page_size)
 
-**How:**
-- **Create (file does not exist or is empty):**
-  1. Create the backing file.
-  2. Reserve logical pages 0 and 1 directly (before the indirection table
-     exists, so `Allocate` cannot be used). Page 0 is the header + inline
-     indirection page. Page 1 is the superblock.
-  3. Write header page 0 with `total_pages = 2`, `page_size = 8192`,
-     `physical_tail = 2 * (page_size + 16)`. Set inline entries 0 and 1
-     to their computed physical offsets (0, page_size + 16).
-     `indirection_head = 0`.
-  4. Return success. The VFS layer calls `Acquire(1)` for the superblock
-     page and initializes it.
-- **Open (file exists):**
-  1. Read logical page 0. Validate `flags == 0x56585346` and CRC32C.
-  2. Read `total_pages`, `page_size`, `segment_size`, `indirection_head`.
-     Load all indirection entries (inline + overflow chain).
-     Reconstruct the in-memory logical-to-physical mapping.
-  3. Return success. The VFS layer reads the superblock from page 1.
+```
+1. Try to open existing file.
+   If exists:
+     a. Read header page 0 (Workload 2.1).
+     b. Validate magic and CRC.
+     c. Load indirection table (Workload 2.2).
+     d. Initialize page cache.
+     e. Return StorageBackend handle.
+   If does not exist:
+     a. Create file.
+     b. Initialize header page 0 (Workload 2.1).
+     c. Initialize indirection table with inline entries only.
+     d. Return StorageBackend handle. (Superblock at page 1 is initialized
+        by Phase 5, not here.)
+```
 
-**Acceptance:**
-  - Create new file, close, reopen: `total_pages` is 2.
-  - After creation, `Allocate(1)` returns page 2 (pages 0–1 are reserved).
-  - Opening a non-VFS file fails during magic validation.
+### storage_close(sb)
+
+```
+1. Flush all dirty pages: storage_flush(sb, -1).
+2. Free all page cache entries.
+3. Free indirection table structures.
+4. Close file descriptor.
+5. Free StorageBackend struct.
+```
+
+### Acceptance
+- [ ] `storage_open("new.vfs", 8192)` → valid handle, `total_pages == 2`
+- [ ] `storage_close(handle)` → file descriptor closed, memory freed (Valgrind clean)
+- [ ] `storage_open("new.vfs", 8192)` → close → reopen → `total_pages` still 2,
+    `physical_tail` matches the value at creation
+- [ ] Opening a non-VFS file fails with error code
+- [ ] Opening a truncated file fails (CRC mismatch)
+
+---
+
+## Final Phase 2 Checklist
+
+Before moving to Phase 3, every item must be checked:
+
+- [ ] File can be created, closed, and reopened with all header fields intact
+- [ ] XVFS magic validated on open; invalid magic rejected
+- [ ] `Allocate(1)` returns sequential pages, entries are non-zero
+- [ ] `Allocate` beyond inline capacity creates overflow pages correctly
+- [ ] `Acquire` succeeds on free pages, fails on allocated pages
+- [ ] `Free` sets entry to 0
+- [ ] Lazy mirror: first write goes to single page, second write allocates
+  sibling, subsequent writes alternate
+- [ ] Crash during mirror allocation: original intact
+- [ ] `Flush(-1)` writes all dirty pages in priority order, `fsync` called
+- [ ] Page cache: hits avoid disk I/O, LRU evicts only clean pages
+- [ ] Write-back only flushes priority-0 (data) pages
+- [ ] 4 concurrent threads allocating and writing without corruption
+- [ ] Valgrind/ASan clean
