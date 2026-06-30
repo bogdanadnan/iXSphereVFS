@@ -91,60 +91,52 @@ never performs logical-to-physical translation.
 ### 3.1 File Layout
 
 The backing file begins with a StorageBackend header page (at logical page 0)
-that doubles as the first indirection directory. All pages, including the
-header, use the lazy mirror mechanism (§3.7).
+that doubles as the first indirection directory. Config fields occupy the first
+40 bytes; the remainder of the page holds inline indirection entries. All pages,
+including the header, use the lazy mirror mechanism (§3.7).
 
-The header spans two logical pages (0 and 1). Page 0 holds the config
-fields and the first page of `indirection directory`. Page 1 continues the
-`indirection directory` array — it is a pure array of int64 entries with no header
-fields. Both pages are lazy mirror backed (§3.7).
+```
+Logical page   Content
+────────────   ───────
+0              StorageBackend header + inline indirection entries
+1              Superblock
+2              First overflow indirection page (if needed, chained dynamically)
+...            remaining pages
+```
 
-**Header page 0 layout (page_size-byte payload):**
+**Header page layout (page_size-byte payload):**
 
 ```
 Offset  Size  Field
 ──────  ────  ─────
  0       8    total_pages       (int64 — highest allocated logical page + 1)
  8       8    page_size         (int64 — payload size in bytes, default 8192)
-16       4    segment_size    (uint32 — pages per segment, default 1024)
-20      12    reserved
-32     ...   indirection_head chain      (array of int64; continued on page 1)
+16       4    segment_size      (uint32 — pages per FileContent segment, default 1024)
+20       4    reserved
+24       8    physical_tail     (uint64 — next available physical byte offset)
+32       8    indirection_head  (int64 — logical page index of first overflow page, 0 if none)
+40     ...   entries[]          (int64_t: 0 = free / never-written, non-zero = physical offset)
 ```
 
-**Header page 1 layout (page_size-byte payload):**
+Config area: 40 bytes. Inline entries start at offset 40, covering the first
+`(page_size - 40) / 8` logical pages (~1,020 at default page_size).
+`indirection_head` links to an overflow chain (0 if no overflow needed).
+The header is zero-filled at allocation; all inline entries are initially 0.
+Small files never allocate a separate indirection page.
 
-```
-Offset  Size  Field
-──────  ────  ─────
- 0     ...   indirection_head chain      (later pages of the int64 array from page 0)
-```
-
-Page 1 has the standard 16-byte PageHeader physically; its payload contains
-no configuration fields — it is a pure later pages of the `indirection directory`
-array. The 16-byte header uses `flags = 0`; it is transparent to array indexing.
-
-The directory chain has unlimited capacity — new pages are allocated and appended as the table grows.
-
-Config area: 40 bytes. Inline entries start at offset 40, covering the first `(page_size - 40) / 8` logical pages. `indirection_head` points to the first overflow page (0 if none).
-
-The header is zero-filled at allocation. All inline entries are initially 0 (free). `indirection_head = 0` (no overflow page).
-
-**Indirection page layout (page_size-byte payload):**
+**Overflow indirection page layout (page_size-byte payload):**
 
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0    page_size  bits[]          (page_size bytes = page_size × 8 bits, covering that many logical pages)
+ 0       8    next             (int64 — logical page index of next overflow page, 0 = end)
+ 8     ...   entries[]         (int64_t: 0 = free, non-zero = physical offset)
 ```
 
-Indirection pages have no `next` pointer — the header's `indirection directory` array is
-the authoritative chain. To find the indirection entry for logical page N:
-`table_index = N / (page_size / 8)`.
-Allocation scans across all indirection pages linearly; freed pages are
-reused regardless of which indirection page they reside on. New indirection pages are
-appended to `indirection directory` only when the last existing page is exhausted.
-
-All pages, including the header block, use the lazy mirror mechanism (§3.7).
+Each overflow page holds `(page_size / 8) - 1` entries. Pages are chained via
+`next`. The chain grows dynamically — when the last page is full, a new page
+is allocated via `Allocate(1)`, zero-filled, and CAS-appended. There is no
+fixed capacity ceiling.
 
 ### 3.2 Initialization
 
@@ -350,24 +342,29 @@ pairs.
 
 ### 3.8 Indirection Table (Internal)
 
-The StorageBackend maintains a private indirection table. One bit per
-allocatable logical page. `1` = free, `0` = allocated.
+The StorageBackend maintains a private indirection table: one 8-byte entry per
+logical page. `0` = free / never-written. Non-zero = physical byte offset in
+the backing file.
 
-**Layout.** The header's `indirection directory` array (§3.1) lists indirection page indices.
-Indirection pages have no internal linking — the directory is authoritative. Each
-indirection page holds page_size * 8 bits (a full page_size-byte payload). Bit position `N`
-in page `indirection directory[M]` corresponds to logical page `M * page_size * 8 + N`.
+**Layout.** Inline entries in the header page (offset 40+) cover the first
+`(page_size - 40) / 8` logical pages. Additional logical pages are covered by
+overflow pages chained from `indirection_head`. Each overflow page has a
+`next` pointer at offset 0 and `(page_size / 8) - 1` entries at offset 8.
+The chain grows dynamically — new pages are allocated via `Allocate(1)`,
+zero-filled, and CAS-appended when the last page is full.
 
-**Growth.** When `Allocate` needs a page beyond the current indirection table capacity,
-a new indirection page is allocated, zero-filled (all bits `0` = allocated), then
-its index is written to the end of the chain in `indirection directory`. The new page's
-bits are then set to `1` (free) for the newly covered range.
+**Growth.** When `Allocate` needs a logical page whose entry is beyond the
+current inline + overflow capacity, a new overflow page is allocated and
+appended to the chain. There is no fixed capacity ceiling — the only limit
+is the StorageBackend running out of physical space.
 
-**Mount.** On mount, `indirection directory` is scanned. All referenced indirection pages are
-read. The allocator is initialized with the free/allocated state.
+**Mount.** On mount, the inline entries and overflow chain are read. The
+allocator is initialized with the logical-to-physical mapping. Entries
+that are 0 represent free pages.
 
-**GC.** The indirection table is rebuilt during the GC copy phase. Unused indirection
-pages are freed.
+**GC.** The indirection table is rebuilt during the GC copy phase: entries
+for pages in the new tree are set to their physical offsets; entries for
+unreachable pages are set to 0. Unused overflow pages are freed.
 
 The VFS layer never accesses the indirection table directly.
 
