@@ -6,265 +6,412 @@ directory listing, and file stat. This includes building in-memory page
 arrays for O(1) lookup, the dentry cache for directory listings, and the
 read rule with epoch mapping for snapshot isolation.
 
+## Non-Negotiable Constraints
+
+- **All API functions must validate inputs first.** Check that nodeIds refer
+  to the correct type before operating. Return `VFS_ERR_NOTDIR` if caller
+  tries to list a file. Return `VFS_ERR_NOTFOUND` if a name doesn't exist.
+- **No disk I/O on the hot path after warm-up.** In-memory arrays and dentry
+  cache must eliminate repeated chain walks.
+- **Every mutation must be crash-safe.** This means: allocate new pool slots
+  before CAS-linking them into chains. Never mutate a live slot in-place
+  except for `namePtr` on same-epoch rename (8-byte atomic store, documented
+  risk).
+- **Epoch validation on every write.** Call the Valid Epochs check from
+  Phase 6 Workload 6.1 before any mutation.
+
+## File Organization
+
+| File | Purpose |
+|------|---------|
+| `src/tree.c` | Bootstrap, CRUD, directory ops, rename, stat |
+| `src/dentry_cache.c` | Directory entry cache with invalidation |
+| `src/page_array.c` | In-memory VirtualPtr array for segment-based O(1) lookup |
+| `test/test_tree.c` | All functional tests |
+
+## Dependencies
+- Phase 2 (StorageBackend) for `Read`/`Write`/`Allocate`
+- Phase 3 (Pool) for slot allocation and VirtualPtr
+- Phase 4 (Node Types) for all layout helpers
+- Phase 6 (Epoch System) for `mapper_resolve` — stub it for now (return epoch unchanged)
+
 ---
 
 ## Workload 5.1 — Superblock Bootstrap & Root Directory
 
-**What:** Initialize the superblock on first use and create the root directory
-node. This is the starting point of the VFS tree.
+### What
+Initialize the superblock on first use and create the root directory node.
+This is the starting point of the VFS tree. Called once by `vfs_open` when
+the backing file is new.
 
-**Why:** Every tree traversal begins at the root. The superblock holds the
-VirtualPtr to the root DirNode. On a fresh VFS instance, both must be
-created before any file or directory operations.
+### Step-by-Step
 
-**How:**
-- After StorageBackend initialization and `Acquire(1)` for the superblock
-  page, the VFS layer initializes the superblock payload with `rootNodeOffset
-  = 0` (empty tree), `currentEpoch = 0` (first live head), `nextNodeId = 1`
-  (nodeId 0 is about to be allocated), `touchedFilesPtr = 0`, `epochMapperPtr = 0`, and all other fields zero.
-- Allocate a DirNode via the pool allocator. Assign it nodeId 0 (the root).
-  Set `type = 0x01` (DirNode), `headPtr = 0` (no children yet). Write it
-  to its pool slot.
-- Update `superblock.rootNodeOffset` to the VirtualPtr of the root DirNode.
-- On subsequent mounts, read `rootNodeOffset` from the superblock and resolve
-  it to load the root DirNode. The root always has nodeId 0.
-- During mount, also walk the epoch mapper chain from `epochMapperPtr` in
-  the superblock and build the in-memory mapper dictionary.
+1. **Acquire superblock page.** Call `Acquire(1)` on the StorageBackend.
+   Page 1 is reserved for the superblock. If this is a reopen, `Acquire`
+   returns false — skip to step 5.
+2. **Prepare superblock payload** in a local 8KB buffer:
+   - `rootNodeOffset = 0` (no root yet)
+   - `currentEpoch = 0` (first live head)
+   - `epochMapperPtr = 0` (no mapper entries)
+   - `poolListHead = 0` (no pool pages yet)
+   - `treeLockState = 0`
+   - `nextNodeId = 1` (nodeId 0 will be used for root)
+   - `touchedFilesPtr = 0`
+3. **Write superblock:** `storage_write(sb, 1, buffer)`. Flush priority 3.
+4. **Create root DirNode:**
+   - Allocate a pool slot: `root_vp = pool_alloc(pool)`.
+   - Write DirNode to that slot: type=0x01, nodeId=0, headPtr=0.
+   - Update superblock: `rootNodeOffset = root_vp`. Write superblock again.
+5. **On reopen (file exists):**
+   - Read superblock page: `payload = storage_read(sb, 1)`.
+   - Read `rootNodeOffset`, `currentEpoch`, `nextNodeId`, `epochMapperPtr`,
+     `poolListHead`, `touchedFilesPtr`, `treeLockState`.
+   - Build in-memory mapper dictionary by walking the epoch mapper chain
+     from `epochMapperPtr` (Phase 6).
+   - Root is always at nodeId 0. Read it to verify.
 
-**Acceptance:**
-  - After bootstrap, `vfs_open` returns a handle where the root directory
-    exists and has nodeId 0.
-  - `nextNodeId` in the superblock is 1 after bootstrap (0 was used for root).
-  - Reopening the file and reading the root DirNode returns the same nodeId
-    and headPtr.
+### Error Conditions
+- If `Acquire(1)` fails on a fresh file → something is wrong with StorageBackend
+  bootstrap. This is a fatal error.
+- If root DirNode's type is not 0x01 on reopen → file is corrupted.
+
+### Acceptance
+- [ ] After bootstrap: root exists, nodeId=0, headPtr=0
+- [ ] `nextNodeId` in superblock is 1 (0 was used for root)
+- [ ] Reopen file: superblock fields read back correctly, root accessible
+- [ ] Reopen file: in-memory mapper dictionary populated from `epochMapperPtr` chain
 
 ---
 
 ## Workload 5.2 — File Create and Delete
 
-**What:** Create a new file under a parent directory at a given epoch. Delete
-a file by prepending a tombstone entry.
+### What
+Create a file under a parent directory. Delete a file by prepending a
+tombstone DirContent entry.
 
-**Why:** Files are the primary data containers. Creation allocates a FileNode
-and links it into the parent's directory listing. Deletion is represented
-as a special DirContent entry with no name, preserving history for snapshots.
+### Create: `vfs_create(vfs, parent_nodeId, name, epoch) → new_nodeId`
 
-**How:**
-- `vfs_create(parent_nodeId, name, epoch)`:
-  1. Validate that `parent_nodeId` refers to a DirNode (type 0x01).
-  2. Increment `nextNodeId` atomically in the superblock to get a new nodeId.
-  3. Allocate a FileNode pool slot. Set `type = 0x03`, `nodeId = newId`,
-     `headPtr = 0`, `sizePtr = 0`, `createdAt = current Unix timestamp`.
-  4. Allocate a NameEntry chain for `name` (one or more pool slots).
-  5. Allocate a DirContent slot. Set `childNodeId = newId`, `epoch = epoch`,
-     `childPtr = VirtualPtr to FileNode`, `namePtr = VirtualPtr to NameEntry`,
-     `nextPtr = current headPtr of parent`.
-  6. CAS the parent's `headPtr` from the old value to the new DirContent's
-     VirtualPtr. If CAS fails (another thread created a file concurrently),
-     retry.
-  7. Return the new file's nodeId.
-- `vfs_delete(parent_nodeId, name, epoch)`:
-  1. Walk the parent's `headPtr` chain at the given epoch to find the
-     DirContent entry for `name`. If not found, return `VFS_ERR_NOTFOUND`.
-  2. Allocate a new DirContent with the same `childNodeId` and `childPtr`,
-     `epoch = epoch`, `namePtr = 0` (tombstone), `nextPtr = current headPtr`.
-  3. CAS the parent's `headPtr`. The old file data is preserved — only the
-     directory entry is tombstoned. The file can still be read at earlier
-     epochs via snapshot isolation.
-  4. Return success.
+```
+1. Validate epoch is writable (Phase 6, Workload 6.1).
+2. Read parent DirNode from pool. Verify type == 0x01 (DirNode).
+3. Walk parent's headPtr DirContent chain at this epoch.
+   If a DirContent with matching name exists at this epoch:
+       return VFS_ERR_EXISTS
+4. Increment nextNodeId in superblock atomically:
+   new_nodeId = vfs_atomic_add_i32(&superblock->nextNodeId, 1)
+5. Allocate FileNode slot: file_vp = pool_alloc(pool).
+   nodes_write_filenode(slot, 0x03, new_nodeId, 0, 0, time(NULL))
+6. Allocate NameEntry chain for 'name': name_vp = pool_alloc_name(pool, name).
+7. Allocate DirContent slot: dc_vp = pool_alloc(pool).
+   Read current parent->headPtr via atomic_load.
+   nodes_write_dircontent(slot, new_nodeId, epoch, file_vp, name_vp, headPtr)
+8. Release memory barrier (vfs_mb_release).
+9. CAS parent->headPtr from old value to dc_vp.
+   If CAS fails: retry from step 7 (read new headPtr, update nextPtr, CAS again).
+10. Return new_nodeId.
+```
 
-**Acceptance:**
-  - Create file "test.txt" under root at epoch 0: `vfs_open_file` at epoch 0
-    returns the file's nodeId.
-  - Delete "test.txt" at epoch 2: listing root at epoch 2 excludes it. Listing
-    root at epoch 0 still includes it (snapshot isolation).
-  - Create a file that already exists at the same epoch: returns
-    `VFS_ERR_EXISTS` (a second DirContent for the same name at the same epoch
-    should not be created for a simple create — the existing entry is reused
-    if the caller wants to overwrite, but that's a separate concern).
+### Delete: `vfs_delete(vfs, parent_nodeId, name, epoch) → VFS_OK`
+
+```
+1. Validate epoch is writable.
+2. Walk parent's headPtr DirContent chain. Find the entry with matching name
+   at epoch ≤ query_epoch and highest such epoch.
+3. If not found: return VFS_ERR_NOTFOUND.
+4. Allocate DirContent slot: dc_vp = pool_alloc(pool).
+   Set childNodeId = found_entry.childNodeId
+   Set childPtr = found_entry.childPtr
+   Set namePtr = 0  ← this is the tombstone
+   Set nextPtr = current headPtr
+5. Release memory barrier.
+6. CAS parent->headPtr to dc_vp.
+7. Return VFS_OK.
+```
+
+### Acceptance
+- [ ] Create "test.txt" under root at epoch 0 → `vfs_open_file` returns file's nodeId
+- [ ] Create same name at same epoch → VFS_ERR_EXISTS
+- [ ] Delete "test.txt" at epoch 2 → listing at epoch 2 excludes it, listing at
+  epoch 0 still includes it
+- [ ] Delete non-existent file → VFS_ERR_NOTFOUND
+- [ ] Create file under non-directory nodeId → VFS_ERR_NOTDIR
 
 ---
 
 ## Workload 5.3 — File Write
 
-**What:** Write data to a file at a given offset and epoch. Handles COW on
-first write to a page in an epoch, and in-place writes on subsequent writes
-to the same page in the same epoch.
+### What
+Write data to a file at a given offset and epoch. Handles COW on first write
+to a page in an epoch, in-place on subsequent writes to the same page in the
+same epoch. This is the most complex operation.
 
-**Why:** This is the primary data mutation path. It must correctly handle
-version chain prepends, segment growth, and file size updates, all while
-being crash-safe via the lazy mirror mechanism.
+### Writable File Validation
 
-**How:**
-- `vfs_write(file_nodeId, offset, data, count, epoch)`:
-  1. Validate that the file node exists and `epoch` is writable (live head
-     or active snapshot per §7.1 of the main spec).
-  2. Compute the logical page range `[offset / page_size, (offset + count -
-     1) / page_size]`.
-  3. For each logical page P in the range:
-     a. Resolve to the PageNode. Compute `segmentIdx = P / 1024`. Walk the
-        FileContent chain to find the segment. If the segment doesn't exist
-        yet (file growth), allocate a new FileContent and PageNodes for all
-        1,024 pages in the segment (unwritten pages have `versionRootPtr = 0`).
-     b. Walk the PageNode chain within the segment to find entry P. Build
-        the in-memory VirtualPtr array on first access to this segment.
-     c. Walk the version chain from `versionRootPtr`. Search for an existing
-        VersionPage with `epoch == writeEpoch`.
-        - FOUND: in-place write. Call `Write(dataPage, newPayload)` via the
-          StorageBackend (lazy mirror handles crash safety).
-        - NOT FOUND (or `versionRootPtr == 0`): COW. Resolve the base
-          physical page from the highest even epoch < writeEpoch in the chain.
-          Allocate a new data page via `Allocate(1)`. Read the base page,
-          copy it, overlay the new data at the appropriate intra-page offset.
-          Call `Write(newDataPage, newPayload)`. Allocate a VersionPage pool
-          slot. CAS `versionRootPtr` to the new VirtualPtr.
-     d. If this is the first write to this file in this epoch, CAS-prepend
-        a TouchedFile entry (Phase 4) for commit conflict tracking.
-  4. Compute `newFileSize = max(oldFileSize, offset + count)`. If larger
-     than the current size: allocate a FileSize pool slot and CAS-prepend
-     to the FileNode's `sizePtr`.
-  5. Return the number of bytes written.
-- Invalidate the in-memory page array if a new FileContent was added (file
-  growth beyond the current segment range).
+Before any operations, call the Valid Epochs check:
 
-**Acceptance:**
-  - Write 100 bytes at offset 0 to a new file: read back returns the same
-    100 bytes.
-  - Write 200 bytes at offset 50: the file now spans both pages. Read back
-    from offset 0 returns the full 250 bytes.
-  - Write to the same offset in the same epoch: second write is in-place
-    (no new VersionPage).
-  - Write to the same offset in a new epoch (after snapshot): new VersionPage
-    is created. Read at the old epoch returns old data. Read at the new epoch
-    returns new data.
-  - Write 2,000 pages (triggering a second FileContent segment): the in-memory
-    array is rebuilt. Reads across segment boundaries return correct data.
+```c
+bool vfs_epoch_is_writable(Superblock* sb, int64_t epoch, Mapper* mapper) {
+    if (epoch == sb->currentEpoch) return true;           // live head
+    if (epoch % 2 == 1 && !mapper_has_entry(mapper, epoch)) return true; // active snapshot
+    return false;
+}
+```
+
+If this returns false, fail with `VFS_ERR_IO` (`write to frozen epoch`).
+
+### Resolving a Logical Page to a PageNode
+
+This function is called for every page touched by a read or write. On first
+call for a segment, it builds the in-memory array.
+
+```
+PageNode* tree_resolve_page(FileNode* file, int64_t logical_page, int64_t epoch) {
+    segment_idx = logical_page / superblock->segment_size
+    page_in_segment = logical_page % superblock->segment_size
+
+    // Walk FileContent chain to find segment
+    fc_vp = file->headPtr
+    for i = 0; i < segment_idx; i++:
+        if fc_vp == 0: // segment doesn't exist yet → file growth
+            allocate new FileContent + 1024 PageNodes (all versionRootPtr=0)
+            CAS-append to FileContent chain
+        fc_vp = fc->nextPtr
+
+    // Access PageNode array
+    if not in in-memory array:
+        walk PageNode chain from fc->pageRootPtr
+        build in-memory array of VirtualPtrs to each PageNode
+    return &in_memory_array[page_in_segment]
+}
+```
+
+### `vfs_write(vfs, file_nodeId, offset, data, count, epoch) → bytes_written`
+
+```
+1. Validate epoch is writable.
+2. Read FileNode from pool. Verify type == 0x03.
+3. Compute page range: [offset / page_size, (offset + count - 1) / page_size]
+4. For each logical page P in the range:
+   a. PageNode* pn = tree_resolve_page(file, P, epoch)
+   b. Walk version chain from pn->versionRootPtr:
+      - Search for VersionPage with epoch == write_epoch
+      - FOUND → in-place write:
+           data_page = vp->dataPage
+           Read current page: old = storage_read(sb, data_page)
+           Overlay new data into old at intra-page offset
+           storage_write(sb, data_page, old)   // lazy mirror handles crash safety
+      - NOT FOUND (or chain is empty) → COW:
+           // Find base page: walk chain, find highest even epoch < write_epoch
+           base_page = highest_even_below(chain, write_epoch)
+           if base_page found:
+               old = storage_read(sb, base_page->dataPage)
+               copy old into new_payload
+           else:
+               zero_fill new_payload   // page never written before
+           overlay new data into new_payload at intra-page offset
+           new_data_page = Allocate(1)
+           storage_write(sb, new_data_page, new_payload)
+           // Create VersionPage
+           vp_slot = pool_alloc(pool)
+           nodes_write_versionpage(vp_slot, write_epoch, new_data_page,
+                                    pn->versionRootPtr)
+           // CAS-prepend to PageNode
+           vp = pool_vptr(vp_slot)
+           old_head = atomic_load_i64(&pn->versionRootPtr)
+           do {
+               nodes_update_nextptr(vp_slot, old_head)
+               new_vp = pool_make_vptr(vp_slot)
+           } while (CAS(&pn->versionRootPtr, old_head, new_vp) != old_head)
+   c. If first write to this file in this epoch:
+        CAS-prepend TouchedFile entry (Phase 6)
+5. Compute new size = max(old_size, offset + count)
+6. If file grew:
+   a. Allocate FileSize pool slot
+   b. nodes_write_filesize(slot, epoch, time(NULL), new_size, current_sizePtr)
+   c. CAS-prepend to FileNode.sizePtr
+7. Return count
+```
+
+### In-Memory Page Array Details
+
+```c
+typedef struct {
+    int64_t* vptr_array;     // malloc'd, size = segment_size
+    bool     built;
+} SegmentArray;
+
+// On first access to segment:
+void segment_array_build(FileContent* fc, SegmentArray* arr) {
+    int64_t vp = fc->pageRootPtr;
+    for (int i = 0; i < segment_size; i++) {
+        arr->vptr_array[i] = vp;  // stores VirtualPtr to PageNode slot
+        PageNode pn;
+        nodes_read_pagenode(pool_resolve(vp), &vp, &next); // vp = next PageNode
+    }
+    arr->built = true;
+}
+```
+
+### Acceptance
+- [ ] Write 100 bytes at offset 0 → read back 100 bytes match
+- [ ] Write 200 bytes at offset 50 → read offset 0 gets 250 bytes (cross-page)
+- [ ] Same offset, same epoch: second write is in-place (no new VersionPage)
+- [ ] Same offset, new epoch (after snapshot): new VersionPage created, old
+  epoch returns old data, new epoch returns new data
+- [ ] Write 2,000 pages: second FileContent segment created, in-memory array
+  rebuilt, reads across segment boundary correct
+- [ ] Write to frozen epoch → VFS_ERR_IO
 
 ---
 
 ## Workload 5.4 — File Read
 
-**What:** Read data from a file at a given offset and epoch. Uses the
-in-memory page array for O(1) page lookup after the first access.
+### What
+Read data from a file at a given offset and epoch. Uses in-memory page arrays
+for O(1) lookup after first access.
 
-**Why:** Read performance is critical — SQLite table scans, file serving,
-and directory listing all depend on fast random and sequential reads.
+### `vfs_read(vfs, file_nodeId, buf, offset, count, epoch) → bytes_read`
 
-**How:**
-- `vfs_read(file_nodeId, buf, offset, count, epoch)`:
-  1. Apply the epoch mapper: `readEpoch = mapper.resolve(epoch)`.
-  2. Compute the logical page range as in Workload 5.3.
-  3. For each logical page P in the range:
-     a. Resolve to the PageNode via the FileContent chain → in-memory
-        VirtualPtr array (or chain walk on first access).
-     b. Walk the version chain from `versionRootPtr` using the read rule:
-        - If entry.epoch == readEpoch: use it (exact match).
-        - If entry.epoch > readEpoch: skip.
-        - If entry.epoch < readEpoch AND even: use it (committed base). Stop.
-        - If entry.epoch < readEpoch AND odd: skip.
-        - Apply `traversalApply` remapping if the entry's epoch has a mapper
-          entry with `traversalApply = true` (treat as mapped epoch).
-     c. From the resolved VersionPage, read `dataPage`. Call `Read(dataPage)`
-        via the StorageBackend. Copy the requested bytes into the output buffer.
-  4. If a page has no matching VersionPage (never written at this epoch),
-     return zero-filled bytes for that range.
-  5. Return the number of bytes read (may be less than `count` if at EOF).
+```
+1. Apply epoch mapper: read_epoch = mapper_resolve(mapper, epoch)
+2. Compute page range as in Write
+3. For each logical page P:
+   a. PageNode* pn = tree_resolve_page(file, P, read_epoch)
+   b. Walk version chain from pn->versionRootPtr:
+      - Apply traversal remapping if mapper has entry for entry's epoch
+      - If entry.epoch == read_epoch: use it (exact match, even or odd)
+      - If entry.epoch > read_epoch: skip, continue
+      - If entry.epoch < read_epoch AND even: use it, stop
+      - If entry.epoch < read_epoch AND odd: skip, continue
+   c. If a VersionPage was found:
+        data = storage_read(sb, vp->dataPage)
+        copy intra-page portion into output buffer
+   d. If no VersionPage found:
+        zero-fill that portion of output buffer (page never written at this epoch)
+4. Return total bytes copied (may be < count at EOF)
+```
 
-**Acceptance:**
-  - Read at an epoch before any data was written: returns zero-filled bytes.
-  - Read at an epoch with data: returns the correct payload.
-  - Read across a page boundary: correct data from both pages.
-  - Read from a committed snapshot (after commit, before GC): returns the
-    committed data.
-  - Read from a soft-deleted snapshot: returns the pre-snapshot base data.
+### Acceptance
+- [ ] Read before any write → returns zero-filled bytes
+- [ ] Read after write at same epoch → returns written data
+- [ ] Read at older epoch → returns data as of that epoch
+- [ ] Read across page boundary → correct data from both pages
+- [ ] Read from committed snapshot (after commit, before GC) → returns committed data
+- [ ] Read from soft-deleted snapshot → returns pre-snapshot base
 
 ---
 
 ## Workload 5.5 — Directory Operations
 
-**What:** Create and remove directories, list directory contents. Includes
-a dentry cache for fast repeated listings.
+### What
+Create and remove directories, list contents. Includes a dentry cache.
 
-**Why:** Directories organize the namespace. Listings must correctly handle
-renames across epochs and deduplicate entries by childNodeId.
+### `vfs_mkdir(vfs, parent_nodeId, name, epoch) → VFS_OK`
 
-**How:**
-- `vfs_mkdir(parent_nodeId, name, epoch)`: same flow as file create, but
-  allocates a DirNode (type 0x01) instead of a FileNode.
-- `vfs_rmdir(parent_nodeId, name, epoch)`:
-  1. Walk the parent's DirContent chain at the given epoch to find the child.
-     Verify the child is a DirNode and has no children (walk its `headPtr`
-     chain — if any DirContent entry at this epoch has `namePtr != 0`, the
-     directory is not empty). If not empty, return `VFS_ERR_NOTEMPTY`.
-  2. Create a tombstone DirContent (namePtr=0). CAS-prepend to parent's
-     `headPtr`.
-- `vfs_readdir(dir_nodeId, entries, max_entries, epoch)`:
-  1. Walk the DirNode's `headPtr` chain. Collect all entries where `namePtr
-     != 0` (not tombstoned).
-  2. For each unique `childNodeId`, keep only the entry with the highest
-     `epoch ≤ readEpoch`. This correctly handles renames and deletions across
-     epochs.
-  3. For each surviving entry, walk the NameEntry chain from `namePtr` to
-     reconstruct the name. Determine whether the child is a directory by
-     reading the child's node type from its pool slot.
-  4. Fill `entries[]` with `{nodeId, name, isDir}` up to `max_entries`.
-  5. Return the number of entries written.
-- Dentry cache: on first listing of a directory, build an in-memory hash
-  table mapping `childNodeId → {name, childPtr, isDir}`. Subsequent listings
-  use the cache, avoiding pool chain traversal. The cache is invalidated when
-  a new DirContent is prepended to that directory's `headPtr`.
+Same flow as file create, but allocates DirNode (type 0x01) instead of FileNode.
 
-**Acceptance:**
-  - Create directory "docs", create file "readme.txt" inside it: listing
-    "docs" returns one entry.
-  - Delete "readme.txt": listing at the current epoch returns zero entries.
-  - Listing "docs" at an epoch before the deletion returns the file.
-  - Rename "readme.txt" to "readme2.txt" in the same directory at the same
-    epoch: listing shows only "readme2.txt" with the same nodeId.
-  - Rename at a new epoch: listing at the old epoch shows the old name;
-    listing at the new epoch shows the new name.
-  - `vfs_rmdir` on a non-empty directory returns `VFS_ERR_NOTEMPTY`.
+### `vfs_rmdir(vfs, parent_nodeId, name, epoch) → VFS_OK`
+
+```
+1. Walk parent's DirContent chain to find the child. Verify child is DirNode.
+2. Check if directory is empty: walk child's headPtr chain. If any DirContent
+   entry at this epoch has namePtr != 0 → return VFS_ERR_NOTEMPTY.
+3. Create tombstone DirContent (namePtr=0) and CAS-prepend to parent's headPtr.
+```
+
+### `vfs_readdir(vfs, dir_nodeId, entries, max, epoch) → count`
+
+```
+1. Walk DirNode's headPtr chain, collecting all entries where namePtr != 0.
+2. Deduplicate by childNodeId: for each child, keep only the entry with the
+   highest epoch ≤ query_epoch.
+3. For each surviving entry:
+   - Resolve name from NameEntry chain starting at namePtr
+   - Determine isDir by reading child's pool slot (check type field)
+   - Write {nodeId=childNodeId, name, isDir} into entries[] array
+4. Return number of entries written (up to max).
+```
+
+### Dentry Cache
+
+```c
+typedef struct {
+    // key: childNodeId, value: {name, childPtr, isDir}
+    // Simple hash table, invalidated when directory's headPtr changes
+    bool     valid;
+    uint32_t last_headPtr_page;  // page part of headPtr when cache was built
+} DentryCache;
+```
+
+On first readdir: build cache. On subsequent readdir: if cache.valid AND
+directory's headPtr hasn't changed (same page as when cache was built),
+return cached entries. On ANY create/delete/rename in this directory:
+set cache.valid = false.
+
+### `vfs_rename(vfs, src_parent, src_name, dst_parent, dst_name, epoch)`
+
+```
+1. Validate epoch is writable.
+2. Find source DirContent entry (as in readdir dedup).
+3. If same directory AND same epoch:
+     Allocate new NameEntry for dst_name
+     Atomic store namePtr = new_name_vp on existing DirContent (release semantics)
+4. Else (cross-dir or different epoch):
+     Allocate new DirContent at dst_parent with:
+       childNodeId = src_entry.childNodeId
+       childPtr = src_entry.childPtr
+       namePtr = new NameEntry for dst_name
+       nextPtr = dst_parent headPtr
+     CAS-prepend to dst_parent headPtr
+     Create tombstone DirContent (namePtr=0, same childNodeId/childPtr) at src_parent
+     CAS-prepend to src_parent headPtr
+```
+
+### Acceptance
+- [ ] mkdir "a", mkdir "a/b", create "a/b/c.txt" → readdir "a/b" returns 1 entry
+- [ ] rmdir on non-empty directory → VFS_ERR_NOTEMPTY
+- [ ] Rename same-dir same-epoch: old name gone, new name appears, nodeId unchanged
+- [ ] Rename cross-dir: source loses entry, destination gains it
+- [ ] Dentry cache: second readdir on unchanged directory uses cache (no pool chain walks)
+- [ ] Dentry cache: after create in directory, cache invalidated, next readdir rebuilds
 
 ---
 
 ## Workload 5.6 — File Stat
 
-**What:** Query file metadata: size, modification time, creation time.
+### What
+Query file metadata: size, modification time, creation time.
 
-**Why:** Standard filesystem metadata operations needed by any VFS consumer.
+### `vfs_file_size(vfs, file_nodeId, epoch) → size`
 
-**How:**
-- `vfs_file_size(file_nodeId, epoch)`: walk `FileNode.sizePtr` chain via read
-  rule. Return `fileSize` from the first matching FileSize entry. If chain
-  is empty, return 0.
-- `vfs_file_mtime(file_nodeId, epoch)`: same chain walk, return `modifiedAt`.
-- `vfs_file_ctime(file_nodeId)`: read `FileNode.createdAt` directly from the
-  FileNode pool slot. This is immutable — no epoch needed.
-- All functions require that `file_nodeId` refers to a valid FileNode.
+```
+1. Read FileNode. Walk sizePtr chain.
+2. Apply read rule: first FileSize entry with epoch ≤ query_epoch (mapped) AND
+   entry.epoch is even (or exact match) → use its fileSize.
+3. If chain is empty: return 0.
+```
 
-**Acceptance:**
-  - Newly created file: size=0, ctime is set, mtime returns the epoch-0
-    FileSize timestamp if any write has occurred.
-  - After writing 500 bytes: size=500.
-  - After writing at a new epoch: size at old epoch still returns old size.
-  - `ctime` is unchanged regardless of epoch.
+### `vfs_file_mtime(vfs, file_nodeId, epoch) → timestamp`
+Same chain walk as file_size, returns `modifiedAt`.
+
+### `vfs_file_ctime(vfs, file_nodeId) → timestamp`
+Read `createdAt` directly from FileNode pool slot. Immutable — no epoch needed.
+
+### Acceptance
+- [ ] New file: size=0, ctime set, mtime returns time of first FileSize entry
+- [ ] After writing 500 bytes: size=500
+- [ ] Write at new epoch: old epoch still returns old size
+- [ ] ctime unchanged across epochs
 
 ---
 
-## Deliverables
+## Final Phase 5 Checklist
 
-| File | Purpose |
-|------|---------|
-| `src/tree.c` | Bootstrap, create, read, write, delete, mkdir, rmdir, readdir, rename, stat |
-| `src/dentry_cache.c` | Directory entry cache with invalidation |
-| `src/page_array.c` | In-memory VirtualPtr array for segment-based O(1) page lookup |
-| `test/test_tree.c` | CRUD operations, multi-epoch isolation, directory listing, rename |
-
-## Success Criteria
-- Create file, write data, read back: correct payload at all offsets.
-- Write across epoch boundaries: snapshot isolation preserves old data.
-- Directory listing correctly handles create, delete, rename across epochs.
-- In-memory page array provides O(1) lookup after first access (measurable:
-  1,000 sequential reads on a 100-page file should take roughly the same time
-  as 1,000 reads on a 1-page file after warm-up).
-- Dentry cache eliminates repeated pool chain walks on repeated listings.
+- [ ] Create file → write → read → delete: full CRUD cycle passes
+- [ ] Cross-epoch isolation: writes at snapshot epoch don't affect live-head reads
+- [ ] In-memory page array: 1,000 reads on 100-page file after warm-up takes
+  roughly same time as 1,000 reads on 1-page file
+- [ ] Dentry cache avoids repeated pool chain walks
+- [ ] Rename preserves nodeId, correctly handles same-epoch and cross-epoch cases
+- [ ] All operations validate inputs (wrong nodeId type → appropriate error)
+- [ ] All writes check epoch validity before mutating
