@@ -357,8 +357,8 @@ The VFS layer never accesses the indirection table directly.
 The superblock lives at logical page 1. It is initialized on first use with
 `rootNodeOffset = 0` (empty tree), `currentEpoch = 0`, and all other fields
 zero. The sentinel -1 means "current live head" in the API; internally the
-current epoch value from the superblock is used. allocated by the VFS layer at logical page 1 via
-`Acquire` after StorageBackend initialization. Like every other page, it
+current epoch value from the superblock is used. The superblock is allocated
+by the VFS layer at logical page 1 via `Acquire` after StorageBackend initialization. Like every other page, it
 uses standard lazy mirror (§3.7) — there is no separate superblock alternate
 page or special swap protocol. The VFS writes superblock updates via
 `Write`, which writes to the inactive half and increments generation
@@ -503,8 +503,7 @@ Offset  Size  Field
  2       2    reserved
  4       4    nodeId         (uint32 — unique identifier, sequential)
  8       8    headPtr        (VirtualPtr — first DirContent entry)
-16       4    segment_size    (uint32 — pages per segment, default 1024)
-20      12    reserved
+16      16    reserved
 ```
 
 A DirNode is the head of a directory. `headPtr` points to the most recent
@@ -555,15 +554,14 @@ is in the parent directory's DirContent.
 Offset  Size  Field
 ──────  ────  ─────
  0       8    pageRootPtr    (VirtualPtr — first PageNode for this segment)
- 8       8    nextPtr        (VirtualPtr — next FileContent, or epoch-keyed next)
-16       4    segment_size    (uint32 — pages per segment, default 1024)
-20      12    reserved
+ 8       8    nextPtr        (VirtualPtr — next FileContent in chain)
+16      16    reserved
 ```
 
 A FileContent groups consecutive logical pages into segments. The segment
 size determines the fan-out: N pages per FileContent means 1 FileContent per
 N pages. At page_size=8192, the segment size is fixed at 1,024 pages (~8 MB). This value is
-hardcoded and not stored on disk. `pageRootPtr` points to the first `PageNode` for this segment.
+stored in the StorageBackend header (`segment_size` field in §3.1). `pageRootPtr` points to the first `PageNode` for this segment.
 
 `FileContent` entries are NOT epoch-keyed — they form a permanent linked list
 of segments that grows as the file expands. The `nextPtr` links to the next
@@ -588,8 +586,7 @@ Offset  Size  Field
 ──────  ────  ─────
  0       8    versionRootPtr (VirtualPtr — first VersionPage for this page)
  8       8    nextPtr        (VirtualPtr — next PageNode in segment)
-16       4    segment_size    (uint32 — pages per segment, default 1024)
-20      12    reserved
+16      16    reserved
 ```
 
 One `PageNode` per logical page within a FileContent segment. Forms a linked
@@ -888,8 +885,7 @@ Offset  Size  Field
  0       4    epoch          (uint32 — snapshot epoch)
  4       4    nodeId         (uint32 — file node identifier)
  8       8    nextPtr        (VirtualPtr — next TouchedFile entry)
-16       4    segment_size    (uint32 — pages per segment, default 1024)
-20      12    reserved
+16      16    reserved
 ```
 
 ### 9.5.1 Conflict Detection (Commit)
