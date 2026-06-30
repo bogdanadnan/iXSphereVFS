@@ -63,30 +63,21 @@ not a valid iXSphereVFS instance. No separate page type field exists —
 the 4-byte `flags` field serves both as the magic number and as per-page
 configuration.
 
-### 2.2 Bit-Set Helper
+### 2.2 Serialization Helpers
 
 `R8(p, o)` / `R2(p, o)` / `W8(p, o, v)` / `W2(p, o, v)` read/write
-integers from byte arrays at given offsets. `BitConverter` equivalents
-in C. Used throughout for page-level serialization.
+integers from byte arrays at given offsets. Used throughout for page-level
+serialization of pool entries and header fields.
 
 ---
 
 ## 3. StorageBackend
 
-The StorageBackend is the sole owner of page-level I/O, allocation, and free-list
-management. The backing file's `page_size` field in the StorageBackend header
-defines the payload size for every page in the system — it is read once at
-mount and used globally by both the StorageBackend and the VFS layer.
-At creation time, `page_size` is configurable (default 8192); at mount time,
-it is read from the existing header and must match the slot counts and segment
-calculations expected by the VFS code. All pages returned by `Allocate` or
-`Acquire` have this fixed payload size.
-
-The StorageBackend is the sole owner of page-level I/O, allocation, and free-list
-management. All page indices used by the VFS data structures (version chain heads,
-version node `physicalPage` fields, directory entries, superblock pointers) are
-**logical page indices** allocated by and opaque to the StorageBackend. The VFS
-never performs logical-to-physical translation.
+The StorageBackend is the sole owner of page-level I/O, allocation, and
+logical-to-physical mapping. The backing file's `page_size` field in the
+StorageBackend header defines the payload size for every page in the system —
+it is read once at mount and used globally by both the StorageBackend and
+the VFS layer.
 
 ### 3.1 File Layout
 
@@ -186,20 +177,11 @@ void    Free(int64_t logicalPage);
 
 All newly allocated pages are zero-filled before returning.
 
-**Capacity limit.** The indirection directory grows dynamically
-of `(page_size − 32) / 8` entries. When all entries are non-zero and no
-further indirection pages can be allocated, the instance has reached its maximum
-logical page count. `Allocate` returns -1. The maximum at page_size = 8192
-is dynamically-growing chain covering 134M logical pages (~1.1 TB at default page_size).
-
 **Thread safety.** `Allocate` is thread-safe via a single atomic CAS on
 `physical_tail`. There are no zones, no scanning, and no per-thread cursors.
-When no free logical pages exist in the current indirection table capacity,
-a new indirection page is allocated and appended to `indirection_head chain` via
-CAS, and `total_pages` is updated via CAS.
-The StorageBackend extends the backing file, allocates the new directory page
-via `Allocate(1)`, zero-fills it, sets its `next` to 0, and CAS-appends it
-to the last page in the chain. Then it updates `total_pages` in the header via CAS.
+When the indirection table capacity is exhausted (all inline entries and
+overflow pages are full), a new overflow page is allocated via `Allocate(1)`,
+zero-filled, and CAS-appended to the chain. `total_pages` is updated via CAS.
 
 ### 3.4 Page I/O
 
@@ -240,8 +222,8 @@ void     Flush(int64_t logicalPage);
 ### 3.5 Flush Ordering
 
 The StorageBackend reads the flush priority from each dirty page's
-PageHeader `flags` field (§2.1). Logical pages 0 and 1 (the StorageBackend
-header) are always flushed at priority 3 (superblock-level) regardless of
+PageHeader `flags` field (§2.1). Logical page 0 (the StorageBackend
+header) is always flushed at priority 3 (superblock-level) regardless of
 their `flags` value — the magic bytes in `flags` are only validated at
 mount, not during flush. For all other pages, `Flush(-1)` writes in
 priority order: 0 (data) first, 3 (superblock) last. Within each priority,
@@ -1027,7 +1009,7 @@ possible.
 ### 10.5 Page Pinning
 
 Direct page access (external API, pins pages for the duration of a direct I/O operation) pins pages. Pin count
-is tracked in an in-memory `thread-safe hash table<long, int>` keyed by page
+is tracked in an in-memory thread-safe hash table keyed by page
 index. Pinned pages are skipped during step 7 freeing.
 
 ### 10.6 History Removal
@@ -1076,7 +1058,7 @@ new logical state — never a torn page.
    Validate its CRC32C. If invalid, try the other page.
 3. Read `rootNodeOffset`, `currentEpoch`, `epochMapperPtr`, `poolListHead`.
 4. Read the first epoch mapper page. Validate CRC32C. Walk the chain via
-   `nextMapperPage`. Rebuild in-memory mapper dictionary.
+   `nextPtr`. Rebuild in-memory mapper dictionary.
 5. Zero `treeLockState` reader count (in-memory only — the on-disk field
    is read only to check bit 63 for GC interruption; its reader count is
    always stale). If bit 63 is set, GC was interrupted; use the alternate
