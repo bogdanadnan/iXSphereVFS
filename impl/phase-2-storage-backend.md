@@ -23,18 +23,16 @@ read the configuration needed to initialize the allocator.
   `flags = 0x56585346`, which together form the ASCII
   string `"XVFS"` in little-endian byte order. This is the magic number.
 - Logical page 1 is the continuation of the `bitmap_dir` array. It has a
-  standard 16-byte PageHeader (type `0x02` PoolPage, `flags = 0`) but its
+  standard 16-byte PageHeader (`flags = 0`) but its
   payload is a pure array of `int64_t` entries — no configuration fields.
 - The header page 0 payload starts with configuration fields at offset 0:
-  `total_pages` (8 bytes), `page_size` (8 bytes, default 8192, caller-configurable at creation time), a `reserved`
-  block (16 bytes). Starting at offset 32 is `bitmap_dir[]` — an array of
+  `total_pages` (8 bytes), `page_size` (8 bytes, default 8192, caller-configurable at creation time), `segment_size` (4 bytes, default 1024), `reserved` (12 bytes). Starting at offset 32 is `bitmap_dir[]` — an array of
   `int64_t` logical page indices, zero-terminated (unused entries are zero
   because the page is zero-filled at allocation).
 - The `bitmap_dir` span: page 0 holds entries `0 .. (page_size - 32) / 8 - 1`,
   page 1 holds the remainder. Total capacity at page_size=8192 is 2,044 entries,
   supporting up to ~134 million logical pages (~1.1 TB logical).
-- On mount: read logical page 0, validate the magic (`pageType == 0x5658 &&
-  flags == 0x5346`), validate CRC32C on the payload. If any check fails,
+- On mount: read logical page 0, validate the magic (`flags == 0x56585346`), validate CRC32C on the payload. If any check fails,
   reject — not a valid VFS file.
 - On create: write header page 0 with `total_pages = 4` (pages 0–3 reserved),
   `page_size = 8192`, and `bitmap_dir[0] = 2` (the first bitmap page is at
@@ -59,7 +57,7 @@ obtained from a single allocator. The bitmap must support concurrent
 allocations without a global lock, and must grow as the backing file grows.
 
 **How:**
-- The bitmap is stored in ordinary logical pages (pageType `0x01` Bitmap).
+- The bitmap is stored in ordinary logical pages.
   Each page holds `page_size × 8` bits, covering that many logical pages.
 - The `bitmap_dir[]` array in the header lists the logical page indices of
   all bitmap pages. It is zero-terminated: the first zero entry marks the
@@ -90,11 +88,11 @@ allocations without a global lock, and must grow as the backing file grows.
   (~1.1 TB logical). `Allocate` returns -1 when the `bitmap_dir` is full.
 
 **Acceptance:**
-  - Allocate 1 page: returns page index, bit is now 0.
-  - Allocate 10 contiguous pages: bits are 0, returned index is the first.
-  - Acquire a specific page that is free: returns true, bit is 0.
+  - Allocate 1 page: indirection entry is now non-zero, page is zero-filled.
+  - Allocate 10 pages: indirection entries are sequential physical offsets, returned index is the first.
+  - Acquire a specific page that is free: returns true, entry is non-zero.
   - Acquire a page that is already allocated: returns false.
-  - Free a page: bit returns to 1.
+  - Free a page: entry returns to 0, physical space not reclaimed.
   - Allocate beyond the first bitmap page: second bitmap page is created
     and appended to `bitmap_dir`.
   - Four concurrent threads allocate 10,000 pages each: total allocated
@@ -117,7 +115,7 @@ significant space.
 **How:**
 - Every logical page is backed by `page_size + 16` bytes of physical storage
   (16-byte PageHeader + `page_size`-byte payload).
-- PageHeader fields: `pageType` (2), `flags` (2), `checksum` (4), `generation`
+- PageHeader fields: `flags` (4), `checksum` (4), `generation`
   (4), `mirrorPage` (4, signed, -1 means no mirror).
 - First write: build payload, compute CRC32C, write PageHeader with `generation = 1`,
   `mirrorPage = -1`. This is the only copy.
@@ -248,10 +246,10 @@ the allocator state.
   1. Create the backing file.
   2. Reserve logical pages 0–3 directly (before the bitmap exists, so
      `Allocate` cannot be used). Page 0 is header page 0, page 1 is header
-     page 1, page 2 is the first bitmap page, page 3 is reserved for the
+     page 1, page 2 is the first indirection table page, page 3 is reserved for the
      superblock.
   3. Write header page 0 with `total_pages = 4`, `page_size = 8192`,
-     `bitmap_dir[0] = 2`. Write header page 1 as zeros.
+     `segment_size = 1024`, and `bitmap_dir[0] = 2`. Write header page 1 as zeros.
   4. Write bitmap page 2: all bits set to 1 (free), except bits 0–3 set to
      0 (allocated — the four reserved pages).
   5. Return success. The VFS layer then calls `Acquire(3)` to claim the

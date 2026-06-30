@@ -91,22 +91,22 @@ never performs logical-to-physical translation.
 ### 3.1 File Layout
 
 The backing file begins with a StorageBackend header block (at logical page 0,
-lazy mirror backed), followed by free-bitmap pages, followed by allocatable data
+lazy mirror backed), followed by free-indirection pages, followed by allocatable data
 pages.
 
 ```
 Logical page   Content
 ────────────   ───────
-0              StorageBackend header page 0 (magic "XVFS", config + first ~1K bitmap_dir entries)
-1              StorageBackend header page 1 (continuation of bitmap_dir array)
-2..B           Free-bitmap pages
+0              StorageBackend header page 0 (magic "XVFS", config + first ~1K indirection_dir entries)
+1              StorageBackend header page 1 (continuation of indirection_dir array)
+2..B           Free-indirection pages
 B+1            First allocatable page — superblock
 ...            remaining logical pages
 ```
 
 The header spans two logical pages (0 and 1). Page 0 holds the config
-fields and the first portion of `bitmap_dir`. Page 1 continues the
-`bitmap_dir` array — it is a pure array of int64 entries with no header
+fields and the first portion of `indirection_dir`. Page 1 continues the
+`indirection_dir` array — it is a pure array of int64 entries with no header
 fields. Both pages are lazy mirror backed (§3.7).
 
 **Header page 0 layout (page_size-byte payload):**
@@ -118,7 +118,7 @@ Offset  Size  Field
  8       8    page_size         (int64 — payload size in bytes, default 8192)
 16       4    segment_size    (uint32 — pages per segment, default 1024)
 20      12    reserved
-32     ...   bitmap_dir[]      (array of int64; continued on page 1)
+32     ...   indirection_dir[]      (array of int64; continued on page 1)
 ```
 
 **Header page 1 layout (page_size-byte payload):**
@@ -126,27 +126,27 @@ Offset  Size  Field
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0     ...   bitmap_dir[]      (continuation of the int64 array from page 0)
+ 0     ...   indirection_dir[]      (continuation of the int64 array from page 0)
 ```
 
 Page 1 has the standard 16-byte PageHeader physically; its payload contains
-no configuration fields — it is a pure continuation of the `bitmap_dir`
-array. The 16-byte header uses `pageType = 0x02` (PoolPage) with `flags = 0`; it is transparent to array indexing.
+no configuration fields — it is a pure continuation of the `indirection_dir`
+array. The 16-byte header uses `flags = 0`; it is transparent to array indexing.
 
-The `bitmap_dir` array spans both pages. Entry N lives at:
+The `indirection_dir` array spans both pages. Entry N lives at:
 - If `N < (page_size − 32) / 8`: page 0, offset `32 + N × 8`
 - Otherwise: page 1, offset `(N − ((page_size − 32) / 8)) × 8`
 
 Total entries: `(2 × page_size − 32) / 8` = 2,044 at default page_size.
 Maximum logical pages: 2,044 × 65,536 = ~134M pages (~1.1 TB logical).
 
-Config area: 32 bytes. `bitmap_dir` starts at offset 32, spans pages 0 and 1.
+Config area: 32 bytes. `indirection_dir` starts at offset 32, spans pages 0 and 1.
 Entries: (2 × page_size − 32) / 8 = 2,044 at default page_size.
 
-The header is zero-filled at allocation. `bitmap_dir` is a compact array of
-bitmap page indices starting at offset 32. Since newly allocated pages are
-zero-filled, unused entries are 0. The number of bitmap pages is the count
-of non-zero entries. The first entry is always 2 (the first bitmap page).
+The header is zero-filled at allocation. `indirection_dir` is a compact array of
+indirection page indices starting at offset 32. Since newly allocated pages are
+zero-filled, unused entries are 0. The number of indirection pages is the count
+of non-zero entries. The first entry is always 2 (the first indirection page).
 
 **Bitmap page layout (page_size-byte payload):**
 
@@ -156,12 +156,12 @@ Offset  Size  Field
  0    page_size  bits[]          (page_size bytes = page_size × 8 bits, covering that many logical pages)
 ```
 
-Bitmap pages have no `next` pointer — the header's `bitmap_dir` array is
+Indirection pages have no `next` pointer — the header's `indirection_dir` array is
 the authoritative chain. To find the bitmap bit for logical page N:
 `bitmap_index = N / (page_size * 8)`, `bit_offset = N % (page_size * 8)`.
-Allocation scans across all bitmap pages via zone cursors; freed pages are
-reused regardless of which bitmap page they reside on. New bitmap pages are
-appended to `bitmap_dir` only when the last existing page is exhausted.
+Allocation scans across all indirection pages via zone cursors; freed pages are
+reused regardless of which indirection page they reside on. New indirection pages are
+appended to `indirection_dir` only when the last existing page is exhausted.
 
 All pages, including the header block, use the lazy mirror mechanism (§3.7).
 
@@ -173,20 +173,23 @@ file exists:
 **File does not exist or is empty:**
 1. Create the backing file.
 2. Bootstrap: reserve logical pages 0–3 directly — `Allocate` cannot be used
-   yet because no bitmap exists. Pages 0–1 are the StorageBackend header,
-   page 2 is the first bitmap page, page 3 is the superblock. All four
-   are zero-filled and use lazy mirror backing.
-3. Write header page 0: `total_pages = 4`, `page_size` (caller-specified, default 8192).
-   Write `2` to `bitmap_dir[0]`.
-4. Write bitmap page 2: all bits set to `1` (free). Mark bits 0–3 (header
-   pages, bitmap, superblock) as allocated (`0`).
+   yet because no indirection table exists. Pages 0–1 are the StorageBackend
+   header, page 2 is the first indirection table page, page 3 is the
+   superblock. All four are zero-filled and use lazy mirror backing.
+3. Write header page 0: `total_pages = 4`, `page_size` (caller-specified,
+   default 8192), `physical_tail = 4 * (page_size + 16)` (pages 0–3 consume
+   this much physical space). Write `2` to `indirection_dir[0]`.
+4. Write indirection page 2: set entries 0, 1, 2, 3 to their computed
+   physical offsets (0, page_size+16, 2*(page_size+16), 3*(page_size+16)).
+   All other entries remain 0 (free / never-written).
 5. Return success. The VFS layer initializes the superblock (§4) on page 3.
 
 **File exists:**
-1. Read logical page 0 (header block). Validate: `flags == 0x56585346` (the "XVFS" magic) and CRC32C is valid. If any check
+1. Read logical page 0 (header block) via the indirection entry for page 0.
+   Validate: `flags == 0x56585346` (the "XVFS" magic) and CRC32C is valid. If any check
    fails, the file is not a valid iXSphereVFS instance.
-2. Read `total_pages` and `page_size`. Load the `bitmap_dir`
-   array (all non-zero entries). Read all referenced bitmap pages.
+2. Read `total_pages` and `page_size`. Load the `indirection_dir`
+   array (all non-zero entries). Read all referenced indirection pages.
 
 ### 3.3 Page Allocation
 
@@ -211,11 +214,11 @@ void    Free(int64_t logicalPage);
 
 All newly allocated pages are zero-filled before returning.
 
-**Capacity limit.** The `bitmap_dir` array in the header has a fixed capacity
+**Capacity limit.** The `indirection_dir` array in the header has a fixed capacity
 of `(page_size − 32) / 8` entries. When all entries are non-zero and no
-further bitmap pages can be allocated, the instance has reached its maximum
+further indirection pages can be allocated, the instance has reached its maximum
 logical page count. `Allocate` returns -1. The maximum at page_size = 8192
-is 2,044 bitmap pages covering 134M logical pages (~1.1 TB at default page_size).
+is 2,044 indirection pages covering 134M logical pages (~1.1 TB at default page_size).
 
 **Thread safety.** `Allocate` is thread-safe. Allocation is zone-based: the
 logical page space is divided into zones of 1M pages. `Allocate` picks a
@@ -223,11 +226,11 @@ zone by thread ID, scans from a per-zone hint cursor for `count` consecutive
 free bits using atomic bit operations. Falls back to adjacent zones if the
 home zone is full.
 
-When no free pages exist in any zone, a new bitmap page must be allocated.
-The StorageBackend extends the backing file, allocates the new bitmap page,
-zero-fills it, and appends its index to the first zero slot in `bitmap_dir`
+When no free pages exist in any zone, a new indirection page must be allocated.
+The StorageBackend extends the backing file, allocates the new indirection page,
+zero-fills it, and appends its index to the first zero slot in `indirection_dir`
 via CAS. Then it updates `total_pages` in the header via CAS. The header
-page is lazy mirror backed §3.7  — the CAS on `bitmap_dir` entries and
+page is lazy mirror backed §3.7  — the CAS on `indirection_dir` entries and
 `total_pages` is safe because the underlying page write is crash-safe.
 
 ### 3.4 Page I/O
@@ -260,7 +263,7 @@ void     Flush(int64_t logicalPage);
   disk (without fsync) when the dirty page count exceeds a configurable
   threshold. Only pages at flush priority 0 (data pages) are eligible for
   write-back — they contain user content with no epoch-tagged metadata.
-  Pool pages (priority 1), bitmap pages (priority 2), and the superblock
+  Pool pages (priority 1), indirection pages (priority 2), and the superblock
   (priority 3) are never write-backed; they wait for an explicit `Flush`.
   This prevents stale uncommitted metadata from surviving a crash and being
   misinterpreted as valid after an epoch counter rollback. Write-back
@@ -281,7 +284,7 @@ allocation time; the StorageBackend never modifies it.
 
 1. **Data pages** (priority 0). User file content.
 2. **Pool pages** (priority 1). All metadata.
-3. **Bitmap pages** (priority 2). Free-page bitmap state.
+3. **Indirection pages** (priority 2). Free-page bitmap state.
 4. **Superblock** (priority 3). Written last. This is the atomic commit point.
 
 **Crash during flush:**
@@ -371,20 +374,20 @@ pairs.
 
 ### 3.8 Free-Page Bitmap (Internal)
 
-The StorageBackend maintains a private free-page bitmap. One bit per
+The StorageBackend maintains a private indirection table. One bit per
 allocatable logical page. `1` = free, `0` = allocated.
 
-**Layout.** The header's `bitmap_dir` array (§3.1) lists bitmap page indices.
-Bitmap pages have no internal linking — the directory is authoritative. Each
-bitmap page holds page_size * 8 bits (a full page_size-byte payload). Bit position `N`
-in page `bitmap_dir[M]` corresponds to logical page `M * page_size * 8 + N`.
+**Layout.** The header's `indirection_dir` array (§3.1) lists indirection page indices.
+Indirection pages have no internal linking — the directory is authoritative. Each
+indirection page holds page_size * 8 bits (a full page_size-byte payload). Bit position `N`
+in page `indirection_dir[M]` corresponds to logical page `M * page_size * 8 + N`.
 
 **Growth.** When `Allocate` needs a page beyond the current bitmap capacity,
-a new bitmap page is allocated, zero-filled (all bits `0` = allocated), then
-its index is written to the first zero slot in `bitmap_dir`. The new page's
+a new indirection page is allocated, zero-filled (all bits `0` = allocated), then
+its index is written to the first zero slot in `indirection_dir`. The new page's
 bits are then set to `1` (free) for the newly covered range.
 
-**Mount.** On mount, `bitmap_dir` is scanned. All referenced bitmap pages are
+**Mount.** On mount, `indirection_dir` is scanned. All referenced indirection pages are
 read. The allocator is initialized with the free/allocated state.
 
 **GC.** The bitmap chain is rebuilt during the GC copy phase. Unused bitmap

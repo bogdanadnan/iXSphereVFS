@@ -23,7 +23,7 @@ extern int tests_passed;
 int test_storage_backend(void) {
     const char* test_path = "/tmp/vfs_test_backend.dat";
     vfs_t* vfs;
-    
+
     /* Remove test file if exists */
     unlink(test_path);
     

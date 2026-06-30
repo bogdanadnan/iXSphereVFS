@@ -12,30 +12,27 @@
 
 /* ── Page Header ─────────────────────────────────────────── */
 /* 16-byte header prepended to every logical page */
+/* flags: bits 0-1 = flush priority; on header page, stores 0x56585346 magic */
 
 #pragma pack(push, 1)
 typedef struct {
-    uint16_t pageType;    /* Page type identifier */
-    uint16_t flags;       /* Priority (0-3) in bits 0-1, other flags elsewhere */
+    uint32_t flags;       /* Flush priority in bits 0-1; magic 0x56585346 on header page */
     uint32_t checksum;    /* CRC32C of payload */
     uint32_t generation;  /* Generation number for mirroring */
     int32_t  mirrorPage;  /* Mirror sibling index, -1 if none */
 } PageHeader;
 #pragma pack(pop)
 
-/* ── Page Types ──────────────────────────────────────────── */
-/* Based on Phase 2 spec: bitmap uses 0x01, pool pages use 0x02, superblock uses 0x00 */
-/* Additional types for future phases are defined here */
+/* ── XVFS Magic Value ─────────────────────────────────────────── */
+/* Magic stored directly in flags field (4 bytes) */
+#define VFS_MAGIC    0x56585346  /* "XVFS" in little-endian */
 
-#define PAGE_TYPE_SUPERBLOCK 0x0000  /* Superblock page (reserved at page 3) */
-#define PAGE_TYPE_BITMAP     0x0001  /* Bitmap page for free-page tracking */
-#define PAGE_TYPE_POOL       0x0002  /* Pool page (also used for header continuation) */
-#define PAGE_TYPE_DATA       0x0003  /* Data page (user file content) */
-
-/* Zone size for zone-based allocation (1M pages per zone) */
+/* ── Zone size for zone-based allocation (1M pages per zone) ────── */
 #define ZONE_SIZE_PAGES 1048576
 
-/* ── StorageBackend Struct ───────────────────────────────── */
+/* ── StorageBackend Struct ─────────────────────────────────────────── */
+
+#define MAX_ZONES 256  /* Max zones for per-zone cursors */
 
 typedef struct {
     int fd;                /* File descriptor */
@@ -43,14 +40,16 @@ typedef struct {
     uint64_t total_pages; /* Total logical pages */
     uint64_t page_size;   /* Page size */
     uint32_t segment_size; /* Pages per segment (for pool allocator) */
-    int64_t bitmap_dir[2044]; /* Bitmap page indices (from header) */
+    int64_t bitmap_dir[2044]; /* Bitmap page indices (from header) - in-memory copy */
     int bitmap_count;      /* Number of bitmap pages allocated */
     uint8_t* buffer;       /* Temporary buffer for reads/writes */
     int initialized;     /* Non-zero after successful open/create */
     
-    /* Zone-based allocation hints */
-    int64_t zone_hint_cursor; /* Next-fit cursor for allocation scanning (atomic) */
-    pthread_mutex_t bitmap_lock; /* Per-instance lock for bitmap updates */
+    /* Per-zone hint cursors - indexed by zone number (§3.3) */
+    int64_t zone_cursors[MAX_ZONES];
+    
+    /* Bitmap lock - protects bitmap page read/write operations */
+    pthread_mutex_t bitmap_lock;
 } StorageBackend;
 
 /* ── VFS Instance ───────────────────────────────────────── */
@@ -59,15 +58,9 @@ struct vfs_t {
     StorageBackend backend;
 };
 
-/* ── XVFS Magic Numbers ─────────────────────────────────── */
-
-/* XVFS magic: pageType=0x5658 ('VX'), flags=0x5346 ('SF') forms "XVFS" in little-endian */
-#define XVFS_MAGIC_TYPE      0x5658
-#define XVFS_MAGIC_FLAGS     0x5346
-
 /* ── Flush Priorities (stored in flags field) ─────────────── */
 
-#define FLUSH_PRIORITY_MASK  0x0003
+#define FLUSH_PRIORITY_MASK  0x00000003
 #define FLUSH_PRIORITY_DATA  0
 #define FLUSH_PRIORITY_POOL  1
 #define FLUSH_PRIORITY_BITMAP 2
@@ -78,5 +71,11 @@ struct vfs_t {
 int64_t storage_allocate(StorageBackend* sb, uint64_t count);  /* Allocate count contiguous pages */
 int     storage_acquire(StorageBackend* sb, int64_t page);    /* Acquire specific page */
 void    storage_free(StorageBackend* sb, int64_t page);         /* Free a page */
+
+/* ── Page I/O API (internal) ─────────────────────────────────── */
+
+uint8_t* storage_read(StorageBackend* sb, int64_t logicalPage);
+void     storage_write(StorageBackend* sb, int64_t logicalPage, uint8_t* payload, uint8_t priority);
+void     storage_flush(StorageBackend* sb, int64_t logicalPage);
 
 #endif /* VFS_INTERNAL_H */

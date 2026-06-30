@@ -92,9 +92,9 @@ operation means a crash during GC leaves the old tree perfectly intact.
   4. Build new pool pages: as entries survive the filter, allocate new pool
      pages and write them sequentially. This packs surviving entries densely
      and eliminates fragmentation.
-  5. Build new bitmap state: the new tree references a known set of data pages
-     and pool pages. Build a new bitmap from scratch marking all reachable
-     pages as allocated. All other pages become free.
+  5. Build new indirection table state: the new tree references a known set of data pages
+     and pool pages. Build a new indirection table from scratch marking all reachable
+     pages as allocated. All entries for unreachable pages are set to 0.
   6. Write new superblock: include the new `rootNodeOffset`, `currentEpoch`,
      `epochMapperPtr`, `poolListHead`, and `treeLockState = 0`. fsync the
      new superblock.
@@ -106,7 +106,7 @@ operation means a crash during GC leaves the old tree perfectly intact.
 
 **Acceptance:**
   - Create a file, take snapshot, write more data, soft-delete the snapshot,
-    run GC. Verify that the soft-deleted data pages are freed and the file
+    run GC. Verify that the soft-deleted data pages are reclaimed (entries set to 0, physical space compacted by the sequential tail during the GC copy phase) and the file
     reverts to its pre-snapshot size.
   - Commit a snapshot, run GC. Verify that committed version nodes are
     relabeled to the live head epoch and the mapper entry is removed.
@@ -122,7 +122,7 @@ operation means a crash during GC leaves the old tree perfectly intact.
 
 **What:** A queue of pages from the old tree that GC has marked for deletion
 but not yet returned to the allocator. The allocator skips pages in this
-queue. Pages are freed only after GC confirms no active traversals reference
+queue. Pages are reclaimed (entries set to 0, physical space compacted by the sequential tail during the GC copy phase) only after GC confirms no active traversals reference
 them.
 
 **Why:** Without deferred-free, a page freed by GC could be immediately
@@ -136,8 +136,8 @@ from "available for reuse."
   in-memory structure protected by the tree lock during population, then
   lock-free for reads).
 - During GC step 9: for every page in the old tree (data pages, pool pages,
-  bitmap pages), if it is not reachable from the new tree, append its logical
-  page index to the deferred-free queue. Data pages are freed as pairs (mirror
+  indirection pages), if it is not reachable from the new tree, append its logical
+  page index to the deferred-free queue. Data pages are reclaimed (entries set to 0, physical space compacted by the sequential tail during the GC copy phase) as pairs (mirror
   sibling included).
 - The allocator (`Allocate`, `Acquire`): before returning a page, check
   whether it is in the deferred-free queue. If yes, skip it — do not allocate
@@ -179,7 +179,7 @@ are logically dead. Rebuilding packs surviving entries densely.
   filled. The new `poolListHead` in the superblock points to the first new
   page.
 - After the swap, the old pool pages are placed in the deferred-free queue.
-- This is the only time pool slots are freed — individual slots are never
+- This is the only time pool slots are reclaimed (entries set to 0, physical space compacted by the sequential tail during the GC copy phase) — individual slots are never
   freed during normal operation. The pool is a monotonic allocator between
   GC cycles.
 - The pool free list (`poolState`) of each new page is initialized normally

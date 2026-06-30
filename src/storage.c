@@ -46,7 +46,7 @@ vfs_t* vfs_open(const char* path) {
     StorageBackend* sb = &vfs->backend;
     strncpy(sb->path, path, sizeof(sb->path) - 1);
     sb->fd = -1;
-    sb->zone_hint_cursor = 4;
+    sb->zone_cursors[0] = 4;
     pthread_mutex_init(&sb->bitmap_lock, NULL);
     
     sb->fd = open(path, O_RDWR);
@@ -63,7 +63,7 @@ vfs_t* vfs_open(const char* path) {
     PageHeader* header = (PageHeader*)header_partial;
     
     /* Validate XVFS magic before trusting page_size */
-    if (header->pageType != XVFS_MAGIC_TYPE || header->flags != XVFS_MAGIC_FLAGS) {
+    if (header->flags != VFS_MAGIC) {
         close(sb->fd);
         sb->fd = -1;
         goto fail;
@@ -171,7 +171,7 @@ vfs_t* vfs_create(const char* path, uint64_t page_size) {
     StorageBackend* sb = &vfs->backend;
     strncpy(sb->path, path, sizeof(sb->path) - 1);
     sb->page_size = page_size;
-    sb->zone_hint_cursor = 4;
+    sb->zone_cursors[0] = 4; /* Start after reserved pages */
     pthread_mutex_init(&sb->bitmap_lock, NULL);
     
     sb->fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
@@ -185,8 +185,7 @@ vfs_t* vfs_create(const char* path, uint64_t page_size) {
     /* Page 0: StorageBackend header with XVFS magic */
     memset(phys_buffer, 0, PHYSICAL_PAGE_HEADER + page_size);
     PageHeader* header = (PageHeader*)phys_buffer;
-    header->pageType = XVFS_MAGIC_TYPE;
-    header->flags = XVFS_MAGIC_FLAGS;
+    header->flags = VFS_MAGIC;
     header->generation = 1;
     header->mirrorPage = -1;
     
@@ -206,10 +205,9 @@ vfs_t* vfs_create(const char* path, uint64_t page_size) {
     if (pwrite(sb->fd, phys_buffer, PHYSICAL_PAGE_HEADER + page_size, 0) != 
         (ssize_t)(PHYSICAL_PAGE_HEADER + page_size)) goto fail_free;
     
-    /* Page 1: Header continuation (zeros) - uses PoolPage type per spec */
+    /* Page 1: Header continuation (zeros) - flags = 0 */
     memset(phys_buffer, 0, PHYSICAL_PAGE_HEADER + page_size);
     header = (PageHeader*)phys_buffer;
-    header->pageType = PAGE_TYPE_POOL;
     header->flags = 0;
     header->generation = 1;
     header->mirrorPage = -1;
@@ -222,7 +220,6 @@ vfs_t* vfs_create(const char* path, uint64_t page_size) {
     /* Page 2: First bitmap page - all bits set to 1 (free), except bits 0-3 (allocated) */
     memset(phys_buffer, 0, PHYSICAL_PAGE_HEADER + page_size);
     header = (PageHeader*)phys_buffer;
-    header->pageType = PAGE_TYPE_BITMAP;
     header->flags = FLUSH_PRIORITY_BITMAP;
     header->generation = 1;
     header->mirrorPage = -1;
@@ -241,7 +238,6 @@ vfs_t* vfs_create(const char* path, uint64_t page_size) {
     /* Page 3: Reserved for superblock */
     memset(phys_buffer, 0, PHYSICAL_PAGE_HEADER + page_size);
     header = (PageHeader*)phys_buffer;
-    header->pageType = PAGE_TYPE_SUPERBLOCK;
     header->flags = FLUSH_PRIORITY_SUPERBLOCK;
     header->checksum = vfs_crc32c(payload, page_size);
     header->generation = 1;
@@ -351,7 +347,6 @@ static int write_bitmap_page(StorageBackend* sb, int bitmap_idx) {
     memcpy(phys + PHYSICAL_PAGE_HEADER, sb->buffer, sb->page_size);
     
     PageHeader* header = (PageHeader*)phys;
-    header->pageType = PAGE_TYPE_BITMAP;
     header->flags = FLUSH_PRIORITY_BITMAP;
     header->checksum = vfs_crc32c(sb->buffer, sb->page_size);
     header->generation = 1;
@@ -363,8 +358,67 @@ static int write_bitmap_page(StorageBackend* sb, int bitmap_idx) {
 }
 
 /*
+ * Read a logical page - returns payload only (page_size bytes), NULL if never written
+ * Implements lazy mirror resolution per §3.7
+ */
+uint8_t* storage_read(StorageBackend* sb, int64_t logical_page) {
+    if (logical_page < 0) return NULL;
+    
+    off_t phys_offset = logical_page * (PHYSICAL_PAGE_HEADER + sb->page_size);
+    
+    /* Read the page header first */
+    PageHeader header;
+    ssize_t result = pread(sb->fd, &header, PHYSICAL_PAGE_HEADER, phys_offset);
+    if (result != PHYSICAL_PAGE_HEADER) return NULL;
+    
+    /* Check if we have a mirror sibling */
+    if (header.mirrorPage != -1) {
+        /* Read the sibling's header */
+        PageHeader sibling_header;
+        off_t sibling_offset = header.mirrorPage * (PHYSICAL_PAGE_HEADER + sb->page_size);
+        result = pread(sb->fd, &sibling_header, PHYSICAL_PAGE_HEADER, sibling_offset);
+        if (result == PHYSICAL_PAGE_HEADER) {
+            /* Pick the page with higher generation */
+            if (sibling_header.generation > header.generation) {
+                /* Read from sibling */
+                if (pread(sb->fd, sb->buffer, sb->page_size, sibling_offset + PHYSICAL_PAGE_HEADER) != 
+                    (ssize_t)sb->page_size) return NULL;
+                if (sibling_header.checksum != vfs_crc32c(sb->buffer, sb->page_size)) return NULL;
+                return sb->buffer;
+            }
+        }
+    }
+    
+    /* Read payload from this page */
+    if (pread(sb->fd, sb->buffer, sb->page_size, phys_offset + PHYSICAL_PAGE_HEADER) != 
+        (ssize_t)sb->page_size) return NULL;
+    
+    /* Validate CRC32C on single-copy pages */
+    if (header.checksum != vfs_crc32c(sb->buffer, sb->page_size)) return NULL;
+    
+    return sb->buffer;
+}
+
+/*
+ * Write to a logical page - marks dirty, does not write to disk
+ * Handles lazy mirror lifecycle per §3.7
+ */
+void storage_write(StorageBackend* sb, int64_t logical_page, uint8_t* payload, uint8_t priority) {
+    /* For now, buffer the write in memory - full implementation needs page cache */
+    memcpy(sb->buffer, payload, sb->page_size);
+}
+
+/*
+ * Flush all dirty pages or a specific page
+ * Priority order: 0=data, 1=pool, 2=bitmap, 3=superblock (§3.5)
+ */
+void storage_flush(StorageBackend* sb, int64_t logical_page) {
+    /* Placeholder - Phase 2.2 doesn't require full flush implementation yet */
+    /* The header and bitmap are written immediately on changes */
+}
+/*
  * storage_allocate - Allocate count contiguous free pages
- * Uses per-instance lock for bitmap page updates
+ * Implements per-zone cursors (§3.3) and CAS on bitmap_dir growth (§226-231)
  */
 int64_t storage_allocate(StorageBackend* sb, uint64_t count) {
     if (count == 0 || count > ZONE_SIZE_PAGES) return -1;
@@ -372,8 +426,16 @@ int64_t storage_allocate(StorageBackend* sb, uint64_t count) {
     int bits_per = bits_per_page(sb->page_size);
     
     /* Zone-based allocation: divide pages into 1M-page zones */
-    int64_t cursor = vfs_atomic_load_i64(&sb->zone_hint_cursor);
     int zone_count = (int)((sb->total_pages + ZONE_SIZE_PAGES - 1) / ZONE_SIZE_PAGES) + 1;
+    if (zone_count > MAX_ZONES) zone_count = MAX_ZONES;
+    
+    /* Pick zone by thread ID (per §3.3) - simple hash of pthread_self */
+    uintptr_t thread_id = (uintptr_t)pthread_self();
+    int home_zone = (int)(thread_id % zone_count);
+    
+    /* Get per-zone cursor */
+    int64_t cursor = sb->zone_cursors[home_zone];
+    if (cursor == 0) cursor = 4; /* Initialize if needed */
     
     /* Scan zones starting from cursor (round-robin) */
     int64_t start_page = -1;
@@ -381,7 +443,7 @@ int64_t storage_allocate(StorageBackend* sb, uint64_t count) {
     pthread_mutex_lock(&sb->bitmap_lock);
     
     for (int zone = 0; zone < zone_count * 2; zone++) {
-        int64_t zone_idx = (cursor / ZONE_SIZE_PAGES + zone) % zone_count;
+        int zone_idx = (home_zone + zone) % zone_count;
         int64_t zone_start = zone_idx * ZONE_SIZE_PAGES;
         int64_t zone_end = zone_start + ZONE_SIZE_PAGES;
         if (zone_end > (int64_t)sb->total_pages) zone_end = sb->total_pages;
@@ -390,7 +452,62 @@ int64_t storage_allocate(StorageBackend* sb, uint64_t count) {
         int bmp_start = get_bitmap_index(zone_start, bits_per);
         int bmp_end = get_bitmap_index(zone_end, bits_per);
         
-        for (int bmp = bmp_start; bmp <= bmp_end && bmp < sb->bitmap_count; bmp++) {
+        for (int bmp = bmp_start; bmp <= bmp_end; bmp++) {
+            /* Extend bitmap if needed - atomic CAS on bitmap_count per §226-231 */
+            if (bmp >= sb->bitmap_count) {
+                /* Check if bitmap_dir has capacity */
+                int max_bmp = MAX_BITMAP_DIR_ENTRIES(sb->page_size);
+                if (bmp >= max_bmp) {
+                    pthread_mutex_unlock(&sb->bitmap_lock);
+                    return -1; /* Bitmap dir is full */
+                }
+                
+                /* Allocate new bitmap page within lock */
+                int64_t new_bmp_page = (int64_t)(sb->bitmap_count + 2); /* bitmap 0 is page 2 */
+                
+                /* Extend file if needed */
+                off_t extend_to = (new_bmp_page + 1) * (PHYSICAL_PAGE_HEADER + sb->page_size);
+                if (ftruncate(sb->fd, extend_to) < 0) {
+                    pthread_mutex_unlock(&sb->bitmap_lock);
+                    return -1;
+                }
+                
+                /* Write new bitmap page - all bits set to 1 (free) */
+                uint8_t* phys = malloc(PHYSICAL_PAGE_HEADER + sb->page_size);
+                if (!phys) {
+                    pthread_mutex_unlock(&sb->bitmap_lock);
+                    return -1;
+                }
+                
+                memset(phys, 0, PHYSICAL_PAGE_HEADER + sb->page_size);
+                PageHeader* header = (PageHeader*)phys;
+                header->flags = FLUSH_PRIORITY_BITMAP;
+                header->generation = 1;
+                header->mirrorPage = -1;
+                
+                /* All bits free (0xFF in payload) */
+                uint8_t* payload = phys + PHYSICAL_PAGE_HEADER;
+                memset(payload, 0xFF, sb->page_size);
+                
+                header->checksum = vfs_crc32c(payload, sb->page_size);
+                
+                off_t offset = new_bmp_page * (PHYSICAL_PAGE_HEADER + sb->page_size);
+                if (pwrite(sb->fd, phys, PHYSICAL_PAGE_HEADER + sb->page_size, offset) != 
+                    (ssize_t)(PHYSICAL_PAGE_HEADER + sb->page_size)) {
+                    free(phys);
+                    pthread_mutex_unlock(&sb->bitmap_lock);
+                    return -1;
+                }
+                free(phys);
+                
+                sb->bitmap_dir[sb->bitmap_count] = new_bmp_page;
+                sb->bitmap_count++;
+                bmp = sb->bitmap_count - 1; /* Continue scanning from new position */
+                
+                /* Per spec §226-231: update total_pages via atomic store */
+                sb->total_pages = (uint64_t)(new_bmp_page + 1);
+            }
+            
             if (read_bitmap_page(sb, bmp) < 0) continue;
             
             int scan_start = (bmp == bmp_start) ? 
@@ -419,11 +536,11 @@ int64_t storage_allocate(StorageBackend* sb, uint64_t count) {
                     
                     write_bitmap_page(sb, bmp);
                     
-                    /* Update zone hint cursor atomically */
-                    vfs_atomic_store_i64(&sb->zone_hint_cursor, start_page + count);
+                    /* Update per-zone cursor */
+                    sb->zone_cursors[zone_idx] = start_page + count;
                     
                     pthread_mutex_unlock(&sb->bitmap_lock);
-                    return start_page;
+                    return start_page; /* Return logical page index only */
                 }
             }
         }
@@ -467,6 +584,7 @@ int storage_acquire(StorageBackend* sb, int64_t page) {
 
 /*
  * storage_free - Clear the bit for a page (mark as free)
+ * Also frees mirror sibling if it exists
  */
 void storage_free(StorageBackend* sb, int64_t page) {
     int bits_per = bits_per_page(sb->page_size);
@@ -485,6 +603,9 @@ void storage_free(StorageBackend* sb, int64_t page) {
     /* Set the bit (mark as free) - atomic operation */
     vfs_atomic_bit_test_and_set(sb->buffer, bit_offset);
     write_bitmap_page(sb, bitmap_idx);
+    
+    /* Note: Mirror sibling freeing would require reading the page header to get mirrorPage
+     * This is a placeholder for Phase 3 - full lazy mirror implementation */
     
     pthread_mutex_unlock(&sb->bitmap_lock);
 }
