@@ -99,7 +99,7 @@ operation means a crash during GC leaves the old tree perfectly intact.
      `epochMapperPtr`, `poolListHead`, and `treeLockState = 0`. fsync the
      new superblock.
   7. Atomically swap to the new superblock (write to the inactive half of the
-     ping-pong superblock page, increment generation).
+     lazy mirror superblock page, increment generation).
   8. Release the tree lock.
   9. Place all pages from the old tree into the deferred-free queue
      (Workload 7.3).

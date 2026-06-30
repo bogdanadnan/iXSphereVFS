@@ -8,7 +8,6 @@ visibility of committed and deleted snapshots during reads.
 
 ---
 
-## Workload 6.2 — Snapshot
 ## Workload 6.1 — Valid Epochs
 
 **What:** Enforce write restrictions on epochs. Only the current live head
@@ -40,6 +39,9 @@ version chain model.
   - Write to epoch 2 (an older even epoch, not the live head): rejected.
   - Read from any epoch: always succeeds.
 
+---
+
+## Workload 6.2 — Snapshot
 
 **What:** Take a snapshot by incrementing the epoch counter. The new epoch
 is odd (snapshot), the previous epoch becomes frozen live-head history.
