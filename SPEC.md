@@ -148,7 +148,7 @@ indirection page indices starting at offset 32. Since newly allocated pages are
 zero-filled, unused entries are 0. The number of indirection pages is the count
 of non-zero entries. The first entry is always 2 (the first indirection page).
 
-**Bitmap page layout (page_size-byte payload):**
+**Indirection page layout (page_size-byte payload):**
 
 ```
 Offset  Size  Field
@@ -157,9 +157,9 @@ Offset  Size  Field
 ```
 
 Indirection pages have no `next` pointer — the header's `indirection_dir` array is
-the authoritative chain. To find the bitmap bit for logical page N:
-`bitmap_index = N / (page_size * 8)`, `bit_offset = N % (page_size * 8)`.
-Allocation scans across all indirection pages via zone cursors; freed pages are
+the authoritative chain. To find the indirection entry for logical page N:
+`table_index = N / (page_size / 8)`.
+Allocation scans across all indirection pages linearly; freed pages are
 reused regardless of which indirection page they reside on. New indirection pages are
 appended to `indirection_dir` only when the last existing page is exhausted.
 
@@ -206,7 +206,7 @@ void    Free(int64_t logicalPage);
   back to individual `Acquire` calls for each needed page.
 - `Acquire(logicalPage)`: atomically checks whether `logicalPage` is
   free. If yes, marks it allocated and returns true. If already allocated,
-  returns false. This is a CAS on the bitmap bit — no scanning, O(1).
+  returns false. This is a CAS on the indirection entry — no scanning, O(1).
   Used for fixed-location allocations (superblock, GC target pages).
 - `Free(logicalPage)`: marks the logical page as free. If a mirror sibling
   exists (`mirrorPage != -1`), the sibling is also freed. GC is the primary
@@ -220,13 +220,11 @@ further indirection pages can be allocated, the instance has reached its maximum
 logical page count. `Allocate` returns -1. The maximum at page_size = 8192
 is 2,044 indirection pages covering 134M logical pages (~1.1 TB at default page_size).
 
-**Thread safety.** `Allocate` is thread-safe. Allocation is zone-based: the
-logical page space is divided into zones of 1M pages. `Allocate` picks a
-zone by thread ID, scans from a per-zone hint cursor for `count` consecutive
-free bits using atomic bit operations. Falls back to adjacent zones if the
-home zone is full.
-
-When no free pages exist in any zone, a new indirection page must be allocated.
+**Thread safety.** `Allocate` is thread-safe via a single atomic CAS on
+`physical_tail`. There are no zones, no scanning, and no per-thread cursors.
+When no free logical pages exist in the current indirection table capacity,
+a new indirection page is allocated and appended to `indirection_dir[]` via
+CAS, and `total_pages` is updated via CAS.
 The StorageBackend extends the backing file, allocates the new indirection page,
 zero-fills it, and appends its index to the first zero slot in `indirection_dir`
 via CAS. Then it updates `total_pages` in the header via CAS. The header
@@ -284,7 +282,7 @@ allocation time; the StorageBackend never modifies it.
 
 1. **Data pages** (priority 0). User file content.
 2. **Pool pages** (priority 1). All metadata.
-3. **Indirection pages** (priority 2). Free-page bitmap state.
+3. **Indirection pages** (priority 2). Free-page indirection state.
 4. **Superblock** (priority 3). Written last. This is the atomic commit point.
 
 **Crash during flush:**
@@ -372,7 +370,7 @@ where 90% of pages are write-once, physical storage is dominated by the single-p
 case rather than mirror pairs, saving significant space over always-allocated mirror
 pairs.
 
-### 3.8 Free-Page Bitmap (Internal)
+### 3.8 Indirection Table (Internal)
 
 The StorageBackend maintains a private indirection table. One bit per
 allocatable logical page. `1` = free, `0` = allocated.
@@ -382,7 +380,7 @@ Indirection pages have no internal linking — the directory is authoritative. E
 indirection page holds page_size * 8 bits (a full page_size-byte payload). Bit position `N`
 in page `indirection_dir[M]` corresponds to logical page `M * page_size * 8 + N`.
 
-**Growth.** When `Allocate` needs a page beyond the current bitmap capacity,
+**Growth.** When `Allocate` needs a page beyond the current indirection table capacity,
 a new indirection page is allocated, zero-filled (all bits `0` = allocated), then
 its index is written to the first zero slot in `indirection_dir`. The new page's
 bits are then set to `1` (free) for the newly covered range.
@@ -390,10 +388,10 @@ bits are then set to `1` (free) for the newly covered range.
 **Mount.** On mount, `indirection_dir` is scanned. All referenced indirection pages are
 read. The allocator is initialized with the free/allocated state.
 
-**GC.** The bitmap chain is rebuilt during the GC copy phase. Unused bitmap
+**GC.** The indirection table is rebuilt during the GC copy phase. Unused indirection
 pages are freed.
 
-The VFS layer never accesses the bitmap directly.
+The VFS layer never accesses the indirection table directly.
 
 ---
 
@@ -708,13 +706,15 @@ The epoch mapper (§8) affects traversal in two ways:
 To resolve a chain at mapped epoch R':
 1. Walk from the head pointer.
 2. If `traversalApply` is true for the entry's epoch mapping: treat the entry
-   as if its epoch were the mapped `toEpoch`, then apply steps 3–6.
-3. If `traversalApply` is false for the entry's epoch mapping: skip the entry.
-4. If no mapping exists for the entry's epoch: proceed to steps 3–6 directly.
-3. If entry.epoch == R' → use it (exact match, regardless of even/odd).
-4. If entry.epoch > R' → skip.
-5. If entry.epoch < R' AND even → use it (committed base). Stop.
-6. If entry.epoch < R' AND odd → skip (unrelated snapshot).
+   as if its epoch were the mapped `toEpoch`, then apply steps 3–7.
+3. If `traversalApply` is false for the entry's epoch mapping: the entry
+   is NOT remapped — its original epoch is used and the standard rules
+   below (steps 4–7) apply.
+4. If no mapping exists for the entry's epoch: proceed to steps 4–7.
+5. If entry.epoch == R' → use it (exact match, regardless of even/odd).
+6. If entry.epoch > R' → skip.
+7. If entry.epoch < R' AND even → use it (committed base). Stop.
+8. If entry.epoch < R' AND odd → skip (unrelated snapshot).
 
 (Chains are descending by epoch, so the first match at step 3 or 5 is the
 most recent committed state at or before R'.)
@@ -825,7 +825,7 @@ head at the moment of the successful CAS. The CAS is uncontested under
 per-file serialization (§9.3) but is retained as a correctness invariant
 and for future lock-free operation.
 
-After a successful CAS on PageNode.versionRootPtr, the the pool page must be `Write`'d
+After a successful CAS on PageNode.versionRootPtr, the pool page must be `Write`'d
 to the dirty cache so the updated slot is persisted on flush.
 
 Pool allocation (§5.2) uses a per-pool-page CAS on `freeCount`/`firstFreeSlot`.
@@ -1041,8 +1041,11 @@ prevents concurrent modifications during the copy phase.
 
 ### 10.4 Crash During GC
 
-If a crash occurs before step 6, the old superblock and old tree remain
-intact. Recovery mounts the old state. The partially-written new tree pages
+If a crash occurs before step 4 (superblock write in the new GC cycle),
+the old superblock and old tree remain intact. If a crash occurs after
+step 4 but before the atomic swap in step 5, the partially-written new
+superblock is discarded and the old superblock is used. If a crash occurs
+after step 5, the new tree is active and consistent. Recovery mounts the old state. The partially-written new tree pages
 are unreachable and will be reclaimed on the next GC cycle. No corruption
 possible.
 
@@ -1076,7 +1079,7 @@ committed snapshot epochs before invoking GC.
 
 ### 11.1 Page Durability
 
-All pages — superblock, bitmap, FileNode/DirNode pool entries, pool pages, mapper pages, and
+All pages — superblock, indirection pages, FileNode/DirNode pool entries, pool pages, mapper pages, and
 data pages — are backed by lazy mirror pairs §3.7. A crash
 mid-write leaves the old half intact (generation not updated) or the new
 half intact (CRC32C valid — generation was written last). No torn page is
@@ -1085,7 +1088,7 @@ fails, the backup half is used.
 
 This eliminates the need for separate "torn-CAS recovery" for metadata
 pages. The CAS-based updates to directory/file node `headPtr` and PageNode
-slot arrays are crash-safe because the underlying page write is ping-pong
+slot arrays are crash-safe because the underlying page write is lazy-mirror
 protected. A CAS that succeeds logically but whose page write is torn on
 disk is recovered by the lazy mirror mechanism on the next read: the backup
 half still holds the pre-CAS state, and the reader sees either the old or
