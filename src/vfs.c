@@ -1,9 +1,5 @@
-/*
- * src/error.c — Error String Conversion
- *
- * Returns human-readable strings for VFS error codes.
- */
 #include "ixsphere_vfs.h"
+#include <stdlib.h>
 
 const char* vfs_error_string(vfs_error_t err) {
     switch (err) {
@@ -18,4 +14,13 @@ const char* vfs_error_string(vfs_error_t err) {
         case VFS_ERR_NOMEM:     return "Out of memory";
         default:                return "Unknown error";
     }
+}
+
+vfs_t* vfs_open(const char* path) {
+    (void)path;
+    return NULL;
+}
+
+void vfs_close(vfs_t* vfs) {
+    (void)vfs;
 }
