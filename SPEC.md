@@ -118,7 +118,7 @@ Offset  Size  Field
  8       8    page_size         (int64 — payload size in bytes, default 8192)
 16       4    segment_size    (uint32 — pages per segment, default 1024)
 20      12    reserved
-32     ...   indirection_dir[]      (array of int64; continued on page 1)
+32     ...   indirection_head chain      (array of int64; continued on page 1)
 ```
 
 **Header page 1 layout (page_size-byte payload):**
@@ -126,7 +126,7 @@ Offset  Size  Field
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0     ...   indirection_dir[]      (continuation of the int64 array from page 0)
+ 0     ...   indirection_head chain      (continuation of the int64 array from page 0)
 ```
 
 Page 1 has the standard 16-byte PageHeader physically; its payload contains
@@ -179,9 +179,9 @@ file exists:
 3. Write header page 0: `total_pages = 4`, `page_size` (caller-specified,
    default 8192), `physical_tail = 4 * (page_size + 16)` (pages 0–3 consume
    this much physical space). Write `2` to `indirection_dir[0]`.
-4. Write indirection page 2: set entries 0, 1, 2, 3 to their computed
-   physical offsets (0, page_size+16, 2*(page_size+16), 3*(page_size+16)).
-   All other entries remain 0 (free / never-written).
+4. Write indirection directory page 2: `next = 0`, set entries 0, 1, 2, 3
+   to their computed physical offsets (0, page_size+16, 2*(page_size+16),
+   3*(page_size+16)). All other entries remain 0 (free / never-written).
 5. Return success. The VFS layer initializes the superblock (§4) on page 3.
 
 **File exists:**
@@ -214,7 +214,7 @@ void    Free(int64_t logicalPage);
 
 All newly allocated pages are zero-filled before returning.
 
-**Capacity limit.** The `indirection_dir` array in the header has a fixed capacity
+**Capacity limit.** The indirection directory has a fixed capacity
 of `(page_size − 32) / 8` entries. When all entries are non-zero and no
 further indirection pages can be allocated, the instance has reached its maximum
 logical page count. `Allocate` returns -1. The maximum at page_size = 8192
@@ -223,7 +223,7 @@ is 2,044 indirection pages covering 134M logical pages (~1.1 TB at default page_
 **Thread safety.** `Allocate` is thread-safe via a single atomic CAS on
 `physical_tail`. There are no zones, no scanning, and no per-thread cursors.
 When no free logical pages exist in the current indirection table capacity,
-a new indirection page is allocated and appended to `indirection_dir[]` via
+a new indirection page is allocated and appended to `indirection_head chain` via
 CAS, and `total_pages` is updated via CAS.
 The StorageBackend extends the backing file, allocates the new indirection page,
 zero-fills it, and appends its index to the first zero slot in `indirection_dir`
