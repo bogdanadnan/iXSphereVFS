@@ -2,242 +2,355 @@
 
 ## Goal
 Expose the full VFS functionality through a clean, POSIX-like C API. Every
-function accepts an optional epoch parameter for snapshot isolation. The API
-covers instance management, file and directory operations, locking, snapshot
-lifecycle, and garbage collection.
+function accepts an optional epoch parameter (-1 = current live head). The
+API covers instance management, file and directory operations, locking,
+snapshot lifecycle, and garbage collection.
+
+## Non-Negotiable Constraints
+
+- **All functions return predictable error codes.** Every failure path must
+  set `vfs->last_error` before returning.
+- **Thread safety.** The `vfs_t` handle is shared across threads. All
+  internal synchronization uses the mechanisms from earlier phases. No
+  additional global locks.
+- **Epoch parameter semantics.** -1 means "current live head." Any other
+  negative value is an error. Odd positive = snapshot. Even positive = may
+  be a live-head epoch (validated by the Epoch System).
+- **Node handles are int64_t.** They contain the nodeId in the lower 32 bits.
+  Upper 32 bits are always 0. The `vfs_dirent_t.nodeId` is also int64_t.
+
+## File Organization
+
+| File | Purpose |
+|------|---------|
+| `src/api.c` | All public API function implementations |
+| `include/ixsphere_vfs.h` | Updated with full public API declarations |
+| `test/test_api.c` | Integration tests |
+
+## Dependencies
+All previous phases must be complete. This phase is a thin wrapper.
 
 ---
 
 ## Workload 8.1 — Instance Management
 
-**What:** Functions to open, close, and flush a VFS instance.
+### `vfs_t* vfs_open(const char* path)`
 
-**Why:** Every VFS consumer starts by opening a backing file. The open call
-handles both creation and mounting of existing instances.
+```
+1. Call storage_open(path, 8192) to create or open the backing file.
+2. If new file: initialize superblock and root directory (Phase 5 Workload 5.1).
+3. If existing file: read superblock, build mapper dictionary, verify root.
+4. Initialize per-instance structures:
+   - Page cache (already initialized by storage_open)
+   - Mapper dictionary (from superblock->epochMapperPtr chain)
+   - File lock hash table (empty, created lazily per Workload 8.4)
+   - Dentry cache (per-directory, created lazily)
+   - Pool list head reference (from superblock->poolListHead)
+   - last_error = VFS_OK
+5. Return vfs_t* handle. NULL on failure (set last_error before returning NULL).
+```
 
-**How:**
-- `vfs_t* vfs_open(const char* path)`: if the file does not exist, create it,
-  bootstrap the StorageBackend header and indirection table (Phase 2), allocate the
-  superblock, and initialize the root directory (Phase 5). If the file exists,
-  validate the XVFS magic, load the indirection table, read the superblock, and walk
-  the epoch mapper chain. Return a handle to the VFS instance, or NULL on
-  error.
-- `void vfs_close(vfs_t* vfs)`: flush all dirty pages, free the page cache,
-  free all in-memory structures, close the backing file descriptor.
-- `int vfs_flush(vfs_t* vfs)`: call `Flush(-1)` on the StorageBackend to
-  write all dirty pages and fsync. Returns `VFS_OK` on success, `VFS_ERR_IO`
-  on failure.
-- The `vfs_t` handle is opaque to the caller. It contains the StorageBackend
-  state, the superblock in-memory copy, the page cache, the mapper dictionary,
-  the file lock hash table, and the pool list head.
+### `void vfs_close(vfs_t* vfs)`
 
-**Acceptance:**
-  - `vfs_open` with a new path creates a valid instance; `vfs_close` cleans up.
-  - `vfs_open` with an existing path mounts the previous state; data written
-    before close is visible after reopen.
-  - `vfs_flush` followed by process kill and remount preserves all committed
-    data.
-  - `vfs_open` with a non-VFS file fails (magic validation).
+```
+1. Flush all dirty pages: vfs_flush(vfs).
+2. storage_close(vfs->sb).  // closes fd, frees cache, frees indirection table
+3. Free all in-memory structures: mapper, lock table, dentry caches.
+4. Free the vfs_t struct itself.
+```
+
+### `int vfs_flush(vfs_t* vfs)`
+
+```
+1. storage_flush(vfs->sb, -1).  // writes all dirty pages + fsync
+2. Return VFS_OK on success, VFS_ERR_IO on failure.
+```
+
+### Acceptance
+- [ ] `vfs_open("new.vfs")` → creates file, bootstrap, returns valid handle
+- [ ] `vfs_close(handle)` → flush, free, Valgrind clean
+- [ ] `vfs_open("existing.vfs")` → mounts, data from previous session visible
+- [ ] `vfs_open("/not/a/vfs/file")` → returns NULL, last_error = VFS_ERR_IO
+- [ ] `vfs_flush` → data survives kill -9 + remount
 
 ---
 
 ## Workload 8.2 — File Operations
 
-**What:** Create, open, read, write, delete, and stat files. All accept an
-optional epoch parameter (pass -1 for current live head).
+### `int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`
 
-**Why:** These are the primary data operations. The API must be simple enough
-for a developer to use without understanding the internal epoch and version
-chain mechanics.
+```
+1. Resolve epoch: if epoch == -1, epoch = superblock->currentEpoch.
+2. Call tree_create(parent, name, epoch) from Phase 5.
+3. On success: return new nodeId. On failure: set last_error, return -1.
+```
 
-**How:**
-- `int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`:
-  create a file under `parent` directory. Returns the new file's nodeId, or
-  -1 on error.
-- `int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`:
-  resolve a path component to a file nodeId. Returns -1 if not found. This
-  is `openat`-style — it resolves one name component relative to a parent
-  directory. Multi-component paths are the caller's responsibility.
-- `int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset, int64_t count, int64_t epoch)`:
-  read up to `count` bytes from `offset`. Returns the number of bytes read
-  (may be less at EOF), or -1 on error. Uses the read rule with epoch mapper.
-- `int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset, int64_t count, int64_t epoch)`:
-  write `count` bytes at `offset`. Handles COW on first write to a page in the
-  epoch, in-place on subsequent writes. Updates FileSize. Returns bytes written.
-- `int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`:
-  tombstone the file. Returns `VFS_OK` or `VFS_ERR_NOTFOUND`.
-- `int64_t vfs_file_size(vfs_t* vfs, int64_t file, int64_t epoch)`: return file
-  size in bytes via the read rule on the `sizePtr` chain.
-- `int64_t vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch)`: return
-  modification timestamp via the read rule on the `sizePtr` chain.
-- `int64_t vfs_file_ctime(vfs_t* vfs, int64_t file)`: return creation timestamp
-  from the FileNode's `createdAt` field.
-- All epoch parameters accept -1 meaning "current live head." The VFS resolves
-  this to the actual `currentEpoch` from the superblock before performing the
-  operation.
+### `int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`
 
-**Acceptance:**
-  - Full CRUD cycle: create → write → read → delete → verify not found.
-  - Read at an old epoch returns data as it existed at that epoch.
-  - Write at a snapshot epoch does not affect live-head readers.
-  - File size updates correctly as data is written.
-  - mtime changes on write; ctime is fixed at creation.
+```
+1. Resolve epoch.
+2. Walk parent DirNode's headPtr chain at epoch.
+   Find DirContent with matching name.
+3. If found: return childNodeId.
+   If not found: last_error = VFS_ERR_NOTFOUND, return -1.
+```
+
+### `int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset, int64_t count, int64_t epoch)`
+
+```
+1. Resolve epoch.
+2. Call tree_read from Phase 5 Workload 5.4.
+3. Return bytes read (may be < count at EOF), or -1 on error.
+```
+
+### `int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset, int64_t count, int64_t epoch)`
+
+```
+1. Resolve epoch.
+2. Call tree_write from Phase 5 Workload 5.3.
+3. Return bytes written, or -1 on error.
+```
+
+### `int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`
+
+```
+1. Resolve epoch.
+2. Call tree_delete from Phase 5 Workload 5.2.
+3. Return VFS_OK or error.
+```
+
+### `int64_t vfs_file_size(vfs_t* vfs, int64_t file, int64_t epoch)`
+
+```
+1. Resolve epoch.
+2. Call tree_file_size from Phase 5 Workload 5.6.
+```
+
+### `int64_t vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch)`
+
+```
+1. Resolve epoch.
+2. Call tree_file_mtime.
+```
+
+### `int64_t vfs_file_ctime(vfs_t* vfs, int64_t file)`
+
+```
+1. No epoch needed. Call tree_file_ctime (reads createdAt directly from FileNode).
+```
+
+### Acceptance
+- [ ] Full CRUD cycle: create → write → read → delete → verify not found
+- [ ] Read at old epoch returns data from that epoch
+- [ ] Write at snapshot epoch doesn't affect live-head readers
+- [ ] File size updates on write; size at old epoch returns old size
+- [ ] mtime changes on write; ctime fixed at creation
 
 ---
 
 ## Workload 8.3 — Directory Operations
 
-**What:** Create and remove directories, list directory contents.
+### `int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`
 
-**Why:** Directories organize the namespace. Listing must correctly deduplicate
-entries across epochs and respect snapshot isolation.
+```
+1. Resolve epoch.
+2. Call tree_mkdir from Phase 5 Workload 5.5.
+```
 
-**How:**
-- `int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`:
-  create a directory. Returns `VFS_OK` or error.
-- `int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`:
-  remove an empty directory. Returns `VFS_ERR_NOTEMPTY` if the directory
-  contains visible children at the given epoch.
-- `int vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries, int max, int64_t epoch)`:
-  fill `entries` with up to `max` directory entries. Each entry is a
-  `vfs_dirent_t` struct containing `nodeId` (int64_t), `name` (char[256]),
-  and `isDir` (bool). Returns the number of entries written. The caller
-  iterates by calling repeatedly until 0 is returned.
-- `vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src_name, int64_t dst_parent, const char* dst_name, int64_t epoch)`:
-  rename a file or directory. Same-directory same-epoch: update `namePtr`
-  in-place. Cross-directory or new epoch: create new DirContent at destination,
-  tombstone at source.
-- Listing uses the dentry cache (Phase 5) after the first call for a given
-  directory and epoch.
+### `int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`
 
-**Acceptance:**
-  - mkdir "a", mkdir "a/b", create "a/b/c.txt": readdir "a/b" returns one entry.
-  - rmdir on non-empty directory fails.
-  - Rename same-dir: listing shows new name, old name gone. NodeId unchanged.
-  - Rename cross-dir: source directory loses entry, destination gains it.
-  - Listing at an old epoch shows the state as of that epoch.
+```
+1. Resolve epoch.
+2. Call tree_rmdir. Validate directory is empty at this epoch. Fail with
+   VFS_ERR_NOTEMPTY if children exist.
+```
+
+### `int vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries, int max, int64_t epoch)`
+
+```
+1. Resolve epoch.
+2. Call tree_readdir.
+3. Fill entries[] up to max:
+   entries[i].nodeId = childNodeId
+   entries[i].isDir  = true if child is DirNode
+   strncpy(entries[i].name, name, 255)
+4. Return number written.
+```
+
+### `int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src_name, int64_t dst_parent, const char* dst_name, int64_t epoch)`
+
+```
+1. Resolve epoch.
+2. Call tree_rename from Phase 5.
+```
+
+### `vfs_dirent_t` Definition
+
+```c
+typedef struct {
+    int64_t nodeId;
+    char    name[256];
+    bool    isDir;
+} vfs_dirent_t;
+```
+
+### Acceptance
+- [ ] mkdir "a", mkdir "a/b", create "a/b/c.txt" → readdir "a/b" returns 1 entry
+  with name "c.txt", isDir=false, valid nodeId
+- [ ] rmdir on non-empty → VFS_ERR_NOTEMPTY
+- [ ] Delete file in dir → rmdir → succeeds
+- [ ] Rename same-dir: old name gone, new name present, nodeId unchanged
+- [ ] Rename cross-dir: source loses entry, destination gains it
+- [ ] readdir at old epoch shows state as of that epoch
 
 ---
 
 ## Workload 8.4 — Locking
 
-**What:** Explicit per-file locking with two modes: global (epoch=0) serializes
-all epochs; per-epoch (specific epoch) allows cross-epoch concurrency.
+### What
+Explicit per-file locking API with two modes: global (epoch=0) serializes all
+epochs; per-epoch (specific epoch) allows cross-epoch concurrency.
 
-**Why:** SQLite needs global locking to serialize all writes to a database file.
-Snapshot-isolated workloads benefit from per-epoch locking where writers at
-different epochs don't block each other. The API exposes both.
+### Data Structure
 
-**How:**
-- `int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch)`: acquire the lock.
-  If `epoch` is 0, acquires the global lock — all other lock requests on this
-  file block until released. If `epoch` is a specific value, acquires the
-  per-epoch lock — only same-epoch writers block; cross-epoch writers proceed
-  concurrently.
-- `int vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch)`: release the lock.
-- Internal write operations automatically acquire the per-epoch lock for the
-  write's epoch. The explicit API is for callers who need to hold the lock
-  across multiple operations (e.g., SQLite's multi-page transactions).
-- Lock compatibility rules (enforced by the lock implementation):
-  - Global lock is incompatible with all other locks on the same file. A
-    global lock request waits for all active per-epoch locks to drain. New
-    per-epoch requests block while a global lock is held or pending.
-  - Per-epoch locks with different epochs are compatible — they don't block
-    each other.
-- The lock hash table is keyed by `(nodeId, epoch)`. Locks are created lazily
-  and never removed. The hash table is thread-safe (mutex per bucket).
+```c
+typedef struct {
+    pthread_mutex_t mutex;
+    int64_t         nodeId;
+    int64_t         epoch;      // 0 = global lock
+    int             refcount;   // for recursive locking within same thread
+} FileLock;
 
-**Acceptance:**
-  - Lock and unlock a file: no error.
-  - Two threads locking the same file at the same epoch: second blocks until
-    first unlocks.
-  - Two threads locking the same file at different epochs: both proceed
-    concurrently.
-  - Global lock (epoch=0) blocks per-epoch locks. Per-epoch locks drain before
-    global lock is granted.
-  - Unlocking a file that was not locked returns an error.
+// Hash table: key = (nodeId << 32) | (epoch & 0xFFFFFFFF)
+// NULL epoch (0) is the global lock — all other epoch locks must respect it.
+```
+
+### `int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch)`
+
+```
+1. If epoch == 0:
+     // Global lock request
+     // 1. Set "global_pending" flag for this file
+     // 2. Wait for all active per-epoch locks on this file to drain (refcount → 0)
+     // 3. Acquire global mutex
+2. Else:
+     // Per-epoch lock request
+     // 1. Check if global lock is held or pending for this file → if yes, block
+     // 2. Acquire per-epoch mutex
+3. Return VFS_OK.
+```
+
+### `int vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch)`
+
+```
+1. Release the mutex for (file, epoch).
+2. If this was the global lock: clear "global_pending" flag.
+3. Return VFS_OK.
+```
+
+### Internal Write Locking
+All write operations (vfs_write, vfs_create, vfs_delete, vfs_mkdir, vfs_rmdir,
+vfs_rename) automatically acquire the per-epoch lock for the write's epoch
+BEFORE performing the operation. This is transparent to the caller. The
+explicit `vfs_lock`/`vfs_unlock` API is for callers who need to hold the 
+lock across multiple operations.
+
+### Acceptance
+- [ ] Lock/unlock same file: no error
+- [ ] Two threads lock same file at same epoch: second blocks until first unlocks
+- [ ] Two threads lock same file at different epochs: both proceed concurrently
+- [ ] Global lock (epoch=0) blocks per-epoch locks
+- [ ] Global lock waits for per-epoch locks to drain before acquiring
+- [ ] Unlocking non-locked file returns error
+- [ ] Internal write acquires and releases the per-epoch lock automatically
 
 ---
 
 ## Workload 8.5 — Snapshot, Commit, and GC
 
-**What:** Public API for the epoch lifecycle.
+### `int64_t vfs_snapshot(vfs_t* vfs)`
 
-**Why:** These operations are exposed so applications can manage snapshots
-and trigger garbage collection without understanding the internal epoch
-machinery.
+```
+1. Return epoch_snapshot(vfs) from Phase 6 Workload 6.2.
+```
 
-**How:**
-- `int64_t vfs_snapshot(vfs_t* vfs)`: take a snapshot. Returns the new
-  snapshot epoch (always odd), or -1 on error. The live head advances by 2.
-- `int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch)`: commit a snapshot.
-  Returns `VFS_OK` on success, `VFS_ERR_CONFLICT` if a conflict is detected,
-  or another error code.
-- `int vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch)`: soft-delete
-  a snapshot. Returns `VFS_OK`. The snapshot's data becomes invisible; space
-  is reclaimed by the next GC.
-- `int vfs_gc(vfs_t* vfs)`: run garbage collection. This is a blocking call
-  — all other operations wait until GC completes. Returns `VFS_OK` on success.
+### `int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch)`
 
-**Acceptance:**
-  - Snapshot returns an odd epoch. Multiple snapshots return distinct epochs.
-  - Commit of a clean snapshot succeeds. Commit with a conflict fails.
-  - Soft-deleted snapshot data is invisible.
-  - GC after soft-delete reclaims space (measurable via `vfs_file_size` or
-    by observing that pool page count decreases).
+```
+1. Call epoch_commit(vfs, snapshot_epoch) from Phase 6 Workload 6.3.
+2. If success: flush superblock (storage_write + storage_flush for the
+   superblock page) to persist the new mapper state.
+3. Return VFS_OK or VFS_ERR_CONFLICT.
+```
+
+### `int vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch)`
+
+```
+1. Call epoch_soft_delete(vfs, snapshot_epoch) from Phase 6 Workload 6.4.
+2. Return VFS_OK.
+```
+
+### `int vfs_gc(vfs_t* vfs)`
+
+```
+1. Call gc_run(vfs) from Phase 7.
+2. This is a blocking call — all other operations wait until it completes.
+3. Return VFS_OK.
+```
+
+### Acceptance
+- [ ] Snapshot returns odd epoch; multiple snapshots return distinct epochs
+- [ ] Commit clean snapshot → succeeds; read at snapshot epoch returns committed data
+- [ ] Commit with conflict → VFS_ERR_CONFLICT
+- [ ] Soft-delete → snapshot data invisible
+- [ ] GC after soft-delete → space reclaimed
 
 ---
 
 ## Workload 8.6 — Error Handling
 
-**What:** A consistent error reporting mechanism. Every API function that can
-fail sets a per-instance error code retrievable by the caller.
+### `vfs_error_t vfs_last_error(vfs_t* vfs)`
 
-**Why:** Callers need to distinguish between "file not found," "I/O error,"
-"out of space," and other failure modes without parsing error strings.
+Returns `vfs->last_error`. Does NOT clear it.
 
-**How:**
-- `vfs_error_t vfs_last_error(vfs_t* vfs)`: return the error code from the
-  most recent operation on this instance.
-- `const char* vfs_error_string(vfs_error_t err)`: return a human-readable
-  string for a given error code.
-- All API functions that return an error indicator (negative return, NULL
-  pointer) MUST set `vfs->last_error` before returning. Functions that succeed
-  leave `last_error` unchanged (it is NOT reset to `VFS_OK` on success).
-- Error codes: `VFS_OK` (0), `VFS_ERR_IO` (-1), `VFS_ERR_NOTFOUND` (-2),
-  `VFS_ERR_EXISTS` (-3), `VFS_ERR_NOTDIR` (-4), `VFS_ERR_NOTEMPTY` (-5),
-  `VFS_ERR_CONFLICT` (-6), `VFS_ERR_FULL` (-7), `VFS_ERR_NOMEM` (-8).
-- Thread safety: `last_error` is per-instance. In a multi-threaded program,
-  each thread should call `vfs_last_error` immediately after the operation
-  that failed, before any other thread performs an operation on the same
-  instance.
+### `const char* vfs_error_string(vfs_error_t err)`
 
-**Acceptance:**
-  - `vfs_open_file` on a non-existent file returns -1 and sets error to
-    `VFS_ERR_NOTFOUND`.
-  - `vfs_write` to a read-only epoch (frozen history) returns -1 and sets
-    an appropriate error.
-  - `vfs_last_error` after a successful operation returns whatever the
-    previous error was (it is not cleared).
-  - `vfs_error_string` returns a non-NULL string for every defined error code.
+Returns string literal for the error code. Already implemented in Phase 1.
+
+### Error Setting Convention
+
+Every API function that can fail must:
+1. Set `vfs->last_error = ERROR_CODE` on the first failure encountered.
+2. Return the error indicator (-1, NULL, or error code).
+3. On success: do NOT reset `last_error`. Leave it unchanged.
+
+### Error Codes
+
+| Code | Value | Meaning |
+|------|-------|---------|
+| VFS_OK | 0 | Success |
+| VFS_ERR_IO | -1 | I/O error, frozen epoch, corrupt data |
+| VFS_ERR_NOTFOUND | -2 | File or directory not found |
+| VFS_ERR_EXISTS | -3 | Already exists (create when file exists) |
+| VFS_ERR_NOTDIR | -4 | Expected directory, got file |
+| VFS_ERR_NOTEMPTY | -5 | Directory not empty (rmdir) |
+| VFS_ERR_CONFLICT | -6 | Commit conflict |
+| VFS_ERR_FULL | -7 | No space left |
+| VFS_ERR_NOMEM | -8 | Out of memory |
+
+### Acceptance
+- [ ] `vfs_open_file` on missing file → returns -1, last_error = VFS_ERR_NOTFOUND
+- [ ] `vfs_write` to frozen epoch → returns -1, last_error = VFS_ERR_IO
+- [ ] `vfs_last_error` after successful operation returns previous error (not cleared)
+- [ ] `vfs_error_string` returns non-NULL for every defined code
 
 ---
 
-## Deliverables
+## Final Phase 8 Checklist
 
-| File | Purpose |
-|------|---------|
-| `src/api.c` | All public API function implementations |
-| `src/api.h` | (update `include/ixsphere_vfs.h`) Full public API declarations |
-| `test/test_api.c` | Integration tests exercising the full API surface |
-
-## Success Criteria
-- All API functions are callable and return documented results.
-- Snapshot isolation: data written at snapshot epoch N is visible at epoch N
-  but not at N-1 or N+1 before commit.
-- Locking: concurrent writers at different epochs don't block; same-epoch
-  writers serialize; global lock serializes everything.
-- GC: after soft-delete + GC, space is reclaimed and data is gone.
-- Error codes are set correctly for all failure paths tested.
-- Multi-threaded stress test: 4 threads each doing create/write/read/delete
-  on different files for 10 seconds, no crashes, no leaks.
+- [ ] All API functions callable and return documented results
+- [ ] Epoch isolation: snapshot writes don't affect live-head reads
+- [ ] Locking: per-epoch concurrent, global serializes, compatibility rules enforced
+- [ ] Error codes set correctly for all failure paths
+- [ ] Multi-threaded stress test: 4 threads, each doing create/write/read/delete
+  on different files, 10 seconds, no crashes, no leaks, no double-frees
