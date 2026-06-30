@@ -90,19 +90,9 @@ never performs logical-to-physical translation.
 
 ### 3.1 File Layout
 
-The backing file begins with a StorageBackend header block (at logical page 0,
-lazy mirror backed), followed by free-indirection pages, followed by allocatable data
-pages.
-
-```
-Logical page   Content
-────────────   ───────
-0              StorageBackend header page 0 (magic "XVFS", config + first ~1K indirection directory entries)
-1              StorageBackend header page 1 (later pages of indirection directory array)
-2..B           Free-indirection pages
-B+1            First allocatable page — superblock
-...            remaining logical pages
-```
+The backing file begins with a StorageBackend header page (at logical page 0)
+that doubles as the first indirection directory. All pages, including the
+header, use the lazy mirror mechanism (§3.7).
 
 The header spans two logical pages (0 and 1). Page 0 holds the config
 fields and the first page of `indirection directory`. Page 1 continues the
