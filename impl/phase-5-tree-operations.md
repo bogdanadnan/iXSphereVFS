@@ -18,7 +18,7 @@ VirtualPtr to the root DirNode. On a fresh VFS instance, both must be
 created before any file or directory operations.
 
 **How:**
-- After StorageBackend initialization and `Acquire(3)` for the superblock
+- After StorageBackend initialization and `Acquire(1)` for the superblock
   page, the VFS layer initializes the superblock payload with `rootNodeOffset
   = 0` (empty tree), `currentEpoch = 0` (first live head), `nextNodeId = 1`
   (nodeId 0 is about to be allocated), `touchedFilesPtr = 0`, `epochMapperPtr = 0`, and all other fields zero.

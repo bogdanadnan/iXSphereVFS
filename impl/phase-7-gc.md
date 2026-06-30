@@ -55,7 +55,7 @@ so crash recovery can detect interrupted GC.
 ## Workload 7.2 — Shadow Compaction
 
 **What:** Walk the entire tree from the root, copy all surviving entries into
-new pool pages, build new bitmap state, and atomically swap the superblock
+new pool pages, build new indirection table state, and atomically swap the superblock
 to the new tree.
 
 **Why:** Soft-deleted epochs accumulate dead entries (VersionPages, DirContents,

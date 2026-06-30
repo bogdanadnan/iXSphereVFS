@@ -58,11 +58,11 @@ platform-specific intrinsics or builtins. Centralizing detection avoids
   and `VFS_UNLIKELY` (branch prediction hints), `VFS_RESTRICT` (aliasing hint).
 - Define `VFS_CACHELINE`: 64 on x86_64, 128 on Apple Silicon (aarch64 macOS),
   64 on Linux aarch64.
-- Define `VFS_PAGE_SIZE` as 8192 — the fixed page size for this VFS.
+- Define `VFS_PAGE_SIZE` as 8192 — the default page size for this VFS. Configurable at creation time via the StorageBackend header.
 - Detect OS: Linux, macOS, Windows. Define `VFS_OS_LINUX`, `VFS_OS_MACOS`,
   `VFS_OS_WINDOWS`.
 
-**Acceptance:** A test that asserts `VFS_PAGE_SIZE == 8192` and verifies
+**Acceptance:** A test that asserts `VFS_PAGE_SIZE` is 8192 (the default; may be overridden at creation) and verifies
 `VFS_CACHELINE` is a power of two ≥ 64. The header compiles cleanly on
 all target platforms.
 

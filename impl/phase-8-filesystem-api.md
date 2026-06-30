@@ -17,9 +17,9 @@ handles both creation and mounting of existing instances.
 
 **How:**
 - `vfs_t* vfs_open(const char* path)`: if the file does not exist, create it,
-  bootstrap the StorageBackend header and bitmap (Phase 2), allocate the
+  bootstrap the StorageBackend header and indirection table (Phase 2), allocate the
   superblock, and initialize the root directory (Phase 5). If the file exists,
-  validate the XVFS magic, load the bitmap, read the superblock, and walk
+  validate the XVFS magic, load the indirection table, read the superblock, and walk
   the epoch mapper chain. Return a handle to the VFS instance, or NULL on
   error.
 - `void vfs_close(vfs_t* vfs)`: flush all dirty pages, free the page cache,

@@ -118,7 +118,7 @@ transactions).
      snapshot workspace.
 - `xFileSize(sqlite3_file*, sqlite3_int64* size)`:
   1. Use the PageMap to determine which file nodes exist.
-  2. Sum the sizes or use the bitmap's `MaxPage` to compute the total database
+  2. Sum the sizes or use the indirection table to compute the database size to compute the total database
      size as `(maxPage + 1) * pageSize`.
 - `xSync(sqlite3_file*, int flags)`: call `vfs_flush(vfs)`.
 - `xClose(sqlite3_file*)`: release all held per-inode locks. If a workspace
