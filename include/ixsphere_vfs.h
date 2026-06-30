@@ -30,14 +30,29 @@ typedef enum {
 
 const char* vfs_error_string(vfs_error_t err);
 
+/* ── CRC32C ─────────────────────────────────────────────── */
+
+uint32_t vfs_crc32c(const uint8_t* data, size_t len);
+
 /* ── Opaque handle ─────────────────────────────────────── */
 
 typedef struct vfs_t vfs_t;
 
 /* ── Instance management ───────────────────────────────── */
 
-vfs_t*  vfs_open(const char* path);
+vfs_t*  vfs_open(const char* path);         /* Open existing file, fails if not found */
+vfs_t*  vfs_create(const char* path, uint64_t page_size); /* Create new file with given page size */
 void    vfs_close(vfs_t* vfs);
+
+/* ── Accessors ─────────────────────────────────────────── */
+
+uint64_t vfs_page_size(vfs_t* vfs);        /* Get configured page size */
+
+/* ── Page allocation API (Phase 2.2) ─────────────────────── */
+
+int64_t vfs_allocate(vfs_t* vfs, uint64_t count);  /* Allocate count contiguous pages */
+int     vfs_acquire(vfs_t* vfs, int64_t page);    /* Acquire specific page */
+void    vfs_free(vfs_t* vfs, int64_t page);         /* Free a page */
 
 #ifdef __cplusplus
 }

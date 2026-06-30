@@ -40,8 +40,7 @@ only.
 ```
 Offset  Size  Field
 ──────  ────  ─────
- 0       2    pageType       (uint16 — type code from PageType enum)
- 2       2    flags          (uint16 — bits 0–1 = flush priority (0=data, 1=pool, 2=bitmap, 3=superblock); bits 2–15 per-type reserved; StorageHdr uses 0x5346 for 'FS' magic)
+ 0       4    flags          (uint32 — bits 0–1 = flush priority; StorageHdr uses 0x56585346 for "XVFS" magic)
  4       4    checksum       (uint32 — CRC32C of payload bytes)
  8       4    generation     (uint32 — incremented on each write; higher = active)
 12       4    mirrorPage     (int32 — logical page index of mirror sibling; -1 = none)
@@ -52,29 +51,19 @@ exists. `mirrorPage` is -1 after first allocation; on the second write to
 the page, a mirror sibling is allocated and both pages are linked via this
 field. See §3.7 for the write lifecycle.
 
-The 16-byte header is power-of-2 aligned. All page types use this layout.
-The StorageBackend header (logical page 0) uses `pageType=0x5658, flags=0x5346`
-to form the 4-byte "XVFS" magic in little-endian byte order.
+The 4-byte `flags` field on the StorageBackend header page (logical page 0)
+stores the magic value `0x56585346` — the ASCII string "XVFS" in
+little-endian byte order. This serves as the VFS file identification magic.
+All other pages use bits 2–31 of `flags` as reserved, with bits 0–1 encoding
+the flush priority.
 
-### 2.2 Page Types
+On mount, the StorageBackend reads logical page 0 and validates:
+`flags == 0x56585346 && CRC32C valid`. If either check fails, the file is
+not a valid iXSphereVFS instance. No separate page type field exists —
+the 4-byte `flags` field serves both as the magic number and as per-page
+configuration.
 
-```
-Type   Name        Purpose
-────   ────        ───────
-0x00   Superblock  Tree root and epoch state (§4)
-0x01   Bitmap      Free-page bitmap page (§3.7)
-0x02   PoolPage    Metadata pool page (§5.2) — all VFS metadata
-0x03   Data        User file content
-```
-
-The StorageBackend header page (logical page 0) uses a special pageType value
-of `0x5658` and flags of `0x5346` — the ASCII string `"XVFS"` in little-endian
-byte order. This serves as the VFS file magic number. On mount, the
-StorageBackend reads logical page 0 and validates: `pageType == 0x5658 &&
-flags == 0x5346 && CRC32C valid`. If any check fails, the file is not a valid
-iXSphereVFS instance.
-
-### 2.3 Bit-Set Helper
+### 2.2 Bit-Set Helper
 
 `R8(p, o)` / `R2(p, o)` / `W8(p, o, v)` / `W2(p, o, v)` read/write
 integers from byte arrays at given offsets. `BitConverter` equivalents
@@ -83,6 +72,15 @@ in C. Used throughout for page-level serialization.
 ---
 
 ## 3. StorageBackend
+
+The StorageBackend is the sole owner of page-level I/O, allocation, and free-list
+management. The backing file's `page_size` field in the StorageBackend header
+defines the payload size for every page in the system — it is read once at
+mount and used globally by both the StorageBackend and the VFS layer.
+At creation time, `page_size` is configurable (default 8192); at mount time,
+it is read from the existing header and must match the slot counts and segment
+calculations expected by the VFS code. All pages returned by `Allocate` or
+`Acquire` have this fixed payload size.
 
 The StorageBackend is the sole owner of page-level I/O, allocation, and free-list
 management. All page indices used by the VFS data structures (version chain heads,
@@ -178,15 +176,14 @@ file exists:
    yet because no bitmap exists. Pages 0–1 are the StorageBackend header,
    page 2 is the first bitmap page, page 3 is the superblock. All four
    are zero-filled and use lazy mirror backing.
-3. Write header page 0: `total_pages = 4`, `page_size = 8192` (default).
+3. Write header page 0: `total_pages = 4`, `page_size` (caller-specified, default 8192).
    Write `2` to `bitmap_dir[0]`.
 4. Write bitmap page 2: all bits set to `1` (free). Mark bits 0–3 (header
    pages, bitmap, superblock) as allocated (`0`).
 5. Return success. The VFS layer initializes the superblock (§4) on page 3.
 
 **File exists:**
-1. Read logical page 0 (header block). Validate: `pageType == 0x5658 &&
-   flags == 0x5346` (the "XVFS" magic) and CRC32C is valid. If any check
+1. Read logical page 0 (header block). Validate: `flags == 0x56585346` (the "XVFS" magic) and CRC32C is valid. If any check
    fails, the file is not a valid iXSphereVFS instance.
 2. Read `total_pages` and `page_size`. Load the `bitmap_dir`
    array (all non-zero entries). Read all referenced bitmap pages.

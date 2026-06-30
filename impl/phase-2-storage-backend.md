@@ -20,13 +20,13 @@ read the configuration needed to initialize the allocator.
 
 **How:**
 - Logical page 0 is the primary StorageBackend header. Its PageHeader carries
-  `pageType = 0x5658` and `flags = 0x5346`, which together form the ASCII
+  `flags = 0x56585346`, which together form the ASCII
   string `"XVFS"` in little-endian byte order. This is the magic number.
 - Logical page 1 is the continuation of the `bitmap_dir` array. It has a
   standard 16-byte PageHeader (type `0x02` PoolPage, `flags = 0`) but its
   payload is a pure array of `int64_t` entries — no configuration fields.
 - The header page 0 payload starts with configuration fields at offset 0:
-  `total_pages` (8 bytes), `page_size` (8 bytes, default 8192), a `reserved`
+  `total_pages` (8 bytes), `page_size` (8 bytes, default 8192, caller-configurable at creation time), a `reserved`
   block (16 bytes). Starting at offset 32 is `bitmap_dir[]` — an array of
   `int64_t` logical page indices, zero-terminated (unused entries are zero
   because the page is zero-filled at allocation).
