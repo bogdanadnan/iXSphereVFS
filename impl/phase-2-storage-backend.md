@@ -247,31 +247,73 @@ All Phase 2 acceptance tests from the spec:
 
 ---
 
-## Review Iteration 3b — Code Verification (2026-07-01)
+## Review Iteration 3b — Full Code vs Spec Audit (2026-07-01)
 
-Cross-checked all 3a claims against current source. Results:
+Complete read of all source files against all 6 workloads in the Phase 2 spec.
 
-**Confirmed fixes in code:**
-- `overflow_logical` array present (storage.h:51, indirection.c:25-207) ✅
-- CAS-based overflow chain append (indirection.c:189-206, `vfs_cas_i64` on `prev[0]` and `indirection_head`) ✅
-- `page_buf.h` functions accept `page_size` parameter (lines 67,74,89) ✅
-- Overflow pages flushed via `mirror_write` during `storage_flush` (storage.c:531-540) ✅
+### Verified — Spec Compliant ✅
 
-**Confirmed accepted (by design):**
-- Header page direct `pwrite` — design note at line 250 explains the circular dependency with lazy mirror. Correct analysis. ✅
-- `cache_flush_page` raw pwrite — flush ordering + superblock commit provides crash safety. ✅
+| Workload | Coverage |
+|----------|----------|
+| 2.1 File Layout | Header offsets correct, XVFS magic 0x56585346, bootstrap entry[0]=0 entry[1]=ps+16, mount validates magic+CRC |
+| 2.2 Indirection | Inline entries via header_buf, overflow chain with `next`+entries, `indir_lookup` handles both, `indir_set` atomic store, CAS chain append in `indir_ensure_capacity` |
+| 2.3 Lazy Mirror | First write gen=1 mirror=-1, second allocates sibling+links, subsequent alternates, `mirror_read` compares generations+CRC fallback |
+| 2.4 File I/O | `storage_read` cache→indirection→mirror→cache, `storage_write` mirror→cache dirty, `storage_flush` data→pool→indir→header→fsync, priority parameter, write-back threshold |
+| 2.5 Page Cache | Hash table per-bucket spin-locks, LRU clean-only eviction, `cache_insert` takes ownership of clean buffers, `cache_flush_all` priority order |
+| 2.6 Bootstrap | `storage_open` create/mount, `storage_close` flush/free/close |
 
-**Confirmed pending (mitigated):**
-- `indir_set` missing overflow dirty marking — mitigated by `storage_flush` writing overflow pages directly via `mirror_write`. No data loss possible. ✅
+### Prior Review Items — Status
 
-**Confirmed remaining issue:**
-- `cache_flush_all` decrements `dirty_count` before `pwrite` (page_cache.c:317). If a write fails partway, the counter is wrong. Low severity — `pwrite` to a valid fd with valid offset/size rarely fails, and the counter corrects on the next `Flush`. ✅
+| # | Item | Status |
+|---|------|--------|
+| 1 | Flush order (Iteration 1) | ✅ Header last |
+| 2 | Global alloc lock (Iteration 1) | ✅ CAS-based try_claim_entry |
+| 3 | Raw pwrite during flush (Iteration 1) | ⚠️ Accepted — ordered flush provides safety |
+| 4 | Priority parameter (Iteration 1) | ✅ `storage_write(..., priority)` |
+| 5 | TOCTOU cache_mark_dirty (Iteration 1) | ✅ Lock held across find |
+| 6 | Double alloc storage_read (Iteration 1) | ✅ Cache takes ownership |
+| 7 | Hardcoded 8192 mount (Iteration 1) | ✅ Reads page_size first |
+| 8 | writeback_threshold (Iteration 1) | ✅ max_entries/4 |
+| — | Overflow chain CAS (Iteration 2a) | ✅ vfs_cas_i64 on prev[0] and indirection_head |
+| — | Page_buf hardcoded (Iteration 2a) | ✅ Functions accept page_size |
+| — | Header direct pwrite (Iteration 2a) | ✅ Design note explains circular dependency |
+| — | Dirty count before write (Iteration 3a) | ⚠️ Low severity — pwrite rarely fails |
 
-**3a additionally verified:**
-- Mirror sibling tracking race (#2): analyzed correctly as safe (sibling has generation=0, never independently written before tracking) ✅
-- `try_claim_entry` fast path (#4): `indir_lookup` check before CAS is correct — CAS itself provides atomicity; caller retries on failure ✅
+### New Findings — Full Audit
 
-**Gate:** Phase 2 is ready. 12/12 acceptance tests pass. No blocking issues remain.
+**A. `storage_acquire` does not CAS on the indirection entry (Concurrency Bug).**
+`storage.c:441-453` — after checking `indir_lookup == 0`, the code advances
+`physical_tail` via CAS (correct) but then calls `indir_set` which does
+`vfs_atomic_store_i64` (a plain store). Between the lookup check at line 441
+and the store at line 453, another thread's `Acquire` on the same page could
+also pass the lookup check. Both would advance `physical_tail` (each getting
+different offsets) and both would store — the second store overwrites the
+first. The physical slot from the first CAS becomes a zombie (wasted), the
+first caller's indirection entry is lost. The spec requires "CAS-set the entry
+from 0 to the old tail value." Fix: use `try_claim_entry` (which does CAS)
+instead of `indir_set` (which does plain store).
+
+**B. `ensure_mirror_arrays` realloc is not thread-safe (Concurrency Bug).**
+`storage.c:230-231` — `realloc` on `sb->mirror_pages` and `sb->generations`
+without any lock. Called from `storage_allocate`, `storage_acquire`,
+`mirror_write`, `bootstrap_new`, `mount_existing`, `storage_open`.
+Concurrent calls from different threads will race on realloc — one thread
+frees the old pointer while another reads it. Fix: protect with a mutex, or
+use a lock-free growable array (pre-allocate larger capacity, grow only under
+a per-array lock).
+
+**C. `indir_ensure_capacity` realloc is not thread-safe (Concurrency Bug).**
+`indirection.c:175-185` — same issue. `realloc` on `overflow_pages` and
+`overflow_logical` without synchronization. Multiple `storage_allocate`
+or `indir_ensure_capacity` calls can race. Fix: mutex or lock-free grow.
+
+### Gate Status
+
+Phase 2 is functionally complete (all 12 acceptance tests pass) but B and C
+above are real concurrency bugs that will manifest under multi-threaded
+allocation stress. They should be fixed before proceeding to Phase 3, as
+Phase 3 (Pool Allocator) is heavily multi-threaded and depends on
+`Allocate(1)` being thread-safe.
 
 ---
 
