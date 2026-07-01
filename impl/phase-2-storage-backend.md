@@ -646,10 +646,16 @@ and flush the header.
 **2. `Allocate` uses a global spin lock, not lock-free CAS.**
 `storage_allocate` line 342: `sb_spin_lock(&sb->alloc_lock)` serializes ALL
 allocations across ALL threads. The spec describes a lock-free model with
-"a single atomic CAS on physical_tail." For multi-page allocations needing
-a contiguous range scan, this lock is reasonable, but the scan should be
-per-entry CAS rather than lock-then-scan-then-unlock. At minimum, document
-this as a deliberate simplification, not an oversight.
+"a single atomic CAS on physical_tail." Fix: remove the global spin lock.
+Divide the logical page space into zones of 1M pages. Each zone has an atomic
+`hint_cursor` (int64_t). `Allocate` picks a zone by thread ID, scans from the
+hint cursor for `count` consecutive free indirection entries. For each free
+entry: CAS advance `physical_tail`, then CAS-set the indirection entry from 0
+to the old tail. If either CAS fails (another thread claimed it), advance the
+cursor and retry. The per-entry CAS resolves collisions; the zone hint cursor
+distributes threads across different regions. No global lock needed. Only when
+a zone is exhausted does the thread fall back to scanning other zones —
+contention is bounded to zone-boundary events, not every allocation.
 
 **3. `storage_flush` flushes pages via raw `pread`/`pwrite`, not lazy mirror.**
 `cache_flush_page` (line 251-262) reads the old PageHeader, updates checksum,
