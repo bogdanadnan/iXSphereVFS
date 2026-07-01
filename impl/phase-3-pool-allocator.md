@@ -17,6 +17,38 @@ on the hot path and must never fragment.
   `VirtualPtr = 0` safely mean "null."
 - **The pool page header must be written BEFORE linking into the list.** This
   closes the single-copy risk window before the page holds multi-file metadata.
+- **Pool page size is fixed at 8192 bytes.** Unlike the StorageBackend's
+  configurable `page_size`, the pool page layout depends on exactly 255 slots
+  of 32 bytes each fitting in an 8KB payload. This is a compile-time constant.
+
+## Dependencies
+
+| Dependency | Phase | What's Used |
+|------------|-------|-------------|
+| `storage_allocate` | Phase 2 | Allocate new pool pages from the StorageBackend |
+| `storage_write` | Phase 2 | Write pool page headers with `FLUSH_PRIO_POOL` (1) |
+| `storage_read` | Phase 2 | Read pool page payloads into memory for slot access |
+| `vfs_atomic_*` | Phase 1 | CAS on `poolState`, `poolListHead` |
+| `vfs_rd2/wr2/wr4/wr8` | Phase 1 | Read/write pool page header fields and slot data |
+| `vfs_crc32c` | Phase 1 | Compute CRC32C on pool page payloads |
+
+## Staging Guidance
+
+Phase 3 can be developed in isolation from Phase 5 (Tree Operations). The pool
+allocator does NOT need a superblock. It needs only:
+
+1. A pointer to `poolListHead` (int64_t). This starts as 0 (no pages). The
+   pool allocator owns this value — it reads and CAS-updates it. Phase 5 will
+   later wire this pointer to the superblock's `poolListHead` field.
+
+2. Access to the StorageBackend (`storage_allocate`, `storage_read`,
+   `storage_write`). A test harness can provide these directly.
+
+Build order:
+- 3.1 + 3.2 first (pool page layout + free list init)
+- 3.4 next (VirtualPtr macros — needed by 3.3 and 3.5)
+- 3.5 next (global list — `pool_list_add` and `pool_list_find_free`)
+- 3.3 last (slot allocation — uses everything above)
 
 ## File Organization
 
@@ -79,8 +111,9 @@ list. Must be done BEFORE the page is linked into the global list.
 3. For slot 254: write `0xFFFF` into bytes 0–1 of the slot (terminal sentinel).
 4. Set `poolState`: `vfs_wr4(payload, 8, (255 << 16) | 0)`.
 5. Write the PageHeader with `generation = 1` and `mirrorPage = -1` via
-   `storage_write`. This transitions the page out of the single-copy risk window
-   BEFORE any operational slots are allocated.
+   `storage_write(sb, page_index, payload, FLUSH_PRIO_POOL)`. This transitions
+   the page out of the single-copy risk window BEFORE any operational slots
+   are allocated.
 
 ### How the Free List Works
 
@@ -110,35 +143,49 @@ The actual allocation algorithm — the hot path for every VFS write.
 ### `pool_alloc(pool_state) → VirtualPtr`
 
 ```
-1. Read poolState = atomic_load_i32(&page->poolState)
-2. Extract freeCount = poolState >> 16
-3. If freeCount == 0:
-   a. Allocate a new pool page via Allocate(1)  (StorageBackend)
+1. page_index = pool_list_find_free(pool)
+2. If page_index == 0:
+   a. Allocate a new pool page via storage_allocate(sb, 1)
    b. Initialize its free list (Workload 3.2)
-   c. Write its PageHeader (gen=1, mirror=-1) via storage_write
-   d. Set new page's nextPoolPage = current poolListHead
-   e. CAS poolListHead from old value to new page index
-   f. If CAS fails: another thread added a page first. Retry with the NEW
-      poolListHead value — never abandon your allocated page.
-   g. Go to step 1 with the new page.
-4. If freeCount > 0:
-   a. firstFreeSlot = poolState & 0xFFFF
-   b. Read nextFreeSlot = vfs_rd2(page->slots[firstFreeSlot], 0)
-   c. newPoolState = ((freeCount - 1) << 16) | nextFreeSlot
-   d. If CAS(&page->poolState, poolState, newPoolState) != poolState:
-      // Another thread raced — the poolState changed. Retry from step 1.
-      goto 1
-   e. Return VirtualPtr = (page_index << 8) | firstFreeSlot
+   c. Write its PageHeader (gen=1, mirror=-1) via
+      storage_write(sb, new_page_index, payload, FLUSH_PRIO_POOL)
+   d. Call pool_list_add(pool, new_page_index) to prepend to global list
+   e. page_index = new_page_index
+3. Read pool page payload via storage_read(sb, page_index)
+   (This returns a pointer to the 8192-byte payload buffer.)
+4. Read poolState = atomic_load_i32(payload + 8)
+5. Extract freeCount = poolState >> 16
+6. If freeCount == 0:
+   // Page was full by the time we got here (race with other threads).
+   // Skip this page in the list scan: advance past it and retry.
+   // (pool_list_find_free should have returned a page with free slots,
+   // but there's a tiny window where another thread drained it.)
+   goto 1
+7. firstFreeSlot = poolState & 0xFFFF
+8. Read nextFreeSlot = vfs_rd2(payload + VFS_POOL_ENTRIES_OFFSET + firstFreeSlot * VFS_POOL_SLOT_SIZE, 0)
+9. newPoolState = ((freeCount - 1) << 16) | nextFreeSlot
+10. If CAS(payload + 8, poolState, newPoolState) != poolState:
+      // Another thread raced — the poolState changed. Retry from step 4.
+      goto 4
+11. Return VirtualPtr = VFS_VPTR_MAKE(page_index, firstFreeSlot)
 ```
 
 ### `pool_resolve(VirtualPtr vp) → uint8_t* pointer to slot`
 
 ```
-page_index = vp >> 8
-slot_index = vp & 0xFF
-page_buffer = cache_find(page_index) or read from StorageBackend
-return page_buffer + VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE
+page_index = VFS_VPTR_PAGE(vp)
+slot_index = VFS_VPTR_SLOT(vp)
+payload = storage_read(sb, page_index)   // goes through page cache
+if payload == NULL: return NULL          // page not yet written (shouldn't happen)
+return payload + VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE
 ```
+
+`pool_resolve` returns a pointer into the page cache buffer. The slot's 32
+bytes can be read or written at this pointer. For writes, the caller must
+call `storage_write` (or mark the cache entry dirty) after modifying the slot
+to persist the changes. For reads, the pointer is valid as long as the cache
+holds the page — the caller should NOT retain the pointer across operations
+that may evict the cache.
 
 ### Arena Optimization (Optional, Deferred)
 If CAS retry rate exceeds 10% at 8+ threads, implement arenas:
@@ -241,6 +288,65 @@ If `poolListHead` is stale after a crash, the list is rebuilt lazily:
   page in the list (or allocates a new one)
 - [ ] After GC: list contains only pages with free slots
 - [ ] Simulated stale poolListHead → lazy rebuild produces correct list
+
+---
+
+## Workload 3.6 — Pool Initialization & Entry Point
+
+### What
+A `pool_init` function that wires the pool allocator to the `poolListHead`
+pointer and the StorageBackend. This is the single entry point called during
+VFS bootstrap (Phase 5) to initialize the pool subsystem.
+
+### `pool_t` struct
+
+```c
+typedef struct {
+    StorageBackend* sb;          // for storage_allocate/read/write
+    int64_t*        list_head;   // pointer to superblock's poolListHead field
+} Pool;
+```
+
+### `pool_init(Pool* pool, StorageBackend* sb, int64_t* list_head)`
+
+```
+1. pool->sb = sb
+2. pool->list_head = list_head
+3. pool->list_head starts at 0 (no pages). The first pool_alloc call will
+   create the first page.
+```
+
+### On Mount (Existing File)
+When `poolListHead` is read from the superblock on mount, it already points
+to the most recently added pool page from the previous session. If the
+previous session crashed before flushing, `poolListHead` may be stale. The
+`pool_list_find_free` function handles this: if no pages are found with free
+slots, the lazy rebuild walks the tree's VirtualPtrs to collect all pool
+page indices and reconstructs the list.
+
+### Acceptance
+- [ ] `pool_init` on fresh system: `*list_head == 0`, first `pool_alloc` creates page
+- [ ] `pool_init` on existing file: `*list_head` points to existing pages
+- [ ] `pool_alloc` works without Phase 5 — only needs StorageBackend + list_head pointer
+
+---
+
+## Crash Recovery Detail
+
+After a crash, the on-disk pool page is self-describing:
+- `poolState` at offset 8 records `freeCount` and `firstFreeSlot`
+- Each free slot's bytes 0–1 point to the next free slot
+- Allocated slots contain their operational data (node types, chain pointers)
+
+On remount, reading the pool page's payload gives the exact same free list
+state as before the crash. No recovery pass is needed — the pool page IS the
+free list. The only exception: slots allocated AND used to write data, but
+whose `storage_write` was not flushed. Those slots appear as "free" on
+remount because the in-memory free list was advanced but the on-disk version
+was not. This is consistent with the VFS's crash model: unflushed writes are
+lost. The slots were allocated, data was written to them, but the writes
+weren't flushed → on remount the slots are free and the data is lost. GC
+will eventually rebuild the pool and reclaim any zombies.
 
 ---
 
