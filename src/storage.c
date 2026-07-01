@@ -172,8 +172,6 @@ static int bootstrap_new(StorageBackend* sb) {
  * --------------------------------------------------------------------------- */
 
 static int mount_existing(StorageBackend* sb) {
-    int64_t ps = sb->page_size;  /* not yet known — read from header */
-
     /* Read PageHeader at offset 0 */
     PageHeader ph;
     ssize_t n = pread(sb->fd, &ph, PAGE_HEADER_SIZE, 0);
@@ -182,39 +180,32 @@ static int mount_existing(StorageBackend* sb) {
     /* Validate XVFS magic */
     if (ph.flags != XVFS_MAGIC) return -1;
 
-    /* Allocate header buffer and read payload */
-    uint8_t* hdr = calloc(1, 8192);  /* temp — we don't know page_size yet */
+    /* Step 1: Read the first 8192 bytes to discover page_size.
+       The config fields (total_pages, page_size, etc.) are within the first
+       40 bytes, so 8192 is always sufficient for discovery. */
+    uint8_t tmp[8192];
+    n = pread(sb->fd, tmp, 8192, PAGE_HEADER_SIZE);
+    if (n != 8192) return -1;
+
+    int64_t ps = vfs_rd8(tmp, HDR_OFF_PAGE_SIZE);
+    if (ps < 512 || ps > 65536) return -1;
+
+    /* Step 2: Read the full page_size payload and validate CRC over ALL of it */
+    uint8_t* hdr = calloc(1, (size_t)ps);
     if (!hdr) return -1;
 
-    n = pread(sb->fd, hdr, 8192, PAGE_HEADER_SIZE);
-    if (n != 8192) { free(hdr); return -1; }
+    n = pread(sb->fd, hdr, (size_t)ps, PAGE_HEADER_SIZE);
+    if (n != ps) { free(hdr); return -1; }
 
-    /* Validate CRC32C */
-    uint32_t crc = vfs_crc32c(hdr, 8192);
+    uint32_t crc = vfs_crc32c(hdr, (size_t)ps);
     if (crc != ph.checksum) { free(hdr); return -1; }
 
-    /* Read header fields */
-    ps = vfs_rd8(hdr, HDR_OFF_PAGE_SIZE);
-    if (ps < 512 || ps > 65536) { free(hdr); return -1; }
-
-    /* Re-read with correct page size if different */
-    if (ps != 8192) {
-        free(hdr);
-        hdr = calloc(1, (size_t)ps);
-        if (!hdr) return -1;
-        n = pread(sb->fd, hdr, (size_t)ps, PAGE_HEADER_SIZE);
-        if (n != ps) { free(hdr); return -1; }
-        /* Re-validate CRC */
-        crc = vfs_crc32c(hdr, (size_t)ps);
-        if (crc != ph.checksum) { free(hdr); return -1; }
-    }
-
-    sb->page_size      = ps;
-    sb->total_pages     = vfs_rd8(hdr, HDR_OFF_TOTAL_PAGES);
-    sb->segment_size    = (uint32_t)vfs_rd4(hdr, HDR_OFF_SEGMENT_SIZE);
-    sb->physical_tail   = vfs_rd8(hdr, HDR_OFF_PHYS_TAIL);
+    sb->page_size       = ps;
+    sb->total_pages      = vfs_rd8(hdr, HDR_OFF_TOTAL_PAGES);
+    sb->segment_size     = (uint32_t)vfs_rd4(hdr, HDR_OFF_SEGMENT_SIZE);
+    sb->physical_tail    = vfs_rd8(hdr, HDR_OFF_PHYS_TAIL);
     sb->indirection_head = vfs_rd8(hdr, HDR_OFF_INDIR_HEAD);
-    sb->header_buf      = hdr;
+    sb->header_buf       = hdr;
 
     return 0;
 }
@@ -327,72 +318,100 @@ void storage_close(StorageBackend* sb) {
  * Allocate / Acquire / Free  (public, thread-safe)
  * --------------------------------------------------------------------------- */
 
-/* Spin-lock helpers (reuse from page_cache) */
-static inline void sb_spin_lock(volatile int* lock) {
-    while (__sync_lock_test_and_set(lock, 1)) { /* spin */ }
-}
-static inline void sb_spin_unlock(volatile int* lock) {
-    __sync_lock_release(lock);
+/* ---------------------------------------------------------------------------
+ * Allocate / Acquire / Free  (public, thread-safe, lock-free)
+ * --------------------------------------------------------------------------- */
+
+/* Attempt to CAS-set an indirection entry from 0 to physical_offset.
+   Returns 1 on success, 0 if the entry was already claimed. */
+static int try_claim_entry(StorageBackend* sb, int64_t logical_page, int64_t physical_offset) {
+    if (indir_lookup(sb, logical_page) != 0) return 0;  /* fast path: already taken */
+
+    /* The entry is in the header buffer (inline) or overflow page buffer.
+       Both are plain int64_t arrays.  CAS on the entry directly. */
+    IndirectionTable* it = &sb->indir;
+    int64_t* entry_ptr;
+
+    if (logical_page < it->inline_count) {
+        entry_ptr = &it->inline_entries[logical_page];
+    } else {
+        int64_t remaining = logical_page - it->inline_count;
+        int64_t overflow_idx = remaining / it->entries_per_overflow;
+        int64_t entry_idx    = remaining % it->entries_per_overflow;
+        if (overflow_idx >= it->overflow_count) return 0;
+        entry_ptr = &it->overflow_pages[overflow_idx][1 + entry_idx];
+    }
+
+    int64_t expected = 0;
+    return (vfs_cas_i64(entry_ptr, expected, physical_offset) == expected);
 }
 
 int64_t storage_allocate(StorageBackend* sb, int count) {
     if (count <= 0) return -1;
 
-    /* Lock the scan+claim to prevent two threads from claiming the same entry */
-    sb_spin_lock(&sb->alloc_lock);
+    /* Ensure indirection table has room */
+    if (indir_ensure_capacity(sb, count) != 0) return -1;
 
-    /* Ensure indirection table has room (must be inside lock for thread safety) */
-    if (indir_ensure_capacity(sb, count) != 0) {
-        sb_spin_unlock(&sb->alloc_lock);
-        return -1;
-    }
-
+    /* Lock-free: scan for 'count' consecutive free entries and CAS-claim them.
+       If any CAS fails (another thread claimed the slot), restart the scan. */
     int64_t total_entries = (int64_t)sb->indir.inline_count +
                             (int64_t)sb->indir.overflow_count * sb->indir.entries_per_overflow;
 
-    int64_t run_start = -1;
-    int     run_len   = 0;
+    for (int attempt = 0; attempt < 1000; attempt++) {
+        int64_t run_start = -1;
+        int     run_len   = 0;
 
-    for (int64_t i = 2; i < total_entries && run_len < count; i++) {
-        if (indir_lookup(sb, i) == 0) {
-            if (run_len == 0) run_start = i;
-            run_len++;
-        } else {
-            run_start = -1;
-            run_len   = 0;
-        }
-    }
-
-    if (run_len < count) {
-        sb_spin_unlock(&sb->alloc_lock);
-        return -1;
-    }
-
-    /* Allocate physical pages for each logical page in the run */
-    for (int j = 0; j < count; j++) {
-        int64_t logical = run_start + j;
-        int64_t old_tail = sb->physical_tail;
-        int64_t new_tail = old_tail + phys_record_size(sb);
-
-        while (vfs_cas_i64(&sb->physical_tail, old_tail, new_tail) != old_tail) {
-            old_tail = sb->physical_tail;
-            new_tail = old_tail + phys_record_size(sb);
+        for (int64_t i = 2; i < total_entries && run_len < count; i++) {
+            if (indir_lookup(sb, i) == 0) {
+                if (run_len == 0) run_start = i;
+                run_len++;
+            } else {
+                run_start = -1;
+                run_len   = 0;
+            }
         }
 
-        indir_set(sb, logical, old_tail);
-        ensure_mirror_arrays(sb, (int)(logical + 1));
+        if (run_len < count) return -1;  /* not enough free entries */
+
+        /* Try to CAS-claim each entry in the run */
+        int ok = 1;
+        for (int j = 0; j < count; j++) {
+            int64_t logical = run_start + j;
+
+            /* CAS advance physical_tail */
+            int64_t old_tail = sb->physical_tail;
+            int64_t new_tail = old_tail + phys_record_size(sb);
+            while (vfs_cas_i64(&sb->physical_tail, old_tail, new_tail) != old_tail) {
+                old_tail = sb->physical_tail;
+                new_tail = old_tail + phys_record_size(sb);
+            }
+
+            /* Try to CAS-set the indirection entry from 0 → old_tail */
+            if (!try_claim_entry(sb, logical, old_tail)) {
+                /* Another thread claimed it.  The physical slot we reserved is
+                   a zombie — wasted but harmless (GC reclaims it).  Restart. */
+                ok = 0;
+                break;
+            }
+
+            ensure_mirror_arrays(sb, (int)(logical + 1));
+        }
+
+        if (ok) {
+            /* Update total_pages if needed */
+            int64_t new_total = run_start + count;
+            int64_t old_total;
+            do {
+                old_total = sb->total_pages;
+                if (new_total <= old_total) break;
+            } while (vfs_cas_i64(&sb->total_pages, old_total, new_total) != old_total);
+
+            return run_start;
+        }
+        /* Collision — retry scan */
     }
 
-    /* Update total_pages if needed */
-    int64_t new_total = run_start + count;
-    int64_t old_total;
-    do {
-        old_total = sb->total_pages;
-        if (new_total <= old_total) break;
-    } while (vfs_cas_i64(&sb->total_pages, old_total, new_total) != old_total);
-
-    sb_spin_unlock(&sb->alloc_lock);
-    return run_start;
+    return -1;  /* too many retries */
 }
 
 int storage_acquire(StorageBackend* sb, int64_t logical_page) {
@@ -478,31 +497,32 @@ uint8_t* storage_read(StorageBackend* sb, int64_t logical_page) {
         return NULL;
     }
 
-    /* 4. Insert into cache as clean */
+    /* 4. Insert into cache — cache takes ownership of buf (no copy) */
     cache_insert(&sb->cache, logical_page, buf, 0, 0);
 
-    /* cache_insert copies buf; return the cached copy */
+    /* 5. Return the cached payload (cache owns buf now) */
     ce = cache_find(&sb->cache, logical_page);
-    free(buf);  /* cache made its own copy */
     return ce ? ce->payload : NULL;
 }
 
-void storage_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload) {
+void storage_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload,
+                   uint32_t priority) {
     /* 1. Write through lazy mirror to disk */
-    uint32_t flags = 0;  /* default priority 0 (data) — VFS layer sets this */
-    mirror_write(sb, logical_page, payload, flags);
+    mirror_write(sb, logical_page, payload, priority);
 
     /* 2. Update cache — mark dirty */
-    cache_insert(&sb->cache, logical_page, (uint8_t*)payload,
-                 flags & HDR_FLAG_PRIORITY_MASK, 1);
+    cache_insert(&sb->cache, logical_page, (uint8_t*)payload, (int)priority, 1);
 }
 
 void storage_flush(StorageBackend* sb, int64_t logical_page) {
     if (logical_page < 0) {
-        /* First: flush the header page (always at physical offset 0).
-           The header buffer holds live indirection entries + total_pages/physical_tail
-           that are updated by Allocate/Acquire/Free.  These changes must reach disk
-           before any cached data pages so the file is consistent on crash. */
+        /* Flush all cached dirty pages in priority order (0=data first, 3=superblock last) */
+        cache_flush_all(sb);
+
+        /* Write the header page LAST — it is the atomic commit point.
+           If a crash occurs before this write, the old header still points to
+           the old tree and any newly-written data pages are unreachable zombies
+           reclaimed by GC.  No corruption. */
 
         /* Update header fields from live state */
         vfs_wr8(sb->header_buf, HDR_OFF_TOTAL_PAGES,  sb->total_pages);
@@ -520,8 +540,6 @@ void storage_flush(StorageBackend* sb, int64_t logical_page) {
             pwrite(sb->fd, sb->header_buf, (size_t)sb->page_size, PAGE_HEADER_SIZE);
         }
 
-        /* Then flush all cached dirty pages in priority order */
-        cache_flush_all(sb);
         fsync(sb->fd);
     } else {
         cache_flush_page(sb, logical_page);

@@ -106,7 +106,7 @@ void test_read_write(void) {
     /* Write a known payload */
     uint8_t payload[8192];
     memset(payload, 0xAB, 8192);
-    storage_write(sb, pg, payload);
+    storage_write(sb, pg, payload, 0);
 
     /* Read back */
     uint8_t* result = storage_read(sb, pg);
@@ -152,7 +152,7 @@ void test_lazy_mirror(void) {
     /* First write */
     uint8_t buf1[8192];
     memset(buf1, 0x11, 8192);
-    storage_write(sb, pg, buf1);
+    storage_write(sb, pg, buf1, 0);
 
     uint8_t* r = storage_read(sb, pg);
     CHECK(r != NULL);
@@ -161,7 +161,7 @@ void test_lazy_mirror(void) {
     /* Second write (triggers mirror allocation) */
     uint8_t buf2[8192];
     memset(buf2, 0x22, 8192);
-    storage_write(sb, pg, buf2);
+    storage_write(sb, pg, buf2, 0);
 
     r = storage_read(sb, pg);
     CHECK(r != NULL);
@@ -170,7 +170,7 @@ void test_lazy_mirror(void) {
     /* Third write (alternates between mirrors) */
     uint8_t buf3[8192];
     memset(buf3, 0x33, 8192);
-    storage_write(sb, pg, buf3);
+    storage_write(sb, pg, buf3, 0);
 
     r = storage_read(sb, pg);
     CHECK(r != NULL);
@@ -192,7 +192,7 @@ void test_flush_order(void) {
     int64_t pg = storage_allocate(sb, 1);
     uint8_t data[8192];
     memset(data, 0xCC, 8192);
-    storage_write(sb, pg, data);
+    storage_write(sb, pg, data, 0);
 
     /* Flush(-1) should succeed and persist */
     storage_flush(sb, -1);
@@ -221,7 +221,7 @@ static void* mt_alloc_thread(void* arg) {
         if (pg >= 0) {
             uint8_t data[8192];
             memset(data, (uint8_t)(tid & 0xFF), 8192);
-            storage_write(s_shared_sb, pg, data);
+            storage_write(s_shared_sb, pg, data, 0);
         }
     }
     return NULL;

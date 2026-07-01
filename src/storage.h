@@ -110,9 +110,6 @@ typedef struct {
     int32_t*         mirror_pages;   /* mirror_page per logical page, -1 = none */
     uint32_t*        generations;    /* generation per logical page */
     int              mirror_cap;     /* allocated capacity */
-
-    /* Allocation lock — protects the scan+claim in storage_allocate */
-    volatile int     alloc_lock;
 } StorageBackend;
 
 /* ---------------------------------------------------------------------------
@@ -127,7 +124,7 @@ int             storage_acquire(StorageBackend* sb, int64_t logical_page);
 void            storage_free(StorageBackend* sb, int64_t logical_page);
 
 uint8_t*        storage_read(StorageBackend* sb, int64_t logical_page);
-void            storage_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload);
+void            storage_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload, uint32_t priority);
 void            storage_flush(StorageBackend* sb, int64_t logical_page);
 
 /* ---------------------------------------------------------------------------

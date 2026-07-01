@@ -83,7 +83,7 @@ void cache_init(PageCache* cache, int64_t page_size) {
     cache->entry_count  = 0;
     cache->max_entries  = CACHE_DEFAULT_MAX;
     cache->dirty_count  = 0;
-    cache->writeback_threshold = 2;
+    cache->writeback_threshold = cache->max_entries / 4;
     cache->page_size    = page_size;
 }
 
@@ -165,6 +165,11 @@ static void cache_evict(PageCache* cache) {
 
 void cache_insert(PageCache* cache, int64_t logical_page,
                   uint8_t* payload, int priority, int dirty) {
+    /* For clean inserts (from storage_read), take ownership of the caller's
+       malloc'd buffer — no copy needed.  For dirty inserts (from storage_write),
+       the caller's buffer is stack/const — we must copy it. */
+    int take_ownership = !dirty;
+
     int bkt = bucket_index(cache, logical_page);
     spin_lock(&cache->bucket_locks[bkt]);
 
@@ -172,7 +177,7 @@ void cache_insert(PageCache* cache, int64_t logical_page,
     CacheEntry* e = cache->buckets[bkt];
     while (e) {
         if (e->logical_page == logical_page) {
-            /* Update existing entry */
+            /* Update existing entry — we already own the payload buffer */
             memcpy(e->payload, payload, (size_t)cache->page_size);
             e->priority = priority;
             if (dirty) {
@@ -181,6 +186,7 @@ void cache_insert(PageCache* cache, int64_t logical_page,
             }
             lru_promote(cache, e);
             spin_unlock(&cache->bucket_locks[bkt]);
+            if (take_ownership) free(payload);
             return;
         }
         e = e->hash_next;
@@ -190,12 +196,14 @@ void cache_insert(PageCache* cache, int64_t logical_page,
     e = calloc(1, sizeof(CacheEntry));
     if (!e) { spin_unlock(&cache->bucket_locks[bkt]); return; }
 
-    /* Determine page size from cache */
-    size_t ps = (size_t)cache->page_size;
-    e->payload = malloc(ps);
-    if (!e->payload) { free(e); spin_unlock(&cache->bucket_locks[bkt]); return; }
+    if (take_ownership) {
+        e->payload = payload;  /* take ownership — no copy */
+    } else {
+        e->payload = malloc((size_t)cache->page_size);
+        if (!e->payload) { free(e); spin_unlock(&cache->bucket_locks[bkt]); return; }
+        memcpy(e->payload, payload, (size_t)cache->page_size);
+    }
 
-    memcpy(e->payload, payload, ps);
     e->logical_page = logical_page;
     e->priority     = priority;
     e->dirty        = dirty;
@@ -224,15 +232,22 @@ void cache_insert(PageCache* cache, int64_t logical_page,
  * --------------------------------------------------------------------------- */
 
 void cache_mark_dirty(PageCache* cache, int64_t logical_page, int priority) {
-    CacheEntry* e = cache_find(cache, logical_page);
-    if (e) {
-        int bkt = bucket_index(cache, logical_page);
-        spin_lock(&cache->bucket_locks[bkt]);
-        if (!e->dirty) cache->dirty_count++;
-        e->dirty    = 1;
-        e->priority = priority;
-        spin_unlock(&cache->bucket_locks[bkt]);
+    int bkt = bucket_index(cache, logical_page);
+    spin_lock(&cache->bucket_locks[bkt]);
+
+    CacheEntry* e = cache->buckets[bkt];
+    while (e) {
+        if (e->logical_page == logical_page) {
+            if (!e->dirty) cache->dirty_count++;
+            e->dirty    = 1;
+            e->priority = priority;
+            lru_promote(cache, e);
+            break;
+        }
+        e = e->hash_next;
     }
+
+    spin_unlock(&cache->bucket_locks[bkt]);
 }
 
 /* ---------------------------------------------------------------------------
