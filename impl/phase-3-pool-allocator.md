@@ -49,6 +49,12 @@ Build order:
 - 3.1 + 3.2 first (pool page layout + free list init)
 - 3.4 next (VirtualPtr macros — needed by 3.3 and 3.5)
 - 3.5 next (global list — `pool_list_add` and `pool_list_find_free`)
+  **Testing note:** 3.5 cannot use `pool_alloc` (3.3) to create pages — that
+  would create a circular dependency. Instead, manually construct pool page
+  payloads: allocate a logical page via `storage_allocate(1)`, write
+  `nextPoolPage=0` and `poolState=(5 << 16) | 0` (5 free slots starting at 0)
+  via `vfs_wr8`/`vfs_wr4`, then call `storage_write`. This gives 3.5 real
+  pages to link and scan without depending on 3.3.
 - 3.3 last (slot allocation — uses everything above)
 
 ## File Organization
