@@ -169,7 +169,11 @@ int64_t pool_alloc(Pool* pool) {
         int32_t old_state = (int32_t)state;
         if (vfs_cas_i32((int32_t*)(payload + POOL_OFF_STATE),
                          old_state, (int32_t)new_state) != old_state) {
-            /* CAS failed — another thread raced.  Retry from step 4. */
+            /* CAS failed — another thread raced.  Re-fetch the payload pointer
+               in case the page was evicted from cache and re-read from disk.
+               This eliminates the pinning race (finding #B). */
+            payload = storage_read(pool->sb, page_index);
+            if (payload == NULL) continue;
             continue;
         }
 
