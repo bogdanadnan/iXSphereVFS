@@ -38,11 +38,12 @@
 #define VFS_POOL_SLOTS_FOR_PAGE(ps) \
     (int)(((ps) - VFS_POOL_HEADER_SIZE) / VFS_POOL_SLOT_SIZE)
 
-/* Verify layout at compile time for default page size */
+/* Verify layout at compile time for default page size (8192).
+   For non-default page sizes, use VFS_POOL_SLOTS_FOR_PAGE(ps) instead. */
 #define VFS_POOL_TOTAL_BYTES \
     (VFS_POOL_HEADER_SIZE + VFS_POOL_SLOTS * VFS_POOL_SLOT_SIZE + 16 /* padding */)
 _Static_assert(VFS_POOL_TOTAL_BYTES == 8192,
-               "pool page layout must be exactly 8192 bytes");
+               "default pool page layout must be exactly 8192 bytes");
 
 /* ---------------------------------------------------------------------------
  * poolState packing/unpacking
@@ -52,6 +53,10 @@ _Static_assert(VFS_POOL_TOTAL_BYTES == 8192,
  * --------------------------------------------------------------------------- */
 
 VFS_INLINE uint32_t pool_state_pack(uint16_t free_count, uint16_t first_free) {
+#ifndef NDEBUG
+    /* first_free must be a valid slot index (0–65535) or the terminal sentinel */
+    assert(first_free <= VFS_POOL_FREE_TERMINAL);
+#endif
     return ((uint32_t)free_count << 16) | (uint32_t)first_free;
 }
 
@@ -76,7 +81,7 @@ VFS_INLINE uint16_t pool_state_first_free(uint32_t state) {
 #define VFS_VPTR_NULL           ((int64_t)0)
 #define VFS_VPTR_MAKE(pg, sl)   (((int64_t)(pg) << 16) | ((int64_t)(sl) & 0xFFFF))
 #define VFS_VPTR_PAGE(vp)       ((int64_t)((uint64_t)(vp) >> 16))
-#define VFS_VPTR_SLOT(vp)       ((int)((vp) & 0xFFFF))
+#define VFS_VPTR_SLOT(vp)       ((int)((uint64_t)(vp) & 0xFFFF))
 
 /* ---------------------------------------------------------------------------
  * Pool handle (Workload 3.6 — forward declaration)

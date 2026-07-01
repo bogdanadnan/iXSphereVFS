@@ -16,7 +16,9 @@
 
 void pool_page_init(uint8_t* payload, int64_t page_size) {
     int slot_count = VFS_POOL_SLOTS_FOR_PAGE(page_size);
-    if (slot_count > VFS_POOL_SLOTS) slot_count = VFS_POOL_SLOTS;
+    /* Cap at 65535 — the maximum that fits in VirtualPtr's 16-bit slot index
+       and poolState's 16-bit firstFreeSlot field. */
+    if (slot_count > 65535) slot_count = 65535;
 
     /* Zero the entire page payload */
     memset(payload, 0, (size_t)page_size);
@@ -153,7 +155,10 @@ int64_t pool_alloc(Pool* pool) {
         /* 7. Get firstFreeSlot */
         uint16_t first_free = pool_state_first_free(state);
 
-        /* 8. Read nextFreeSlot from the slot's bytes 0–1 */
+        /* 8. Read nextFreeSlot from the slot's bytes 0–1.
+           This MUST be inside the CAS retry loop: if the CAS fails, another
+           thread consumed this slot, and first_free may now point to a
+           different slot with a different next_free. */
         int slot_offset = VFS_POOL_ENTRIES_OFFSET + first_free * VFS_POOL_SLOT_SIZE;
         uint16_t next_free = (uint16_t)vfs_rd2(payload, slot_offset);
 
