@@ -1,4 +1,5 @@
 #include "ixsphere_vfs.h"
+#include "platform.h"
 #include <stdlib.h>
 
 const char* vfs_error_string(vfs_error_t err) {

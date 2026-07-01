@@ -23,6 +23,8 @@ typedef enum {
 
 const char* vfs_error_string(vfs_error_t err);
 
+uint32_t vfs_crc32c(const uint8_t* data, size_t len);
+
 typedef struct vfs_t vfs_t;
 
 vfs_t*  vfs_open(const char* path);

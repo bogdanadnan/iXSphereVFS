@@ -7,9 +7,13 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic")
 
 add_library(ixsphere_vfs STATIC
     src/vfs.c
+    src/crc32c.c
 )
 
-target_include_directories(ixsphere_vfs PUBLIC include)
+target_include_directories(ixsphere_vfs PUBLIC 
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
 
 enable_testing()
 add_executable(vfs_test
