@@ -19,8 +19,8 @@ on the hot path and must never fragment.
   closes the single-copy risk window before the page holds multi-file metadata.
 - **Pool page size is derived from StorageBackend.** The number of slots per
   page is `(sb->page_size - 16) / 32` = 255 at the default page_size of 8192.
-  Larger page_sizes increase slot count. The VirtualPtr encoding uses 10 bits
-  for the slot index (0–1023), supporting page sizes up to 32,752 bytes.
+  Larger page_sizes increase slot count. The VirtualPtr encoding uses 16 bits
+  for the slot index (0–65535), supporting page sizes up to 32,752 bytes.
 
 ## Dependencies
 
@@ -202,7 +202,7 @@ If CAS retry rate exceeds 10% at 8+ threads, implement arenas:
 - [ ] 256th allocation creates a second pool page
 - [ ] 4 threads × 100 allocations each: all VirtualPtrs unique, no double-allocations
 - [ ] CAS retry: two threads racing on same poolState → exactly one wins, other retries
-- [ ] VirtualPtr for slot 0 is `(page << 10) | 0`, for slot 254 is `(page << 10) | 254`
+- [ ] VirtualPtr for slot 0 is `(page << 16) | 0`, for slot 254 is `(page << 16) | 254`
 
 ---
 
@@ -214,15 +214,16 @@ An 8-byte packed reference used everywhere to link pool entries into chains.
 ### Encoding/Decoding (Macros in pool.h)
 ```c
 #define VFS_VPTR_NULL         ((int64_t)0)
-#define VFS_VPTR_MAKE(pg, sl) (((int64_t)(pg) << 10) | ((sl) & 0x3FF))
-#define VFS_VPTR_PAGE(vp)     ((int64_t)((vp) >> 10))
-#define VFS_VPTR_SLOT(vp)     ((int)((vp) & 0x3FF))
+#define VFS_VPTR_MAKE(pg, sl) (((int64_t)(pg) << 16) | ((sl) & 0xFFFF))
+#define VFS_VPTR_PAGE(vp)     ((int64_t)((vp) >> 16))
+#define VFS_VPTR_SLOT(vp)     ((int)((vp) & 0xFFFF))
 ```
 
 ### Requirements
-- The page index can be up to 2^54 - 1 (fits in 54 bits). Slot index is 0–1023
-  (fits in 10 bits). This supports up to 1,024 slots per pool page — enough for
-  page sizes up to `1024 * 32 + 16 = 32,784` bytes.
+- The page index can be up to 2^48 - 1 (fits in 416 bits). Slot index is 0–65,535
+  (fits in 16 bits). This supports up to 65K slots per pool page — enough for
+  page sizes up to ~2 MB. The free list's `uint16_t` next-pointer in bytes 0–1
+  of each free slot accommodates the full range.
 - `VFS_VPTR_NULL` is 0. Logical page 0 is the StorageBackend header — never a
   pool page — so `(0, 0)` is safely null.
 - VirtualPtr is stored as `int64_t` in pool entries at 8-byte aligned offsets.
@@ -233,9 +234,9 @@ An 8-byte packed reference used everywhere to link pool entries into chains.
 ### Acceptance
 - [ ] `VFS_VPTR_MAKE(42, 7)` → PAGE=42, SLOT=7
 - [ ] `VFS_VPTR_MAKE(1, 0)` round-trips through pool_resolve correctly
-- [ ] Maximum page (2^54 - 1) and max slot (1023) encode/decode without
+- [ ] Maximum page (2^48 - 1) and max slot (65535) encode/decode without
   overflow
-- [ ] Slot index 1024 is rejected (assert in debug, error in release)
+- [ ] Slot index 65536 is rejected (assert in debug, error in release)
 - [ ] `VFS_VPTR_NULL` → PAGE=0, SLOT=0
 
 ---
