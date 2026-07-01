@@ -627,3 +627,76 @@ Before moving to Phase 3, every item must be checked:
 - [ ] Write-back only flushes priority-0 (data) pages
 - [ ] 4 concurrent threads allocating and writing without corruption
 - [ ] Valgrind/ASan clean
+
+---
+
+## Review Iteration 1 (2026-07-01)
+
+### Critical
+
+**1. Flush order is wrong — header written FIRST, should be LAST.**
+`storage_flush` lines 502-521 write the header page (with indirection table
+entries and XVFS magic) directly to disk BEFORE calling `cache_flush_all` for
+data/pool pages. If a crash occurs after the header write but before data
+pages are flushed, the new header's indirection entries point to physical
+offsets that contain stale or unwritten data. The spec requires superblock-level
+pages to be flushed LAST. Fix: write data pages first via cache, THEN update
+and flush the header.
+
+**2. `Allocate` uses a global spin lock, not lock-free CAS.**
+`storage_allocate` line 342: `sb_spin_lock(&sb->alloc_lock)` serializes ALL
+allocations across ALL threads. The spec describes a lock-free model with
+"a single atomic CAS on physical_tail." For multi-page allocations needing
+a contiguous range scan, this lock is reasonable, but the scan should be
+per-entry CAS rather than lock-then-scan-then-unlock. At minimum, document
+this as a deliberate simplification, not an oversight.
+
+**3. `storage_flush` flushes pages via raw `pread`/`pwrite`, not lazy mirror.**
+`cache_flush_page` (line 251-262) reads the old PageHeader, updates checksum,
+and writes it back — without using the lazy mirror mechanism. Individual page
+writes during flush are not crash-safe (no mirror fallback). The flush ordering
+compensates (superblock is the atomic commit point), but a torn page write
+during flush corrupts the old data. Fix is optional: lazy mirror writes during
+flush add overhead; the spec's ordered flush + superblock-commit model is the
+primary protection.
+
+### Medium
+
+**4. `storage_write` hardcodes priority to 0 (data).**
+Line 493: `uint32_t flags = 0` — all writes default to priority 0. Pool pages
+need priority 1, indirection pages need priority 2, superblock needs priority 3.
+The VFS layer must be able to specify the priority. Fix: add a `priority`
+parameter to `storage_write`.
+
+**5. `cache_mark_dirty` has a TOCTOU race.**
+Line 226-236: `cache_find` returns an entry, then the function re-acquires
+the bucket lock separately. The entry could be evicted between `cache_find`
+and `spin_lock`. The eviction path (`cache_evict`) frees the entry under the
+bucket lock. After `cache_find` returns, the entry has no reference count or
+pin preventing eviction. Fix: the caller must hold the bucket lock across the
+find+modify, or use reference counting.
+
+**6. `storage_read` double-allocates and double-looks-up.**
+Lines 473-487: malloc buffer → mirror_read into it → cache_insert (which
+mallocs its own copy) → free original → cache_find to return cached copy.
+This is 3 heap operations and 2 hash lookups per read. Fix: `cache_insert`
+should return the cached buffer, or the cache should take ownership of the
+caller's buffer (caller passes ownership, no copy).
+
+### Low
+
+**7. `mount_existing` uses hardcoded 8192 for initial header read.**
+Line 186: `calloc(1, 8192)`. If the backing file was created with a different
+page_size, this buffer is too small. The code does re-read at line 200-210
+after discovering the real page_size, but the initial `pread` at line 189
+reads exactly 8192 bytes into a 8192-byte buffer — safe regardless of actual
+page_size, as long as the config fields are within the first 8KB. The config
+fields ARE within the first 40 bytes, so this works. But the CRC check at
+line 193 is computed over only 8192 bytes, not the full page_size. If page_size
+is larger than 8192, the CRC32C validation is incomplete. Fix: read the full
+page_size after discovering it, then validate CRC over the full payload.
+
+**8. `writeback_threshold` set to 2 for testing.**
+Line 86: `cache->writeback_threshold = 2` — this is a debug value. Should be
+computed as a percentage of `max_entries` (e.g., `max_entries / 4`).
+Production default: 8,192 pages at 256 MB cache.
