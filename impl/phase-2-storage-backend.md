@@ -8,6 +8,12 @@ before Phase 3 begins.
 
 ## Non-Negotiable Constraints
 
+- **page_size is NOT hardcoded.** The value `8192` is the default, not a
+  constant. All code must use `sb->page_size` read from the StorageBackend
+  header at mount time. Never reference `VFS_PAGE_SIZE` in StorageBackend code
+  (that macro is for the VFS layer's pool page layout calculations). Every
+  allocation, every Read/Write offset computation, every cache buffer size
+  must use `sb->page_size`.
 - **All APIs blocking or return-ready.** No callbacks, no async I/O, no
   completion ports. Every function blocks until done.
 - **The VFS layer never sees a PageHeader.** `Read` and `Write` operate on
@@ -20,6 +26,57 @@ before Phase 3 begins.
   a recoverable state. Test this. Do not assume it works — prove it.
 - **No leaks.** Every allocated page must be trackable. The test suite's
   Valgrind/ASan run must be clean.
+
+## Staging Guidance — Build Incrementally, Don't Get Stuck
+
+The workloads have circular dependencies. You cannot fully implement
+Workload 2.1 (file layout) without `Write`, which needs lazy mirror (2.3).
+You cannot test `Read` (2.4) without the page cache (2.5). Here is the
+build order that works:
+
+### Stage A — Raw file I/O (no mirror, no cache)
+
+1. **Implement `raw_read` and `raw_write`.** These read/write `page_size + 16`
+   bytes directly from/to the backing file at a given physical offset. They
+   compute and validate CRC32C on the payload. No lazy mirror, no cache.
+   Use `pread`/`pwrite` or `lseek`+`read`/`write`.
+
+2. **Build 2.1 (File Layout) on top of raw I/O.** Create/open the backing file,
+   write/read the header page 0 using `raw_read`/`raw_write`. The indirection
+   table entries can be read/written via raw I/O at this stage.
+
+3. **Build 2.2 (Indirection Table) on top of raw I/O.** Allocate pages by
+   advancing `physical_tail`, write entries via `raw_write`. Read entries
+   via `raw_read`. No lazy mirror yet — data integrity on crash is not
+   guaranteed at this stage.
+
+### Stage B — Add lazy mirror
+
+4. **Build 2.3 (Lazy Mirror).** Replace `raw_write` with `mirror_write`.
+   Replace `raw_read` with `mirror_read`. All writes from this point forward
+   go through the mirror mechanism. The header and indirection table pages
+   written in Stage A will need to be re-written through lazy mirror or
+   accepted as having a single-copy risk for those initial writes.
+
+5. **Re-test 2.1 and 2.2** with lazy mirror active. Crash tests should now
+   pass (the original is intact after `kill -9` during mirror allocation).
+
+### Stage C — Add page cache and flush
+
+6. **Build 2.5 (Page Cache).** Insert `cache_find` and `cache_insert` into
+   `Read` and `Write`. Reads now hit the cache first. Writes mark pages dirty.
+   LRU eviction only on clean pages.
+
+7. **Build 2.4 (File I/O) properly.** `Read` → cache → mirror_read. `Write` →
+   mirror_write → cache (dirty). `Flush` writes dirty pages in priority order
+   and fsyncs.
+
+8. **Write-back** (data pages only, priority 0) as final optimization.
+
+### Stage D — Bootstrap & integration
+
+9. **Build 2.6 (Bootstrap & Mount).** `storage_open` and `storage_close`
+   wrapping all the above. This is the public API that Phase 3+ will call.
 
 ---
 
