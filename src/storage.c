@@ -158,11 +158,14 @@ static int bootstrap_new(StorageBackend* sb) {
 
     fsync(sb->fd);
 
-    /* Set in-memory state */
+    /* Sync in-memory tracking — bootstrap wrote page 0 with generation=1 */
     sb->total_pages      = 2;
     sb->segment_size     = 1024;
     sb->physical_tail    = 2 * (ps + PAGE_HEADER_SIZE);
     sb->indirection_head = 0;
+    ensure_mirror_arrays(sb, 2);
+    sb->generations[0]   = 1;
+    sb->mirror_pages[0]  = -1;
 
     return 0;
 }
@@ -206,6 +209,11 @@ static int mount_existing(StorageBackend* sb) {
     sb->physical_tail    = vfs_rd8(hdr, HDR_OFF_PHYS_TAIL);
     sb->indirection_head = vfs_rd8(hdr, HDR_OFF_INDIR_HEAD);
     sb->header_buf       = hdr;
+
+    /* Sync in-memory lazy mirror tracking from on-disk PageHeader */
+    ensure_mirror_arrays(sb, 1);
+    sb->generations[0]  = ph.generation;
+    sb->mirror_pages[0] = ph.mirror_page;
 
     return 0;
 }
@@ -300,6 +308,7 @@ void storage_close(StorageBackend* sb) {
         free(sb->indir.overflow_pages[i]);
     }
     free(sb->indir.overflow_pages);
+    free(sb->indir.overflow_logical);
 
     /* Free mirror arrays */
     free(sb->mirror_pages);
@@ -519,12 +528,25 @@ void storage_flush(StorageBackend* sb, int64_t logical_page) {
         /* Flush all cached dirty pages in priority order (0=data first, 3=superblock last) */
         cache_flush_all(sb);
 
-        /* Write the header page LAST — it is the atomic commit point.
-           If a crash occurs before this write, the old header still points to
-           the old tree and any newly-written data pages are unreachable zombies
-           reclaimed by GC.  No corruption. */
+        /* Flush overflow indirection pages (priority 2).
+           These are not in the cache — write them directly through lazy mirror. */
+        IndirectionTable* it = &sb->indir;
+        for (int i = 0; i < it->overflow_count; i++) {
+            int64_t logical = it->overflow_logical[i];
+            if (logical > 0) {
+                mirror_write(sb, logical, (const uint8_t*)it->overflow_pages[i],
+                             FLUSH_PRIO_INDIR);
+            }
+        }
 
-        /* Update header fields from live state */
+        /* Write the header page LAST via direct pwrite (no lazy mirror).
+           Page 0 is special: mount always reads from physical offset 0, and
+           lazy mirror would create a sibling at a different offset.  On reopen,
+           the original at offset 0 would have stale data (the updated header
+           was written to the sibling).  Direct pwrite avoids this.
+           Crash safety: data pages are written first, header is the atomic
+           commit point.  Crash before header write → old header is still valid.
+           Crash after header write → all preceding pages are on disk. */
         vfs_wr8(sb->header_buf, HDR_OFF_TOTAL_PAGES,  sb->total_pages);
         vfs_wr8(sb->header_buf, HDR_OFF_PHYS_TAIL,    sb->physical_tail);
         vfs_wr8(sb->header_buf, HDR_OFF_INDIR_HEAD,   sb->indirection_head);

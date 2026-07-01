@@ -12,6 +12,14 @@
     #define VFS_BOUNDS_CHECK(offset, size) ((void)0)
 #endif
 
+/* ---------------------------------------------------------------------------
+ * Integer read/write at byte offsets.
+ *
+ * These are for VFS-layer metadata (header page, pool entries) where the
+ * buffer size is always VFS_PAGE_SIZE.  For StorageBackend buffers of
+ * arbitrary page_size, use memcpy directly.
+ * --------------------------------------------------------------------------- */
+
 VFS_INLINE int64_t vfs_rd8(const uint8_t* buf, int offset) {
     VFS_BOUNDS_CHECK(offset, 8);
     int64_t val;
@@ -48,25 +56,38 @@ VFS_INLINE void vfs_wr2(uint8_t* buf, int offset, int16_t val) {
     memcpy(buf + offset, &val, 2);
 }
 
-VFS_INLINE void vfs_zero_page(uint8_t* buf) {
-    memset(buf, 0, VFS_PAGE_SIZE);
+/* ---------------------------------------------------------------------------
+ * Page buffer operations.
+ *
+ * These accept a `page_size` parameter for StorageBackend compatibility.
+ * The VFS layer calls them with VFS_PAGE_SIZE; the StorageBackend calls
+ * them with sb->page_size.
+ * --------------------------------------------------------------------------- */
+
+VFS_INLINE void vfs_zero_page(uint8_t* buf, int64_t page_size) {
+    memset(buf, 0, (size_t)page_size);
 }
 
 #if VFS_ARCH_X86_64 && VFS_COMPILER_GCC
     #include <emmintrin.h>  /* SSE2 — _mm_setzero_si128 / _mm_storeu_si128 */
 
-    VFS_INLINE void vfs_zero_page_fast(uint8_t* buf) {
+    VFS_INLINE void vfs_zero_page_fast(uint8_t* buf, int64_t page_size) {
         __m128i zero = _mm_setzero_si128();
-        for (int i = 0; i < VFS_PAGE_SIZE; i += 16) {
+        int64_t i;
+        for (i = 0; i + 16 <= page_size; i += 16) {
             _mm_storeu_si128((__m128i*)(buf + i), zero);
+        }
+        /* Zero remaining bytes */
+        for (; i < page_size; i++) {
+            buf[i] = 0;
         }
     }
 #else
     #define vfs_zero_page_fast vfs_zero_page
 #endif
 
-VFS_INLINE void vfs_copy_page(uint8_t* dst, const uint8_t* src) {
-    memcpy(dst, src, VFS_PAGE_SIZE);
+VFS_INLINE void vfs_copy_page(uint8_t* dst, const uint8_t* src, int64_t page_size) {
+    memcpy(dst, src, (size_t)page_size);
 }
 
 #endif /* VFS_PAGE_BUF_H */

@@ -148,19 +148,19 @@ void test_page_buf(void) {
     vfs_wr2(page, 200, (int16_t)12345);
     CHECK_EQ(vfs_rd2(page, 200), (int16_t)12345);
 
-    vfs_zero_page(page);
+    vfs_zero_page(page, VFS_PAGE_SIZE);
     int all_zero = 1;
     for (int i = 0; i < 8192; i++) { if (page[i] != 0) { all_zero = 0; break; } }
     CHECK(all_zero);
 
     memset(page, 0xAA, 8192);
     uint8_t dst[8192];
-    vfs_copy_page(dst, page);
+    vfs_copy_page(dst, page, VFS_PAGE_SIZE);
     CHECK_EQ(memcmp(dst, page, 8192), 0);
 
     /* vfs_zero_page_fast produces identical result to memset */
     memset(page, 0xFF, 8192);
-    vfs_zero_page_fast(page);
+    vfs_zero_page_fast(page, VFS_PAGE_SIZE);
     all_zero = 1;
     for (int i = 0; i < 8192; i++) { if (page[i] != 0) { all_zero = 0; break; } }
     CHECK(all_zero);

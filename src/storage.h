@@ -48,6 +48,7 @@ typedef struct {
 
     /* Overflow chain — dynamically grown array of page buffers */
     int64_t** overflow_pages;  /* each points to a page_size buffer (next + entries) */
+    int64_t*  overflow_logical; /* logical page index for each overflow page */
     int       overflow_count;  /* number of overflow pages */
     int       overflow_cap;    /* allocated capacity */
 

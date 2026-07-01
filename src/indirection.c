@@ -21,9 +21,10 @@ void indir_init(StorageBackend* sb) {
     it->entries_per_overflow = (sb->page_size / 8) - 1;
 
     /* Load overflow chain from disk */
-    it->overflow_pages = NULL;
-    it->overflow_count = 0;
-    it->overflow_cap   = 0;
+    it->overflow_pages  = NULL;
+    it->overflow_logical = NULL;
+    it->overflow_count  = 0;
+    it->overflow_cap    = 0;
 
     int64_t chain_page = sb->indirection_head;
     while (chain_page != 0) {
@@ -58,12 +59,16 @@ void indir_init(StorageBackend* sb) {
         if (it->overflow_count >= it->overflow_cap) {
             int new_cap = it->overflow_cap ? it->overflow_cap * 2 : 8;
             int64_t** np = realloc(it->overflow_pages, (size_t)new_cap * sizeof(int64_t*));
-            if (!np) { free(buf); break; }
-            it->overflow_pages = np;
-            it->overflow_cap   = new_cap;
+            int64_t*  nl = realloc(it->overflow_logical, (size_t)new_cap * sizeof(int64_t));
+            if (!np || !nl) { free(buf); free(np); free(nl); break; }
+            it->overflow_pages   = np;
+            it->overflow_logical = nl;
+            it->overflow_cap     = new_cap;
         }
 
-        it->overflow_pages[it->overflow_count++] = (int64_t*)buf;
+        it->overflow_pages[it->overflow_count]   = (int64_t*)buf;
+        it->overflow_logical[it->overflow_count]  = chain_page;
+        it->overflow_count++;
 
         /* Follow chain: next is at offset 0 of the overflow page */
         chain_page = vfs_rd8(buf, 0);
@@ -172,21 +177,35 @@ int indir_ensure_capacity(StorageBackend* sb, int needed) {
         if (it->overflow_count >= it->overflow_cap) {
             int new_cap = it->overflow_cap ? it->overflow_cap * 2 : 8;
             int64_t** np = realloc(it->overflow_pages, (size_t)new_cap * sizeof(int64_t*));
-            if (!np) { free(buf); return -1; }
-            it->overflow_pages = np;
-            it->overflow_cap   = new_cap;
+            int64_t*  nl = realloc(it->overflow_logical, (size_t)new_cap * sizeof(int64_t));
+            if (!np || !nl) { free(buf); free(np); free(nl); return -1; }
+            it->overflow_pages   = np;
+            it->overflow_logical = nl;
+            it->overflow_cap     = new_cap;
         }
 
-        /* Link previous overflow page's 'next' to this new page's logical index */
+        /* Link previous overflow page's 'next' to this new page's logical index.
+           Use CAS to ensure atomic chain append — another thread may be appending
+           simultaneously. */
         if (it->overflow_count > 0) {
             int64_t* prev = it->overflow_pages[it->overflow_count - 1];
-            vfs_wr8((uint8_t*)prev, 0, new_logical);
+            int64_t expected_next = 0;
+            if (vfs_cas_i64(&prev[0], expected_next, new_logical) != expected_next) {
+                /* Another thread appended — retry the entire capacity check */
+                free(buf);
+                return indir_ensure_capacity(sb, needed);
+            }
         } else {
-            /* First overflow page — update indirection_head */
-            sb->indirection_head = new_logical;
+            /* First overflow page — CAS-update indirection_head */
+            int64_t expected_head = sb->indirection_head;
+            while (vfs_cas_i64(&sb->indirection_head, expected_head, new_logical) != expected_head) {
+                expected_head = sb->indirection_head;
+            }
         }
 
-        it->overflow_pages[it->overflow_count++] = (int64_t*)buf;
+        it->overflow_pages[it->overflow_count]   = (int64_t*)buf;
+        it->overflow_logical[it->overflow_count]  = new_logical;
+        it->overflow_count++;
         total_entries += it->entries_per_overflow;
     }
 

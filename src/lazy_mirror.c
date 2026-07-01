@@ -18,6 +18,23 @@ static int read_page_header(StorageBackend* sb, int64_t phys_offset, PageHeader*
     return (n == PAGE_HEADER_SIZE) ? 0 : -1;
 }
 
+/* Sync in-memory generation + mirror_page from the on-disk PageHeader.
+   Called lazily when generations[logical_page] is 0 but the page may have
+   been written before a remount. */
+static void sync_generation_from_disk(StorageBackend* sb, int64_t logical_page) {
+    if (logical_page >= sb->mirror_cap) return;
+    if (sb->generations[logical_page] != 0) return;  /* already synced */
+
+    int64_t offset = indir_lookup(sb, logical_page);
+    if (offset == 0) return;  /* not allocated */
+
+    PageHeader ph;
+    if (read_page_header(sb, offset, &ph) == 0) {
+        sb->generations[logical_page]  = ph.generation;
+        sb->mirror_pages[logical_page] = ph.mirror_page;
+    }
+}
+
 /* Write a PageHeader + payload to disk at the given physical offset. */
 static int write_page_record(StorageBackend* sb, int64_t phys_offset,
                              const PageHeader* ph, const uint8_t* payload) {
@@ -37,9 +54,18 @@ static int write_page_record(StorageBackend* sb, int64_t phys_offset,
  * 4. If mirror_page != -1: read sibling, pick higher generation, validate
  * --------------------------------------------------------------------------- */
 
+/* Compute physical offset for a logical page.
+   Pages 0 and 1 have fixed offsets (header and superblock).
+   Pages 2+ use the indirection table. */
+static int64_t physical_offset(StorageBackend* sb, int64_t logical_page) {
+    if (logical_page == 0) return 0;
+    if (logical_page == 1) return sb->page_size + PAGE_HEADER_SIZE;
+    return indir_lookup(sb, logical_page);
+}
+
 int mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) {
-    int64_t offset = indir_lookup(sb, logical_page);
-    if (offset == 0) return -1;
+    int64_t offset = physical_offset(sb, logical_page);
+    if (offset < 0) return -1;
 
     PageHeader ph;
     if (read_page_header(sb, offset, &ph) != 0) return -1;
@@ -139,11 +165,14 @@ int mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) 
 
 int mirror_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload,
                  uint32_t flags) {
-    int64_t offset = indir_lookup(sb, logical_page);
-    if (offset == 0) return -1;
+    int64_t offset = physical_offset(sb, logical_page);
+    if (offset < 0) return -1;
 
     /* Ensure mirror tracking */
     ensure_mirror_arrays(sb, (int)(logical_page + 1));
+
+    /* Sync generation from disk if in-memory is stale (after remount) */
+    sync_generation_from_disk(sb, logical_page);
 
     uint32_t gen = sb->generations[logical_page];
     int32_t  mp  = sb->mirror_pages[logical_page];
