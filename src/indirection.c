@@ -173,15 +173,27 @@ int indir_ensure_capacity(StorageBackend* sb, int needed) {
             old_tp = sb->total_pages;
         }
 
-        /* Append to overflow chain */
+        /* Append to overflow chain — grow arrays under lock */
         if (it->overflow_count >= it->overflow_cap) {
-            int new_cap = it->overflow_cap ? it->overflow_cap * 2 : 8;
-            int64_t** np = realloc(it->overflow_pages, (size_t)new_cap * sizeof(int64_t*));
-            int64_t*  nl = realloc(it->overflow_logical, (size_t)new_cap * sizeof(int64_t));
-            if (!np || !nl) { free(buf); free(np); free(nl); return -1; }
-            it->overflow_pages   = np;
-            it->overflow_logical = nl;
-            it->overflow_cap     = new_cap;
+            while (__sync_lock_test_and_set(&it->overflow_lock, 1)) { /* spin */ }
+
+            /* Double-check after acquiring lock */
+            if (it->overflow_count >= it->overflow_cap) {
+                int new_cap = it->overflow_cap ? it->overflow_cap * 2 : 8;
+                int64_t** np = realloc(it->overflow_pages, (size_t)new_cap * sizeof(int64_t*));
+                int64_t*  nl = realloc(it->overflow_logical, (size_t)new_cap * sizeof(int64_t));
+                if (!np || !nl) {
+                    __sync_lock_release(&it->overflow_lock);
+                    free(buf); free(np); free(nl);
+                    return -1;
+                }
+                it->overflow_pages   = np;
+                it->overflow_logical = nl;
+                __sync_synchronize();
+                it->overflow_cap     = new_cap;
+            }
+
+            __sync_lock_release(&it->overflow_lock);
         }
 
         /* Link previous overflow page's 'next' to this new page's logical index.

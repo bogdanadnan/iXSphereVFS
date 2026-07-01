@@ -271,14 +271,15 @@ void cache_flush_page(StorageBackend* sb, int64_t logical_page) {
         ssize_t n = pread(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
         if (n == PAGE_HEADER_SIZE) {
             ph.checksum = crc;
-            pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
-            pwrite(sb->fd, e->payload, (size_t)sb->page_size,
-                   offset + PAGE_HEADER_SIZE);
+            ssize_t w1 = pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
+            ssize_t w2 = pwrite(sb->fd, e->payload, (size_t)sb->page_size,
+                                offset + PAGE_HEADER_SIZE);
+            if (w1 == PAGE_HEADER_SIZE && w2 == sb->page_size) {
+                e->dirty = 0;
+                cache->dirty_count--;
+            }
         }
     }
-
-    e->dirty = 0;
-    cache->dirty_count--;
 
     spin_unlock(&cache->bucket_locks[bkt]);
 }
@@ -308,13 +309,15 @@ void cache_flush_all(StorageBackend* sb) {
                         ssize_t n = pread(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
                         if (n == PAGE_HEADER_SIZE) {
                             ph.checksum = crc;
-                            pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
-                            pwrite(sb->fd, e->payload, (size_t)sb->page_size,
-                                   offset + PAGE_HEADER_SIZE);
+                            ssize_t w1 = pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
+                            ssize_t w2 = pwrite(sb->fd, e->payload, (size_t)sb->page_size,
+                                                offset + PAGE_HEADER_SIZE);
+                            if (w1 == PAGE_HEADER_SIZE && w2 == sb->page_size) {
+                                e->dirty = 0;
+                                cache->dirty_count--;
+                            }
                         }
                     }
-                    e->dirty = 0;
-                    cache->dirty_count--;
                 }
                 e = next;
             }

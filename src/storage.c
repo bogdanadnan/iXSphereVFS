@@ -223,13 +223,27 @@ static int mount_existing(StorageBackend* sb) {
  * --------------------------------------------------------------------------- */
 
 int ensure_mirror_arrays(StorageBackend* sb, int min_cap) {
+    /* Fast path: already big enough */
     if (sb->mirror_cap >= min_cap) return 0;
+
+    /* Slow path: acquire lock for realloc */
+    while (__sync_lock_test_and_set(&sb->mirror_lock, 1)) { /* spin */ }
+
+    /* Double-check after acquiring lock (another thread may have grown) */
+    if (sb->mirror_cap >= min_cap) {
+        __sync_lock_release(&sb->mirror_lock);
+        return 0;
+    }
+
     int new_cap = sb->mirror_cap ? sb->mirror_cap * 2 : 256;
     while (new_cap < min_cap) new_cap *= 2;
 
     int32_t*  mp = realloc(sb->mirror_pages, (size_t)new_cap * sizeof(int32_t));
     uint32_t* gn = realloc(sb->generations,  (size_t)new_cap * sizeof(uint32_t));
-    if (!mp || !gn) return -1;
+    if (!mp || !gn) {
+        __sync_lock_release(&sb->mirror_lock);
+        return -1;
+    }
 
     /* Initialize new entries */
     for (int i = sb->mirror_cap; i < new_cap; i++) {
@@ -239,7 +253,11 @@ int ensure_mirror_arrays(StorageBackend* sb, int min_cap) {
 
     sb->mirror_pages = mp;
     sb->generations  = gn;
+    /* Memory barrier: ensure arrays are visible before updating cap */
+    __sync_synchronize();
     sb->mirror_cap   = new_cap;
+
+    __sync_lock_release(&sb->mirror_lock);
     return 0;
 }
 
@@ -437,9 +455,8 @@ int storage_acquire(StorageBackend* sb, int64_t logical_page) {
         if (indir_ensure_capacity(sb, needed) != 0) return 0;
     }
 
-    /* CAS check: entry must be 0 */
-    int64_t current = indir_lookup(sb, logical_page);
-    if (current != 0) return 0;  /* already allocated */
+    /* Fast check: if already allocated, return false */
+    if (indir_lookup(sb, logical_page) != 0) return 0;
 
     /* CAS advance physical_tail */
     int64_t old_tail = sb->physical_tail;
@@ -449,8 +466,12 @@ int storage_acquire(StorageBackend* sb, int64_t logical_page) {
         new_tail = old_tail + phys_record_size(sb);
     }
 
-    /* CAS-set the entry from 0 to old_tail */
-    indir_set(sb, logical_page, old_tail);
+    /* CAS-set the entry from 0 to old_tail.
+       try_claim_entry does atomic CAS, not plain store.
+       If CAS fails (another thread claimed it), the physical slot is a zombie. */
+    if (!try_claim_entry(sb, logical_page, old_tail)) {
+        return 0;  /* another thread claimed it */
+    }
 
     /* Update total_pages */
     int64_t new_total = logical_page + 1;

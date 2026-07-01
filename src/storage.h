@@ -51,6 +51,7 @@ typedef struct {
     int64_t*  overflow_logical; /* logical page index for each overflow page */
     int       overflow_count;  /* number of overflow pages */
     int       overflow_cap;    /* allocated capacity */
+    volatile int overflow_lock; /* protects realloc of overflow arrays */
 
     int64_t   entries_per_overflow; /* (page_size / 8) - 1 */
 } IndirectionTable;
@@ -111,6 +112,7 @@ typedef struct {
     int32_t*         mirror_pages;   /* mirror_page per logical page, -1 = none */
     uint32_t*        generations;    /* generation per logical page */
     int              mirror_cap;     /* allocated capacity */
+    volatile int     mirror_lock;    /* protects realloc in ensure_mirror_arrays */
 } StorageBackend;
 
 /* ---------------------------------------------------------------------------
