@@ -421,11 +421,11 @@ in the superblock.
 A `VirtualPtr` is an 8-byte packed value referencing a pool entry:
 
 ```
-VirtualPtr = (poolPageIndex << 8) | (slotIndex & 0xFF)
+VirtualPtr = (poolPageIndex << 16) | (slotIndex & 0xFFFF)
 ```
 
-- Bits 0–7: slot index within the pool page (0–254)
-- Bits 8–63: logical page index of the pool page
+- Bits 0–15: slot index within the pool page (0–65535)
+- Bits 16–63: logical page index of the pool page
 
 `VirtualPtr` of 0 means null. Logical page 0 is the StorageBackend header
 and is never a pool page, so `(page=0, slot=0)` is never a valid reference.
