@@ -78,6 +78,107 @@ build order that works:
 9. **Build 2.6 (Bootstrap & Mount).** `storage_open` and `storage_close`
    wrapping all the above. This is the public API that Phase 3+ will call.
 
+**8. `writeback_threshold` set to 2 for testing.**
+Line 86: `cache->writeback_threshold = 2` — this is a debug value. Should be
+computed as a percentage of `max_entries` (e.g., `max_entries / 4`).
+Production default: 8,192 pages at 256 MB cache.
+
+---
+
+## Review Iteration 2a (2026-07-01)
+
+Findings after Iteration 1 fixes were applied. Code review of the updated
+implementation against the spec.
+
+### Critical
+
+**1. Flush order - header not using lazy mirror.**
+`storage_flush` lines 527-541 write the header page directly via raw pwrite after
+`cache_flush_all`, bypassing lazy mirror. While the ordering is correct (header last),
+the direct write to the header page without mirror protection creates a single-copy
+risk window. The header page should use lazy mirror writes for crash safety like all
+other pages. The current implementation writes the header with:
+- `pwrite(&ph, ...)` — raw write without mirror
+- `pwrite(header_buf, ...)` — raw payload write without mirror
+
+Fix: The header page should be written through the lazy mirror mechanism or the
+header's indirection entries should be mirrored separately.
+
+**2. Overflow chain append not atomic.**
+`indirection.c:181-189` - When `indir_ensure_capacity` adds a new overflow page
+to the chain, it modifies `sb->indirection_head` and the previous overflow page's
+`next` field non-atomically. The spec (§3.8) requires CAS-append for the overflow
+chain. Between:
+- Line 183: `vfs_wr8((uint8_t*)prev, 0, new_logical);`
+- Line 186: `sb->indirection_head = new_logical;`
+
+Another thread could read an inconsistent state. Fix: Use CAS to update the `next`
+pointer and link the chain atomically.
+
+**3. Page size hardcoded in page_buf.h.**
+`page_buf.h:10,53,60,69` - `VFS_PAGE_SIZE` (8192) is hardcoded in:
+- `VFS_BOUNDS_CHECK` macro (line 10)
+- `vfs_zero_page` function (line 53)
+- `vfs_zero_page_fast` function (line 60)
+- `vfs_copy_page` function (line 69)
+
+This violates the non-negotiable constraint from §3.1 that "page_size is NOT
+hardcoded. All code must use `sb->page_size` read from the StorageBackend header
+at mount time." Any buffer operations in the StorageBackend must use the dynamic
+page_size, not the compile-time constant.
+
+### Medium
+
+**4. cache_flush_page bypasses lazy mirror.**
+`page_cache.c:257-284` (`cache_flush_page`) writes directly to disk using `pwrite`
+instead of using `mirror_write`. This creates a window where a torn page write could
+corrupt data during flush. While the ordered flush + superblock-commit model
+provides primary protection, this still violates the spec's requirement that all
+page writes go through the lazy mirror mechanism.
+
+Fix: Either use `mirror_write` for flush operations, or document that flush-level
+crash safety relies on ordering rather than mirror protection (per Issue #3 in
+Iteration 1, this is optional but incomplete).
+
+**5. indir_set missing priority for cache_mark_dirty.**
+`indirection.c:97` calls `cache_mark_dirty(&sb->cache, 0, FLUSH_PRIO_SUPERBLOCK)`
+after setting an indirection entry. However, the overflow page modification at
+line 107 does NOT mark the overflow page dirty. If an overflow page is modified,
+it should be marked dirty with `FLUSH_PRIO_INDIR` priority.
+
+### Low
+
+**6. vfs_zero_page_fast page size assumption.**
+`page_buf.h:60` loops `for (int i = 0; i < VFS_PAGE_SIZE; i += 16)` which
+assumes 8192-byte pages. If called with a different page size buffer, this will
+incorrectly zero only 8192 bytes or overstep bounds. The function should either
+take a length parameter or be removed/updated to match the VFS_PAGE_SIZE contract.
+
+---
+
+## Review Iteration 2b — Code Verification (2026-07-01)
+
+Verified all 6 Iteration 2a findings against actual source. All confirmed.
+Additionally verified Iteration 1 resolution status — 6 of 8 issues fixed.
+
+**Iteration 1 resolution:**
+
+| # | Issue | Status |
+|---|-------|--------|
+| 1 | Flush order (header first) | Fixed — header now after `cache_flush_all` |
+| 2 | Global alloc lock | Fixed — removed, replaced with CAS-based `try_claim_entry` |
+| 3 | Raw pwrite during flush | Not fixed — same as 2a #4, acknowledged as optional |
+| 4 | Priority hardcoded to 0 | Fixed — `storage_write` now takes `priority` parameter |
+| 5 | TOCTOU in cache_mark_dirty | Fixed — lock held across find+modify |
+| 6 | Double alloc in storage_read | Fixed — `cache_insert` takes ownership of clean buffers |
+| 7 | Hardcoded 8192 in mount | Fixed — reads page_size first, CRC over full payload |
+| 8 | writeback_threshold = 2 | Fixed — changed to `max_entries / 4` |
+
+**Outstanding (2a + 1 residual): 7 issues.**
+Priorities: #2 (overflow chain CAS) blocks concurrent allocate correctness.
+#3 (hardcoded page_size) blocks non-8192 page sizes. Others are crash-safety
+hardening or edge cases.
+
 ---
 
 ## File Organization
