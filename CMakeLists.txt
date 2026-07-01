@@ -8,16 +8,23 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic")
 add_library(ixsphere_vfs STATIC
     src/vfs.c
     src/crc32c.c
+    src/storage.c
+    src/indirection.c
+    src/lazy_mirror.c
+    src/page_cache.c
 )
 
-target_include_directories(ixsphere_vfs PUBLIC 
+target_include_directories(ixsphere_vfs PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 enable_testing()
-add_executable(vfs_test
-    test/test_main.c
-)
+
+add_executable(vfs_test test/test_main.c)
 target_link_libraries(vfs_test ixsphere_vfs pthread)
 add_test(NAME vfs_test COMMAND vfs_test)
+
+add_executable(test_storage test/test_storage.c)
+target_link_libraries(test_storage ixsphere_vfs pthread)
+add_test(NAME test_storage COMMAND test_storage)
