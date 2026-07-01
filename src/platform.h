@@ -199,9 +199,16 @@ VFS_INLINE void vfs_atomic_store_ptr(void** ptr, void* val) {
 }
 
 VFS_INLINE void* vfs_atomic_add_ptr(void** ptr, intptr_t delta) {
-    void* old = (void*)InterlockedCompareExchangePointer((volatile void**)ptr, NULL, NULL);
-    InterlockedExchangePointer((volatile void**)ptr, (void*)((char*)old + delta));
-    return (void*)((char*)old + delta);
+    void* expected = (void*)InterlockedCompareExchangePointer((volatile void**)ptr, NULL, NULL);
+    void* desired;
+    void* actual;
+    do {
+        desired = (void*)((char*)expected + delta);
+        actual = (void*)InterlockedCompareExchangePointer((volatile void**)ptr, desired, expected);
+        if (actual == expected) break;
+        expected = actual;   /* re-read on failure */
+    } while (1);
+    return desired;
 }
 
 VFS_INLINE void* vfs_cas_ptr(void** ptr, void* expected, void* desired) {

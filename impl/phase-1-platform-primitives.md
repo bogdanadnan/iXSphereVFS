@@ -346,7 +346,40 @@ Before moving to Phase 2, every item must be checked:
 - [ ] `vfs_error_string(VFS_ERR_NOTFOUND)` returns `"Not found"`
 - [ ] No `malloc`/`free` in production code (test harness only)
 - [ ] `include/ixsphere_vfs.h` is the only public header
-- [ ] `src/platform.h` is included by every `.c` file
+---
+
+## Review Iteration 2 (2026-07-01)
+
+All 6 issues from Iteration 1 have been addressed. Hardware CRC32C paths added,
+table init made thread-safe, zero_page_fast added, bounds checks in debug mode,
+MSVC add_ptr uses CAS loop, Windows thread support in test harness.
+
+### Critical
+
+**7. aarch64 CRC32C intrinsic API mismatch.**
+`crc32c.c` lines 95 and 98 pass raw pointers to `__crc32cd` and `__crc32cw`.
+These ARMv8 intrinsics expect `uint64_t` and `uint32_t` values, not pointers:
+
+```c
+// WRONG (fails to compile on aarch64):
+crc = __crc32cd(crc, data + i);
+crc = __crc32cw(crc, data + i);
+
+// CORRECT:
+crc = __crc32cd(crc, *(const uint64_t*)(data + i));
+crc = __crc32cw(crc, *(const uint32_t*)(data + i));
+```
+
+Fix: dereference the pointer with an appropriate cast. Use `memcpy` for
+unaligned-safe access (data may not be 8-byte aligned). Same pattern as the
+x86_64 path already uses.
+
+### Low
+
+**8. `immintrin.h` vs `emmintrin.h`.**
+`page_buf.h` line 56 includes `<immintrin.h>` for `_mm_setzero_si128`. This
+pulls in all Intel intrinsics headers. For SSE2-only code, `<emmintrin.h>` is
+sufficient and compiles faster. Not a correctness issue.
 
 ---
 
