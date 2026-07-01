@@ -92,10 +92,14 @@ static uint32_t vfs_crc32c_hw_arm(const uint8_t* data, size_t len) {
     size_t i = 0;
 
     for (; i + 8 <= len; i += 8) {
-        crc = __crc32cd(crc, data + i);
+        uint64_t chunk;
+        memcpy(&chunk, data + i, 8);
+        crc = __crc32cd(crc, chunk);
     }
     for (; i + 4 <= len; i += 4) {
-        crc = __crc32cw(crc, data + i);
+        uint32_t chunk;
+        memcpy(&chunk, data + i, 4);
+        crc = __crc32cw(crc, chunk);
     }
     for (; i < len; i++) {
         crc = __crc32cb(crc, data[i]);

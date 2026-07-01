@@ -53,7 +53,7 @@ VFS_INLINE void vfs_zero_page(uint8_t* buf) {
 }
 
 #if VFS_ARCH_X86_64 && VFS_COMPILER_GCC
-    #include <immintrin.h>
+    #include <emmintrin.h>  /* SSE2 — _mm_setzero_si128 / _mm_storeu_si128 */
 
     VFS_INLINE void vfs_zero_page_fast(uint8_t* buf) {
         __m128i zero = _mm_setzero_si128();
