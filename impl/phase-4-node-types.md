@@ -405,3 +405,58 @@ void nodes_read_mapperentry(const uint8_t* slot, uint32_t* fromEpoch,
 - [ ] MapperEntry: all three flag states writable and readable
 - [ ] Fresh zero-filled slot → safe to read as any type (all zeros is valid
   initial state for every type: nextPtr=0, etc.)
+
+---
+
+## Dependencies
+
+| Dependency | Phase | Used For |
+|------------|-------|----------|
+| `pool_alloc` | Phase 3 | Allocating pool slots for node type tests |
+| `pool_resolve` | Phase 3 | Reading back written node data |
+| `VFS_VPTR_MAKE/PAGE/SLOT` | Phase 3 | VirtualPtr encoding in all helpers |
+| `vfs_rd2/rd4/rd8/wr2/wr4/wr8` | Phase 1 | Serializing all fields |
+
+Phase 4 has no dependencies on Phase 5 (Tree Operations) or Phase 6 (Epoch System).
+All 10 workloads can be developed and tested independently given a working Pool.
+
+## Staging Guidance
+
+All workloads are independent — they are pure data structure definitions.
+Build order is any, but recommended:
+
+1. 4.1 + 4.2 (DirNode, FileNode) — simplest, only 2 fields each
+2. 4.3 to 4.6 (DirContent, FileContent, PageNode, VersionPage) — the core chain types
+3. 4.7 + 4.8 (FileSize, NameEntry) — file metadata
+4. 4.9 + 4.10 (TouchedFile, MapperEntry) — epoch system types
+
+**Note on Workload 4.8 (NameEntry):** The write helper `nodes_write_name` takes
+a `Pool*` and calls `pool_alloc` to allocate chained slots for long names.
+This is the only workload that depends on a fully functional Pool (Phase 3).
+All other workloads write into caller-provided slots — they only need Phase 1
+serialization helpers.
+
+**Note on nodeId assignment:** DirNode and FileNode have a `nodeId` field but
+Phase 4 does NOT assign it. The `nodeId` is passed as a parameter to the write
+helper. The caller (Phase 5) is responsible for atomically incrementing
+`superblock.nextNodeId` and passing the assigned value.
+
+## Phase 3 Debt Check
+
+| Item | Status |
+|------|--------|
+| VirtualPtr unsigned cast (Iteration 1a #4) | ✅ Acceptable |
+| Slot cap at 255 (Iteration 1b #A) | ✅ Raised to 65535 |
+| `nextFreeSlot` in CAS retry (Iteration 1a #7) | ✅ Fixed |
+| Debug assert in pool_state_pack (Iteration 1a #5) | ✅ Added |
+| Pinning race fix (Iteration 2b) | ✅ Fixed |
+| No blocking debt carried into Phase 4 | ✅ |
+
+## Gaps Noted
+
+| # | Gap | Severity | Resolution |
+|---|-----|----------|------------|
+| 1 | No explicit dependency list | Low | Added above |
+| 2 | `nodeId` assignment not clarified as caller's responsibility | Low | Noted above |
+| 3 | Zero-length name overlaps with tombstone sentinel (`namePtr=0`) | Low | Document: zero-length names are invalid; caller must ensure `namePtr != 0` for live entries |
+| 4 | No staging/build order guidance | Low | Added above |
