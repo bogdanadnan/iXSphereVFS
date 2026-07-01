@@ -419,10 +419,55 @@ void storage_flush(StorageBackend* sb, int64_t logical_page);
 2. If `logical_page >= 0`: write only that page (no fsync). Mark it clean.
 
 ### Write-Back (Automatic)
-- Only flush priority 0 (data pages). Pool, indirection, and superblock pages
-  are NEVER write-backed — they wait for explicit `Flush`.
-- Triggered when dirty page count crosses a configurable threshold.
-- Non-blocking. Does not fsync. Does not mark pages clean.
+
+Write-back is an optional, non-blocking mechanism that reduces the data loss
+window between explicit `Flush` calls. It is NOT a replacement for Flush.
+
+**What triggers it:**
+- A global dirty page counter (`dirty_count`) is incremented on every `storage_write`
+  and decremented on every `storage_flush` (when pages are written to disk).
+- When `dirty_count >= dirty_threshold`, write-back fires. Default threshold:
+  25% of the cache budget (e.g., 8,192 pages at 256 MB cache).
+- Write-back runs in a background thread or is checked inline on `storage_write`.
+  It must NOT block the calling thread.
+- After write-back, `dirty_count` is unchanged — pages remain dirty in the cache.
+  Only `Flush` marks them clean.
+
+**What gets written:**
+- Only flush priority 0 pages (data pages). Priority 1 (pool), 2 (indirection),
+  and 3 (superblock) pages are NEVER write-backed.
+- Write-back follows the same ordering as Flush: priority 0 pages are written
+  to disk in any order (all same priority). No fsync is called.
+- This is safe because data pages contain only user content. There are no
+  epoch-tagged VersionPage entries, no Directory entries, no chain pointers.
+  Writing a data page early cannot corrupt metadata.
+
+**How priorities are set:**
+- The VFS layer (Phase 5+) sets the flush priority in the PageHeader `flags`
+  bits 0–1 at allocation time. The StorageBackend never decides the priority.
+- At `storage_write` time, the StorageBackend reads `flags` bits 0–1 from the
+  PageHeader and assigns the page to the correct per-priority dirty list.
+- Priority values:
+  - 0 = data page (user file content)
+  - 1 = pool page (all metadata)
+  - 2 = indirection page (logical-to-physical mapping)
+  - 3 = superblock
+
+**Why only priority 0:**
+- Data pages contain no references to other pages. Writing them early is safe.
+- Pool pages may contain VersionPage entries with `dataPage` fields pointing
+  to data pages. If pool pages are written before their referenced data pages,
+  a crash could leave dangling references.
+- Indirection pages and superblock are structural — writing them early could
+  expose an inconsistent state after a crash.
+- By restricting write-back to priority 0, we guarantee that only self-contained
+  payloads are flushed early. Everything else waits for the ordered `Flush`.
+
+**Write-back order (simplified Flush):**
+1. Collect all dirty priority-0 pages from the per-priority dirty list.
+2. For each page: read the indirection entry to get the physical offset, write
+   the payload + PageHeader to disk. Do NOT fsync.
+3. Do NOT mark pages clean. Do NOT decrement `dirty_count`.
 
 ### Acceptance
 - [ ] Write page 5 with a known payload → Read page 5 → same payload
