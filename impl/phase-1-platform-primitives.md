@@ -347,3 +347,52 @@ Before moving to Phase 2, every item must be checked:
 - [ ] No `malloc`/`free` in production code (test harness only)
 - [ ] `include/ixsphere_vfs.h` is the only public header
 - [ ] `src/platform.h` is included by every `.c` file
+
+---
+
+## Review Iteration 1 (2025-07-01)
+
+Findings from first implementation attempt. Fix before marking Phase 1 complete.
+
+### Critical
+
+**1. CRC32C missing hardware paths.**
+`src/crc32c.c` implements only the software fallback (256-entry lookup table).
+The spec requires hardware-accelerated paths:
+- x86_64: SSE4.2 `_mm_crc32_u64` / `_mm_crc32_u32` / `_mm_crc32_u8`
+- aarch64: ARMv8 CRC32 `__crc32cd` / `__crc32cw` / `__crc32cb`
+
+Add them under `#if VFS_ARCH_X86_64` and `#elif VFS_ARCH_AARCH64` guards.
+The software path stays as `#else` fallback. Expected speedup: ~100× on 8KB pages.
+
+### Medium
+
+**2. CRC32C table init is not thread-safe.**
+`crc32c.c` uses `static int s_table_ready` to guard one-time table initialization.
+Two threads calling `vfs_crc32c` concurrently race on the flag. Fix: use C11
+`call_once` or initialize the table at library load time (a `__attribute__((constructor))`
+function, or a static initializer that precomputes the table at compile time).
+
+**3. Missing `vfs_zero_page_fast`.**
+`page_buf.h` provides `vfs_zero_page` via `memset` but not the SSE2-accelerated
+`vfs_zero_page_fast` required by the spec. Add it under `#if VFS_ARCH_X86_64` using
+`_mm_setzero_si128()` with 128-bit stores in a loop. Fall back to `vfs_zero_page` on
+other architectures.
+
+### Low
+
+**4. No debug-mode bounds checks.**
+`page_buf.h` includes `<assert.h>` but none of the read/write helpers assert bounds.
+Add `assert(offset + sizeof(type) <= VFS_PAGE_SIZE)` in each helper, conditionally
+compiled under `#ifndef NDEBUG`.
+
+**5. MSVC `vfs_atomic_add_ptr` has a race.**
+`platform.h` lines 201-204 implement pointer add via read + manual add + exchange.
+This is not atomic if another thread modifies the pointer between steps. Use a CAS
+retry loop or `InterlockedExchangeAdd` (if available for pointer-sized values).
+
+**6. `pthread_create` in test — Windows portability.**
+`test/test_main.c` line 119 uses `pthread_create`. On Windows this requires
+pthreads-win32 or the MSVC C11 threads library. Option: add a platform wrapper
+`vfs_thread_create` in `platform.h` that maps to `pthread_create` on Unix and
+`_beginthreadex` on Windows. Or use C11 `thrd_create` from `<threads.h>`.
