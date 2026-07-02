@@ -92,46 +92,36 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
                 (void)dc_epoch; (void)dc_namePtr;
 
                 if (dc_child == tf_nodeId) {
-                    /* Found the file — walk its version chains */
-                    uint8_t* file_slot = pool_resolve(&ctx->pool, dc_childPtr);
-                    if (!file_slot) break;
+                    /* Found the file — walk its version chains using
+                       tree_resolve_page to get PageNode slots. */
+                    for (int64_t lp = 0; ; lp++) {
+                        uint8_t* pn_slot = tree_resolve_page(ctx, dc_childPtr,
+                                                              lp, 0);
+                        if (!pn_slot) break;  /* beyond file growth */
 
-                    int64_t fc_vp2 = vfs_rd8(file_slot, FILENODE_OFF_HEADPTR);
-                    while (fc_vp2 != 0) {
-                        uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp2);
-                        if (!fc_slot) break;
+                        int64_t vp = vfs_atomic_load_i64(
+                            (const int64_t*)(pn_slot + PAGENODE_OFF_VERSIONROOT));
+                        int has_snapshot = 0;
+                        int has_live = 0;
 
-                        int64_t pn_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
-                        while (pn_vp != 0) {
-                            uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
-                            if (!pn_slot) break;
+                        while (vp != 0) {
+                            uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
+                            if (!vp_slot) break;
+                            uint32_t v_epoch;
+                            int64_t v_dataPage, v_next;
+                            nodes_read_versionpage(vp_slot, &v_epoch,
+                                                    &v_dataPage, &v_next);
+                            (void)v_dataPage;
 
-                            int64_t vp = vfs_rd8(pn_slot, PAGENODE_OFF_VERSIONROOT);
-                            int has_snapshot = 0;
-                            int has_live = 0;
+                            if (v_epoch == s_epoch) has_snapshot = 1;
+                            if (v_epoch > s_epoch && v_epoch % 2 == 0)
+                                has_live = 1;
 
-                            while (vp != 0) {
-                                uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
-                                if (!vp_slot) break;
-                                uint32_t v_epoch;
-                                int64_t v_dataPage, v_next;
-                                nodes_read_versionpage(vp_slot, &v_epoch,
-                                                        &v_dataPage, &v_next);
-                                (void)v_dataPage;
-
-                                if (v_epoch == s_epoch) has_snapshot = 1;
-                                if (v_epoch > s_epoch && v_epoch % 2 == 0)
-                                    has_live = 1;
-
-                                vp = v_next;
-                            }
-
-                            if (has_snapshot && has_live)
-                                return VFS_ERR_CONFLICT;
-
-                            pn_vp = vfs_rd8(pn_slot, PAGENODE_OFF_NEXTPTR);
+                            vp = v_next;
                         }
-                        fc_vp2 = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
+
+                        if (has_snapshot && has_live)
+                            return VFS_ERR_CONFLICT;
                     }
                 }
                 walk_vp = dc_next;
