@@ -518,6 +518,84 @@ static void test_nameentry_24byte(void) {
     name_teardown(pool);
 }
 
+static void test_nameentry_48byte(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    /* Exactly 48 bytes = 2 full slots */
+    const char* name48 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV";
+    CHECK_EQ(strlen(name48), 48);
+
+    int64_t first_vp;
+    int n = nodes_write_name(pool, name48, &first_vp);
+    CHECK_EQ(n, 2);
+    CHECK(first_vp != VFS_VPTR_NULL);
+
+    char buf[128];
+    int len = nodes_read_name(pool, first_vp, buf, sizeof(buf));
+    CHECK_EQ(len, 48);
+    CHECK_EQ(strcmp(buf, name48), 0);
+
+    name_teardown(pool);
+}
+
+static void test_nameentry_unicode(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    const char* uname = "h\u00e9llo w\u00f6rld";
+    size_t expected_len = strlen(uname);
+
+    int64_t first_vp;
+    int n = nodes_write_name(pool, uname, &first_vp);
+    CHECK(n >= 1);
+    CHECK(first_vp != VFS_VPTR_NULL);
+
+    char buf[128];
+    int len = nodes_read_name(pool, first_vp, buf, sizeof(buf));
+    CHECK_EQ(len, (int)expected_len);
+    CHECK_EQ(strcmp(buf, uname), 0);
+
+    name_teardown(pool);
+}
+
+static void test_nameentry_embedded_null(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    const char ename[] = {'a', 'b', '\0', 'c', 'd', '\0'};
+    int64_t first_vp;
+    int n = nodes_write_name(pool, ename, &first_vp);
+    CHECK_EQ(n, 1);
+
+    char buf[64];
+    int len = nodes_read_name(pool, first_vp, buf, sizeof(buf));
+    CHECK_EQ(len, 2);
+    CHECK_EQ(buf[0], 'a');
+    CHECK_EQ(buf[1], 'b');
+    CHECK_EQ(buf[2], '\0');
+
+    name_teardown(pool);
+}
+
+static void test_nameentry_maxlen_boundary(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    const char* name50 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX";
+    int64_t first_vp;
+    int n = nodes_write_name(pool, name50, &first_vp);
+    CHECK_EQ(n, 3);
+
+    char small_buf[10];
+    int len = nodes_read_name(pool, first_vp, small_buf, 10);
+    CHECK_EQ(len, 9);
+    CHECK_EQ(strncmp(small_buf, "abcdefghi", 9), 0);
+    CHECK_EQ(small_buf[9], '\0');
+
+    name_teardown(pool);
+}
+
 static void test_nameentry_empty(void) {
     Pool* pool = name_setup();
     CHECK(pool != NULL);
@@ -561,6 +639,10 @@ int main(void) {
     test_nameentry_short();
     test_nameentry_50byte();
     test_nameentry_24byte();
+    test_nameentry_48byte();
+    test_nameentry_unicode();
+    test_nameentry_embedded_null();
+    test_nameentry_maxlen_boundary();
     test_nameentry_empty();
 
     name_cleanup();
