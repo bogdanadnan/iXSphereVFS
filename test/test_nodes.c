@@ -387,6 +387,63 @@ static void test_filesize_chain(void) {
     CHECK_EQ(nextPtr, 0);
 }
 
+/* ---------------------------------------------------------------------------
+ * TouchedFile tests (Workload 4.9)
+ * --------------------------------------------------------------------------- */
+
+static void test_touchedfile(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Single TouchedFile {epoch=3, nodeId=7} */
+    nodes_write_touchedfile(slot, 3, 7, 0);
+
+    uint32_t epoch, nodeId;
+    int64_t nextPtr;
+    nodes_read_touchedfile(slot, &epoch, &nodeId, &nextPtr);
+
+    CHECK_EQ(epoch, 3u);
+    CHECK_EQ(nodeId, 7u);
+    CHECK_EQ(nextPtr, 0);
+
+    /* Verify reserved bytes 16-31 are zero */
+    int all_zero = 1;
+    for (int i = 16; i < 32; i++) {
+        if (slot[i] != 0) { all_zero = 0; break; }
+    }
+    CHECK(all_zero);
+}
+
+/* ---------------------------------------------------------------------------
+ * MapperEntry tests (Workload 4.10)
+ * --------------------------------------------------------------------------- */
+
+static void test_mapperentry(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Commit mapping: {from=1, to=2, traversalApply=true} */
+    nodes_write_mapperentry(slot, 1, 2, MAPPER_FLAG_TRAVERSAL_APPLY, 0);
+
+    uint32_t fromEpoch, toEpoch;
+    uint16_t flags;
+    int64_t nextPtr;
+    nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &nextPtr);
+
+    CHECK_EQ(fromEpoch, 1u);
+    CHECK_EQ(toEpoch, 2u);
+    CHECK_EQ(flags, MAPPER_FLAG_TRAVERSAL_APPLY);
+    CHECK_EQ(nextPtr, 0);
+
+    /* Soft-delete mapping: {from=3, to=2, flags=0} */
+    memset(slot, 0, sizeof(slot));
+    nodes_write_mapperentry(slot, 3, 2, 0, 0);
+    nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &nextPtr);
+    CHECK_EQ(fromEpoch, 3u);
+    CHECK_EQ(toEpoch, 2u);
+    CHECK_EQ(flags, 0);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -407,6 +464,9 @@ int main(void) {
 
     test_filesize();
     test_filesize_chain();
+
+    test_touchedfile();
+    test_mapperentry();
 
     printf("test_nodes: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

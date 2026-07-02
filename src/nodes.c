@@ -138,3 +138,44 @@ void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
     *fileSize   = vfs_rd8(slot, FILESIZE_OFF_FILESIZE);
     *nextPtr    = vfs_rd8(slot, FILESIZE_OFF_NEXTPTR);
 }
+
+/* ---------------------------------------------------------------------------
+ * TouchedFile (Workload 4.9)
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_touchedfile(uint8_t* slot, uint32_t epoch, uint32_t nodeId,
+                             int64_t nextPtr) {
+    vfs_wr4(slot, TOUCHEDFILE_OFF_EPOCH, (int32_t)epoch);
+    vfs_wr4(slot, TOUCHEDFILE_OFF_NODEID, (int32_t)nodeId);
+    vfs_wr8(slot, TOUCHEDFILE_OFF_NEXTPTR, nextPtr);
+    memset(slot + 16, 0, 16);
+}
+
+void nodes_read_touchedfile(const uint8_t* slot, uint32_t* epoch,
+                            uint32_t* nodeId, int64_t* nextPtr) {
+    *epoch  = (uint32_t)vfs_rd4(slot, TOUCHEDFILE_OFF_EPOCH);
+    *nodeId = (uint32_t)vfs_rd4(slot, TOUCHEDFILE_OFF_NODEID);
+    *nextPtr = vfs_rd8(slot, TOUCHEDFILE_OFF_NEXTPTR);
+}
+
+/* ---------------------------------------------------------------------------
+ * MapperEntry (Workload 4.10)
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_mapperentry(uint8_t* slot, uint32_t fromEpoch, uint32_t toEpoch,
+                             uint16_t flags, int64_t nextPtr) {
+    vfs_wr4(slot, MAPPER_OFF_FROMEPOCH, (int32_t)fromEpoch);
+    vfs_wr4(slot, MAPPER_OFF_TOEPOCH, (int32_t)toEpoch);
+    vfs_wr2(slot, MAPPER_OFF_FLAGS, (int16_t)flags);
+    memset(slot + 10, 0, 6);
+    vfs_wr8(slot, MAPPER_OFF_NEXTPTR, nextPtr);
+    memset(slot + 24, 0, 8);
+}
+
+void nodes_read_mapperentry(const uint8_t* slot, uint32_t* fromEpoch,
+                            uint32_t* toEpoch, uint16_t* flags, int64_t* nextPtr) {
+    *fromEpoch = (uint32_t)vfs_rd4(slot, MAPPER_OFF_FROMEPOCH);
+    *toEpoch   = (uint32_t)vfs_rd4(slot, MAPPER_OFF_TOEPOCH);
+    *flags     = (uint16_t)vfs_rd2(slot, MAPPER_OFF_FLAGS);
+    *nextPtr   = vfs_rd8(slot, MAPPER_OFF_NEXTPTR);
+}
