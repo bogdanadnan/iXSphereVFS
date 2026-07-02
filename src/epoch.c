@@ -93,8 +93,14 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
 
                 if (dc_child == tf_nodeId) {
                     /* Found the file — walk its version chains using
-                       tree_resolve_page to get PageNode slots. */
-                    for (int64_t lp = 0; ; lp++) {
+                       tree_resolve_page. Bound the loop by the file's page
+                       count to avoid tree_resolve_page's write-side effects
+                       (it creates new segments beyond existing pages). */
+                    int64_t fsize = vfs_file_size(vfs, dc_childPtr, s_epoch);
+                    int64_t num_pages = (fsize + VFS_PAGE_SIZE - 1) / VFS_PAGE_SIZE;
+                    if (num_pages < 1) num_pages = 1;
+
+                    for (int64_t lp = 0; lp < num_pages; lp++) {
                         uint8_t* pn_slot = tree_resolve_page(ctx, dc_childPtr,
                                                               lp, 0);
                         if (!pn_slot) break;  /* beyond file growth */
