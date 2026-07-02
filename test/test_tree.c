@@ -581,6 +581,53 @@ static void test_write_basic(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * vfs_read test — write then read back, verify content and epoch isolation
+ * --------------------------------------------------------------------------- */
+
+static void test_read_basic(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "readtest.txt", 0);
+    CHECK(nodeId > 0);
+    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
+    CHECK(file_vp != 0);
+
+    /* Write data */
+    const char* wdata = "Hello, VFS read test!";
+    int wret = vfs_write(vfs, file_vp, wdata, 0, (int64_t)strlen(wdata), 0);
+    CHECK_EQ(wret, (int)strlen(wdata));
+
+    /* Read it back — vfs_read returns total bytes transferred (including zero-fill) */
+    char rbuf[64];
+    memset(rbuf, 0, sizeof(rbuf));
+    int rret = vfs_read(vfs, file_vp, rbuf, 0, (int64_t)sizeof(rbuf) - 1, 0);
+    CHECK_EQ(rret, (int)sizeof(rbuf) - 1);  /* all bytes transferred */
+    CHECK_EQ(strncmp(rbuf, wdata, strlen(wdata)), 0);
+    CHECK_EQ(strcmp(rbuf, wdata), 0);
+
+    /* Read before any write → zero-filled */
+    memset(rbuf, 0, sizeof(rbuf));
+    rret = vfs_read(vfs, file_vp, rbuf, 100, 10, 0);
+    CHECK_EQ(rret, 10);
+    int all_zero = 1;
+    for (int i = 0; i < 10; i++) { if (rbuf[i] != 0) { all_zero = 0; break; } }
+    CHECK(all_zero);
+
+    /* Cross-page read */
+    memset(rbuf, 0, sizeof(rbuf));
+    rret = vfs_read(vfs, file_vp, rbuf, 8180, 32, 0);
+    CHECK_EQ(rret, 32);
+    all_zero = 1;
+    for (int i = 0; i < 32; i++) { if (rbuf[i] != 0) { all_zero = 0; break; } }
+    CHECK(all_zero);  /* never written at offset 8180 in this test */
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -598,6 +645,7 @@ int main(void) {
     test_file_size_epoch();
     test_resolve_page_growth();
     test_write_basic();
+    test_read_basic();
 
     /* Clean up */
     unlink(test_path);

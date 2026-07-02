@@ -756,3 +756,100 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
 
     return (int)count;
 }
+
+/* ---------------------------------------------------------------------------
+ * vfs_read — read data from a file at given offset and epoch
+ *
+ * Uses the read-rule: exact match at read_epoch, or highest even epoch
+ * < read_epoch.  Unwritten pages return zero-filled data.
+ * Returns bytes read, or -1 on error.
+ * --------------------------------------------------------------------------- */
+
+int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
+             int64_t count, int64_t epoch) {
+    if (!vfs || !vfs->ctx || !buf || count <= 0 || offset < 0) return -1;
+    TreeContext* ctx = vfs->ctx;
+
+    /* Apply epoch mapper to get read_epoch */
+    int64_t read_epoch = mapper_resolve(NULL, epoch);
+
+    /* Read FileNode, verify type */
+    uint8_t* file_slot = pool_resolve(&ctx->pool, file);
+    if (!file_slot) return -1;
+    if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
+        return -1;
+
+    int64_t page_size = VFS_PAGE_SIZE;
+    int64_t first_page = offset / page_size;
+    int64_t last_page  = (offset + count - 1) / page_size;
+    uint8_t* dst = (uint8_t*)buf;
+    int64_t remaining = count;
+
+    for (int64_t p = first_page; p <= last_page; p++) {
+        /* Resolve PageNode for this page */
+        uint8_t* pn_slot = tree_resolve_page(ctx, file, p, read_epoch);
+        if (!pn_slot) {
+            /* Page doesn't exist → zero-fill this portion */
+            int64_t page_offset = (p == first_page) ? offset % page_size : 0;
+            int64_t page_count = (int64_t)page_size - page_offset;
+            if (remaining < page_count) page_count = remaining;
+            memset(dst, 0, (size_t)page_count);
+            dst += page_count;
+            remaining -= page_count;
+            continue;
+        }
+
+        /* Compute intra-page offset and count */
+        int64_t page_offset = (p == first_page) ? offset % page_size : 0;
+        int64_t page_count = (int64_t)page_size - page_offset;
+        if (remaining < page_count) page_count = remaining;
+
+        /* Walk version chain applying read-rule */
+        int64_t vp = vfs_atomic_load_i64(
+            (const int64_t*)(pn_slot + PAGENODE_OFF_VERSIONROOT));
+        int64_t data_page = -1;
+        int found = 0;
+
+        while (vp != 0 && !found) {
+            uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
+            if (!vp_slot) break;
+            uint32_t vp_epoch;
+            int64_t vp_dataPage, vp_next;
+            nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+
+            if (vp_epoch == (uint32_t)read_epoch) {
+                /* Exact match — use it regardless of even/odd */
+                data_page = vp_dataPage;
+                found = 1;
+            } else if (vp_epoch < (uint32_t)read_epoch) {
+                if (vp_epoch % 2 == 0) {
+                    /* Even epoch < read_epoch — committed base, use it */
+                    data_page = vp_dataPage;
+                    found = 1;
+                }
+                /* Odd epoch < read_epoch — skip (unrelated snapshot) */
+            }
+            /* vp_epoch > read_epoch — skip, continue walking */
+
+            vp = vp_next;
+        }
+
+        if (found) {
+            /* Read data page and copy intra-page portion */
+            uint8_t* page_data = storage_read(ctx->sb, data_page);
+            if (page_data) {
+                memcpy(dst, page_data + page_offset, (size_t)page_count);
+            } else {
+                memset(dst, 0, (size_t)page_count);
+            }
+        } else {
+            /* No VersionPage found — page never written at this epoch */
+            memset(dst, 0, (size_t)page_count);
+        }
+
+        dst += page_count;
+        remaining -= page_count;
+    }
+
+    return (int)(dst - (uint8_t*)buf);
+}
