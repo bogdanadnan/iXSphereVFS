@@ -4,14 +4,13 @@
 #include "ixsphere_vfs.h"
 #include "storage.h"
 #include "pool.h"
+#include "page_array.h"
 
 #define VFS_PAGE_SIZE 8192
+typedef struct SegmentArray SegmentArray;
 
 /* ---------------------------------------------------------------------------
  * TreeContext — runtime state for one VFS instance
- *
- * Holds the StorageBackend, Pool allocator, superblock fields, and
- * configuration needed by all tree operations (Phase 5+).
  * --------------------------------------------------------------------------- */
 
 typedef struct {
@@ -31,6 +30,10 @@ typedef struct {
 
     /* Configuration (from StorageBackend header) */
     uint32_t segment_size;       /* pages per FileContent segment */
+
+    /* In-memory page array cache — one entry for the most recently accessed segment */
+    SegmentArray seg_array_cache;
+    int64_t      seg_array_fc_vp;  /* FileContent VirtualPtr that owns the cached array, 0 = invalid */
 } TreeContext;
 
 struct vfs_t {

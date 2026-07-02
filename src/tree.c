@@ -1,5 +1,6 @@
 /* Phase 5: Tree Operations — Bootstrap, Init, Superblock I/O */
 #include "tree.h"
+#include "page_array.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -136,6 +137,12 @@ int tree_init(TreeContext* ctx) {
 
 /* ---------------------------------------------------------------------------
  * Page Resolution — resolve a logical page to its PageNode
+ *
+ * Walks the FileContent chain to find the segment containing this page.
+ * Creates missing FileContent + PageNode entries on file growth.
+ * Builds the in-memory VirtualPtr array on first access to a segment.
+ *
+ * Returns a pointer to the PageNode slot (via pool_resolve), or NULL on error.
  * --------------------------------------------------------------------------- */
 
 uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
@@ -155,14 +162,16 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
     nodes_read_filenode(file_slot, NULL, &fc_vp, NULL, NULL);
 
     /* Walk FileContent chain to find the target segment */
+    int64_t prev_fc_vp = 0;  /* previous FileContent's VirtualPtr, for linking */
+
     for (int64_t i = 0; i <= segment_idx; i++) {
         if (fc_vp == VFS_VPTR_NULL) {
             /* Segment doesn't exist yet — file growth:
-               allocate new FileContent + PageNodes */
+               allocate new FileContent + all PageNodes */
             int64_t page_root_vp = VFS_VPTR_NULL;
             int64_t prev_pn_vp = 0;
 
-            /* Allocate PageNodes for this segment (reverse order) */
+            /* Allocate PageNodes in reverse order (last→first) */
             for (int64_t p = seg_size - 1; p >= 0; p--) {
                 int64_t pn_vp = pool_alloc(&ctx->pool);
                 if (pn_vp == VFS_VPTR_NULL) return NULL;
@@ -180,35 +189,46 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
             if (!fc_slot) return NULL;
             nodes_write_filecontent(fc_slot, page_root_vp, 0);
 
-            /* Link: if this is the first segment, CAS into FileNode.
-               Otherwise, CAS-append to previous FileContent's nextPtr. */
+            /* Link into chain */
             if (i == 0) {
-                /* For now, simple store — CAS will be needed for concurrency */
+                /* First segment — write into FileNode headPtr */
                 vfs_wr8(file_slot, FILENODE_OFF_HEADPTR, new_fc_vp);
-                fc_vp = new_fc_vp;
-            } else {
-                vfs_wr8(fc_slot, FILECONTENT_OFF_NEXTPTR, new_fc_vp);
-                fc_vp = new_fc_vp;
+            } else if (prev_fc_vp != 0) {
+                /* Subsequent segment — write into previous FC's nextPtr */
+                uint8_t* prev_slot = pool_resolve(&ctx->pool, prev_fc_vp);
+                if (prev_slot)
+                    vfs_wr8(prev_slot, FILECONTENT_OFF_NEXTPTR, new_fc_vp);
             }
-            break;
+
+            fc_vp = new_fc_vp;
         }
 
         uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
         if (!fc_slot) return NULL;
 
         if (i == segment_idx) {
-            /* Walk PageNode chain to build in-memory array (or find target) */
-            int64_t pn_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
-            for (int64_t p = 0; p < page_in_segment; p++) {
-                if (pn_vp == VFS_VPTR_NULL) return NULL;
-                uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
-                if (!pn_slot) return NULL;
-                pn_vp = vfs_rd8(pn_slot, PAGENODE_OFF_NEXTPTR);
+            /* Build in-memory page array if not cached for this segment */
+            if (ctx->seg_array_fc_vp != fc_vp) {
+                /* Destroy old cache if any */
+                if (ctx->seg_array_fc_vp != 0)
+                    segment_array_destroy(&ctx->seg_array_cache);
+
+                int64_t fc_page_root = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
+                int err = segment_array_build(&ctx->pool, fc_page_root,
+                                               seg_size, &ctx->seg_array_cache);
+                if (err != VFS_OK) {
+                    ctx->seg_array_fc_vp = 0;
+                    return NULL;
+                }
+                ctx->seg_array_fc_vp = fc_vp;
             }
-            if (pn_vp == VFS_VPTR_NULL) return NULL;
-            return pool_resolve(&ctx->pool, pn_vp);
+
+            /* Resolve the specific page via the array */
+            return segment_array_resolve(&ctx->pool, &ctx->seg_array_cache,
+                                         (uint32_t)page_in_segment);
         }
 
+        prev_fc_vp = fc_vp;
         fc_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
     }
 
@@ -428,6 +448,8 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
         }
         walk_vp = ce_next;
     }
+
+    (void)best_childPtr;
 
     if (!best_name_match) return VFS_ERR_NOTFOUND;
     return best_child;

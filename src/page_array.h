@@ -1,7 +1,9 @@
 #ifndef VFS_PAGE_ARRAY_H
 #define VFS_PAGE_ARRAY_H
 
-#include "vfs_internal.h"
+#include "ixsphere_vfs.h"
+#include "pool.h"
+#include "page_buf.h"
 #include "nodes.h"
 #include <stdbool.h>
 
@@ -15,7 +17,7 @@
  * One SegmentArray per segment.  The array is rebuilt after GC.
  * --------------------------------------------------------------------------- */
 
-typedef struct {
+typedef struct SegmentArray {
     int64_t* vptr_array;     /* malloc'd array of VirtualPtrs, size = segment_size */
     bool     built;           /* set to true after chain walk completes */
 } SegmentArray;
