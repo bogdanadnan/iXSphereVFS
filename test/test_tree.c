@@ -628,6 +628,189 @@ static void test_read_basic(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * vfs_write/read comprehensive tests
+ * --------------------------------------------------------------------------- */
+
+/* Write 200 bytes at offset 50 (cross-page), read back */
+static void test_write_cross_page(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "cross.txt", 0);
+    CHECK(nodeId > 0);
+    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
+    CHECK(file_vp != 0);
+
+    char data[200];
+    for (int i = 0; i < 200; i++) data[i] = (char)('A' + (i % 26));
+    int ret = vfs_write(vfs, file_vp, data, 50, 200, 0);
+    CHECK_EQ(ret, 200);
+
+    char rbuf[256];
+    memset(rbuf, 0, sizeof(rbuf));
+    ret = vfs_read(vfs, file_vp, rbuf, 0, 250, 0);
+    CHECK_EQ(ret, 250);
+
+    /* First 50 bytes are zero (never written) */
+    for (int i = 0; i < 50; i++) CHECK_EQ(rbuf[i], 0);
+    /* Bytes 50-249 match the data */
+    for (int i = 0; i < 200; i++) CHECK_EQ(rbuf[50 + i], data[i]);
+
+    vfs_close(vfs);
+}
+
+/* Same offset, same epoch: second write in-place (VersionPage count unchanged) */
+static void test_write_in_place(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "inplace.txt", 0);
+    CHECK(nodeId > 0);
+    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
+    CHECK(file_vp != 0);
+
+    /* First write: creates a VersionPage */
+    int ret = vfs_write(vfs, file_vp, "AAAA", 0, 4, 0);
+    CHECK_EQ(ret, 4);
+
+    /* Count VersionPages for page 0 after first write */
+    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0);
+    CHECK(pn0 != NULL);
+    int64_t vp = vfs_atomic_load_i64((const int64_t*)(pn0 + PAGENODE_OFF_VERSIONROOT));
+    int count_before = 0;
+    int64_t walk = vp;
+    while (walk != 0) {
+        count_before++;
+        uint8_t* vs = pool_resolve(&ctx->pool, walk);
+        CHECK(vs != NULL);
+        walk = vfs_rd8(vs, VERSIONPAGE_OFF_NEXTPTR);
+    }
+    CHECK_EQ(count_before, 1);  /* exactly 1 VersionPage */
+
+    /* Second write at same offset, same epoch: in-place, no new VersionPage */
+    ret = vfs_write(vfs, file_vp, "BBBB", 0, 4, 0);
+    CHECK_EQ(ret, 4);
+
+    /* Count VersionPages again — should still be 1 (in-place) */
+    pn0 = tree_resolve_page(ctx, file_vp, 0, 0);
+    CHECK(pn0 != NULL);
+    vp = vfs_atomic_load_i64((const int64_t*)(pn0 + PAGENODE_OFF_VERSIONROOT));
+    int count_after = 0;
+    walk = vp;
+    while (walk != 0) {
+        count_after++;
+        uint8_t* vs = pool_resolve(&ctx->pool, walk);
+        CHECK(vs != NULL);
+        walk = vfs_rd8(vs, VERSIONPAGE_OFF_NEXTPTR);
+    }
+    CHECK_EQ(count_after, 1);  /* still 1 VersionPage */
+
+    /* Read back — should be "BBBB" */
+    char rbuf[16];
+    memset(rbuf, 0, sizeof(rbuf));
+    ret = vfs_read(vfs, file_vp, rbuf, 0, 4, 0);
+    CHECK_EQ(ret, 4);
+    CHECK_EQ(strncmp(rbuf, "BBBB", 4), 0);
+
+    vfs_close(vfs);
+}
+
+/* Same offset, new epoch: COW creates new VersionPage, old epoch returns old data */
+static void test_write_cow_epoch(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "cow.txt", 0);
+    CHECK(nodeId > 0);
+    int64_t file_vp = get_file_vp(&ctx->pool, ctx->rootNodeOffset);
+    CHECK(file_vp != 0);
+
+    /* Write at epoch 0 */
+    int ret = vfs_write(vfs, file_vp, "AAAA", 0, 4, 0);
+    CHECK_EQ(ret, 4);
+
+    /* Write same offset at epoch 2 (different epoch — triggers COW) */
+    ret = vfs_write(vfs, file_vp, "BBBB", 0, 4, 2);
+    CHECK_EQ(ret, 4);
+
+    /* Old epoch returns old data */
+    char rbuf[16];
+    memset(rbuf, 0, sizeof(rbuf));
+    ret = vfs_read(vfs, file_vp, rbuf, 0, 4, 0);
+    CHECK_EQ(ret, 4);
+    CHECK_EQ(strncmp(rbuf, "AAAA", 4), 0);
+
+    /* New epoch returns new data */
+    memset(rbuf, 0, sizeof(rbuf));
+    ret = vfs_read(vfs, file_vp, rbuf, 0, 4, 2);
+    CHECK_EQ(ret, 4);
+    CHECK_EQ(strncmp(rbuf, "BBBB", 4), 0);
+
+    /* VersionPage count should be 2 now (one per epoch) */
+    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0);
+    CHECK(pn0 != NULL);
+    int64_t vp = vfs_atomic_load_i64((const int64_t*)(pn0 + PAGENODE_OFF_VERSIONROOT));
+    int count = 0;
+    int64_t walk = vp;
+    while (walk != 0) {
+        count++;
+        uint8_t* vs = pool_resolve(&ctx->pool, walk);
+        CHECK(vs != NULL);
+        walk = vfs_rd8(vs, VERSIONPAGE_OFF_NEXTPTR);
+    }
+    CHECK_EQ(count, 2);
+
+    vfs_close(vfs);
+}
+
+/* Write 2000 pages → second FileContent segment, reads across boundary */
+static void test_write_multi_segment(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "multi.txt", 0);
+    CHECK(nodeId > 0);
+    int64_t file_vp = get_file_vp(&ctx->pool, ctx->rootNodeOffset);
+    CHECK(file_vp != 0);
+
+    /* Write a marker at page 0 and page seg_size (creates 2 segments) */
+    uint32_t seg_size = ctx->segment_size;
+
+    int ret = vfs_write(vfs, file_vp, "FIRST", 0, 5, 0);
+    CHECK_EQ(ret, 5);
+
+    int64_t offset2 = (int64_t)seg_size * VFS_PAGE_SIZE;
+    ret = vfs_write(vfs, file_vp, "SECOND", offset2, 6, 0);
+    CHECK_EQ(ret, 6);
+
+    /* Read back from both pages */
+    char rbuf[32];
+    memset(rbuf, 0, sizeof(rbuf));
+    ret = vfs_read(vfs, file_vp, rbuf, 0, 5, 0);
+    CHECK_EQ(ret, 5);
+    CHECK_EQ(strncmp(rbuf, "FIRST", 5), 0);
+
+    memset(rbuf, 0, sizeof(rbuf));
+    ret = vfs_read(vfs, file_vp, rbuf, offset2, 6, 0);
+    CHECK_EQ(ret, 6);
+    CHECK_EQ(strncmp(rbuf, "SECOND", 6), 0);
+
+    /* Sanity: segment array cache should handle the switch */
+    CHECK(ctx->seg_array_fc_vp != 0);
+    (void)seg_size;
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -644,8 +827,28 @@ int main(void) {
     test_stat_not_file();
     test_file_size_epoch();
     test_resolve_page_growth();
+
+    /* Write/read tests use a separate clean file */
+    unlink(test_path);
+
     test_write_basic();
     test_read_basic();
+
+    unlink(test_path);
+
+    test_write_cross_page();
+
+    unlink(test_path);
+
+    test_write_in_place();
+
+    unlink(test_path);
+
+    test_write_cow_epoch();
+
+    unlink(test_path);
+
+    test_write_multi_segment();
 
     /* Clean up */
     unlink(test_path);
