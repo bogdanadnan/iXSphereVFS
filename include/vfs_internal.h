@@ -26,6 +26,9 @@ typedef struct {
     uint32_t nextNodeId;         /* next available node identifier */
     int64_t  treeLockState;      /* bit 63 = GC exclusive lock, bits 32-62 = reader count */
 
+    /* Pool list head — lives here so pool.list_head points into TreeContext */
+    int64_t  pool_list_head_value;
+
     /* Configuration (from StorageBackend header) */
     uint32_t segment_size;       /* pages per FileContent segment */
 } TreeContext;

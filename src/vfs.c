@@ -1,6 +1,9 @@
 #include "ixsphere_vfs.h"
 #include "platform.h"
+#include "vfs_internal.h"
+#include "tree.h"
 #include <stdlib.h>
+#include <string.h>
 
 const char* vfs_error_string(vfs_error_t err) {
     switch (err) {
@@ -18,10 +21,44 @@ const char* vfs_error_string(vfs_error_t err) {
 }
 
 vfs_t* vfs_open(const char* path) {
-    (void)path;
-    return NULL;
+    vfs_t* vfs = (vfs_t*)calloc(1, sizeof(vfs_t));
+    if (!vfs) return NULL;
+
+    TreeContext* ctx = (TreeContext*)calloc(1, sizeof(TreeContext));
+    if (!ctx) {
+        free(vfs);
+        return NULL;
+    }
+
+    ctx->sb = storage_open(path, VFS_PAGE_SIZE);
+    if (!ctx->sb) {
+        free(ctx);
+        free(vfs);
+        return NULL;
+    }
+
+    /* Initialize pool allocator — list_head points into TreeContext */
+    pool_init(&ctx->pool, ctx->sb, &ctx->pool_list_head_value);
+
+    /* Bootstrap or reinitialize the tree.
+       tree_bootstrap_superblock handles both fresh and reopen internally. */
+    int err = tree_bootstrap_superblock(ctx);
+    if (err != VFS_OK) {
+        storage_close(ctx->sb);
+        free(ctx);
+        free(vfs);
+        return NULL;
+    }
+
+    vfs->ctx = ctx;
+    return vfs;
 }
 
 void vfs_close(vfs_t* vfs) {
-    (void)vfs;
+    if (!vfs) return;
+    if (vfs->ctx) {
+        storage_close(vfs->ctx->sb);
+        free(vfs->ctx);
+    }
+    free(vfs);
 }
