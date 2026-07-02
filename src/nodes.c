@@ -179,3 +179,85 @@ void nodes_read_mapperentry(const uint8_t* slot, uint32_t* fromEpoch,
     *flags     = (uint16_t)vfs_rd2(slot, MAPPER_OFF_FLAGS);
     *nextPtr   = vfs_rd8(slot, MAPPER_OFF_NEXTPTR);
 }
+
+/* ---------------------------------------------------------------------------
+ * NameEntry (Workload 4.8)
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_name_entry(uint8_t* slot, const uint8_t* data_24, int64_t nextPtr) {
+    memcpy(slot, data_24, NAMEENTRY_DATA_SIZE);
+    vfs_wr8(slot, NAMEENTRY_OFF_NEXTPTR, nextPtr);
+}
+
+int nodes_write_name(Pool* pool, const char* utf8_name, int64_t* first_slot_vp) {
+    if (!utf8_name || utf8_name[0] == '\0') {
+        *first_slot_vp = VFS_VPTR_NULL;
+        return 0;
+    }
+
+    size_t total_len = strlen(utf8_name);
+    int slots_needed = (int)((total_len + NAMEENTRY_DATA_SIZE - 1) / NAMEENTRY_DATA_SIZE);
+    int64_t next_vp = 0;
+
+    /* Allocate slots in reverse order (last slot first) */
+    for (int i = slots_needed - 1; i >= 0; i--) {
+        int64_t vp = pool_alloc(pool);
+        if (vp == VFS_VPTR_NULL) {
+            /* Allocation failure — partial chain may exist */
+            *first_slot_vp = VFS_VPTR_NULL;
+            return 0;
+        }
+
+        uint8_t* slot_data = pool_resolve(pool, vp);
+        if (!slot_data) {
+            *first_slot_vp = VFS_VPTR_NULL;
+            return 0;
+        }
+
+        size_t offset = (size_t)i * NAMEENTRY_DATA_SIZE;
+        size_t chunk = total_len - offset;
+        if (chunk > NAMEENTRY_DATA_SIZE)
+            chunk = NAMEENTRY_DATA_SIZE;
+
+        uint8_t buf[NAMEENTRY_DATA_SIZE] = {0};
+        memcpy(buf, utf8_name + offset, chunk);
+        nodes_write_name_entry(slot_data, buf, next_vp);
+
+        if (i == 0)
+            *first_slot_vp = vp;
+
+        next_vp = vp;
+    }
+
+    return slots_needed;
+}
+
+int nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_len) {
+    if (first_slot_vp == VFS_VPTR_NULL || max_len <= 0) {
+        if (max_len > 0) out_buf[0] = '\0';
+        return 0;
+    }
+
+    int total = 0;
+    int64_t vp = first_slot_vp;
+
+    while (vp != VFS_VPTR_NULL && total < max_len - 1) {
+        uint8_t* slot_data = pool_resolve(pool, vp);
+        if (!slot_data) break;
+
+        /* Copy up to NAMEENTRY_DATA_SIZE bytes, stopping at first null */
+        for (int i = 0; i < NAMEENTRY_DATA_SIZE && total < max_len - 1; i++) {
+            uint8_t byte = slot_data[i];
+            if (byte == 0) {
+                out_buf[total] = '\0';
+                return total;
+            }
+            out_buf[total++] = (char)byte;
+        }
+
+        vp = vfs_rd8(slot_data, NAMEENTRY_OFF_NEXTPTR);
+    }
+
+    out_buf[total] = '\0';
+    return total;
+}

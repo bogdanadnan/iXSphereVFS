@@ -2,6 +2,8 @@
 #include "nodes.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 /* Test infrastructure */
 static int tests_run = 0, tests_passed = 0;
@@ -444,6 +446,94 @@ static void test_mapperentry(void) {
     CHECK_EQ(flags, 0);
 }
 
+/* ---------------------------------------------------------------------------
+ * NameEntry tests (Workload 4.8)
+ * --------------------------------------------------------------------------- */
+
+static const char* name_test_path = "/tmp/test_nodes_name.tmp";
+static void name_cleanup(void) { unlink(name_test_path); }
+
+static Pool* name_setup(void) {
+    StorageBackend* sb = storage_open(name_test_path, 8192);
+    if (!sb) return NULL;
+    static int64_t list_head;
+    static Pool pool;
+    pool_init(&pool, sb, &list_head);
+    return &pool;
+}
+
+static void name_teardown(Pool* pool) {
+    if (pool && pool->sb) storage_close(pool->sb);
+}
+
+static void test_nameentry_short(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    int64_t first_vp;
+    int n = nodes_write_name(pool, "hello", &first_vp);
+    CHECK_EQ(n, 1);
+    CHECK(first_vp != VFS_VPTR_NULL);
+
+    char buf[64];
+    int len = nodes_read_name(pool, first_vp, buf, sizeof(buf));
+    CHECK_EQ(len, 5);
+    CHECK_EQ(strcmp(buf, "hello"), 0);
+
+    name_teardown(pool);
+}
+
+static void test_nameentry_50byte(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    const char* name = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX";
+    CHECK_EQ(strlen(name), 50);
+
+    int64_t first_vp;
+    int n = nodes_write_name(pool, name, &first_vp);
+    CHECK_EQ(n, 3); /* 24+24+2 */
+    CHECK(first_vp != VFS_VPTR_NULL);
+
+    char buf[128];
+    int len = nodes_read_name(pool, first_vp, buf, sizeof(buf));
+    CHECK_EQ(len, 50);
+    CHECK_EQ(strcmp(buf, name), 0);
+
+    name_teardown(pool);
+}
+
+static void test_nameentry_24byte(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    int64_t first_vp;
+    int n = nodes_write_name(pool, "abcdefghijklmnopqrstuvwx", &first_vp);
+    CHECK_EQ(n, 1);
+
+    char buf[64];
+    int len = nodes_read_name(pool, first_vp, buf, sizeof(buf));
+    CHECK_EQ(len, 24);
+
+    name_teardown(pool);
+}
+
+static void test_nameentry_empty(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    int64_t first_vp = 123;
+    int n = nodes_write_name(pool, "", &first_vp);
+    CHECK_EQ(n, 0);
+    CHECK_EQ(first_vp, VFS_VPTR_NULL);
+
+    char buf[64];
+    int len = nodes_read_name(pool, first_vp, buf, sizeof(buf));
+    CHECK_EQ(len, 0);
+
+    name_teardown(pool);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -467,6 +557,13 @@ int main(void) {
 
     test_touchedfile();
     test_mapperentry();
+
+    test_nameentry_short();
+    test_nameentry_50byte();
+    test_nameentry_24byte();
+    test_nameentry_empty();
+
+    name_cleanup();
 
     printf("test_nodes: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
