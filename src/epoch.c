@@ -162,10 +162,13 @@ int vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch) {
     if (mapper_resolve(&ctx->mapper, snapshot_epoch) != snapshot_epoch)
         return VFS_ERR_IO;
 
-    /* Insert soft-delete mapping: snapshot_epoch → currentEpoch without traversalApply */
-    int64_t current = ctx->currentEpoch;
+    /* Insert soft-delete mapping: snapshot_epoch → (snapshot_epoch - 1)
+       without traversalApply flag.  snapshot_epoch - 1 is the even epoch
+       (live head) that the snapshot was taken from — readers at odd
+       snapshot epochs fall through to this base via the read-rule. */
+    uint32_t toEpoch = (uint32_t)snapshot_epoch - 1;
     int ret = mapper_insert(&ctx->mapper, (uint32_t)snapshot_epoch,
-                            (uint32_t)current, 0);
+                            toEpoch, 0);
     if (ret != VFS_OK) return ret;
 
     /* Drop TouchedFile chain for this epoch */
