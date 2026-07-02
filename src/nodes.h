@@ -30,6 +30,7 @@
  * --------------------------------------------------------------------------- */
 
 #define DIRNODE_OFF_TYPE      0
+#define DIRNODE_OFF_RSVD      2
 #define DIRNODE_OFF_NODEID    4
 #define DIRNODE_OFF_HEADPTR   8
 
@@ -50,6 +51,7 @@ void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr)
  * --------------------------------------------------------------------------- */
 
 #define FILENODE_OFF_TYPE      0
+#define FILENODE_OFF_RSVD      2
 #define FILENODE_OFF_NODEID    4
 #define FILENODE_OFF_HEADPTR   8
 #define FILENODE_OFF_SIZEPTR  16
@@ -73,7 +75,7 @@ int64_t nodes_read_filenode_ctime(const uint8_t* slot);
  *    24      8    nextPtr      (VirtualPtr — next DirContent, 0 = end)
  * --------------------------------------------------------------------------- */
 
-#define DIRCONTENT_OFF_CHILDNODEID   0
+#define DIRCONTENT_OFF_CHILDID     0
 #define DIRCONTENT_OFF_EPOCH         4
 #define DIRCONTENT_OFF_CHILDPTR      8
 #define DIRCONTENT_OFF_NAMEPTR      16
@@ -95,7 +97,7 @@ void nodes_read_dircontent(const uint8_t* slot, uint32_t* childNodeId,
  *    16     16    reserved
  * --------------------------------------------------------------------------- */
 
-#define FILECONTENT_OFF_PAGEROOTPTR   0
+#define FILECONTENT_OFF_ROOTPTR     0
 #define FILECONTENT_OFF_NEXTPTR       8
 
 void nodes_write_filecontent(uint8_t* slot, int64_t pageRootPtr, int64_t nextPtr);
@@ -111,7 +113,7 @@ void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* 
  *    16     16    reserved
  * --------------------------------------------------------------------------- */
 
-#define PAGENODE_OFF_VERSIONROOTPTR   0
+#define PAGENODE_OFF_VERSIONROOT    0
 #define PAGENODE_OFF_NEXTPTR          8
 
 void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr);
@@ -130,6 +132,7 @@ void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr, int64_t* 
  * --------------------------------------------------------------------------- */
 
 #define VERSIONPAGE_OFF_EPOCH      0
+#define VERSIONPAGE_OFF_RSVD       4
 #define VERSIONPAGE_OFF_DATAPAGE   8
 #define VERSIONPAGE_OFF_NEXTPTR   16
 
@@ -173,6 +176,9 @@ void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
 #define NAMEENTRY_OFF_NEXTPTR 24
 #define NAMEENTRY_DATA_SIZE   24   /* bytes of name data per slot */
 
+/* Internal helper: write a single NameEntry slot (used by nodes_write_name). */
+void nodes_write_name_entry(uint8_t* slot, const uint8_t* data_24, int64_t nextPtr);
+
 /* Write a name chain.  Returns number of slots written (1 or more).
    Empty name (len=0): returns 0 and sets *first_slot_vp = VFS_VPTR_NULL. */
 int  nodes_write_name(Pool* pool, const char* utf8_name, int64_t* first_slot_vp);
@@ -214,10 +220,10 @@ void nodes_read_touchedfile(const uint8_t* slot, uint32_t* epoch,
  *    24      8    reserved
  * --------------------------------------------------------------------------- */
 
-#define MAPPERENTRY_OFF_FROMEPOCH  0
-#define MAPPERENTRY_OFF_TOEPOCH    4
-#define MAPPERENTRY_OFF_FLAGS      8
-#define MAPPERENTRY_OFF_NEXTPTR   16
+#define MAPPER_OFF_FROMEPOCH  0
+#define MAPPER_OFF_TOEPOCH    4
+#define MAPPER_OFF_FLAGS      8
+#define MAPPER_OFF_NEXTPTR   16
 
 void nodes_write_mapperentry(uint8_t* slot, uint32_t fromEpoch, uint32_t toEpoch,
                              uint16_t flags, int64_t nextPtr);
