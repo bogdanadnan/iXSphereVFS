@@ -466,6 +466,77 @@ static void test_file_size_epoch(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * tree_resolve_page test — file growth and in-memory page array
+ * --------------------------------------------------------------------------- */
+
+static void test_resolve_page_growth(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "big.txt", 0);
+    CHECK(nodeId > 0);
+    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
+    CHECK(file_vp != 0);
+
+    uint32_t seg_size = ctx->segment_size;
+    CHECK(seg_size > 0);
+
+    /* Resolve page 0 — should create first segment */
+    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0);
+    CHECK(pn0 != NULL);
+
+    /* Verify it's a PageNode with versionRootPtr=0 (never written) */
+    CHECK_EQ(vfs_rd8(pn0, PAGENODE_OFF_VERSIONROOT), 0);
+
+    /* Cache should now be populated for this segment */
+    CHECK(ctx->seg_array_fc_vp != 0);
+    CHECK(ctx->seg_array_cache.built);
+
+    /* Resolve page 1 — should hit cached array */
+    uint8_t* pn1 = tree_resolve_page(ctx, file_vp, 1, 0);
+    CHECK(pn1 != NULL);
+    CHECK_EQ(vfs_rd8(pn1, PAGENODE_OFF_VERSIONROOT), 0);
+
+    /* Page 1 should be at nextPtr offset from page 0 in the chain */
+    uint8_t* fc_slot = pool_resolve(&ctx->pool, ctx->seg_array_fc_vp);
+    CHECK(fc_slot != NULL);
+    int64_t fc_root = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
+    CHECK(fc_root != 0);
+
+    /* Walk from root to page 1 slot via nextPtr */
+    int64_t pn_vp = fc_root;
+    for (int i = 0; i < 2 && pn_vp != 0; i++) {
+        uint8_t* slot = pool_resolve(&ctx->pool, pn_vp);
+        CHECK(slot != NULL);
+        if (i == 0) {
+            CHECK_EQ(slot, pn0);  /* first PageNode matches */
+        }
+        if (i == 1) {
+            CHECK_EQ(slot, pn1);  /* second PageNode matches */
+        }
+        pn_vp = vfs_rd8(slot, PAGENODE_OFF_NEXTPTR);
+    }
+    CHECK(pn_vp != 0);  /* chain has more than 2 entries */
+
+    /* Resolve page at segment boundary — should create second segment */
+    uint8_t* pn_first_new = tree_resolve_page(ctx, file_vp, seg_size, 0);
+    CHECK(pn_first_new != NULL);
+    CHECK_EQ(vfs_rd8(pn_first_new, PAGENODE_OFF_VERSIONROOT), 0);
+
+    /* Cache should now point to the second segment */
+    CHECK(ctx->seg_array_fc_vp != 0);
+
+    /* Resolve page 0 again — cache may have been invalidated by second segment.
+       Just verify it still works. */
+    pn0 = tree_resolve_page(ctx, file_vp, 0, 0);
+    CHECK(pn0 != NULL);
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -481,6 +552,7 @@ int main(void) {
     test_file_stat();
     test_stat_not_file();
     test_file_size_epoch();
+    test_resolve_page_growth();
 
     /* Clean up */
     unlink(test_path);

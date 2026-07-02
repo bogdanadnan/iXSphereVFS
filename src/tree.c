@@ -159,7 +159,11 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
 
     int64_t fc_vp;   /* VirtualPtr to current FileContent */
 
-    nodes_read_filenode(file_slot, NULL, &fc_vp, NULL, NULL);
+    uint32_t tmp_nodeId;
+    int64_t tmp_headPtr, tmp_sizePtr, tmp_createdAt;
+
+    nodes_read_filenode(file_slot, &tmp_nodeId, &tmp_headPtr, &tmp_sizePtr, &tmp_createdAt);
+    fc_vp = tmp_headPtr;
 
     /* Walk FileContent chain to find the target segment */
     int64_t prev_fc_vp = 0;  /* previous FileContent's VirtualPtr, for linking */
