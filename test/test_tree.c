@@ -232,6 +232,48 @@ static void test_delete_file(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * vfs_open_file test
+ * --------------------------------------------------------------------------- */
+
+static void test_open_file(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    /* Create a file */
+    int nodeId = vfs_create(vfs, root_vp, "found.txt", 0);
+    CHECK(nodeId > 0);
+
+    /* Open it by name */
+    int64_t opened = vfs_open_file(vfs, root_vp, "found.txt", 0);
+    CHECK_EQ(opened, (int64_t)nodeId);
+
+    /* Open non-existent → VFS_ERR_NOTFOUND */
+    opened = vfs_open_file(vfs, root_vp, "missing.txt", 0);
+    CHECK_EQ(opened, VFS_ERR_NOTFOUND);
+
+    /* Open from a file nodeId → VFS_ERR_NOTDIR
+       First, get the file's VirtualPtr from the DirContent entry. */
+    {
+        uint8_t* root_slot2 = pool_resolve(&ctx->pool, root_vp);
+        CHECK(root_slot2 != NULL);
+        int64_t head2 = vfs_rd8(root_slot2, DIRNODE_OFF_HEADPTR);
+        CHECK(head2 != 0);
+        uint32_t ce_c, ce_e;
+        int64_t ce_cp, ce_np, ce_nx;
+        nodes_read_dircontent(pool_resolve(&ctx->pool, head2),
+                              &ce_c, &ce_e, &ce_cp, &ce_np, &ce_nx);
+        (void)ce_c; (void)ce_e; (void)ce_np; (void)ce_nx;
+        /* ce_cp is the file's VirtualPtr (a FileNode) */
+        opened = vfs_open_file(vfs, ce_cp, "anything.txt", 0);
+        CHECK_EQ(opened, VFS_ERR_NOTDIR);
+    }
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -241,6 +283,7 @@ int main(void) {
     test_pool_list_head();
     test_create_file();
     test_delete_file();
+    test_open_file();
 
     /* Clean up */
     unlink(test_path);
