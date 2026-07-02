@@ -18,9 +18,7 @@
 bool vfs_epoch_is_writable(TreeContext* ctx, int64_t epoch);
 
 /* Record that a file was touched in a given epoch (for commit conflict detection).
-   Current stub: no-op.
-   Phase 6: CAS-prepends a TouchedFile entry to superblock->touchedFilesPtr. */
-void touchedfile_add(void* vfs, int64_t epoch, uint32_t nodeId);
+   Use touchedfile_add from touched.h with ctx->pool and ctx->touchedFilesPtr. */
 
 /* Test helper: override vfs_epoch_is_writable return value.
    Pass non-zero for writable (default), zero for frozen. */

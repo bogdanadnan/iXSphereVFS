@@ -32,12 +32,6 @@ bool vfs_epoch_is_writable(TreeContext* ctx, int64_t epoch) {
     return false;
 }
 
-void touchedfile_add(void* vfs, int64_t epoch, uint32_t nodeId) {
-    (void)vfs;
-    (void)epoch;
-    (void)nodeId;
-}
-
 int64_t vfs_snapshot(vfs_t* vfs) {
     if (!vfs || !vfs->ctx) return -1;
     TreeContext* ctx = vfs->ctx;
