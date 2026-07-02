@@ -607,6 +607,10 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
     if (offset + count > new_size) new_size = offset + count;
     int grew = (new_size > old_size);
 
+    /* Track first write to this file in this epoch for TouchedFile */
+    int touched_this_epoch = 0;
+    uint32_t file_nodeId = (uint32_t)vfs_rd4(file_slot, FILENODE_OFF_NODEID);
+
     for (int64_t p = first_page; p <= last_page; p++) {
         /* Resolve or create PageNode for this page */
         uint8_t* pn_slot = tree_resolve_page(ctx, file, p, epoch);
@@ -617,34 +621,40 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
         int64_t page_count = (int64_t)page_size - page_offset;
         if (remaining < page_count) page_count = remaining;
 
-        /* Walk version chain searching for existing write at this epoch */
-        int64_t version_root = vfs_rd8(pn_slot, PAGENODE_OFF_VERSIONROOT);
-        int64_t vp = version_root;
-        int64_t data_page = -1;
-        int found_in_place = 0;
+        while (1) {  /* retry loop for CAS */
+            /* Walk version chain searching for existing write at this epoch */
+            int64_t version_root = vfs_atomic_load_i64(
+                (const int64_t*)(pn_slot + PAGENODE_OFF_VERSIONROOT));
+            int64_t vp = version_root;
+            int64_t data_page = -1;
+            int found_in_place = 0;
 
-        while (vp != 0) {
-            uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
-            if (!vp_slot) break;
-            uint32_t vp_epoch;
-            int64_t vp_dataPage, vp_next;
-            nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
-            if (vp_epoch == (uint32_t)epoch) {
-                data_page = vp_dataPage;
-                found_in_place = 1;
-                break;
+            while (vp != 0) {
+                uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
+                if (!vp_slot) break;
+                uint32_t vp_epoch;
+                int64_t vp_dataPage, vp_next;
+                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+                if (vp_epoch == (uint32_t)epoch) {
+                    data_page = vp_dataPage;
+                    found_in_place = 1;
+                    break;
+                }
+                vp = vp_next;
             }
-            vp = vp_next;
-        }
 
-        if (found_in_place) {
-            /* In-place write: read current page, overlay, write back */
-            uint8_t* page_buf = storage_read(ctx->sb, data_page);
-            if (!page_buf) return -1;
-            memcpy(page_buf + page_offset, src, (size_t)page_count);
-            storage_write(ctx->sb, data_page, page_buf, 0);
-        } else {
-            /* COW: find base page (highest even epoch < write_epoch) */
+            if (found_in_place) {
+                /* In-place write: read current page, overlay, write back */
+                uint8_t* page_buf = storage_read(ctx->sb, data_page);
+                if (!page_buf) return -1;
+                memcpy(page_buf + page_offset, src, (size_t)page_count);
+                storage_write(ctx->sb, data_page, page_buf, 0);
+                break;  /* exit retry loop — in-place succeeded */
+            }
+
+            /* COW: find base page (highest even epoch < write_epoch).
+               VersionPages are prepended (newest first), so the first
+               match is the highest even epoch. */
             int64_t base_page = -1;
             vp = version_root;
             while (vp != 0) {
@@ -684,7 +694,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
             storage_write(ctx->sb, new_dp, page_buf, 0);
             free(page_buf);
 
-            /* Create VersionPage and CAS-prepend to PageNode */
+            /* Create VersionPage */
             int64_t vp_new = pool_alloc(&ctx->pool);
             if (vp_new == VFS_VPTR_NULL) return -1;
             uint8_t* vp_new_slot = pool_resolve(&ctx->pool, vp_new);
@@ -697,12 +707,27 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
             int64_t old_root = vfs_cas_i64(
                 (int64_t*)(pn_slot + PAGENODE_OFF_VERSIONROOT),
                 version_root, vp_new);
-            if (old_root != version_root) {
-                /* CAS failed — another thread wrote first. Leak our VersionPage.
-                   We still have a valid data page, so we could try again, but
-                   for simplicity we accept the leak and proceed. */
-                (void)old_root;
+            if (old_root == version_root) {
+                break;  /* CAS succeeded — exit retry loop */
             }
+            /* CAS failed — retry loop will re-read version_root and try again.
+               Our orphaned data page and VersionPage will be reclaimed by GC. */
+        }
+
+        /* TouchedFile: record first write to this file in this epoch */
+        if (!touched_this_epoch) {
+            int64_t tf_vp = pool_alloc(&ctx->pool);
+            if (tf_vp != VFS_VPTR_NULL) {
+                uint8_t* tf_slot = pool_resolve(&ctx->pool, tf_vp);
+                if (tf_slot) {
+                    int64_t old_tf = ctx->touchedFilesPtr;
+                    nodes_write_touchedfile(tf_slot, (uint32_t)epoch,
+                                            file_nodeId, old_tf);
+                    vfs_mb_release();
+                    vfs_cas_i64(&ctx->touchedFilesPtr, old_tf, tf_vp);
+                }
+            }
+            touched_this_epoch = 1;
         }
 
         src += page_count;
@@ -711,19 +736,21 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
 
     /* Update FileSize if file grew */
     if (grew) {
-        int64_t old_sizePtr = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
-        int64_t fs_vp = pool_alloc(&ctx->pool);
-        if (fs_vp == VFS_VPTR_NULL) return -1;
-        uint8_t* fs_slot = pool_resolve(&ctx->pool, fs_vp);
-        if (!fs_slot) return -1;
-        nodes_write_filesize(fs_slot, (uint32_t)epoch, (int64_t)time(NULL),
-                             new_size, old_sizePtr);
-        vfs_mb_release();
-        int64_t cas_res = vfs_cas_i64(
-            (int64_t*)(file_slot + FILENODE_OFF_SIZEPTR),
-            old_sizePtr, fs_vp);
-        if (cas_res != old_sizePtr) {
-            /* CAS failed — our FileSize is orphaned, GC will clean it */
+        while (1) {  /* retry loop for CAS */
+            int64_t old_sizePtr = vfs_atomic_load_i64(
+                (const int64_t*)(file_slot + FILENODE_OFF_SIZEPTR));
+            int64_t fs_vp = pool_alloc(&ctx->pool);
+            if (fs_vp == VFS_VPTR_NULL) return -1;
+            uint8_t* fs_slot = pool_resolve(&ctx->pool, fs_vp);
+            if (!fs_slot) return -1;
+            nodes_write_filesize(fs_slot, (uint32_t)epoch, (int64_t)time(NULL),
+                                 new_size, old_sizePtr);
+            vfs_mb_release();
+            int64_t cas_res = vfs_cas_i64(
+                (int64_t*)(file_slot + FILENODE_OFF_SIZEPTR),
+                old_sizePtr, fs_vp);
+            if (cas_res == old_sizePtr) break;
+            /* CAS failed — retry with fresh old_sizePtr */
         }
     }
 
