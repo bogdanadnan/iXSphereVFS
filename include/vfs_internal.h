@@ -5,6 +5,8 @@
 #include "storage.h"
 #include "pool.h"
 #include "page_array.h"
+#include "dentry_cache.h"
+#include "mapper.h"
 
 #define VFS_PAGE_SIZE 8192
 typedef struct SegmentArray SegmentArray;
@@ -34,6 +36,9 @@ typedef struct {
     /* In-memory page array cache — one entry for the most recently accessed segment */
     SegmentArray seg_array_cache;
     int64_t      seg_array_fc_vp;  /* FileContent VirtualPtr that owns the cached array, 0 = invalid */
+
+    /* Epoch mapper */
+    Mapper mapper;
 } TreeContext;
 
 struct vfs_t {

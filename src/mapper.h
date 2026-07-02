@@ -1,7 +1,8 @@
 #ifndef VFS_MAPPER_H
 #define VFS_MAPPER_H
 
-#include "vfs_internal.h"
+#include "ixsphere_vfs.h"
+#include "pool.h"
 #include "nodes.h"
 #include <stdbool.h>
 

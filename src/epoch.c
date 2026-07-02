@@ -1,18 +1,15 @@
-/* Phase 5a: Epoch stubs — replaced with real implementations in Phase 6. */
+/* Phase 6: Epoch system — replaces Phase 5a stubs. */
 #include "epoch.h"
 
-/* Test override: when non-zero, vfs_epoch_is_writable returns this value.
-   Zero means use default behavior (always true in stub). */
+/* Test override: when non-zero, vfs_epoch_is_writable returns this value. */
 static int _test_epoch_writable = 1;
 
 void test_set_epoch_writable(int writable) {
     _test_epoch_writable = writable;
 }
 
-int64_t mapper_resolve(void* mapper, int64_t epoch) {
-    (void)mapper;
-    return epoch;
-}
+/* mapper_resolve is now implemented in mapper.c — declared in mapper.h.
+   The stub in this file has been removed. Callers include mapper.h directly. */
 
 bool vfs_epoch_is_writable(void* sb, int64_t epoch, void* mapper) {
     (void)sb;

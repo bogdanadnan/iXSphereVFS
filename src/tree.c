@@ -771,7 +771,7 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
     TreeContext* ctx = vfs->ctx;
 
     /* Apply epoch mapper to get read_epoch */
-    int64_t read_epoch = mapper_resolve(NULL, epoch);
+    int64_t read_epoch = mapper_resolve(&ctx->mapper, epoch);
 
     /* Read FileNode, verify type */
     uint8_t* file_slot = pool_resolve(&ctx->pool, file);

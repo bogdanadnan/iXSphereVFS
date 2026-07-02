@@ -40,6 +40,9 @@ vfs_t* vfs_open(const char* path) {
     /* Initialize pool allocator — list_head points into TreeContext */
     pool_init(&ctx->pool, ctx->sb, &ctx->pool_list_head_value);
 
+    /* Initialize epoch mapper */
+    mapper_init(&ctx->mapper, &ctx->pool, &ctx->epochMapperPtr);
+
     /* Bootstrap or reinitialize the tree.
        tree_bootstrap_superblock handles both fresh and reopen internally. */
     int err = tree_bootstrap_superblock(ctx);

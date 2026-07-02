@@ -3,21 +3,16 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "mapper.h"
 
 /* ---------------------------------------------------------------------------
- * Phase 5a: Epoch stubs — replaced with real implementations in Phase 6.
+ * Phase 6: Epoch system — replaces Phase 5a stubs.
  *
- * These stubs allow Phase 5 (Tree Operations) to be built and tested
- * independently of Phase 6 (Epoch System).
+ * mapper_resolve is now defined in mapper.h (takes Mapper*).
+ * The stub in epoch.c has been replaced with delegation to mapper.c.
  * --------------------------------------------------------------------------- */
 
-/* Resolve an epoch through the mapper chain.
-   Current stub: identity mapping (no-op).
-   Phase 6: walks the MapperEntry chain from superblock->epochMapperPtr. */
-int64_t mapper_resolve(void* mapper, int64_t epoch);
-
 /* Check whether an epoch is writable.
-   Current stub: all epochs writable.
    Phase 6: returns true only for current live head and active snapshots. */
 bool vfs_epoch_is_writable(void* sb, int64_t epoch, void* mapper);
 
