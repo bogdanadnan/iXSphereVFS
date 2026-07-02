@@ -392,6 +392,80 @@ static void test_stat_not_file(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * Helper: get file VirtualPtr from parent's first DirContent entry
+ * --------------------------------------------------------------------------- */
+
+static int64_t get_file_vp(Pool* pool, int64_t root_vp) {
+    uint8_t* rs = pool_resolve(pool, root_vp);
+    if (!rs) return 0;
+    int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+    if (head == 0) return 0;
+    uint32_t cc, ce;
+    int64_t cp, np, nx;
+    nodes_read_dircontent(pool_resolve(pool, head),
+                          &cc, &ce, &cp, &np, &nx);
+    (void)cc; (void)ce; (void)np; (void)nx;
+    return cp;
+}
+
+/* ---------------------------------------------------------------------------
+ * File size with epoch isolation test
+ *
+ * Directly writes a FileSize entry to simulate a file write.
+ * Verifies: new file size=0, after write size matches,
+ * old epoch returns old size, ctime unchanged.
+ * --------------------------------------------------------------------------- */
+
+static void test_file_size_epoch(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "sizetest.txt", 0);
+    CHECK(nodeId > 0);
+    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
+    CHECK(file_vp != 0);
+
+    int64_t ctime_before = vfs_file_ctime(vfs, file_vp);
+    CHECK(ctime_before > 0);
+
+    /* New file: size=0 */
+    CHECK_EQ(vfs_file_size(vfs, file_vp, 0), 0);
+
+    /* Directly write a FileSize entry at epoch 2 (simulating a write) */
+    int64_t fs_vp = pool_alloc(&ctx->pool);
+    CHECK(fs_vp != VFS_VPTR_NULL);
+    uint8_t* fs_slot = pool_resolve(&ctx->pool, fs_vp);
+    CHECK(fs_slot != NULL);
+
+    uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
+    CHECK(file_slot != NULL);
+    int64_t old_sizePtr = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
+
+    nodes_write_filesize(fs_slot, 2, 2000, 500, old_sizePtr);
+    vfs_mb_release();
+    int64_t cas_result = vfs_cas_i64(
+        (int64_t*)(file_slot + FILENODE_OFF_SIZEPTR),
+        old_sizePtr, fs_vp);
+    CHECK_EQ(cas_result, old_sizePtr);  /* CAS succeeded */
+
+    /* At epoch 2: size=500, mtime=2000 */
+    CHECK_EQ(vfs_file_size(vfs, file_vp, 2), 500);
+    CHECK_EQ(vfs_file_mtime(vfs, file_vp, 2), 2000);
+
+    /* At epoch 0: still size=0 (old epoch unaffected) */
+    CHECK_EQ(vfs_file_size(vfs, file_vp, 0), 0);
+    CHECK_EQ(vfs_file_mtime(vfs, file_vp, 0), 0);
+
+    /* ctime unchanged across epochs */
+    int64_t ctime_after = vfs_file_ctime(vfs, file_vp);
+    CHECK_EQ(ctime_after, ctime_before);
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -406,6 +480,7 @@ int main(void) {
     test_delete_epoch_isolation();
     test_file_stat();
     test_stat_not_file();
+    test_file_size_epoch();
 
     /* Clean up */
     unlink(test_path);
