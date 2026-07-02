@@ -16,6 +16,7 @@ const char* vfs_error_string(vfs_error_t err) {
         case VFS_ERR_CONFLICT:  return "Conflict";
         case VFS_ERR_FULL:      return "No space left";
         case VFS_ERR_NOMEM:     return "Out of memory";
+        case VFS_ERR_EPOCH:     return "Epoch not writable";
         default:                return "Unknown error";
     }
 }

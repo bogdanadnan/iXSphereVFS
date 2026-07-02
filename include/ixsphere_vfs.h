@@ -19,6 +19,7 @@ typedef enum {
     VFS_ERR_CONFLICT  = -6,
     VFS_ERR_FULL      = -7,
     VFS_ERR_NOMEM     = -8,
+    VFS_ERR_EPOCH     = -9,
 } vfs_error_t;
 
 const char* vfs_error_string(vfs_error_t err);
