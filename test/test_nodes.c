@@ -612,6 +612,72 @@ static void test_nameentry_empty(void) {
     name_teardown(pool);
 }
 
+/* ---------------------------------------------------------------------------
+ * Zero-slot safety test (Phase 4e)
+ * --------------------------------------------------------------------------- */
+
+static void test_zero_slot_safety(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* DirNode: type=0, nodeId=0, headPtr=0 */
+    CHECK_EQ(vfs_rd2(slot, DIRNODE_OFF_TYPE), 0);
+    CHECK_EQ(vfs_rd4(slot, DIRNODE_OFF_NODEID), 0);
+    CHECK_EQ(vfs_rd8(slot, DIRNODE_OFF_HEADPTR), 0);
+
+    /* FileNode: type=0, nodeId=0, headPtr=0, sizePtr=0, createdAt=0 */
+    CHECK_EQ(vfs_rd2(slot, FILENODE_OFF_TYPE), 0);
+    CHECK_EQ(vfs_rd4(slot, FILENODE_OFF_NODEID), 0);
+    CHECK_EQ(vfs_rd8(slot, FILENODE_OFF_HEADPTR), 0);
+    CHECK_EQ(vfs_rd8(slot, FILENODE_OFF_SIZEPTR), 0);
+    CHECK_EQ(vfs_rd8(slot, FILENODE_OFF_CTIME), 0);
+
+    /* DirContent: childNodeId=0, epoch=0, childPtr=0, namePtr=0, nextPtr=0 */
+    CHECK_EQ(vfs_rd4(slot, DIRCONTENT_OFF_CHILDID), 0);
+    CHECK_EQ(vfs_rd4(slot, DIRCONTENT_OFF_EPOCH), 0);
+    CHECK_EQ(vfs_rd8(slot, DIRCONTENT_OFF_CHILDPTR), 0);
+    CHECK_EQ(vfs_rd8(slot, DIRCONTENT_OFF_NAMEPTR), 0);
+    CHECK_EQ(vfs_rd8(slot, DIRCONTENT_OFF_NEXTPTR), 0);
+
+    /* FileContent: pageRootPtr=0, nextPtr=0 */
+    CHECK_EQ(vfs_rd8(slot, FILECONTENT_OFF_ROOTPTR), 0);
+    CHECK_EQ(vfs_rd8(slot, FILECONTENT_OFF_NEXTPTR), 0);
+
+    /* PageNode: versionRootPtr=0, nextPtr=0 */
+    CHECK_EQ(vfs_rd8(slot, PAGENODE_OFF_VERSIONROOT), 0);
+    CHECK_EQ(vfs_rd8(slot, PAGENODE_OFF_NEXTPTR), 0);
+
+    /* VersionPage: epoch=0, dataPage=0, nextPtr=0 */
+    CHECK_EQ(vfs_rd4(slot, VERSIONPAGE_OFF_EPOCH), 0);
+    CHECK_EQ(vfs_rd8(slot, VERSIONPAGE_OFF_DATAPAGE), 0);
+    CHECK_EQ(vfs_rd8(slot, VERSIONPAGE_OFF_NEXTPTR), 0);
+
+    /* FileSize: epoch=0, modifiedAt=0, fileSize=0, nextPtr=0 */
+    CHECK_EQ(vfs_rd4(slot, FILESIZE_OFF_EPOCH), 0);
+    CHECK_EQ(vfs_rd8(slot, FILESIZE_OFF_MODIFIEDAT), 0);
+    CHECK_EQ(vfs_rd8(slot, FILESIZE_OFF_FILESIZE), 0);
+    CHECK_EQ(vfs_rd8(slot, FILESIZE_OFF_NEXTPTR), 0);
+
+    /* NameEntry: data all zero, nextPtr=0 */
+    int data_all_zero = 1;
+    for (int i = 0; i < NAMEENTRY_DATA_SIZE; i++) {
+        if (slot[i] != 0) { data_all_zero = 0; break; }
+    }
+    CHECK(data_all_zero);
+    CHECK_EQ(vfs_rd8(slot, NAMEENTRY_OFF_NEXTPTR), 0);
+
+    /* TouchedFile: epoch=0, nodeId=0, nextPtr=0 */
+    CHECK_EQ(vfs_rd4(slot, TOUCHEDFILE_OFF_EPOCH), 0);
+    CHECK_EQ(vfs_rd4(slot, TOUCHEDFILE_OFF_NODEID), 0);
+    CHECK_EQ(vfs_rd8(slot, TOUCHEDFILE_OFF_NEXTPTR), 0);
+
+    /* MapperEntry: fromEpoch=0, toEpoch=0, flags=0, nextPtr=0 */
+    CHECK_EQ(vfs_rd4(slot, MAPPER_OFF_FROMEPOCH), 0);
+    CHECK_EQ(vfs_rd4(slot, MAPPER_OFF_TOEPOCH), 0);
+    CHECK_EQ(vfs_rd2(slot, MAPPER_OFF_FLAGS), 0);
+    CHECK_EQ(vfs_rd8(slot, MAPPER_OFF_NEXTPTR), 0);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -644,6 +710,8 @@ int main(void) {
     test_nameentry_embedded_null();
     test_nameentry_maxlen_boundary();
     test_nameentry_empty();
+
+    test_zero_slot_safety();
 
     name_cleanup();
 
