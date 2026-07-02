@@ -50,8 +50,10 @@ int tree_superblock_write(TreeContext* ctx) {
  * --------------------------------------------------------------------------- */
 
 int tree_bootstrap_superblock(TreeContext* ctx) {
-    /* Acquire superblock page (page 1 is reserved for the superblock) */
-    if (storage_acquire(ctx->sb, SUPERBLOCK_PAGE) != 0) {
+    /* Acquire superblock page (page 1 is reserved for the superblock).
+       storage_acquire returns 1 on successful allocation (fresh file),
+       or 0 if page already exists (reopen) or on error. */
+    if (storage_acquire(ctx->sb, SUPERBLOCK_PAGE) == 0) {
         /* Already acquired — this is a reopen, not a fresh file */
         return tree_init(ctx);
     }
