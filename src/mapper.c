@@ -29,6 +29,8 @@ int mapper_insert(Mapper* m, uint32_t fromEpoch, uint32_t toEpoch,
         if (entry_to == toEpoch) return VFS_ERR_EXISTS;
         /* Check if toEpoch is already used as a source (would create chain) */
         if (entry_from == toEpoch) return VFS_ERR_EXISTS;
+        /* Check if fromEpoch is already used as a target (would create chain) */
+        if (entry_to == fromEpoch) return VFS_ERR_EXISTS;
 
         vp = entry_next;
     }

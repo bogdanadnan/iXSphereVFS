@@ -27,6 +27,7 @@ void mapper_init(Mapper* m, Pool* pool, int64_t* epochMapperPtr);
  *   - If fromEpoch already exists as a from in a live entry → VFS_ERR_EXISTS
  *   - If toEpoch already exists as a to in a live entry → VFS_ERR_EXISTS
  *   - If toEpoch already exists as a from in a live entry → VFS_ERR_EXISTS
+ *   - If fromEpoch already exists as a to in a live entry → VFS_ERR_EXISTS
  * Allocates a pool slot, writes MapperEntry, CAS-prepends to chain.
  * Returns VFS_OK on success, or a negative error code. */
 int mapper_insert(Mapper* m, uint32_t fromEpoch, uint32_t toEpoch,

@@ -47,3 +47,7 @@ add_test(NAME test_nodes COMMAND test_nodes)
 add_executable(test_tree test/test_tree.c)
 target_link_libraries(test_tree ixsphere_vfs pthread)
 add_test(NAME test_tree COMMAND test_tree)
+
+add_executable(test_mapper test/test_mapper.c)
+target_link_libraries(test_mapper ixsphere_vfs pthread)
+add_test(NAME test_mapper COMMAND test_mapper)
