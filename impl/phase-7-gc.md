@@ -31,11 +31,65 @@ and the allocator.
 | `test/test_gc.c` | GC correctness, crash recovery, deferred-free isolation |
 
 ## Dependencies
-- Phase 2 (StorageBackend) for `Allocate`, `Free`, `Read`, `Write`, `Flush`
-- Phase 3 (Pool) for slot allocation
-- Phase 4 (Node Types) for all layout helpers
-- Phase 5 (Tree Operations) for tree walking
-- Phase 6 (Epoch System) for mapper access
+- Phase 2 (StorageBackend) for `storage_allocate`, `storage_free`, `storage_read`, `storage_write`, `storage_flush`, `indir_set`
+- Phase 3 (Pool) for `pool_alloc`, `pool_page_init`, `pool_resolve`, `pool_list_add`
+- Phase 4 (Node Types) for all `nodes_read_*`/`nodes_write_*` helpers
+- Phase 5 (Tree Operations) for `tree_resolve_page` (version chain access),
+  `tree_superblock_read`/`tree_superblock_write` (superblock persistence),
+  `TreeContext` (rootNodeOffset, currentEpoch, etc.)
+- Phase 6 (Epoch System) for `mapper_resolve` (checking if epoch is soft-deleted)
+
+## Staging Guidance
+
+Build in this order — each workload depends on the previous:
+
+### Stage A — Tree Lock (self-contained)
+- 7.1: `tree_lock_acquire_shared`, `tree_lock_release_shared`,
+  `tree_lock_acquire_exclusive`, `tree_lock_release_exclusive`.
+  These are pure atomic operations on `treeLockState`. No pool, no tree, no I/O.
+  Test with concurrent readers/writers.
+
+### Stage B — Deferred-Free Queue (depends on Phase 2)
+- 7.3: `deferred_free_enqueue`, `deferred_free_is_queued`, `deferred_free_confirm_and_release`.
+  Needs `storage_free` from Phase 2 to actually free pages. Test that enqueued
+  pages are not returned by `Allocate`.
+
+### Stage C — Shadow Compaction (depends on A, B, Phases 2–6)
+- 7.2: `vfs_gc`. The full GC cycle. Uses tree lock, deferred-free,
+  tree walking (Phase 5), mapper (Phase 6), pool rebuild (7.4).
+  Build 7.4 (pool rebuild) as a helper function within 7.2 — it's the inner
+  loop that copies surviving entries into new pool pages.
+
+## Key Implementation Notes
+
+**VirtualPtr remapping:** VirtualPtrs use 16-bit slot encoding
+`(page << 16) | (slot & 0xFFFF)`. During GC, entries move to new logical
+pages and new slots. All VirtualPtrs inside copied entries that reference
+other relocated entries must be updated. When a chain entry is DROPPED
+(e.g., a deleted VersionPage), the previous entry's `nextPtr` must be
+relinked to the dropped entry's `nextPtr`, not set to 0. Setting to 0
+would truncate the chain incorrectly — surviving entries further down
+the chain would be lost.
+
+**Superblock page constant:** The superblock is at logical page 1.
+Define `#define SUPERBLOCK_PAGE 1` or use the constant from Phase 5's
+`SUPERBLOCK_PAGE` (tree.h line 24).
+
+**Creating new pool pages during GC:** Use the same pattern as Phase 3's
+`pool_alloc`:
+```
+page = storage_allocate(sb, 1);
+payload = malloc(page_size);
+pool_page_init(payload, page_size);
+storage_write(sb, page, payload, FLUSH_PRIO_POOL);
+pool_list_add(pool, page, payload);
+```
+Do NOT use `pool_alloc` itself — GC builds pages sequentially without the
+CAS-based free list.
+
+**Indirection table cleanup:** Use `storage_free(logical_page)` for pages
+being dropped, which sets the indirection entry to 0. Or use
+`indir_set(logical_page, 0)` directly for bulk cleanup.
 
 ---
 
@@ -307,7 +361,7 @@ for each surviving entry E in tree walk:
 
 ### Wait — VirtualPtr Adjustment
 
-VirtualPtrs stored in pool entries encode `(logical_page_index << 8) | slot_index`.
+VirtualPtrs stored in pool entries encode `(logical_page_index << 16) | slot_index`.
 During GC, the ENTRY MOVES to a new logical page and new slot. So VirtualPtrs
 inside pool entries that point to OTHER pool entries must be UPDATED.
 
