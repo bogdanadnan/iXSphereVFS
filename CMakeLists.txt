@@ -40,3 +40,7 @@ add_test(NAME test_pool COMMAND test_pool)
 add_executable(test_nodes test/test_nodes.c)
 target_link_libraries(test_nodes ixsphere_vfs pthread)
 add_test(NAME test_nodes COMMAND test_nodes)
+
+add_executable(test_tree test/test_tree.c)
+target_link_libraries(test_tree ixsphere_vfs pthread)
+add_test(NAME test_tree COMMAND test_tree)
