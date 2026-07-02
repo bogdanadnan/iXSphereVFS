@@ -18,6 +18,7 @@ add_library(ixsphere_vfs STATIC
     src/tree.c
     src/page_array.c
     src/dentry_cache.c
+    src/mapper.c
 )
 
 target_include_directories(ixsphere_vfs PUBLIC
