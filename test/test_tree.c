@@ -158,6 +158,80 @@ static void test_create_file(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * vfs_delete test
+ * --------------------------------------------------------------------------- */
+
+static void test_delete_file(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    /* Create a file first */
+    int nodeId = vfs_create(vfs, root_vp, "delete_me.txt", 0);
+    CHECK(nodeId > 0);
+
+    /* Verify it exists in root's DirContent chain */
+    uint8_t* root_slot = pool_resolve(&ctx->pool, root_vp);
+    CHECK(root_slot != NULL);
+    int64_t headPtr = vfs_rd8(root_slot, DIRNODE_OFF_HEADPTR);
+    CHECK(headPtr != 0);
+
+    int64_t walk_vp = headPtr;
+    int found = 0;
+    while (walk_vp != 0 && !found) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        CHECK(dc_slot != NULL);
+        uint32_t ce_child, ce_epoch;
+        int64_t ce_childPtr, ce_namePtr, ce_next;
+        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                              &ce_namePtr, &ce_next);
+        (void)ce_child; (void)ce_childPtr;
+        if (ce_epoch == 0 && ce_namePtr != 0) {
+            char entry_name[256];
+            int nl = nodes_read_name(&ctx->pool, ce_namePtr,
+                                      entry_name, (int)sizeof(entry_name));
+            if (nl > 0 && strcmp(entry_name, "delete_me.txt") == 0)
+                found = 1;
+        }
+        walk_vp = ce_next;
+    }
+    CHECK(found);
+
+    /* Delete the file at epoch 2 */
+    int ret = vfs_delete(vfs, root_vp, "delete_me.txt", 2);
+    CHECK_EQ(ret, VFS_OK);
+
+    /* Verify the tombstone exists */
+    root_slot = pool_resolve(&ctx->pool, root_vp);
+    CHECK(root_slot != NULL);
+    headPtr = vfs_rd8(root_slot, DIRNODE_OFF_HEADPTR);
+    CHECK(headPtr != 0);
+
+    walk_vp = headPtr;
+    int found_tombstone = 0;
+    while (walk_vp != 0) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        CHECK(dc_slot != NULL);
+        uint32_t ce_child, ce_epoch;
+        int64_t ce_childPtr, ce_namePtr, ce_next;
+        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                              &ce_namePtr, &ce_next);
+        (void)ce_child; (void)ce_childPtr;
+        if (ce_epoch == 2 && ce_namePtr == 0)
+            found_tombstone = 1;
+        walk_vp = ce_next;
+    }
+    CHECK(found_tombstone);
+
+    /* Delete non-existent file → VFS_ERR_NOTFOUND */
+    ret = vfs_delete(vfs, root_vp, "nonexistent.txt", 2);
+    CHECK_EQ(ret, VFS_ERR_NOTFOUND);
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -166,6 +240,7 @@ int main(void) {
     test_bootstrap_reopen();
     test_pool_list_head();
     test_create_file();
+    test_delete_file();
 
     /* Clean up */
     unlink(test_path);

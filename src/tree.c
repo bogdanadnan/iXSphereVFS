@@ -290,3 +290,72 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     return (int)new_nodeId;
 }
+
+/* ---------------------------------------------------------------------------
+ * vfs_delete — delete a file by prepending a tombstone DirContent
+ * --------------------------------------------------------------------------- */
+
+int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
+    if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
+    TreeContext* ctx = vfs->ctx;
+
+    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch, NULL)) return VFS_ERR_IO;
+
+    /* Read parent DirNode, verify type */
+    uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
+    if (!parent_slot) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2(parent_slot, DIRNODE_OFF_TYPE) != (int16_t)NODE_TYPE_DIR)
+        return VFS_ERR_NOTDIR;
+
+    /* Walk parent's DirContent chain to find the entry with matching name
+       at epoch ≤ query_epoch. Chain is in descending epoch order,
+       so the first match is the most recent at or before query_epoch. */
+    int64_t headPtr = vfs_rd8(parent_slot, DIRNODE_OFF_HEADPTR);
+    int64_t found_vp = 0;
+    uint32_t found_childId = 0;
+    int64_t found_childPtr = 0;
+
+    int64_t walk_vp = headPtr;
+    while (walk_vp != 0 && found_vp == 0) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+        uint32_t ce_child, ce_epoch;
+        int64_t ce_childPtr, ce_namePtr, ce_next;
+        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                              &ce_namePtr, &ce_next);
+        /* Only match non-tombstone entries at or before query epoch */
+        if (ce_namePtr != 0 && ce_epoch <= (uint32_t)epoch) {
+            char entry_name[256];
+            int name_len = nodes_read_name(&ctx->pool, ce_namePtr,
+                                            entry_name, (int)sizeof(entry_name));
+            if (name_len > 0 && strcmp(entry_name, name) == 0) {
+                found_vp = walk_vp;
+                found_childId = ce_child;
+                found_childPtr = ce_childPtr;
+            }
+        }
+        walk_vp = ce_next;
+    }
+
+    if (found_vp == 0) return VFS_ERR_NOTFOUND;
+
+    /* Allocate tombstone DirContent and CAS-prepend */
+    int64_t old_head, dc_vp;
+    uint8_t* dc_slot;
+    do {
+        old_head = vfs_atomic_load_i64(
+            (const int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR));
+        dc_vp = pool_alloc(&ctx->pool);
+        if (dc_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
+        dc_slot = pool_resolve(&ctx->pool, dc_vp);
+        if (!dc_slot) return VFS_ERR_IO;
+
+        /* Tombstone: namePtr=0 means deleted */
+        nodes_write_dircontent(dc_slot, found_childId, (uint32_t)epoch,
+                               found_childPtr, 0, old_head);
+        vfs_mb_release();
+    } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
+                         old_head, dc_vp) != old_head);
+
+    return VFS_OK;
+}
