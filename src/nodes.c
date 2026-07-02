@@ -67,3 +67,18 @@ void nodes_read_dircontent(const uint8_t* slot, uint32_t* childNodeId,
     *namePtr     = vfs_rd8(slot, DIRCONTENT_OFF_NAMEPTR);
     *nextPtr     = vfs_rd8(slot, DIRCONTENT_OFF_NEXTPTR);
 }
+
+/* ---------------------------------------------------------------------------
+ * FileContent (Workload 4.4)
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_filecontent(uint8_t* slot, int64_t pageRootPtr, int64_t nextPtr) {
+    vfs_wr8(slot, FILECONTENT_OFF_ROOTPTR, pageRootPtr);
+    vfs_wr8(slot, FILECONTENT_OFF_NEXTPTR, nextPtr);
+    memset(slot + 16, 0, 16);
+}
+
+void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* nextPtr) {
+    *pageRootPtr = vfs_rd8(slot, FILECONTENT_OFF_ROOTPTR);
+    *nextPtr     = vfs_rd8(slot, FILECONTENT_OFF_NEXTPTR);
+}

@@ -192,6 +192,62 @@ static void test_dircontent_chain(void) {
     CHECK(3 > 1);
 }
 
+/* ---------------------------------------------------------------------------
+ * FileContent tests (Workload 4.4)
+ * --------------------------------------------------------------------------- */
+
+static void test_filecontent(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Single FileContent entry */
+    nodes_write_filecontent(slot, VFS_VPTR_MAKE(20, 5), 0);
+
+    int64_t pageRootPtr, nextPtr;
+    nodes_read_filecontent(slot, &pageRootPtr, &nextPtr);
+
+    CHECK_EQ(VFS_VPTR_PAGE(pageRootPtr), 20);
+    CHECK_EQ(VFS_VPTR_SLOT(pageRootPtr), 5);
+    CHECK_EQ(nextPtr, 0);
+
+    /* Verify reserved bytes 16-31 are zero */
+    int all_zero = 1;
+    for (int i = 16; i < 32; i++) {
+        if (slot[i] != 0) { all_zero = 0; break; }
+    }
+    CHECK(all_zero);
+}
+
+static void test_filecontent_chain(void) {
+    uint8_t s1[32], s2[32];
+    memset(s1, 0, sizeof(s1));
+    memset(s2, 0, sizeof(s2));
+
+    int64_t vp2 = VFS_VPTR_MAKE(30, 0);
+
+    /* Segment 2 (higher range): nextPtr=0 */
+    nodes_write_filecontent(s2, VFS_VPTR_MAKE(30, 0), 0);
+    /* Segment 1 (lower range): nextPtr points to s2 */
+    nodes_write_filecontent(s1, VFS_VPTR_MAKE(10, 0), vp2);
+
+    int64_t root, next;
+    nodes_read_filecontent(s1, &root, &next);
+    CHECK_EQ(VFS_VPTR_PAGE(root), 10);
+    CHECK_EQ(next, vp2);
+
+    nodes_read_filecontent(s2, &root, &next);
+    CHECK_EQ(VFS_VPTR_PAGE(root), 30);
+    CHECK_EQ(next, 0);
+}
+
+static void test_pagenode(void) {
+    // Placeholder — will be implemented in 4b.5
+}
+
+static void test_versionpage(void) {
+    // Placeholder — will be implemented in 4b.6
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -201,6 +257,9 @@ int main(void) {
     test_dircontent_basic();
     test_dircontent_tombstone();
     test_dircontent_chain();
+
+    test_filecontent();
+    test_filecontent_chain();
 
     printf("test_nodes: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
