@@ -62,80 +62,82 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
     if (mapper_resolve(&ctx->mapper, snapshot_epoch) != snapshot_epoch)
         return VFS_ERR_IO;
 
-    /* Collect all files modified in this snapshot epoch */
-    uint32_t touched_ids[1024];
-    int touched_count = touchedfile_collect(&ctx->pool, ctx->touchedFilesPtr,
-                                            s_epoch, touched_ids, 1024);
+    /* Conflict detection: walk the TouchedFile chain directly (no fixed buffer).
+       For each file modified in this snapshot epoch, scan its version chains
+       looking for conflicts at even epochs > snapshot_epoch. */
+    int64_t tf_vp = ctx->touchedFilesPtr;
+    while (tf_vp != 0) {
+        uint8_t* tf_slot = pool_resolve(&ctx->pool, tf_vp);
+        if (!tf_slot) break;
+        uint32_t tf_epoch, tf_nodeId;
+        int64_t tf_next;
+        nodes_read_touchedfile(tf_slot, &tf_epoch, &tf_nodeId, &tf_next);
 
-    /* Conflict detection: for each touched file, check version chains
-       for pages modified at both snapshot epoch AND any live head epoch
-       in (snapshot_epoch, currentEpoch].  Walk the FileNode's FileContent
-       chain and check each PageNode's version chain. */
-    for (int f = 0; f < touched_count; f++) {
-        /* Find the file's VirtualPtr by scanning DirContent chains.
-           Since we only have the nodeId, we need to scan.  For now,
-           use pool_resolve on the root DirContent chain. */
-        /* Simplified: check the version chain manually by walking all
-           FileContent entries and their PageNode version chains. */
-        int64_t root_vp = ctx->rootNodeOffset;
-        uint8_t* root_slot = pool_resolve(&ctx->pool, root_vp);
-        if (!root_slot) continue;
+        if (tf_epoch == s_epoch) {
+            /* Walk root DirContent chain to find the file's VirtualPtr by nodeId.
+               (Subdirectory support deferred — all files are root-level until
+               recursive directory scan is implemented.) */
+            int64_t root_vp = ctx->rootNodeOffset;
+            uint8_t* root_slot = pool_resolve(&ctx->pool, root_vp);
+            if (!root_slot) { tf_vp = tf_next; continue; }
 
-        int64_t walk_vp = vfs_rd8(root_slot, DIRNODE_OFF_HEADPTR);
-        while (walk_vp != 0) {
-            uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
-            if (!dc_slot) break;
-            uint32_t dc_child, dc_epoch;
-            int64_t dc_childPtr, dc_namePtr, dc_next;
-            nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
-                                  &dc_namePtr, &dc_next);
-            (void)dc_epoch; (void)dc_namePtr;
+            int64_t walk_vp = vfs_rd8(root_slot, DIRNODE_OFF_HEADPTR);
+            while (walk_vp != 0) {
+                uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+                if (!dc_slot) break;
+                uint32_t dc_child, dc_epoch;
+                int64_t dc_childPtr, dc_namePtr, dc_next;
+                nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
+                                      &dc_namePtr, &dc_next);
+                (void)dc_epoch; (void)dc_namePtr;
 
-            if (dc_child == touched_ids[f]) {
-                /* Found the file — walk its version chains */
-                uint8_t* file_slot = pool_resolve(&ctx->pool, dc_childPtr);
-                if (!file_slot) break;
+                if (dc_child == tf_nodeId) {
+                    /* Found the file — walk its version chains */
+                    uint8_t* file_slot = pool_resolve(&ctx->pool, dc_childPtr);
+                    if (!file_slot) break;
 
-                int64_t fc_vp = vfs_rd8(file_slot, FILENODE_OFF_HEADPTR);
-                while (fc_vp != 0) {
-                    uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
-                    if (!fc_slot) break;
+                    int64_t fc_vp2 = vfs_rd8(file_slot, FILENODE_OFF_HEADPTR);
+                    while (fc_vp2 != 0) {
+                        uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp2);
+                        if (!fc_slot) break;
 
-                    int64_t pn_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
-                    while (pn_vp != 0) {
-                        uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
-                        if (!pn_slot) break;
+                        int64_t pn_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
+                        while (pn_vp != 0) {
+                            uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
+                            if (!pn_slot) break;
 
-                        int64_t vp = vfs_rd8(pn_slot, PAGENODE_OFF_VERSIONROOT);
-                        int has_snapshot = 0;
-                        int has_live = 0;
+                            int64_t vp = vfs_rd8(pn_slot, PAGENODE_OFF_VERSIONROOT);
+                            int has_snapshot = 0;
+                            int has_live = 0;
 
-                        while (vp != 0) {
-                            uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
-                            if (!vp_slot) break;
-                            uint32_t v_epoch;
-                            int64_t v_dataPage, v_next;
-                            nodes_read_versionpage(vp_slot, &v_epoch,
-                                                    &v_dataPage, &v_next);
-                            (void)v_dataPage;
+                            while (vp != 0) {
+                                uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
+                                if (!vp_slot) break;
+                                uint32_t v_epoch;
+                                int64_t v_dataPage, v_next;
+                                nodes_read_versionpage(vp_slot, &v_epoch,
+                                                        &v_dataPage, &v_next);
+                                (void)v_dataPage;
 
-                            if (v_epoch == s_epoch) has_snapshot = 1;
-                            if (v_epoch > s_epoch && v_epoch % 2 == 0)
-                                has_live = 1;
+                                if (v_epoch == s_epoch) has_snapshot = 1;
+                                if (v_epoch > s_epoch && v_epoch % 2 == 0)
+                                    has_live = 1;
 
-                            vp = v_next;
+                                vp = v_next;
+                            }
+
+                            if (has_snapshot && has_live)
+                                return VFS_ERR_CONFLICT;
+
+                            pn_vp = vfs_rd8(pn_slot, PAGENODE_OFF_NEXTPTR);
                         }
-
-                        if (has_snapshot && has_live)
-                            return VFS_ERR_CONFLICT;
-
-                        pn_vp = vfs_rd8(pn_slot, PAGENODE_OFF_NEXTPTR);
+                        fc_vp2 = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
                     }
-                    fc_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
                 }
+                walk_vp = dc_next;
             }
-            walk_vp = dc_next;
         }
+        tf_vp = tf_next;
     }
 
     /* Insert commit mapping: snapshot_epoch → currentEpoch with traversalApply */
