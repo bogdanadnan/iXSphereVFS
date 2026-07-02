@@ -189,18 +189,45 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
             if (!fc_slot) return NULL;
             nodes_write_filecontent(fc_slot, page_root_vp, 0);
 
-            /* Link into chain */
+            /* CAS-link into chain with release barrier */
+            vfs_mb_release();
             if (i == 0) {
-                /* First segment — write into FileNode headPtr */
-                vfs_wr8(file_slot, FILENODE_OFF_HEADPTR, new_fc_vp);
-            } else if (prev_fc_vp != 0) {
-                /* Subsequent segment — write into previous FC's nextPtr */
+                /* First segment — CAS into FileNode headPtr */
+                int64_t expected = 0;
+                int64_t desired = new_fc_vp;
+                int64_t old = vfs_cas_i64(
+                    (int64_t*)(file_slot + FILENODE_OFF_HEADPTR),
+                    expected, desired);
+                if (old != expected) {
+                    /* CAS failed — another thread already set headPtr.
+                       Our orphaned FileContent+PageNodes will be GC'd.
+                       Fall through to walk the existing chain. */
+                    fc_vp = old;
+                    i--;  /* retry this segment */
+                    continue;
+                }
+                fc_vp = new_fc_vp;
+            } else {
+                /* Subsequent segment — CAS into previous FC's nextPtr.
+                   Expected value is 0 (nextPtr not yet set). */
                 uint8_t* prev_slot = pool_resolve(&ctx->pool, prev_fc_vp);
-                if (prev_slot)
-                    vfs_wr8(prev_slot, FILECONTENT_OFF_NEXTPTR, new_fc_vp);
+                if (prev_slot) {
+                    int64_t expected = 0;
+                    int64_t desired = new_fc_vp;
+                    int64_t off = FILECONTENT_OFF_NEXTPTR;
+                    int64_t old = vfs_cas_i64(
+                        (int64_t*)(prev_slot + off), expected, desired);
+                    if (old != expected) {
+                        /* CAS failed — another thread linked a segment.
+                           Our orphaned slots will be GC'd.
+                           Walk the existing chain starting from old value. */
+                        fc_vp = old;
+                        i--;  /* retry this segment */
+                        continue;
+                    }
+                }
+                fc_vp = new_fc_vp;
             }
-
-            fc_vp = new_fc_vp;
         }
 
         uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
