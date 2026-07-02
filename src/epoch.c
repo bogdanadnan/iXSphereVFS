@@ -1,6 +1,7 @@
 /* Phase 6: Epoch system — replaces Phase 5a stubs. */
 #include "epoch.h"
 #include "vfs_internal.h"
+#include "touched.h"
 
 /* Test override: -1 = use real implementation (Phase 6 default).
    0 = frozen, 1 = all writable (backward compat for existing tests). */
@@ -30,6 +31,11 @@ bool vfs_epoch_is_writable(TreeContext* ctx, int64_t epoch) {
 
     /* Even epoch that isn't currentEpoch → not writable (frozen past) */
     return false;
+}
+
+void epoch_touchedfile_add(TreeContext* ctx, int64_t epoch, uint32_t nodeId) {
+    if (!ctx) return;
+    touchedfile_add(&ctx->pool, &ctx->touchedFilesPtr, (uint32_t)epoch, nodeId);
 }
 
 int64_t vfs_snapshot(vfs_t* vfs) {
