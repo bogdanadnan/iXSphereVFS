@@ -6,6 +6,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <pthread.h>
 
 static int tests_run = 0, tests_passed = 0;
 
@@ -44,25 +45,18 @@ static void test_shared_lock(void) {
 
     CHECK_EQ(ctx->treeLockState, 0);
 
-    /* Acquire shared lock */
     tree_lock_acquire_shared(ctx);
-    /* Reader count should be 1, exclusive bit clear */
     CHECK(ctx->treeLockState & (int64_t)TREE_LOCK_READER_MASK);
     CHECK(!(ctx->treeLockState & (int64_t)TREE_LOCK_EXCLUSIVE_BIT));
-
-    /* Release shared lock */
     tree_lock_release_shared(ctx);
     CHECK_EQ(ctx->treeLockState, 0);
 
-    /* Acquire multiple shared locks */
+    /* Multiple readers */
     tree_lock_acquire_shared(ctx);
     tree_lock_acquire_shared(ctx);
     tree_lock_acquire_shared(ctx);
-    /* Reader count should be 3 */
-    int64_t readers = ctx->treeLockState & (int64_t)TREE_LOCK_READER_MASK;
-    CHECK_EQ(readers, (int64_t)TREE_LOCK_READER_INC * 3);
-
-    /* Release all */
+    CHECK_EQ(ctx->treeLockState & (int64_t)TREE_LOCK_READER_MASK,
+             (int64_t)TREE_LOCK_READER_INC * 3);
     tree_lock_release_shared(ctx);
     tree_lock_release_shared(ctx);
     tree_lock_release_shared(ctx);
@@ -80,14 +74,9 @@ static void test_exclusive_lock(void) {
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
 
-    /* Acquire exclusive lock */
     tree_lock_acquire_exclusive(ctx);
     CHECK(ctx->treeLockState & (int64_t)TREE_LOCK_EXCLUSIVE_BIT);
-    /* Reader count should be 0 */
-    int64_t readers = ctx->treeLockState & (int64_t)TREE_LOCK_READER_MASK;
-    CHECK_EQ(readers, 0);
-
-    /* Release exclusive lock */
+    CHECK_EQ(ctx->treeLockState & (int64_t)TREE_LOCK_READER_MASK, 0);
     tree_lock_release_exclusive(ctx);
     CHECK_EQ(ctx->treeLockState, 0);
 
@@ -95,27 +84,91 @@ static void test_exclusive_lock(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * Exclusive blocks shared acquire test (conceptual: verify state transition)
+ * Exclusive blocks concurrent readers
  * --------------------------------------------------------------------------- */
+
+static TreeContext* blocking_ctx;
+static volatile int reader_blocked_started = 0;
+static volatile int reader_blocked_acquired = 0;
+
+static void* blocking_reader_thread(void* arg) {
+    (void)arg;
+    reader_blocked_started = 1;
+    tree_lock_acquire_shared(blocking_ctx);
+    reader_blocked_acquired = 1;
+    tree_lock_release_shared(blocking_ctx);
+    return NULL;
+}
 
 static void test_exclusive_blocks_shared(void) {
     vfs_t* vfs = setup();
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
+    blocking_ctx = ctx;
+    reader_blocked_started = 0;
+    reader_blocked_acquired = 0;
 
-    /* Acquire exclusive lock */
+    /* Hold exclusive lock */
     tree_lock_acquire_exclusive(ctx);
-    CHECK(ctx->treeLockState & (int64_t)TREE_LOCK_EXCLUSIVE_BIT);
 
-    /* Release exclusive */
+    /* Spawn reader — should block on exclusive bit */
+    pthread_t reader;
+    CHECK_EQ(pthread_create(&reader, NULL, blocking_reader_thread, NULL), 0);
+    while (!reader_blocked_started) sched_yield();
+    usleep(5000);  /* give reader time to attempt acquire */
+    CHECK(!reader_blocked_acquired);  /* must still be blocked */
+
+    /* Release exclusive — reader should now acquire and finish */
     tree_lock_release_exclusive(ctx);
-    CHECK_EQ(ctx->treeLockState, 0);
+    pthread_join(reader, NULL);
+    CHECK(reader_blocked_acquired);  /* reader succeeded after release */
 
-    /* Shared → Exclusive → Shared ordering works */
-    tree_lock_acquire_shared(ctx);
-    CHECK(ctx->treeLockState & (int64_t)TREE_LOCK_READER_MASK);
-    tree_lock_release_shared(ctx);
-    CHECK_EQ(ctx->treeLockState, 0);
+    teardown(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * Exclusive drains active readers before acquiring
+ * --------------------------------------------------------------------------- */
+
+static volatile int drain_readers_ready = 0;
+static volatile int drain_readers_released = 0;
+
+static void* slow_reader_thread(void* arg) {
+    (void)arg;
+    tree_lock_acquire_shared(blocking_ctx);
+    __sync_fetch_and_add(&drain_readers_ready, 1);
+    usleep(30000);  /* hold lock for 30ms */
+    tree_lock_release_shared(blocking_ctx);
+    __sync_fetch_and_add(&drain_readers_released, 1);
+    return NULL;
+}
+
+static void test_exclusive_drains_readers(void) {
+    vfs_t* vfs = setup();
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    blocking_ctx = ctx;
+    drain_readers_ready = 0;
+    drain_readers_released = 0;
+
+    /* Spawn 3 readers that hold the lock briefly */
+    pthread_t readers[3];
+    for (int i = 0; i < 3; i++)
+        CHECK_EQ(pthread_create(&readers[i], NULL, slow_reader_thread, NULL), 0);
+
+    /* Wait for all readers to acquire */
+    while (drain_readers_ready < 3) sched_yield();
+    usleep(1000);
+
+    /* Now acquire exclusive — must block until readers drain */
+    tree_lock_acquire_exclusive(ctx);
+    /* All readers must have finished before exclusive acquired */
+    CHECK_EQ(drain_readers_released, 3);
+    CHECK(ctx->treeLockState & (int64_t)TREE_LOCK_EXCLUSIVE_BIT);
+    CHECK_EQ(ctx->treeLockState & (int64_t)TREE_LOCK_READER_MASK, 0);
+
+    tree_lock_release_exclusive(ctx);
+    for (int i = 0; i < 3; i++) pthread_join(readers[i], NULL);
 
     teardown(vfs);
 }
@@ -127,19 +180,12 @@ static void test_exclusive_blocks_shared(void) {
 static void test_crash_recovery(void) {
     vfs_t* vfs = setup();
     CHECK(vfs != NULL);
-    /* Simulate stale exclusive lock by setting bit 63 */
     vfs->ctx->treeLockState = (int64_t)TREE_LOCK_EXCLUSIVE_BIT;
-
-    /* Close and reopen (without explicit unlink to preserve state).
-       This triggers tree_init which should detect and clear the stale bit. */
     vfs_close(vfs);
 
-    /* Reopen the same file — tree_init should clear the stale exclusive bit */
     vfs = vfs_open(test_path);
     CHECK(vfs != NULL);
-    /* treeLockState should be 0 after crash recovery */
     CHECK_EQ(vfs->ctx->treeLockState, 0);
-
     teardown(vfs);
 }
 
@@ -151,6 +197,7 @@ int main(void) {
     test_shared_lock();
     test_exclusive_lock();
     test_exclusive_blocks_shared();
+    test_exclusive_drains_readers();
     test_crash_recovery();
 
     printf("test_gc: %d/%d passed\n", tests_passed, tests_run);
