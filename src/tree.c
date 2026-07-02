@@ -1,6 +1,7 @@
 /* Phase 5: Tree Operations — Bootstrap, Init, Superblock I/O */
 #include "tree.h"
 #include "page_array.h"
+#include "touched.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -714,19 +715,12 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
                Our orphaned data page and VersionPage will be reclaimed by GC. */
         }
 
-        /* TouchedFile: record first write to this file in this epoch */
+        /* TouchedFile: record first write to this file in this epoch.
+           Uses touchedfile_add which handles dedup (checks for existing
+           (epoch, nodeId) pair before inserting) and CAS-prepend. */
         if (!touched_this_epoch) {
-            int64_t tf_vp = pool_alloc(&ctx->pool);
-            if (tf_vp != VFS_VPTR_NULL) {
-                uint8_t* tf_slot = pool_resolve(&ctx->pool, tf_vp);
-                if (tf_slot) {
-                    int64_t old_tf = ctx->touchedFilesPtr;
-                    nodes_write_touchedfile(tf_slot, (uint32_t)epoch,
-                                            file_nodeId, old_tf);
-                    vfs_mb_release();
-                    vfs_cas_i64(&ctx->touchedFilesPtr, old_tf, tf_vp);
-                }
-            }
+            touchedfile_add(&ctx->pool, &ctx->touchedFilesPtr,
+                            (uint32_t)epoch, file_nodeId);
             touched_this_epoch = 1;
         }
 
