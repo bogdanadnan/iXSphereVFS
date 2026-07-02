@@ -119,6 +119,11 @@ int tree_init(TreeContext* ctx) {
        ones only after commit).  An incomplete GC simply leaves some
        unreclaimed pages. */
     if (ctx->treeLockState & (int64_t)TREE_LOCK_EXCLUSIVE_BIT) {
+#ifndef NDEBUG
+        fprintf(stderr, "vfs: tree_init: stale exclusive lock detected "
+                "(treeLockState=0x%016llx), clearing\n",
+                (unsigned long long)ctx->treeLockState);
+#endif
         ctx->treeLockState = 0;
     }
 
