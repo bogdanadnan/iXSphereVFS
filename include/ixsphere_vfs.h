@@ -30,6 +30,9 @@ typedef struct vfs_t vfs_t;
 vfs_t*  vfs_open(const char* path);
 void    vfs_close(vfs_t* vfs);
 
+/* Include the full tree API */
+#include "tree_api.h"
+
 #ifdef __cplusplus
 }
 #endif
