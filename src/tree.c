@@ -811,12 +811,22 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
             int64_t vp_dataPage, vp_next;
             nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
 
-            if (vp_epoch == (uint32_t)read_epoch) {
+            /* Apply mapper traversal remapping: if a mapping exists for this
+               entry's epoch and traversalApply is true, treat the entry as if
+               its epoch were the mapped toEpoch.  If traversalApply is false,
+               keep the entry's original epoch (odd → skipped by read-rule). */
+            int64_t effective_epoch = (int64_t)vp_epoch;
+            if (mapper_traversal_apply(&ctx->mapper, (int64_t)vp_epoch)) {
+                effective_epoch = mapper_resolve(&ctx->mapper,
+                                                  (int64_t)vp_epoch);
+            }
+
+            if (effective_epoch == read_epoch) {
                 /* Exact match — use it regardless of even/odd */
                 data_page = vp_dataPage;
                 found = 1;
-            } else if (vp_epoch < (uint32_t)read_epoch) {
-                if (vp_epoch % 2 == 0) {
+            } else if (effective_epoch < read_epoch) {
+                if (effective_epoch % 2 == 0) {
                     /* Even epoch < read_epoch — committed base, use it */
                     data_page = vp_dataPage;
                     found = 1;
