@@ -61,7 +61,7 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     ctx->currentEpoch     = 0;
     ctx->epochMapperPtr   = 0;
     ctx->touchedFilesPtr  = 0;
-    ctx->nextNodeId       = 1;  /* nodeId 0 reserved for root */
+    ctx->nextNodeId       = 0;  /* first vfs_atomic_add_i32 returns 1 */
     ctx->treeLockState    = 0;
 
     /* Write superblock with initial state */
