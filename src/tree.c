@@ -2,6 +2,7 @@
 #include "tree.h"
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ---------------------------------------------------------------------------
  * Superblock I/O helpers
@@ -212,4 +213,80 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
     }
 
     return NULL;
+}
+
+/* ---------------------------------------------------------------------------
+ * vfs_create — create a file under a parent directory
+ *
+ * Returns new nodeId on success, or negative vfs_error_t on failure.
+ * --------------------------------------------------------------------------- */
+
+int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
+    if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
+    TreeContext* ctx = vfs->ctx;
+
+    /* Validate epoch is writable (Phase 6 stub: always writable) */
+    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch, NULL)) return VFS_ERR_IO;
+
+    /* Read parent DirNode, verify type */
+    uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
+    if (!parent_slot) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2(parent_slot, DIRNODE_OFF_TYPE) != (int16_t)NODE_TYPE_DIR)
+        return VFS_ERR_NOTDIR;
+
+    /* Walk parent's DirContent chain, checking for name collision */
+    int64_t headPtr = vfs_rd8(parent_slot, DIRNODE_OFF_HEADPTR);
+    int64_t walk_vp = headPtr;
+    while (walk_vp != 0) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+        uint32_t ce_child, ce_epoch;
+        int64_t ce_namePtr, ce_next;
+        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, NULL,
+                              &ce_namePtr, &ce_next);
+        if (ce_epoch == (uint32_t)epoch && ce_namePtr != 0) {
+            /* Read the name and compare */
+            char entry_name[256];
+            int name_len = nodes_read_name(&ctx->pool, ce_namePtr,
+                                            entry_name, (int)sizeof(entry_name));
+            if (name_len > 0 && strcmp(entry_name, name) == 0)
+                return VFS_ERR_EXISTS;
+        }
+        walk_vp = ce_next;
+    }
+
+    /* Atomically increment nextNodeId */
+    uint32_t new_nodeId = (uint32_t)vfs_atomic_add_i32((int32_t*)&ctx->nextNodeId, 1);
+    /* nextNodeId starts at 1, first add yields nodeId=1 */
+
+    /* Allocate FileNode slot and write it */
+    int64_t file_vp = pool_alloc(&ctx->pool);
+    if (file_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
+    uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
+    if (!file_slot) return VFS_ERR_IO;
+    nodes_write_filenode(file_slot, new_nodeId, 0, 0, (int64_t)time(NULL));
+
+    /* Allocate NameEntry chain for the file name */
+    int64_t name_vp;
+    int name_slots = nodes_write_name(&ctx->pool, name, &name_vp);
+    if (name_slots == 0) return VFS_ERR_IO;
+
+    /* CAS-prepend DirContent to parent's headPtr */
+    int64_t old_head, dc_vp;
+    uint8_t* dc_slot;
+    do {
+        old_head = vfs_atomic_load_i64(
+            (const int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR));
+        dc_vp = pool_alloc(&ctx->pool);
+        if (dc_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
+        dc_slot = pool_resolve(&ctx->pool, dc_vp);
+        if (!dc_slot) return VFS_ERR_IO;
+
+        nodes_write_dircontent(dc_slot, new_nodeId, (uint32_t)epoch,
+                               file_vp, name_vp, old_head);
+        vfs_mb_release();
+    } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
+                         old_head, dc_vp) != old_head);
+
+    return (int)new_nodeId;
 }
