@@ -31,8 +31,75 @@ visibility of committed and deleted snapshots during reads.
 
 ## Dependencies
 - Phase 3 (Pool) for TouchedFile and MapperEntry slot allocation
-- Phase 4 (Node Types) for layout helpers
-- Phase 5 (Tree Operations) for reading superblock and version chain access
+- Phase 4 (Node Types) for `nodes_write_mapperentry`, `nodes_write_touchedfile`,
+  `nodes_read_mapperentry`, `nodes_read_touchedfile`
+- Phase 5 (Tree Operations) for:
+  - `tree_resolve_page` — to walk VersionPage chains during commit conflict scan
+  - `tree_superblock_read/write` — for `touchedFilesPtr` CAS updates
+  - `tree_current_epoch` — for snapshot increment
+
+## Staging Guidance
+
+Phase 6 has internal dependencies. Build in this order:
+
+### Stage A — Mapper (self-contained)
+- 6.5 first: MapperEntry chain operations (`mapper_insert`, `mapper_resolve`,
+  `mapper_traversal_apply`). This is the foundation — all other workloads
+  depend on reading the mapper. Test with pool-allocated entries and chain
+  walks.
+
+### Stage B — Epoch Validation (depends on A)
+- 6.1: `vfs_epoch_is_writable` — uses `mapper_resolve` to check if an epoch
+  has been committed or soft-deleted. Replace the Phase 5 stub with this
+  real implementation.
+
+### Stage C — Snapshot + TouchedFile (depends on A)
+- 6.2: `vfs_snapshot` — atomic increment, zero I/O.
+- 6.6: TouchedFile chain — `touchedfile_add`, `touchedfile_collect`,
+  `touchedfile_drop`. Needs pool allocator.
+
+### Stage D — Commit + Soft-Delete (depends on B, C)
+- 6.3: `vfs_commit` — uses mapper, TouchedFile, and version chain access
+  via `tree_resolve_page` from Phase 5.
+- 6.4: `vfs_delete_snapshot` — adds mapper entry, drops TouchedFile chain.
+
+## Stub Replacement Notes
+
+Phase 5 stubs in `src/epoch.c` that must be replaced:
+
+| Stub | Replaced By | Workload |
+|------|-------------|----------|
+| `mapper_resolve(void* mapper, int64_t epoch)` | Real implementation walking MapperEntry chain | 6.5 |
+| `vfs_epoch_is_writable(void* sb, int64_t epoch, void* mapper)` | Real implementation with mapper check | 6.1 |
+| `touchedfile_add(void* vfs, int64_t epoch, uint32_t nodeId)` | Real implementation with CAS-prepend | 6.6 |
+
+Phase 5 code calls these via the same signatures — the stubs just need to be
+replaced with real implementations. No Phase 5 code changes needed.
+
+## Phase 5 Debt Check
+
+| Item | Status |
+|------|--------|
+| Stub functions in src/epoch.c | ✅ Being replaced by this phase |
+| tree_resolve_page provides version chain access | ✅ Used by 6.3 for conflict scan |
+| superblock fields accessible via TreeContext | ✅ All fields present |
+| No blocking debt | ✅ |
+
+## Gaps Noted
+
+| # | Gap | Severity | Resolution |
+|---|-----|----------|------------|
+| 1 | No staging guidance | Medium | Added above — 4-stage build order |
+| 2 | `mapper_init` entry point not described | Low | Initialize Mapper.epochMapperPtr from superblock field during tree_init (Phase 5) |
+| 3 | Conflict scan version chain access not explicit | Low | Uses `tree_resolve_page` → `versionRootPtr` → walk chain. Documented above |
+| 4 | `touchedFilesPtr` CAS synchronized between 6.6 and superblock | Low | 6.6 CAS-prepends entries; superblock persists the chain head on flush |
+
+## Circular Dependencies (None)
+
+All workloads within Phase 6 form a clean DAG:
+6.5 (Mapper) → 6.1 (Epoch Valid) → 6.2 (Snapshot) → 6.6 (TouchedFile) → 6.3 (Commit) / 6.4 (Soft-Delete)
+
+No cycles. Stage A must be built first; everything else builds on it.
 
 ---
 
