@@ -16,6 +16,7 @@ add_library(ixsphere_vfs STATIC
     src/nodes.c
     src/epoch.c
     src/tree.c
+    src/page_array.c
 )
 
 target_include_directories(ixsphere_vfs PUBLIC
