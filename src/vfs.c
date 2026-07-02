@@ -57,6 +57,8 @@ vfs_t* vfs_open(const char* path) {
 void vfs_close(vfs_t* vfs) {
     if (!vfs) return;
     if (vfs->ctx) {
+        /* Flush superblock to persist any pending changes */
+        tree_superblock_write(vfs->ctx);
         storage_close(vfs->ctx->sb);
         free(vfs->ctx);
     }
