@@ -26,4 +26,8 @@ bool vfs_epoch_is_writable(void* sb, int64_t epoch, void* mapper);
    Phase 6: CAS-prepends a TouchedFile entry to superblock->touchedFilesPtr. */
 void touchedfile_add(void* vfs, int64_t epoch, uint32_t nodeId);
 
+/* Test helper: override vfs_epoch_is_writable return value.
+   Pass non-zero for writable (default), zero for frozen. */
+void test_set_epoch_writable(int writable);
+
 #endif /* VFS_EPOCH_H */

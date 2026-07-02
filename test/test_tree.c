@@ -811,6 +811,33 @@ static void test_write_multi_segment(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * Write to frozen epoch test — vfs_epoch_is_writable returns false
+ * --------------------------------------------------------------------------- */
+
+static void test_write_frozen_epoch(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "frozen.txt", 0);
+    CHECK(nodeId > 0);
+    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
+    CHECK(file_vp != 0);
+
+    /* Freeze epoch — write should fail */
+    test_set_epoch_writable(0);
+
+    int ret = vfs_write(vfs, file_vp, "DATA", 0, 4, 3);
+    CHECK_EQ(ret, -1);  /* VFS_ERR_IO mapped to -1 */
+
+    /* Unfreeze for cleanup */
+    test_set_epoch_writable(1);
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -849,6 +876,10 @@ int main(void) {
     unlink(test_path);
 
     test_write_multi_segment();
+
+    unlink(test_path);
+
+    test_write_frozen_epoch();
 
     /* Clean up */
     unlink(test_path);
