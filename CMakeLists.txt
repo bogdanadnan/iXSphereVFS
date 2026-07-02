@@ -57,3 +57,7 @@ add_test(NAME test_mapper COMMAND test_mapper)
 add_executable(test_epoch test/test_epoch.c)
 target_link_libraries(test_epoch ixsphere_vfs pthread)
 add_test(NAME test_epoch COMMAND test_epoch)
+
+add_executable(test_gc test/test_gc.c)
+target_link_libraries(test_gc ixsphere_vfs pthread)
+add_test(NAME test_gc COMMAND test_gc)
