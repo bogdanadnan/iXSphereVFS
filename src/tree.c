@@ -2,6 +2,7 @@
 #include "tree.h"
 #include "page_array.h"
 #include "touched.h"
+#include "gc.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -110,6 +111,16 @@ int tree_init(TreeContext* ctx) {
     /* Verify type is DirNode (0x01) */
     int16_t type = vfs_rd2(root_slot, DIRNODE_OFF_TYPE);
     if (type != (int16_t)NODE_TYPE_DIR) return VFS_ERR_IO;
+
+    /* Crash recovery: if exclusive lock (bit 63) was held at crash time,
+       zero the field so the lock is released on mount.  The GC operation
+       that was in progress may be incomplete, but all data is consistent
+       because GC uses shadow-compaction (writes to new pages, frees old
+       ones only after commit).  An incomplete GC simply leaves some
+       unreclaimed pages. */
+    if (ctx->treeLockState & (int64_t)TREE_LOCK_EXCLUSIVE_BIT) {
+        ctx->treeLockState = 0;
+    }
 
     /* Read segment_size from StorageBackend header */
     uint8_t* hdr = storage_read(ctx->sb, 0);
