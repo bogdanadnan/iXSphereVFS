@@ -117,3 +117,24 @@ void nodes_read_versionpage(const uint8_t* slot, uint32_t* epoch,
     *dataPage = vfs_rd8(slot, VERSIONPAGE_OFF_DATAPAGE);
     *nextPtr  = vfs_rd8(slot, VERSIONPAGE_OFF_NEXTPTR);
 }
+
+/* ---------------------------------------------------------------------------
+ * FileSize (Workload 4.7)
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_filesize(uint8_t* slot, uint32_t epoch, int64_t modifiedAt,
+                          int64_t fileSize, int64_t nextPtr) {
+    vfs_wr4(slot, FILESIZE_OFF_EPOCH, (int32_t)epoch);
+    vfs_wr8(slot, FILESIZE_OFF_MODIFIEDAT, modifiedAt);
+    vfs_wr8(slot, FILESIZE_OFF_FILESIZE, fileSize);
+    vfs_wr8(slot, FILESIZE_OFF_NEXTPTR, nextPtr);
+    vfs_wr4(slot, 28, 0);
+}
+
+void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
+                         int64_t* modifiedAt, int64_t* fileSize, int64_t* nextPtr) {
+    *epoch      = (uint32_t)vfs_rd4(slot, FILESIZE_OFF_EPOCH);
+    *modifiedAt = vfs_rd8(slot, FILESIZE_OFF_MODIFIEDAT);
+    *fileSize   = vfs_rd8(slot, FILESIZE_OFF_FILESIZE);
+    *nextPtr    = vfs_rd8(slot, FILESIZE_OFF_NEXTPTR);
+}

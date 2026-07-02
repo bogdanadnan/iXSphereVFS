@@ -337,6 +337,56 @@ static void test_versionpage_chain(void) {
     CHECK_EQ(nextPtr, 0);
 }
 
+/* ---------------------------------------------------------------------------
+ * FileSize tests (Workload 4.7)
+ * --------------------------------------------------------------------------- */
+
+static void test_filesize(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Single FileSize entry {epoch=2, modifiedAt=now, fileSize=500} */
+    nodes_write_filesize(slot, 2, 1000, 500, 0);
+
+    uint32_t epoch;
+    int64_t modifiedAt, fileSize, nextPtr;
+    nodes_read_filesize(slot, &epoch, &modifiedAt, &fileSize, &nextPtr);
+
+    CHECK_EQ(epoch, 2u);
+    CHECK_EQ(modifiedAt, 1000);
+    CHECK_EQ(fileSize, 500);
+    CHECK_EQ(nextPtr, 0);
+
+    /* Verify reserved bytes 28-31 are zero */
+    CHECK_EQ(vfs_rd4(slot, 28), 0);
+}
+
+static void test_filesize_chain(void) {
+    uint8_t s1[32], s2[32];
+    memset(s1, 0, sizeof(s1));
+    memset(s2, 0, sizeof(s2));
+
+    int64_t vp2 = VFS_VPTR_MAKE(10, 2);
+
+    /* Older entry (epoch=2, size=500): nextPtr=0 */
+    nodes_write_filesize(s2, 2, 500, 500, 0);
+    /* Newer entry (epoch=3, size=1000): nextPtr -> s2 */
+    nodes_write_filesize(s1, 3, 1000, 1000, vp2);
+
+    uint32_t epoch;
+    int64_t modifiedAt, fileSize, nextPtr;
+
+    nodes_read_filesize(s1, &epoch, &modifiedAt, &fileSize, &nextPtr);
+    CHECK_EQ(epoch, 3u);
+    CHECK_EQ(fileSize, 1000);
+    CHECK_EQ(nextPtr, vp2);
+
+    nodes_read_filesize(s2, &epoch, &modifiedAt, &fileSize, &nextPtr);
+    CHECK_EQ(epoch, 2u);
+    CHECK_EQ(fileSize, 500);
+    CHECK_EQ(nextPtr, 0);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -354,6 +404,9 @@ int main(void) {
     test_pagenode_chain();
     test_versionpage();
     test_versionpage_chain();
+
+    test_filesize();
+    test_filesize_chain();
 
     printf("test_nodes: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
