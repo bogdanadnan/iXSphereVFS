@@ -44,3 +44,26 @@ void nodes_read_filenode(const uint8_t* slot, uint32_t* nodeId,
 int64_t nodes_read_filenode_ctime(const uint8_t* slot) {
     return vfs_rd8(slot, FILENODE_OFF_CTIME);
 }
+
+/* ---------------------------------------------------------------------------
+ * DirContent (Workload 4.3)
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_dircontent(uint8_t* slot, uint32_t childNodeId, uint32_t epoch,
+                            int64_t childPtr, int64_t namePtr, int64_t nextPtr) {
+    vfs_wr4(slot, DIRCONTENT_OFF_CHILDID, (int32_t)childNodeId);
+    vfs_wr4(slot, DIRCONTENT_OFF_EPOCH, (int32_t)epoch);
+    vfs_wr8(slot, DIRCONTENT_OFF_CHILDPTR, childPtr);
+    vfs_wr8(slot, DIRCONTENT_OFF_NAMEPTR, namePtr);
+    vfs_wr8(slot, DIRCONTENT_OFF_NEXTPTR, nextPtr);
+}
+
+void nodes_read_dircontent(const uint8_t* slot, uint32_t* childNodeId,
+                           uint32_t* epoch, int64_t* childPtr,
+                           int64_t* namePtr, int64_t* nextPtr) {
+    *childNodeId = (uint32_t)vfs_rd4(slot, DIRCONTENT_OFF_CHILDID);
+    *epoch       = (uint32_t)vfs_rd4(slot, DIRCONTENT_OFF_EPOCH);
+    *childPtr    = vfs_rd8(slot, DIRCONTENT_OFF_CHILDPTR);
+    *namePtr     = vfs_rd8(slot, DIRCONTENT_OFF_NAMEPTR);
+    *nextPtr     = vfs_rd8(slot, DIRCONTENT_OFF_NEXTPTR);
+}

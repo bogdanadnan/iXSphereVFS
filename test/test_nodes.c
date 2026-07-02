@@ -115,12 +115,92 @@ static void test_filenode_dirnode_overlap(void) {
     CHECK_EQ(FILENODE_OFF_HEADPTR, 8);
 }
 
+/* ---------------------------------------------------------------------------
+ * DirContent tests (Workload 4.3)
+ * --------------------------------------------------------------------------- */
+
+static void test_dircontent_basic(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Normal DirContent entry */
+    nodes_write_dircontent(slot, 7, 5, VFS_VPTR_MAKE(3, 1), VFS_VPTR_MAKE(3, 2), 0);
+
+    uint32_t childNodeId, epoch;
+    int64_t childPtr, namePtr, nextPtr;
+    nodes_read_dircontent(slot, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr);
+
+    CHECK_EQ(childNodeId, 7u);
+    CHECK_EQ(epoch, 5u);
+    CHECK_EQ(VFS_VPTR_PAGE(childPtr), 3);
+    CHECK_EQ(VFS_VPTR_SLOT(childPtr), 1);
+    CHECK_EQ(VFS_VPTR_PAGE(namePtr), 3);
+    CHECK_EQ(VFS_VPTR_SLOT(namePtr), 2);
+    CHECK_EQ(nextPtr, 0);
+}
+
+static void test_dircontent_tombstone(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Tombstone: namePtr=0 means deleted */
+    nodes_write_dircontent(slot, 7, 5, VFS_VPTR_MAKE(3, 1), 0, 0);
+
+    uint32_t childNodeId, epoch;
+    int64_t childPtr, namePtr, nextPtr;
+    nodes_read_dircontent(slot, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr);
+
+    CHECK_EQ(namePtr, 0);
+}
+
+static void test_dircontent_chain(void) {
+    /* Build 3 DirContent entries linked via nextPtr, prepend in descending epoch */
+    uint8_t e1[32], e2[32], e3[32];
+    memset(e1, 0, sizeof(e1));
+    memset(e2, 0, sizeof(e2));
+    memset(e3, 0, sizeof(e3));
+
+    int64_t vp1 = VFS_VPTR_MAKE(10, 1);
+    int64_t vp2 = VFS_VPTR_MAKE(10, 2);
+    int64_t vp3 = VFS_VPTR_MAKE(10, 3);
+
+    /* Entry 3 (oldest, epoch=1): nextPtr=0 */
+    nodes_write_dircontent(e3, 1, 1, vp3, 0, 0);
+    /* Entry 2 (epoch=3): nextPtr points to e3 */
+    nodes_write_dircontent(e2, 2, 3, vp2, 0, vp3);
+    /* Entry 1 (newest, epoch=5): nextPtr points to e2 */
+    nodes_write_dircontent(e1, 3, 5, vp1, 0, vp2);
+
+    uint32_t childNodeId, epoch;
+    int64_t childPtr, namePtr, nextPtr;
+
+    /* Walk chain: e1 -> e2 -> e3 */
+    nodes_read_dircontent(e1, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr);
+    CHECK_EQ(epoch, 5u);
+    CHECK_EQ(nextPtr, vp2);
+
+    nodes_read_dircontent(e2, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr);
+    CHECK_EQ(epoch, 3u);
+    CHECK_EQ(nextPtr, vp3);
+
+    nodes_read_dircontent(e3, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr);
+    CHECK_EQ(epoch, 1u);
+    CHECK_EQ(nextPtr, 0);
+
+    /* Verify descending epoch order */
+    CHECK(5 > 3);
+    CHECK(3 > 1);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
     test_filenode_write_read();
     test_filenode_ctime();
     test_filenode_dirnode_overlap();
+    test_dircontent_basic();
+    test_dircontent_tombstone();
+    test_dircontent_chain();
 
     printf("test_nodes: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
