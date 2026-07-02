@@ -432,3 +432,91 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
     if (!best_name_match) return VFS_ERR_NOTFOUND;
     return best_child;
 }
+
+/* ---------------------------------------------------------------------------
+ * vfs_file_size — query file size at a given epoch
+ *
+ * Walks the FileNode's sizePtr chain.  Applies the read-rule: finds the
+ * first FileSize entry with epoch ≤ query_epoch (even or exact match).
+ * Returns 0 if the chain is empty.
+ * --------------------------------------------------------------------------- */
+
+int64_t vfs_file_size(vfs_t* vfs, int64_t file, int64_t epoch) {
+    if (!vfs || !vfs->ctx) return -1;
+    TreeContext* ctx = vfs->ctx;
+
+    uint8_t* file_slot = pool_resolve(&ctx->pool, (int64_t)file);
+    if (!file_slot) return -1;
+    if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
+        return -1;
+
+    int64_t sizePtr = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
+    uint32_t query_epoch = (uint32_t)epoch;
+
+    int64_t walk_vp = sizePtr;
+    while (walk_vp != 0) {
+        uint8_t* fs_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!fs_slot) break;
+        uint32_t fs_epoch;
+        int64_t fs_modified, fs_size, fs_next;
+        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modified, &fs_size, &fs_next);
+        (void)fs_modified;
+
+        if (fs_epoch == query_epoch ||
+            (fs_epoch < query_epoch && fs_epoch % 2 == 0))
+            return fs_size;
+
+        walk_vp = fs_next;
+    }
+    return 0;  /* empty chain */
+}
+
+/* ---------------------------------------------------------------------------
+ * vfs_file_mtime — query file modification time at a given epoch
+ * --------------------------------------------------------------------------- */
+
+int64_t vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch) {
+    if (!vfs || !vfs->ctx) return -1;
+    TreeContext* ctx = vfs->ctx;
+
+    uint8_t* file_slot = pool_resolve(&ctx->pool, (int64_t)file);
+    if (!file_slot) return -1;
+    if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
+        return -1;
+
+    int64_t sizePtr = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
+    uint32_t query_epoch = (uint32_t)epoch;
+
+    int64_t walk_vp = sizePtr;
+    while (walk_vp != 0) {
+        uint8_t* fs_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!fs_slot) break;
+        uint32_t fs_epoch;
+        int64_t fs_modified, fs_size, fs_next;
+        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modified, &fs_size, &fs_next);
+        (void)fs_size;
+
+        if (fs_epoch == query_epoch ||
+            (fs_epoch < query_epoch && fs_epoch % 2 == 0))
+            return fs_modified;
+
+        walk_vp = fs_next;
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * vfs_file_ctime — query file creation time (immutable, no epoch needed)
+ * --------------------------------------------------------------------------- */
+
+int64_t vfs_file_ctime(vfs_t* vfs, int64_t file) {
+    if (!vfs || !vfs->ctx) return -1;
+    TreeContext* ctx = vfs->ctx;
+
+    uint8_t* file_slot = pool_resolve(&ctx->pool, (int64_t)file);
+    if (!file_slot) return -1;
+    if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
+        return -1;
+
+    return nodes_read_filenode_ctime(file_slot);
+}

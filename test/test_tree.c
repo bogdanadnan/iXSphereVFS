@@ -324,6 +324,74 @@ static void test_delete_epoch_isolation(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * File stat tests
+ * --------------------------------------------------------------------------- */
+
+static void test_file_stat(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    /* Create a file and get its VirtualPtr from the DirContent chain */
+    int nodeId = vfs_create(vfs, root_vp, "stat.txt", 0);
+    CHECK(nodeId > 0);
+
+    int64_t file_vp = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        CHECK(head != 0);
+        uint32_t cc, ce;
+        int64_t cp, np, nx;
+        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
+                              &cc, &ce, &cp, &np, &nx);
+        (void)cc; (void)ce; (void)np; (void)nx;
+        file_vp = cp;  /* VirtualPtr to the FileNode */
+    }
+    CHECK(file_vp != 0);
+
+    /* New file: size=0, ctime set, mtime=0 (no FileSize chain yet) */
+    int64_t size = vfs_file_size(vfs, file_vp, 0);
+    CHECK_EQ(size, 0);
+
+    int64_t ctime = vfs_file_ctime(vfs, file_vp);
+    CHECK(ctime > 0);  /* should be a valid timestamp */
+
+    int64_t mtime = vfs_file_mtime(vfs, file_vp, 0);
+    CHECK_EQ(mtime, 0);  /* empty chain */
+
+    /* Open file on non-file VirtualPtr (root is DirNode) → -1 */
+    size = vfs_file_size(vfs, root_vp, 0);
+    CHECK_EQ(size, -1);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * File stat on non-directory test
+ * --------------------------------------------------------------------------- */
+
+static void test_stat_not_file(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    /* Root is a DirNode, not a FileNode → all stat functions return -1 */
+    int64_t size = vfs_file_size(vfs, root_vp, 0);
+    CHECK_EQ(size, -1);
+
+    int64_t mtime = vfs_file_mtime(vfs, root_vp, 0);
+    CHECK_EQ(mtime, -1);
+
+    int64_t ctime = vfs_file_ctime(vfs, root_vp);
+    CHECK_EQ(ctime, -1);
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -336,6 +404,8 @@ int main(void) {
     test_open_file();
     test_create_duplicate();
     test_delete_epoch_isolation();
+    test_file_stat();
+    test_stat_not_file();
 
     /* Clean up */
     unlink(test_path);
