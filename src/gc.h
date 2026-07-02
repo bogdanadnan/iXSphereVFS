@@ -54,8 +54,10 @@ typedef struct {
 int deferred_free_init(DeferredFreeQueue* queue, int initial_capacity);
 
 /* Enqueue a logical page for deferred freeing.
- * If the page has a mirror sibling, also enqueues the sibling. */
-void deferred_free_enqueue(DeferredFreeQueue* queue, int64_t logical_page);
+ * If the page has a mirror sibling (via StorageBackend), also enqueues
+ * the sibling so both are freed together. */
+void deferred_free_enqueue(DeferredFreeQueue* queue, int64_t logical_page,
+                            StorageBackend* sb);
 
 /* Check whether a logical page is in the deferred-free queue.
  * Returns true if the page is enqueued (and not yet confirmed+released). */

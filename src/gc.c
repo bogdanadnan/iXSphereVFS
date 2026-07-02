@@ -79,18 +79,49 @@ int deferred_free_init(DeferredFreeQueue* queue, int initial_capacity) {
     return VFS_OK;
 }
 
-void deferred_free_enqueue(DeferredFreeQueue* queue, int64_t logical_page) {
+void deferred_free_enqueue(DeferredFreeQueue* queue, int64_t logical_page,
+                            StorageBackend* sb) {
     if (!queue) return;
 
-    /* Grow the array if full */
-    if (queue->count >= queue->capacity) {
-        int new_cap = queue->capacity * 2 + 16;
-        int64_t* new_pages = (int64_t*)realloc(queue->pages,
-                                (size_t)new_cap * sizeof(int64_t));
-        if (!new_pages) return;  /* allocation failure — skip enqueue */
-        queue->pages = new_pages;
-        queue->capacity = new_cap;
+    /* Helper to append a single page, growing the array if needed */
+    int append_ok = 0;
+    do {
+        if (queue->count >= queue->capacity) {
+            int new_cap = queue->capacity * 2 + 16;
+            int64_t* new_pages = (int64_t*)realloc(queue->pages,
+                                    (size_t)new_cap * sizeof(int64_t));
+            if (!new_pages) break;  /* OOM — skip */
+            queue->pages = new_pages;
+            queue->capacity = new_cap;
+        }
+        queue->pages[queue->count++] = logical_page;
+        append_ok = 1;
+    } while (0);
+
+    if (!append_ok) {
+#ifndef NDEBUG
+        fprintf(stderr, "vfs: deferred_free_enqueue: OOM, page %lld lost\n",
+                (long long)logical_page);
+#endif
     }
 
-    queue->pages[queue->count++] = logical_page;
+    /* Enqueue mirror sibling if it exists */
+    if (append_ok && sb && (uint64_t)logical_page < (uint64_t)sb->mirror_cap) {
+        int32_t mirror = sb->mirror_pages[logical_page];
+        if (mirror >= 0) {
+            int64_t mirror_page = (int64_t)mirror;
+            if (queue->count >= queue->capacity) {
+                int new_cap = queue->capacity * 2 + 16;
+                int64_t* new_pages = (int64_t*)realloc(queue->pages,
+                                        (size_t)new_cap * sizeof(int64_t));
+                if (new_pages) {
+                    queue->pages = new_pages;
+                    queue->capacity = new_cap;
+                    queue->pages[queue->count++] = mirror_page;
+                }
+            } else {
+                queue->pages[queue->count++] = mirror_page;
+            }
+        }
+    }
 }
