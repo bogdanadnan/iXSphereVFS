@@ -125,3 +125,11 @@ void deferred_free_enqueue(DeferredFreeQueue* queue, int64_t logical_page,
         }
     }
 }
+
+bool deferred_free_is_queued(DeferredFreeQueue* queue, int64_t logical_page) {
+    if (!queue || !queue->pages) return false;
+    for (int i = 0; i < queue->count; i++) {
+        if (queue->pages[i] == logical_page) return true;
+    }
+    return false;
+}
