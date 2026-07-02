@@ -103,6 +103,53 @@ No cycles. Stage A must be built first; everything else builds on it.
 
 ---
 
+## Review Iteration 1 — Code vs Spec (2026-07-02)
+
+### Implementation Status
+
+| Workload | Spec | Code | Status |
+|----------|------|------|--------|
+| 6.1 Valid Epochs | `vfs_epoch_is_writable` | `epoch.c:16-36` | ✅ Correct |
+| 6.2 Snapshot | `vfs_snapshot` | `epoch.c:43-51` | ✅ Correct |
+| 6.3 Commit | `vfs_commit` with conflict scan | `epoch.c:53-152` | ✅ Core logic correct |
+| 6.4 Soft-Delete | `vfs_delete_snapshot` | `epoch.c:154-181` | ✅ Correct |
+| 6.5 Mapper | `mapper_insert/resolve/traversal` | `mapper.c:1-123` | ✅ All 4 functions |
+| 6.6 TouchedFile | `touchedfile_add/collect/drop` | `touched.c:1-94` | ✅ All 3 functions |
+
+### Additional Functions Beyond Spec
+
+| Function | File | Purpose |
+|----------|------|---------|
+| `mapper_init` | `mapper.c:5-8` | Wires Mapper to Pool + epochMapperPtr |
+| `mapper_validate` | `mapper.c:102-123` | Debug helper — counts mapper entries |
+| `epoch_touchedfile_add` | `epoch.c:38-41` | Thin wrapper delegating to `touchedfile_add` |
+| `test_set_epoch_writable` | `epoch.c:12-14` | Test hook for Phase 5 backward compat |
+
+### Gap: Subdirectory Commit Conflict Detection
+
+`vfs_commit` at `epoch.c:76-94` walks DirContent entries to find modified files
+by nodeId. It only searches the root directory's DirContent chain. Files created
+in subdirectories (e.g., `mkdir a` → `create a/file.txt`) will not be found
+during conflict scanning.
+
+**Impact:** If a subdirectory file is modified in both a snapshot and the live
+head, the conflict will not be detected. The commit will succeed and the live
+head's version will be silently overwritten by the snapshot's version.
+
+**Mitigation:** The code acknowledges this at lines 78-79. For Phase 6, the
+limitation is acceptable because Phase 5's directory operations (vfs_mkdir,
+vfs_readdir) already support subdirectories, but the commit scan hasn't been
+extended to recursively walk them. This should be fixed before Phase 8
+(Filesystem API) where subdirectories are fully supported.
+
+**Fix:** Replace the root-only DirContent walk with a recursive tree walk that
+follows `childPtr` DirNodes into subdirectories, collecting all file nodeIds at
+all levels. Or use the tree's `tree_resolve_page` which walks FileContent chains
+directly — but it needs the file's VirtualPtr, and finding a file by nodeId
+requires a tree walk.
+
+---
+
 ## Workload 6.1 — Valid Epochs
 
 ### What
