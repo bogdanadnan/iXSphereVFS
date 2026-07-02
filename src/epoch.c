@@ -2,6 +2,8 @@
 #include "epoch.h"
 #include "vfs_internal.h"
 #include "touched.h"
+#include "tree.h"
+#include <stdlib.h>
 
 /* Test override: -1 = use real implementation (Phase 6 default).
    0 = frozen, 1 = all writable (backward compat for existing tests). */
@@ -46,4 +48,133 @@ int64_t vfs_snapshot(vfs_t* vfs) {
        Snapshot epoch = old value + 1 = new value - 1. */
     int64_t new_epoch = vfs_atomic_add_i64(&ctx->currentEpoch, 2);
     return new_epoch - 1;  /* snapshot epoch is always odd */
+}
+
+int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
+    if (!vfs || !vfs->ctx) return VFS_ERR_IO;
+    TreeContext* ctx = vfs->ctx;
+    uint32_t s_epoch = (uint32_t)snapshot_epoch;
+
+    /* Validate snapshot_epoch is odd */
+    if (snapshot_epoch % 2 == 0) return VFS_ERR_IO;
+
+    /* Validate snapshot_epoch is still active (no MapperEntry for it) */
+    if (mapper_resolve(&ctx->mapper, snapshot_epoch) != snapshot_epoch)
+        return VFS_ERR_IO;
+
+    /* Collect all files modified in this snapshot epoch */
+    uint32_t touched_ids[1024];
+    int touched_count = touchedfile_collect(&ctx->pool, ctx->touchedFilesPtr,
+                                            s_epoch, touched_ids, 1024);
+
+    /* Conflict detection: for each touched file, check version chains
+       for pages modified at both snapshot epoch AND any live head epoch
+       in (snapshot_epoch, currentEpoch].  Walk the FileNode's FileContent
+       chain and check each PageNode's version chain. */
+    for (int f = 0; f < touched_count; f++) {
+        /* Find the file's VirtualPtr by scanning DirContent chains.
+           Since we only have the nodeId, we need to scan.  For now,
+           use pool_resolve on the root DirContent chain. */
+        /* Simplified: check the version chain manually by walking all
+           FileContent entries and their PageNode version chains. */
+        int64_t root_vp = ctx->rootNodeOffset;
+        uint8_t* root_slot = pool_resolve(&ctx->pool, root_vp);
+        if (!root_slot) continue;
+
+        int64_t walk_vp = vfs_rd8(root_slot, DIRNODE_OFF_HEADPTR);
+        while (walk_vp != 0) {
+            uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+            if (!dc_slot) break;
+            uint32_t dc_child, dc_epoch;
+            int64_t dc_childPtr, dc_namePtr, dc_next;
+            nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
+                                  &dc_namePtr, &dc_next);
+            (void)dc_epoch; (void)dc_namePtr;
+
+            if (dc_child == touched_ids[f]) {
+                /* Found the file — walk its version chains */
+                uint8_t* file_slot = pool_resolve(&ctx->pool, dc_childPtr);
+                if (!file_slot) break;
+
+                int64_t fc_vp = vfs_rd8(file_slot, FILENODE_OFF_HEADPTR);
+                while (fc_vp != 0) {
+                    uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
+                    if (!fc_slot) break;
+
+                    int64_t pn_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
+                    while (pn_vp != 0) {
+                        uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
+                        if (!pn_slot) break;
+
+                        int64_t vp = vfs_rd8(pn_slot, PAGENODE_OFF_VERSIONROOT);
+                        int has_snapshot = 0;
+                        int has_live = 0;
+
+                        while (vp != 0) {
+                            uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
+                            if (!vp_slot) break;
+                            uint32_t v_epoch;
+                            int64_t v_dataPage, v_next;
+                            nodes_read_versionpage(vp_slot, &v_epoch,
+                                                    &v_dataPage, &v_next);
+                            (void)v_dataPage;
+
+                            if (v_epoch == s_epoch) has_snapshot = 1;
+                            if (v_epoch > s_epoch && v_epoch % 2 == 0)
+                                has_live = 1;
+
+                            vp = v_next;
+                        }
+
+                        if (has_snapshot && has_live)
+                            return VFS_ERR_CONFLICT;
+
+                        pn_vp = vfs_rd8(pn_slot, PAGENODE_OFF_NEXTPTR);
+                    }
+                    fc_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
+                }
+            }
+            walk_vp = dc_next;
+        }
+    }
+
+    /* Insert commit mapping: snapshot_epoch → currentEpoch with traversalApply */
+    int64_t current = ctx->currentEpoch;
+    int ret = mapper_insert(&ctx->mapper, (uint32_t)snapshot_epoch,
+                            (uint32_t)current, MAPPER_FLAG_TRAVERSAL_APPLY);
+    if (ret != VFS_OK) return ret;
+
+    /* Drop TouchedFile chain for this epoch */
+    touchedfile_drop(&ctx->pool, &ctx->touchedFilesPtr, s_epoch);
+
+    /* Flush superblock to persist the mapper change */
+    ret = tree_superblock_write(ctx);
+
+    return ret;
+}
+
+int vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch) {
+    if (!vfs || !vfs->ctx) return VFS_ERR_IO;
+    TreeContext* ctx = vfs->ctx;
+
+    /* Validate snapshot_epoch is odd */
+    if (snapshot_epoch % 2 == 0) return VFS_ERR_IO;
+
+    /* Validate snapshot_epoch is still active */
+    if (mapper_resolve(&ctx->mapper, snapshot_epoch) != snapshot_epoch)
+        return VFS_ERR_IO;
+
+    /* Insert soft-delete mapping: snapshot_epoch → currentEpoch without traversalApply */
+    int64_t current = ctx->currentEpoch;
+    int ret = mapper_insert(&ctx->mapper, (uint32_t)snapshot_epoch,
+                            (uint32_t)current, 0);
+    if (ret != VFS_OK) return ret;
+
+    /* Drop TouchedFile chain for this epoch */
+    touchedfile_drop(&ctx->pool, &ctx->touchedFilesPtr, (uint32_t)snapshot_epoch);
+
+    /* Flush superblock */
+    ret = tree_superblock_write(ctx);
+
+    return ret;
 }
