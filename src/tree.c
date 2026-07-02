@@ -276,8 +276,8 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
     TreeContext* ctx = vfs->ctx;
 
-    /* Validate epoch is writable (Phase 6 stub: always writable) */
-    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch, NULL)) return VFS_ERR_IO;
+    /* Validate epoch is writable (Phase 6: uses real epoch validation) */
+    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
 
     /* Read parent DirNode, verify type */
     uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
@@ -352,7 +352,7 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
     TreeContext* ctx = vfs->ctx;
 
-    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch, NULL)) return VFS_ERR_IO;
+    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
 
     /* Read parent DirNode, verify type */
     uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
@@ -587,7 +587,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
     TreeContext* ctx = vfs->ctx;
 
     /* Validate epoch is writable */
-    if (!vfs_epoch_is_writable(ctx, epoch, NULL)) return -1;
+    if (!vfs_epoch_is_writable(ctx, epoch)) return -1;
 
     /* Read FileNode, verify type */
     uint8_t* file_slot = pool_resolve(&ctx->pool, file);

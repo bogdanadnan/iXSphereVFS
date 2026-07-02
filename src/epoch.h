@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "mapper.h"
+#include "vfs_internal.h"
 
 /* ---------------------------------------------------------------------------
  * Phase 6: Epoch system — replaces Phase 5a stubs.
@@ -14,7 +15,7 @@
 
 /* Check whether an epoch is writable.
    Phase 6: returns true only for current live head and active snapshots. */
-bool vfs_epoch_is_writable(void* sb, int64_t epoch, void* mapper);
+bool vfs_epoch_is_writable(TreeContext* ctx, int64_t epoch);
 
 /* Record that a file was touched in a given epoch (for commit conflict detection).
    Current stub: no-op.
