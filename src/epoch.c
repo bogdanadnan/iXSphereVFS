@@ -37,3 +37,13 @@ void touchedfile_add(void* vfs, int64_t epoch, uint32_t nodeId) {
     (void)epoch;
     (void)nodeId;
 }
+
+int64_t vfs_snapshot(vfs_t* vfs) {
+    if (!vfs || !vfs->ctx) return -1;
+    TreeContext* ctx = vfs->ctx;
+
+    /* Atomically increment currentEpoch by 2 (add_fetch returns new value).
+       Snapshot epoch = old value + 1 = new value - 1. */
+    int64_t new_epoch = vfs_atomic_add_i64(&ctx->currentEpoch, 2);
+    return new_epoch - 1;  /* snapshot epoch is always odd */
+}

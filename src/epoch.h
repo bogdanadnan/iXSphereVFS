@@ -26,4 +26,9 @@ void touchedfile_add(void* vfs, int64_t epoch, uint32_t nodeId);
    Pass non-zero for writable (default), zero for frozen. */
 void test_set_epoch_writable(int writable);
 
+/* Create a snapshot by advancing the epoch counter by 2.
+   Returns the snapshot epoch (always odd), or -1 on error.
+   Zero I/O — no superblock flush. */
+int64_t vfs_snapshot(vfs_t* vfs);
+
 #endif /* VFS_EPOCH_H */
