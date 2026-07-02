@@ -56,7 +56,9 @@ void tree_lock_acquire_exclusive(TreeContext* ctx) {
 }
 
 void tree_lock_release_exclusive(TreeContext* ctx) {
-    /* Atomically clear the exclusive bit */
+    /* Release barrier ensures all writes performed under exclusive lock
+       are globally visible before the lock appears released. */
+    vfs_mb_release();
     vfs_atomic_add_i64(&ctx->treeLockState,
                        -((int64_t)TREE_LOCK_EXCLUSIVE_BIT));
 }
