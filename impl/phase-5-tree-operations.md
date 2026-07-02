@@ -30,10 +30,101 @@ read rule with epoch mapping for snapshot isolation.
 | `test/test_tree.c` | All functional tests |
 
 ## Dependencies
-- Phase 2 (StorageBackend) for `Read`/`Write`/`Allocate`
-- Phase 3 (Pool) for slot allocation and VirtualPtr
-- Phase 4 (Node Types) for all layout helpers
-- Phase 6 (Epoch System) for `mapper_resolve` — stub it for now (return epoch unchanged)
+- Phase 2 (StorageBackend) for `storage_read`/`storage_write`/`storage_allocate`/`storage_acquire`
+- Phase 3 (Pool) for `pool_alloc`/`pool_resolve` and VirtualPtr
+- Phase 4 (Node Types) for all `nodes_write_*`/`nodes_read_*` helpers
+- Phase 6 (Epoch System) for `mapper_resolve` and `vfs_epoch_is_writable` —
+  **stub these now.** Create `src/epoch.c` with:
+  ```c
+  int64_t mapper_resolve(void* mapper, int64_t epoch) { return epoch; }
+  bool vfs_epoch_is_writable(void* sb, int64_t epoch, void* mapper) { return true; }
+  ```
+  Replace with real implementations in Phase 6.
+
+## Staging Guidance
+
+Phase 5 has the most complex inter-workload dependencies of any phase. Build
+in this order to avoid getting stuck:
+
+### Stage A — Bootstrap (self-contained)
+- 5.1: Superblock bootstrap + root directory. This gives you a writeable tree
+  with a root node. Test: create file, open/close file.
+
+### Stage B — Core operations (depends on A)
+- 5.2: File Create + Delete. Uses pool, nodes, superblock.
+- 5.6: File Stat. Simple chain walks on sizePtr. Good for validating chains.
+- 5.5: Directory Operations. Read, write, list. Depends on 5.2 for create.
+
+### Stage C — I/O operations (depends on B, needs stub from Phase 6)
+- 5.3 first: `tree_resolve_page` + in-memory page array. This is the shared
+  utility used by both read and write. Build and test it standalone first.
+- 5.3: File Write (COW + in-place).
+- 5.4: File Read (uses tree_resolve_page + in-memory array from 5.3).
+
+### Shared Utilities
+`tree_resolve_page(file, logical_page, epoch) → PageNode*` is the critical
+shared function. Build it as a separate internal function before 5.3 and 5.4.
+It:
+1. Walks FileContent chain to find the segment
+2. Creates missing FileContent + PageNodes on file growth
+3. Builds the in-memory VirtualPtr array on first access to a segment
+4. Returns a pointer to the PageNode's pool slot for the given page
+
+### Stub Functions Needed
+Create `src/epoch.c` with these stubs before starting Stage C:
+
+```c
+/* Replace with real implementation in Phase 6 */
+int64_t mapper_resolve(void* mapper, int64_t epoch) {
+    (void)mapper;
+    return epoch;  // identity — no mapping
+}
+
+bool vfs_epoch_is_writable(void* sb, int64_t epoch, void* mapper) {
+    (void)sb; (void)mapper;
+    return true;  // all epochs writable — Phase 6 adds restrictions
+}
+
+/* TouchedFile — no-op stub */
+void touchedfile_add(void* vfs, int64_t epoch, uint32_t nodeId) {
+    (void)vfs; (void)epoch; (void)nodeId;
+}
+```
+
+## Phase 4 Debt Check
+
+| Item | Status |
+|------|--------|
+| All 10 node types with correct field offsets | ✅ |
+| NameEntry multi-slot chaining | ✅ |
+| Zero-length name → VFS_VPTR_NULL sentinel | ✅ |
+| nodeId assignment is caller's responsibility | ✅ |
+| No blocking debt | ✅ |
+
+## Gaps Noted
+
+| # | Gap | Severity | Resolution |
+|---|-----|----------|------------|
+| 1 | No staging guidance or build order | Medium | Added above |
+| 2 | `tree_resolve_page` not called out as shared utility | Medium | Added as "Shared Utilities" section |
+| 3 | No `tree_init` entry point | Low | Bootstrap in 5.1 is the implicit init |
+| 4 | Superblock persistence protocol not described | Low | `storage_write(..., FLUSH_PRIO_SUPERBLOCK)` — implied but should be explicit |
+| 5 | No dentry cache eviction or memory limit | Low | Acceptable for Phase 5; add in Phase 10 |
+| 6 | FileContent CAS-append not specific about CAS field | Low | CAS on `FileContent.nextPtr` — documented in Phase 4 |
+| 7 | `page_array` dependency on `sb->segment_size` not explicit | Low | Read from StorageBackend header at mount; store in tree context |
+
+## Circular Dependencies
+
+| Workload | Depends On | Stub Needed |
+|----------|-----------|-------------|
+| 5.3 Write | Phase 6 (TouchedFile, epoch validation) | `vfs_epoch_is_writable`, `touchedfile_add` |
+| 5.4 Read | Phase 6 (mapper_resolve) | `mapper_resolve` |
+| 5.5 Rename | Phase 6 (epoch validation) | `vfs_epoch_is_writable` |
+
+All three resolved by the stubs above. No true circular dependency — Phase 5
+can be fully built and tested with stub epoch functions that always return
+"writable" and "no mapping." The stubs are replaced with real implementations
+in Phase 6 without changing Phase 5 code.
 
 ---
 
