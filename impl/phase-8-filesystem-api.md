@@ -30,6 +30,12 @@ snapshot lifecycle, and garbage collection.
 ## Dependencies
 All previous phases must be complete. This phase is a thin wrapper.
 
+## Debt from Previous Phases
+
+| Item | Phase | Description | Resolution |
+|------|-------|-------------|------------|
+| Subdirectory commit conflict detection | 6 | `vfs_commit` only scans root DirContent chain — modified files in subdirectories are not checked for conflicts. Commit may silently succeed when it should fail with VFS_ERR_CONFLICT. | Implement recursive tree walk in `vfs_commit` that follows `childPtr` into subdirectory DirContent chains, collecting all file nodeIds at all directory levels. |
+
 ---
 
 ## Workload 8.1 — Instance Management
