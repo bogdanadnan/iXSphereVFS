@@ -537,6 +537,50 @@ static void test_resolve_page_growth(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * vfs_write test — basic write, size update, cross-page write
+ * --------------------------------------------------------------------------- */
+
+static void test_write_basic(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "write.txt", 0);
+    CHECK(nodeId > 0);
+    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
+    CHECK(file_vp != 0);
+
+    /* Write 100 bytes at offset 0 */
+    const char* data1 = "Hello, VFS write test!";
+    int ret = vfs_write(vfs, file_vp, data1, 0, (int64_t)strlen(data1), 0);
+    CHECK_EQ(ret, (int)strlen(data1));
+
+    /* File size should be updated */
+    int64_t sz = vfs_file_size(vfs, file_vp, 0);
+    CHECK_EQ(sz, (int64_t)strlen(data1));
+
+    /* Write more bytes at offset 50 (partial page overlap) */
+    const char* data2 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    ret = vfs_write(vfs, file_vp, data2, 50, (int64_t)strlen(data2), 0);
+    CHECK_EQ(ret, (int)strlen(data2));
+
+    /* File size should be max(old_size, 50+26) = 76 */
+    sz = vfs_file_size(vfs, file_vp, 0);
+    CHECK_EQ(sz, 76);
+
+    /* Write across page boundary: offset 8180, 32 bytes should span 2 pages */
+    const char* data3 = "CROSS_PAGE_BOUNDARY_TEST!";
+    ret = vfs_write(vfs, file_vp, data3, 8180, (int64_t)strlen(data3), 0);
+    CHECK_EQ(ret, (int)strlen(data3));
+
+    sz = vfs_file_size(vfs, file_vp, 0);
+    CHECK_EQ(sz, 8180 + (int64_t)strlen(data3));
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -553,6 +597,7 @@ int main(void) {
     test_stat_not_file();
     test_file_size_epoch();
     test_resolve_page_growth();
+    test_write_basic();
 
     /* Clean up */
     unlink(test_path);
