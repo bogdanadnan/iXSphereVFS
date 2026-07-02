@@ -73,9 +73,22 @@ int touchedfile_collect(Pool* pool, int64_t touchedFilesPtr,
 }
 
 void touchedfile_drop(Pool* pool, int64_t* touchedFilesPtr, uint32_t epoch) {
-    (void)pool;
-    (void)touchedFilesPtr;
-    (void)epoch;
-    /* Entries are reclaimed by GC during the next garbage collection cycle.
-       No action needed here. */
+    if (!pool || !touchedFilesPtr) return;
+    /* Walk the chain and mark each entry for the given epoch as reclaimed
+       by setting its epoch to 0.  Epoch 0 is the root creation epoch and
+       will never be a valid snapshot epoch for commit conflict detection,
+       so entries marked this way are transparently skipped by
+       vfs_commit's TouchedFile walk (which filters by s_epoch). */
+    int64_t vp = *touchedFilesPtr;
+    while (vp != 0) {
+        uint8_t* slot = pool_resolve(pool, vp);
+        if (!slot) break;
+        uint32_t entry_epoch, entry_nodeId;
+        int64_t entry_next;
+        nodes_read_touchedfile(slot, &entry_epoch, &entry_nodeId, &entry_next);
+        if (entry_epoch == epoch) {
+            nodes_write_touchedfile(slot, 0, entry_nodeId, entry_next);
+        }
+        vp = entry_next;
+    }
 }
