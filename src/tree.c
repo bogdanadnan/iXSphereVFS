@@ -381,8 +381,10 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
 
     int64_t headPtr = vfs_rd8(parent_slot, DIRNODE_OFF_HEADPTR);
     uint32_t query_epoch = (uint32_t)epoch;
-    int64_t best_vp = 0;
+    int64_t best_child = 0;       /* childNodeId of best match */
+    int64_t best_childPtr = 0;    /* childPtr of best match */
     uint32_t best_epoch = 0;
+    int best_name_match = 0;      /* non-zero if name matched */
 
     int64_t walk_vp = headPtr;
     while (walk_vp != 0) {
@@ -392,30 +394,41 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
         int64_t ce_childPtr, ce_namePtr, ce_next;
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
                               &ce_namePtr, &ce_next);
-        (void)ce_child; (void)ce_childPtr;
 
-        if (ce_namePtr == 0) { walk_vp = ce_next; continue; }
+        /* Read-rule: does this entry apply at query epoch? */
+        int applies = (ce_epoch == query_epoch) ||
+                      (ce_epoch < query_epoch && ce_epoch % 2 == 0);
+        if (!applies) { walk_vp = ce_next; continue; }
 
-        /* Read-rule: exact match or even epoch ≤ query epoch */
-        if (ce_epoch == query_epoch ||
-            (ce_epoch < query_epoch && ce_epoch % 2 == 0)) {
-            if (ce_epoch >= best_epoch) {
+        /* If we already have a newer entry for this childNodeId, skip */
+        if ((int64_t)ce_child == best_child && ce_epoch <= best_epoch)
+            { walk_vp = ce_next; continue; }
+
+        if (ce_epoch > best_epoch || (int64_t)ce_child != best_child) {
+            /* Check name if this is a live entry */
+            if (ce_namePtr != 0) {
                 char entry_name[256];
                 int nl = nodes_read_name(&ctx->pool, ce_namePtr,
                                           entry_name, (int)sizeof(entry_name));
                 if (nl > 0 && strcmp(entry_name, name) == 0) {
-                    best_vp = walk_vp;
+                    best_child = (int64_t)ce_child;
+                    best_childPtr = ce_childPtr;
                     best_epoch = ce_epoch;
+                    best_name_match = 1;
+                }
+            } else {
+                /* Tombstone — mark as best for this child, but no name match */
+                if ((int64_t)ce_child != best_child) {
+                    best_child = (int64_t)ce_child;
+                    best_childPtr = ce_childPtr;
+                    best_epoch = ce_epoch;
+                    best_name_match = 0;
                 }
             }
         }
         walk_vp = ce_next;
     }
 
-    if (best_vp == 0) return VFS_ERR_NOTFOUND;
-
-    /* Read childNodeId from the DirContent slot */
-    uint8_t* best_slot = pool_resolve(&ctx->pool, best_vp);
-    if (!best_slot) return VFS_ERR_IO;
-    return (int64_t)vfs_rd4(best_slot, DIRCONTENT_OFF_CHILDID);
+    if (!best_name_match) return VFS_ERR_NOTFOUND;
+    return best_child;
 }

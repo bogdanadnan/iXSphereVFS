@@ -254,8 +254,7 @@ static void test_open_file(void) {
     opened = vfs_open_file(vfs, root_vp, "missing.txt", 0);
     CHECK_EQ(opened, VFS_ERR_NOTFOUND);
 
-    /* Open from a file nodeId → VFS_ERR_NOTDIR
-       First, get the file's VirtualPtr from the DirContent entry. */
+    /* Open from a file VirtualPtr → VFS_ERR_NOTDIR */
     {
         uint8_t* root_slot2 = pool_resolve(&ctx->pool, root_vp);
         CHECK(root_slot2 != NULL);
@@ -266,10 +265,61 @@ static void test_open_file(void) {
         nodes_read_dircontent(pool_resolve(&ctx->pool, head2),
                               &ce_c, &ce_e, &ce_cp, &ce_np, &ce_nx);
         (void)ce_c; (void)ce_e; (void)ce_np; (void)ce_nx;
-        /* ce_cp is the file's VirtualPtr (a FileNode) */
         opened = vfs_open_file(vfs, ce_cp, "anything.txt", 0);
         CHECK_EQ(opened, VFS_ERR_NOTDIR);
     }
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * Duplicate name test
+ * --------------------------------------------------------------------------- */
+
+static void test_create_duplicate(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    /* First create succeeds */
+    int r1 = vfs_create(vfs, root_vp, "dup.txt", 0);
+    CHECK(r1 > 0);
+
+    /* Second create with same name at same epoch → VFS_ERR_EXISTS */
+    int r2 = vfs_create(vfs, root_vp, "dup.txt", 0);
+    CHECK_EQ(r2, VFS_ERR_EXISTS);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * Epoch isolation test: delete at epoch 2, verify epoch 0 still sees file
+ * --------------------------------------------------------------------------- */
+
+static void test_delete_epoch_isolation(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    /* Create file at epoch 0 */
+    int nodeId = vfs_create(vfs, root_vp, "epoch_test.txt", 0);
+    CHECK(nodeId > 0);
+
+    /* Verify it's visible at epoch 0 */
+    int64_t found = vfs_open_file(vfs, root_vp, "epoch_test.txt", 0);
+    CHECK_EQ(found, (int64_t)nodeId);
+
+    /* Delete at epoch 2 */
+    int ret = vfs_delete(vfs, root_vp, "epoch_test.txt", 2);
+    CHECK_EQ(ret, VFS_OK);
+
+    /* Verify it's NOT visible at epoch 2 */
+    found = vfs_open_file(vfs, root_vp, "epoch_test.txt", 2);
+    CHECK_EQ(found, VFS_ERR_NOTFOUND);
+
+    /* Verify it IS still visible at epoch 0 (older epoch unaffected) */
+    found = vfs_open_file(vfs, root_vp, "epoch_test.txt", 0);
+    CHECK_EQ(found, (int64_t)nodeId);
 
     vfs_close(vfs);
 }
@@ -284,6 +334,8 @@ int main(void) {
     test_create_file();
     test_delete_file();
     test_open_file();
+    test_create_duplicate();
+    test_delete_epoch_isolation();
 
     /* Clean up */
     unlink(test_path);
