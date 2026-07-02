@@ -62,3 +62,19 @@ void tree_lock_release_exclusive(TreeContext* ctx) {
     vfs_atomic_add_i64(&ctx->treeLockState,
                        -((int64_t)TREE_LOCK_EXCLUSIVE_BIT));
 }
+
+/* ---------------------------------------------------------------------------
+ * Deferred Free Queue (§7.3)
+ * --------------------------------------------------------------------------- */
+
+int deferred_free_init(DeferredFreeQueue* queue, int initial_capacity) {
+    if (!queue || initial_capacity <= 0) return VFS_ERR_IO;
+
+    queue->pages = (int64_t*)malloc((size_t)initial_capacity * sizeof(int64_t));
+    if (!queue->pages) return VFS_ERR_NOMEM;
+
+    queue->count = 0;
+    queue->capacity = initial_capacity;
+    queue->confirmed = false;
+    return VFS_OK;
+}

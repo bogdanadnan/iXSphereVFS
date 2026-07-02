@@ -49,6 +49,10 @@ typedef struct {
     bool     confirmed;  /* true when no active traversals remain */
 } DeferredFreeQueue;
 
+/* Initialize a deferred free queue with the given initial capacity.
+ * Allocates the pages array via malloc.  Returns VFS_OK on success. */
+int deferred_free_init(DeferredFreeQueue* queue, int initial_capacity);
+
 /* Enqueue a logical page for deferred freeing.
  * If the page has a mirror sibling, also enqueues the sibling. */
 void deferred_free_enqueue(DeferredFreeQueue* queue, int64_t logical_page);
