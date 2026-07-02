@@ -78,3 +78,19 @@ int deferred_free_init(DeferredFreeQueue* queue, int initial_capacity) {
     queue->confirmed = false;
     return VFS_OK;
 }
+
+void deferred_free_enqueue(DeferredFreeQueue* queue, int64_t logical_page) {
+    if (!queue) return;
+
+    /* Grow the array if full */
+    if (queue->count >= queue->capacity) {
+        int new_cap = queue->capacity * 2 + 16;
+        int64_t* new_pages = (int64_t*)realloc(queue->pages,
+                                (size_t)new_cap * sizeof(int64_t));
+        if (!new_pages) return;  /* allocation failure — skip enqueue */
+        queue->pages = new_pages;
+        queue->capacity = new_cap;
+    }
+
+    queue->pages[queue->count++] = logical_page;
+}
