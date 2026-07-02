@@ -82,3 +82,38 @@ void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* 
     *pageRootPtr = vfs_rd8(slot, FILECONTENT_OFF_ROOTPTR);
     *nextPtr     = vfs_rd8(slot, FILECONTENT_OFF_NEXTPTR);
 }
+
+/* ---------------------------------------------------------------------------
+ * PageNode (Workload 4.5)
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr) {
+    vfs_wr8(slot, PAGENODE_OFF_VERSIONROOT, versionRootPtr);
+    vfs_wr8(slot, PAGENODE_OFF_NEXTPTR, nextPtr);
+    memset(slot + 16, 0, 16);
+}
+
+void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr, int64_t* nextPtr) {
+    *versionRootPtr = vfs_rd8(slot, PAGENODE_OFF_VERSIONROOT);
+    *nextPtr        = vfs_rd8(slot, PAGENODE_OFF_NEXTPTR);
+}
+
+/* ---------------------------------------------------------------------------
+ * VersionPage (Workload 4.6)
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_versionpage(uint8_t* slot, uint32_t epoch, int64_t dataPage,
+                             int64_t nextPtr) {
+    vfs_wr4(slot, VERSIONPAGE_OFF_EPOCH, (int32_t)epoch);
+    vfs_wr4(slot, VERSIONPAGE_OFF_RSVD, 0);
+    vfs_wr8(slot, VERSIONPAGE_OFF_DATAPAGE, dataPage);
+    vfs_wr8(slot, VERSIONPAGE_OFF_NEXTPTR, nextPtr);
+    memset(slot + 24, 0, 8);
+}
+
+void nodes_read_versionpage(const uint8_t* slot, uint32_t* epoch,
+                            int64_t* dataPage, int64_t* nextPtr) {
+    *epoch    = (uint32_t)vfs_rd4(slot, VERSIONPAGE_OFF_EPOCH);
+    *dataPage = vfs_rd8(slot, VERSIONPAGE_OFF_DATAPAGE);
+    *nextPtr  = vfs_rd8(slot, VERSIONPAGE_OFF_NEXTPTR);
+}

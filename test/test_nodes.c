@@ -241,11 +241,100 @@ static void test_filecontent_chain(void) {
 }
 
 static void test_pagenode(void) {
-    // Placeholder — will be implemented in 4b.5
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* PageNode with versionRootPtr=0 (unwritten page) */
+    nodes_write_pagenode(slot, 0, VFS_VPTR_MAKE(5, 0));
+
+    int64_t vroot, next;
+    nodes_read_pagenode(slot, &vroot, &next);
+
+    CHECK_EQ(vroot, 0);
+    CHECK_EQ(VFS_VPTR_PAGE(next), 5);
+    CHECK_EQ(VFS_VPTR_SLOT(next), 0);
+
+    /* Verify reserved bytes 16-31 are zero */
+    int all_zero = 1;
+    for (int i = 16; i < 32; i++) {
+        if (slot[i] != 0) { all_zero = 0; break; }
+    }
+    CHECK(all_zero);
+}
+
+static void test_pagenode_chain(void) {
+    uint8_t s1[32], s2[32], s3[32];
+    memset(s1, 0, sizeof(s1));
+    memset(s2, 0, sizeof(s2));
+    memset(s3, 0, sizeof(s3));
+
+    int64_t vp2 = VFS_VPTR_MAKE(10, 2);
+    int64_t vp3 = VFS_VPTR_MAKE(10, 3);
+
+    /* PageNode 3 (last): nextPtr=0 */
+    nodes_write_pagenode(s3, 0, 0);
+    /* PageNode 2: nextPtr -> s3 */
+    nodes_write_pagenode(s2, 0, vp3);
+    /* PageNode 1 (first): nextPtr -> s2 */
+    nodes_write_pagenode(s1, 0, vp2);
+
+    int64_t vroot, next;
+    nodes_read_pagenode(s1, &vroot, &next);
+    CHECK_EQ(next, vp2);
+    nodes_read_pagenode(s2, &vroot, &next);
+    CHECK_EQ(next, vp3);
+    nodes_read_pagenode(s3, &vroot, &next);
+    CHECK_EQ(next, 0);
 }
 
 static void test_versionpage(void) {
-    // Placeholder — will be implemented in 4b.6
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* VersionPage {epoch=3, dataPage=100, nextPtr=VFS_VPTR_MAKE(5,1)} */
+    nodes_write_versionpage(slot, 3, 100, VFS_VPTR_MAKE(5, 1));
+
+    uint32_t epoch;
+    int64_t dataPage, nextPtr;
+    nodes_read_versionpage(slot, &epoch, &dataPage, &nextPtr);
+
+    CHECK_EQ(epoch, 3u);
+    CHECK_EQ(dataPage, 100);
+    CHECK_EQ(VFS_VPTR_PAGE(nextPtr), 5);
+    CHECK_EQ(VFS_VPTR_SLOT(nextPtr), 1);
+
+    /* Verify reserved bytes 24-31 are zero */
+    int all_zero = 1;
+    for (int i = 24; i < 32; i++) {
+        if (slot[i] != 0) { all_zero = 0; break; }
+    }
+    CHECK(all_zero);
+}
+
+static void test_versionpage_chain(void) {
+    uint8_t v5[32], v3[32];
+    memset(v5, 0, sizeof(v5));
+    memset(v3, 0, sizeof(v3));
+
+    int64_t vp3 = VFS_VPTR_MAKE(5, 1);
+
+    /* Older version (epoch=3): nextPtr=0 */
+    nodes_write_versionpage(v3, 3, 50, 0);
+    /* Newer version (epoch=5): nextPtr -> v3 */
+    nodes_write_versionpage(v5, 5, 100, vp3);
+
+    uint32_t epoch;
+    int64_t dataPage, nextPtr;
+
+    nodes_read_versionpage(v5, &epoch, &dataPage, &nextPtr);
+    CHECK_EQ(epoch, 5u);
+    CHECK_EQ(dataPage, 100);
+    CHECK_EQ(nextPtr, vp3);
+
+    nodes_read_versionpage(v3, &epoch, &dataPage, &nextPtr);
+    CHECK_EQ(epoch, 3u);
+    CHECK_EQ(dataPage, 50);
+    CHECK_EQ(nextPtr, 0);
 }
 
 int main(void) {
@@ -260,6 +349,11 @@ int main(void) {
 
     test_filecontent();
     test_filecontent_chain();
+
+    test_pagenode();
+    test_pagenode_chain();
+    test_versionpage();
+    test_versionpage_chain();
 
     printf("test_nodes: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
