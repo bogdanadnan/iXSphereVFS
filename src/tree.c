@@ -119,6 +119,20 @@ int tree_init(TreeContext* ctx) {
         ctx->segment_size = 1024;
     }
 
+    /* Walk epoch mapper chain (stub — just validate chain is readable).
+       Full mapper resolution is implemented in Phase 6. */
+    int64_t mapper_vp = ctx->epochMapperPtr;
+    while (mapper_vp != 0) {
+        uint8_t* slot = pool_resolve(&ctx->pool, mapper_vp);
+        if (!slot) return VFS_ERR_IO;
+        uint32_t fromEpoch, toEpoch;
+        uint16_t flags;
+        int64_t next;
+        nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &next);
+        (void)fromEpoch; (void)toEpoch; (void)flags;
+        mapper_vp = next;
+    }
+
     return VFS_OK;
 }
 
