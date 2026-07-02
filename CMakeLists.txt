@@ -13,6 +13,7 @@ add_library(ixsphere_vfs STATIC
     src/lazy_mirror.c
     src/page_cache.c
     src/pool.c
+    src/nodes.c
 )
 
 target_include_directories(ixsphere_vfs PUBLIC
@@ -33,3 +34,7 @@ add_test(NAME test_storage COMMAND test_storage)
 add_executable(test_pool test/test_pool.c)
 target_link_libraries(test_pool ixsphere_vfs pthread)
 add_test(NAME test_pool COMMAND test_pool)
+
+add_executable(test_nodes test/test_nodes.c)
+target_link_libraries(test_nodes ixsphere_vfs pthread)
+add_test(NAME test_nodes COMMAND test_nodes)
