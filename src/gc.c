@@ -905,6 +905,10 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
     /* Record the old pool list head to enqueue old pages later */
     int64_t old_pool_list_head = ctx->pool.list_head ? *ctx->pool.list_head : 0;
 
+    /* Save pre-GC total pages — new pages allocated during tree walk
+       should NOT be subject to reclamation. */
+    int64_t old_total_pages = ctx->sb->total_pages;
+
     /* Initialize the allocation cursor */
     GCAllocCursor alloc;
     alloc.cur_page_vp = VFS_VPTR_NULL;
@@ -960,12 +964,24 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
         return err;
     }
 
-    /* Free dead data pages: iterate all logical pages from 2 upwards.
+    /* Enqueue old pool pages for deferred free BEFORE reclaiming dead pages.
+       This ensures deferred_free_is_queued correctly identifies pool pages
+       in the reclamation loop below. */
+    int64_t old_page = old_pool_list_head;
+    while (old_page != 0) {
+        deferred_free_enqueue(queue, old_page, ctx->sb);
+        uint8_t* old_header = storage_read(ctx->sb, old_page);
+        if (!old_header) break;
+        int64_t next_page = vfs_rd8_s(old_header, 0, ctx->page_size);
+        old_page = next_page;
+    }
+
+    /* Free dead data pages: iterate all logical pages from 2 upwards
+       using pre-GC total_pages to avoid touching new pool pages.
        Pool pages (already in deferred-free queue) are skipped.
        Data pages not in the live set are freed via storage_free. */
     if (lps) {
-        int64_t total = ctx->sb->total_pages;
-        for (int64_t page = 2; page < total; page++) {
+        for (int64_t page = 2; page < old_total_pages; page++) {
             if (deferred_free_is_queued(queue, page))
                 continue;
             if (!live_page_set_contains(lps, page))
@@ -973,18 +989,7 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
         }
     }
 
-    /* Enqueue old pool pages for deferred free.
-       Walk the old pool list from the pre-GC chain head. */
-    int64_t old_page = old_pool_list_head;
-    while (old_page != 0) {
-        deferred_free_enqueue(queue, old_page, ctx->sb);
-        /* Read next page from the old chain by resolving the old page.
-           Pool pages have a header with next-page pointer at offset 0. */
-        uint8_t* old_header = storage_read(ctx->sb, old_page);
-        if (!old_header) break;
-        int64_t next_page = vfs_rd8_s(old_header, 0, ctx->page_size);
-        old_page = next_page;
-    }
+    /* Verify: old pool pages are now enqueued, dead data pages freed. */
 
     /* Destroy the gc_map and live page set */
     gc_map_destroy(&gc_map);
