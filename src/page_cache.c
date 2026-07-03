@@ -288,7 +288,14 @@ void cache_flush_page(StorageBackend* sb, int64_t logical_page) {
  * Flush all dirty pages in priority order
  * --------------------------------------------------------------------------- */
 
-void cache_evict_all(PageCache* cache) {
+void cache_evict_all(StorageBackend* sb) {
+    PageCache* cache = &sb->cache;
+
+    /* Flush all dirty pages to disk before evicting, so that subsequent
+       reads from disk retrieve the latest data rather than stale on-disk
+       state.  cache_flush_all scans buckets in priority order. */
+    cache_flush_all(sb);
+
     for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
         spin_lock(&cache->bucket_locks[bkt]);
         CacheEntry* e = cache->buckets[bkt];

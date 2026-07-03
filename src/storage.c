@@ -20,7 +20,7 @@ int64_t vfs_cache_get_max_entries(StorageBackend* sb) {
 }
 
 void vfs_cache_evict_all(StorageBackend* sb) {
-    if (sb) cache_evict_all(&sb->cache);
+    if (sb) cache_evict_all(sb);
 }
 
 void vfs_cache_reset(void) {

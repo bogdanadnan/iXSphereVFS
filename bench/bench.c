@@ -466,9 +466,15 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     if (count <= 0) return 0;
 
     int64_t cache_cap = vfs_cache_get_max_entries(vfs->ctx->sb);
-    int reads_needed = (count < 35000) ? 35000 : count;
-    int file_pages = reads_needed < 30000 ? 30000 : reads_needed;
+    /* Read slightly more than cache capacity to force cache misses.
+       At least cache_cap + 1000 reads ensure the first cache_cap pages
+       miss (filling the cache) and the remaining 1000 hit. */
+    int64_t min_reads = cache_cap + 1000;
+    int reads_needed = (count < (int)(2 * cache_cap)) ? (int)(min_reads) : count;
+    if (reads_needed > 65536) reads_needed = 65536;
+    int file_pages = reads_needed;
 
+    /* Pre-populate file_pages distinct pages (untimed). */
     int64_t file_vp = 0;
     int writes_ok = 0;
     {
@@ -485,8 +491,13 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
         if (writes_ok < file_pages / 2) return 0;
     }
 
+    /* Flush all dirty pages to disk, then evict the entire page cache.
+       This forces subsequent reads to re-read from disk (cache misses). */
+    storage_flush(vfs->ctx->sb, -1);
     vfs_cache_evict_all(vfs->ctx->sb);
+    vfs_cache_reset();
 
+    /* Build a random permutation over [0, file_pages). */
     int* order = (int*)malloc((size_t)file_pages * sizeof(int));
     if (!order) return 0;
     for (int i = 0; i < file_pages; i++) order[i] = i;
@@ -496,6 +507,8 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
         int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
     }
 
+    /* Timed phase: read reads_needed pages randomly from [0, file_pages).
+       All reads are cache misses on first access (cold cache). */
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
     if (!buf) { free(order); return 0; }
     lat_init(reads_needed);
@@ -504,7 +517,7 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     int ok = 0;
     for (int i = 0; i < reads_needed; i++) {
         double op_t0 = now_sec();
-        int64_t offset = (int64_t)order[i % file_pages] * (int64_t)page_sz;
+        int64_t offset = (int64_t)order[i] * (int64_t)page_sz;
         int r = vfs_read(vfs, file_vp, buf, offset, page_sz, 0);
         if (r == page_sz) ok++;
         lat_record(now_sec() - op_t0);
@@ -518,8 +531,6 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     return ok;
 }
 
-/* ---------------------------------------------------------------------------
- * Main — dispatch to workload
 /* ---------------------------------------------------------------------------
  * Main — dispatch to workload
  * --------------------------------------------------------------------------- */
