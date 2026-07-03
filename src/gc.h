@@ -116,6 +116,18 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                      int64_t file_vp, int64_t epoch);
 
+/* Walk a VersionPage chain applying survival rules.
+ * For each VersionPage in the chain starting at version_root_vp:
+ *   - If epoch is soft-deleted (mapper entry with traversalApply=false): DROP
+ *   - If epoch is committed (mapper entry with traversalApply=true):
+ *     REWRITE epoch to the mapper's toEpoch, KEEP
+ *   - Otherwise: KEEP unchanged
+ * Copies surviving entries via gc_copy_entry.
+ * Returns VFS_OK on success, or a negative error code. */
+int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
+                               GCAllocCursor* alloc,
+                               int64_t version_root_vp);
+
 /* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *

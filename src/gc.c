@@ -531,6 +531,74 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     return VFS_OK;
 }
 
+/* ---------------------------------------------------------------------------
+ * VersionPage chain walk with survival rules
+ * --------------------------------------------------------------------------- */
+
+int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
+                               GCAllocCursor* alloc,
+                               int64_t version_root_vp) {
+    if (!ctx || !gc_map || !alloc) return VFS_ERR_IO;
+
+    #define GC_NEXT_SLOT() do { \
+        if (alloc->cur_slot >= alloc->slots_per_page) { \
+            alloc->cur_page_vp = gc_allocate_new_pool_page(ctx, gc_map); \
+            if (alloc->cur_page_vp == VFS_VPTR_NULL) return VFS_ERR_FULL; \
+            alloc->cur_slot = 0; \
+        } \
+    } while(0)
+
+    int64_t vp_walk = version_root_vp;
+    while (vp_walk != 0) {
+        uint8_t* vp_slot = pool_resolve(&ctx->pool, vp_walk);
+        if (!vp_slot) break;
+
+        uint32_t vp_epoch;
+        int64_t vp_dataPage, vp_next;
+        nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+        (void)vp_dataPage;
+
+        int live = 1;
+        int64_t rewrite_epoch = (int64_t)vp_epoch;
+
+        /* Check mapper for odd epochs */
+        if (vp_epoch % 2 == 1) {
+            int64_t resolved = mapper_resolve(&ctx->mapper, (int64_t)vp_epoch);
+            if (resolved != (int64_t)vp_epoch) {
+                if (mapper_traversal_apply(&ctx->mapper, (int64_t)vp_epoch)) {
+                    /* Committed — REWRITE epoch to resolved toEpoch */
+                    rewrite_epoch = resolved;
+                } else {
+                    /* Soft-deleted — DROP */
+                    live = 0;
+                }
+            }
+        }
+
+        if (live) {
+            GC_NEXT_SLOT();
+            int64_t new_vp = VFS_VPTR_MAKE(
+                VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
+            uint8_t* new_slot = pool_resolve(&ctx->pool, new_vp);
+            if (!new_slot) return VFS_ERR_IO;
+            alloc->cur_slot++;
+
+            gc_copy_entry(gc_map, vp_walk, new_vp, vp_slot, new_slot);
+
+            /* Update epoch field if rewritten */
+            if (rewrite_epoch != (int64_t)vp_epoch) {
+                vfs_wr4(new_slot, VERSIONPAGE_OFF_EPOCH,
+                        (uint32_t)rewrite_epoch);
+            }
+        }
+
+        vp_walk = vp_next;
+    }
+
+    #undef GC_NEXT_SLOT
+    return VFS_OK;
+}
+
 /* Shadow-compaction helper — walks the pool chain, builds a live set,
    copies live pool entries to fresh pages, then enqueues old pages
    for deferred freeing.  Currently a stub — returns VFS_OK. */
