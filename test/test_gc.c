@@ -280,19 +280,28 @@ static void test_df_mirror_sibling(void) {
     StorageBackend* sb = df_setup();
     CHECK(sb != NULL);
 
-    /* Enqueue a page — mirror sibling check uses sb->mirror_pages.
-       For a fresh SB, mirror_pages is uninitialized (NULL/calloc'd to 0).
-       Enqueuing a page with no mirror should not add extra entries. */
+    /* Allocate mirror arrays and configure mirror relationship */
+    ensure_mirror_arrays(sb, 10);
+    sb->mirror_pages[5] = 7;    /* page 7 is mirror of page 5 */
+    sb->mirror_pages[7] = 5;    /* bidirectional */
+
+    /* Enqueue page 5 — should also enqueue mirror page 7 */
     deferred_free_enqueue(&q, 5, sb);
-    CHECK_EQ(q.count, 1);  /* just page 5, no mirror */
-
-    /* Enqueue another page */
-    deferred_free_enqueue(&q, 6, sb);
     CHECK_EQ(q.count, 2);
-
-    /* Verify both are in the queue */
     CHECK(deferred_free_is_queued(&q, 5));
+    CHECK(deferred_free_is_queued(&q, 7));
+
+    /* No-mirror page: mirror_pages[6] was set to 0 by calloc.
+       Set to -1 explicitly to test the no-mirror boundary. */
+    sb->mirror_pages[6] = -1;
+    deferred_free_enqueue(&q, 6, sb);
+    CHECK_EQ(q.count, 3);  /* only page 6, no mirror added */
     CHECK(deferred_free_is_queued(&q, 6));
+
+    /* Negative case: mirror == -1 means no mirror */
+    sb->mirror_pages[8] = -1;
+    deferred_free_enqueue(&q, 8, sb);
+    CHECK_EQ(q.count, 4);  /* only page 8, no mirror */
 
     deferred_free_destroy(&q);
     df_teardown(sb);
