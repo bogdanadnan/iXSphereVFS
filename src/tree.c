@@ -361,6 +361,68 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     return (int)new_nodeId;
 }
 
+int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
+    if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
+    TreeContext* ctx = vfs->ctx;
+
+    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
+
+    uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
+    if (!parent_slot) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+        return VFS_ERR_NOTDIR;
+
+    /* Walk DirContent chain, check for name collision */
+    int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
+    int64_t walk_vp = headPtr;
+    while (walk_vp != 0) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+        uint32_t cc, ce;
+        int64_t cp, np, nx;
+        nodes_read_dircontent(dc_slot, &cc, &ce, &cp, &np, &nx, ctx->page_size);
+        (void)cc; (void)cp;
+        if (ce == (uint32_t)epoch && np != 0) {
+            char entry_name[256];
+            int nl = nodes_read_name(&ctx->pool, np, entry_name,
+                                     (int)sizeof(entry_name));
+            if (nl > 0 && strcmp(entry_name, name) == 0)
+                return VFS_ERR_EXISTS;
+        }
+        walk_vp = nx;
+    }
+
+    uint32_t new_nodeId = (uint32_t)vfs_atomic_add_i32(
+        (int32_t*)&ctx->nextNodeId, 1);
+
+    int64_t dir_vp = pool_alloc(&ctx->pool);
+    if (dir_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
+    uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
+    if (!dir_slot) return VFS_ERR_IO;
+    nodes_write_dirnode(dir_slot, new_nodeId, 0, ctx->page_size);
+
+    int64_t name_vp;
+    int name_slots = nodes_write_name(&ctx->pool, name, &name_vp);
+    if (name_slots == 0) return VFS_ERR_IO;
+
+    int64_t dc_vp = pool_alloc(&ctx->pool);
+    if (dc_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
+    uint8_t* dc_slot = pool_resolve(&ctx->pool, dc_vp);
+    if (!dc_slot) return VFS_ERR_IO;
+
+    int64_t old_head;
+    do {
+        old_head = vfs_atomic_load_i64(
+            (const int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR));
+        nodes_write_dircontent(dc_slot, new_nodeId, (uint32_t)epoch,
+                               dir_vp, name_vp, old_head, ctx->page_size);
+        vfs_mb_release();
+    } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
+                         old_head, dc_vp) != old_head);
+
+    return VFS_OK;
+}
+
 /* ---------------------------------------------------------------------------
  * vfs_delete — delete a file by prepending a tombstone DirContent
  * --------------------------------------------------------------------------- */
