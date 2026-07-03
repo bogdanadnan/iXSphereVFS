@@ -39,6 +39,9 @@ typedef struct {
 
     /* Epoch mapper */
     Mapper mapper;
+
+    /* Readdir cache — one directory at a time, zeroed to valid=false */
+    DentryCache readdir_cache;
 } TreeContext;
 
 struct vfs_t {
