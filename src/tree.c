@@ -358,6 +358,7 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
                          old_head, dc_vp) != old_head);
 
+    dentry_cache_invalidate(&ctx->readdir_cache);
     return (int)new_nodeId;
 }
 
@@ -420,6 +421,7 @@ int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
                          old_head, dc_vp) != old_head);
 
+    dentry_cache_invalidate(&ctx->readdir_cache);
     return VFS_OK;
 }
 
@@ -490,6 +492,7 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
                          old_head, dc_vp) != old_head);
 
+    dentry_cache_invalidate(&ctx->readdir_cache);
     return VFS_OK;
 }
 
@@ -601,6 +604,7 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
                          old_head, dc_vp) != old_head);
 
+    dentry_cache_invalidate(&ctx->readdir_cache);
     return VFS_OK;
 }
 
@@ -703,6 +707,7 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                 vfs_mb_release();
                 vfs_atomic_store_i64(
                     (int64_t*)(dc + DIRCONTENT_OFF_NAMEPTR), new_name_vp);
+                dentry_cache_invalidate(&ctx->readdir_cache);
                 return VFS_OK;
             }
             walk_vp = nx;
@@ -749,6 +754,7 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
     } while (vfs_cas_i64((int64_t*)(src_slot + DIRNODE_OFF_HEADPTR),
                          src_old_head, src_dc_vp) != src_old_head);
 
+    dentry_cache_invalidate(&ctx->readdir_cache);
     return VFS_OK;
 }
 
