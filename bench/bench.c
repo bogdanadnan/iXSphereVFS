@@ -143,7 +143,8 @@ static int64_t resolve_child_vp(vfs_t* vfs, int64_t parent_vp, const char* name)
  * Workload: create N files
  * --------------------------------------------------------------------------- */
 
-static int bench_create(vfs_t* vfs, int count, const char* path) {
+static int bench_create(vfs_t* vfs, int count, int threads, const char* path) {
+    (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
     double t0 = now_sec();
     int ok = 0;
@@ -154,7 +155,7 @@ static int bench_create(vfs_t* vfs, int count, const char* path) {
         if (ret > 0) ok++;
     }
     double t1 = now_sec();
-    report("create", ok, 1, t1 - t0);
+    report("create", ok, threads, t1 - t0);
     return ok;
 }
 
@@ -162,7 +163,8 @@ static int bench_create(vfs_t* vfs, int count, const char* path) {
  * Workload: write N files — uses resolve_child_vp for VirtualPtr
  * --------------------------------------------------------------------------- */
 
-static int bench_write(vfs_t* vfs, int count, const char* path) {
+static int bench_write(vfs_t* vfs, int count, int threads, const char* path) {
+    (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
     double t0 = now_sec();
     int ok = 0;
@@ -179,7 +181,7 @@ static int bench_write(vfs_t* vfs, int count, const char* path) {
         if (written > 0) ok++;
     }
     double t1 = now_sec();
-    report("write", ok, 1, t1 - t0);
+    report("write", ok, threads, t1 - t0);
     return ok;
 }
 
@@ -187,9 +189,9 @@ static int bench_write(vfs_t* vfs, int count, const char* path) {
  * Workload: read N files
  * --------------------------------------------------------------------------- */
 
-static int bench_read(vfs_t* vfs, int count, const char* path) {
+static int bench_read(vfs_t* vfs, int count, int threads, const char* path) {
+    (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
-    /* Create files first, then measure read time */
     for (int i = 0; i < count; i++) {
         char name[64];
         snprintf(name, sizeof(name), "r%d.txt", i);
@@ -207,17 +209,24 @@ static int bench_read(vfs_t* vfs, int count, const char* path) {
         if (r > 0) ok++;
     }
     double t1 = now_sec();
-    report("read", count, 1, t1 - t0);
+    report("read", count, threads, t1 - t0);
     return ok;
 }
 
 /* ---------------------------------------------------------------------------
- * Workload: scan — create, readdir, read all
+ * Workload: scan — create, readdir, read all.
+ * NOTE: limited to 1024 entries (DENTRY_CACHE_MAX) by VFS readdir.
  * --------------------------------------------------------------------------- */
 
-static int bench_scan(vfs_t* vfs, int count, const char* path) {
+static int bench_scan(vfs_t* vfs, int count, int threads, const char* path) {
+    (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
-    /* Create files first */
+    /* Cap count to DENTRY_CACHE_MAX (1024) for correctness */
+    int max_entries = 1024;
+    if (count > max_entries) {
+        fprintf(stderr, "warning: scan workload capped at %d entries (VFS readdir limit)\n", max_entries);
+        count = max_entries;
+    }
     for (int i = 0; i < count; i++) {
         char name[64];
         snprintf(name, sizeof(name), "s%d.txt", i);
@@ -226,8 +235,8 @@ static int bench_scan(vfs_t* vfs, int count, const char* path) {
     double t0 = now_sec();
     int ok = 0;
 
-    vfs_dirent_t entries[4096];
-    int n = vfs_readdir(vfs, root_vp, entries, 4096, 0);
+    vfs_dirent_t entries[1024];  /* matches DENTRY_CACHE_MAX */
+    int n = vfs_readdir(vfs, root_vp, entries, 1024, 0);
     if (n < 0) n = 0;
 
     for (int i = 0; i < n; i++) {
@@ -238,7 +247,7 @@ static int bench_scan(vfs_t* vfs, int count, const char* path) {
         if (r > 0) ok++;
     }
     double t1 = now_sec();
-    report("scan", ok, 1, t1 - t0);
+    report("scan", ok, threads, t1 - t0);
     return ok;
 }
 
@@ -246,7 +255,8 @@ static int bench_scan(vfs_t* vfs, int count, const char* path) {
  * Workload: mixed — create, write, read, delete
  * --------------------------------------------------------------------------- */
 
-static int bench_mixed(vfs_t* vfs, int count, const char* path) {
+static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path) {
+    (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
     double t0 = now_sec();
     int ok = 0;
@@ -271,7 +281,7 @@ static int bench_mixed(vfs_t* vfs, int count, const char* path) {
         if (vfs_delete(vfs, root_vp, name, 0) == VFS_OK) ok++;
     }
     double t1 = now_sec();
-    report("mixed", count, 1, t1 - t0);
+    report("mixed", count, threads, t1 - t0);
     return ok;
 }
 
@@ -279,7 +289,8 @@ static int bench_mixed(vfs_t* vfs, int count, const char* path) {
  * Workload: dir — create directories and files inside
  * --------------------------------------------------------------------------- */
 
-static int bench_dir(vfs_t* vfs, int count, const char* path) {
+static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
+    (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
     double t0 = now_sec();
     int ok = 0;
@@ -302,7 +313,7 @@ static int bench_dir(vfs_t* vfs, int count, const char* path) {
         }
     }
     double t1 = now_sec();
-    report("dir", ok, 1, t1 - t0);
+    report("dir", ok, threads, t1 - t0);
     return ok;
 }
 
@@ -317,6 +328,10 @@ int main(int argc, char** argv) {
 
     /* Open VFS file */
     unlink(opts.output);
+
+    if (opts.threads > 1)
+        fprintf(stderr, "warning: --threads not yet implemented, running single-threaded\n");
+
     vfs_t* vfs = vfs_open(opts.output, opts.page_size);
     if (!vfs) {
         fprintf(stderr, "Failed to open VFS file: %s\n", opts.output);
@@ -325,17 +340,17 @@ int main(int argc, char** argv) {
 
     int ok = 0;
     if (strcmp(opts.workload, "create") == 0) {
-        ok = bench_create(vfs, opts.count, opts.output);
+        ok = bench_create(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "write") == 0) {
-        ok = bench_write(vfs, opts.count, opts.output);
+        ok = bench_write(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "read") == 0) {
-        ok = bench_read(vfs, opts.count, opts.output);
+        ok = bench_read(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "scan") == 0) {
-        ok = bench_scan(vfs, opts.count, opts.output);
+        ok = bench_scan(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "mixed") == 0) {
-        ok = bench_mixed(vfs, opts.count, opts.output);
+        ok = bench_mixed(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "dir") == 0) {
-        ok = bench_dir(vfs, opts.count, opts.output);
+        ok = bench_dir(vfs, opts.count, opts.threads, opts.output);
     } else {
         fprintf(stderr, "Unknown workload: %s\n", opts.workload);
         usage();
