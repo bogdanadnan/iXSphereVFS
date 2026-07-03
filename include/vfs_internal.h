@@ -8,7 +8,6 @@
 #include "dentry_cache.h"
 #include "mapper.h"
 
-#define VFS_PAGE_SIZE 8192
 typedef struct SegmentArray SegmentArray;
 
 /* ---------------------------------------------------------------------------
