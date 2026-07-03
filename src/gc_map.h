@@ -11,11 +11,13 @@
  * This map records the mapping from old VirtualPtr to new VirtualPtr so
  * that pointers within entries can be updated after compaction.
  *
- * The table uses open addressing with linear probing.  A sentinel value
- * indicates an empty slot (VFS_VPTR_NULL = 0 is used for "no mapping",
- * but VirtualPtr 0 is also a valid pointer — however no pool slot has
- * VirtualPtr 0, so this is safe).
+ * The table uses open addressing with linear probing.
+ *   old_vp = 0             → empty slot
+ *   old_vp = GC_MAP_TOMB  → tombstone (slot was removed, probe continues)
+ *   old_vp = anything else → live mapping
  * --------------------------------------------------------------------------- */
+
+#define GC_MAP_TOMB ((int64_t)-1)  /* tombstone sentinel — -1 is not a valid VP */
 
 typedef struct {
     int64_t old_vp;      /* old VirtualPtr (key) — 0 means empty slot */
