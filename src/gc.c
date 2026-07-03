@@ -303,6 +303,233 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
 #undef GC_NEXT_SLOT
 
+/* ---------------------------------------------------------------------------
+ * FileNode walk — copy FileNode, walk FileContent/PageNode/VersionPage and
+ * FileSize chains applying survival rules.
+ * --------------------------------------------------------------------------- */
+
+int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
+                     int64_t file_vp, int64_t epoch) {
+    if (!ctx || !gc_map || !alloc || file_vp == 0) return VFS_ERR_IO;
+
+    uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
+    if (!file_slot) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
+        return VFS_ERR_IO;
+
+    /* Local allocation helper */
+    #define GC_NEXT_SLOT() do { \
+        if (alloc->cur_slot >= alloc->slots_per_page) { \
+            alloc->cur_page_vp = gc_allocate_new_pool_page(ctx, gc_map); \
+            if (alloc->cur_page_vp == VFS_VPTR_NULL) return VFS_ERR_FULL; \
+            alloc->cur_slot = 0; \
+        } \
+    } while(0)
+
+    /* Allocate destination for the FileNode entry */
+    GC_NEXT_SLOT();
+    int64_t new_file_vp = VFS_VPTR_MAKE(VFS_VPTR_PAGE(alloc->cur_page_vp),
+                                         alloc->cur_slot);
+    uint8_t* new_file_slot = pool_resolve(&ctx->pool, new_file_vp);
+    if (!new_file_slot) return VFS_ERR_IO;
+    alloc->cur_slot++;
+
+    /* Copy the FileNode with remapping */
+    gc_copy_entry(gc_map, file_vp, new_file_vp, file_slot, new_file_slot);
+
+    /* Walk FileSize chain (tracked via FileNode.sizePtr) */
+    int64_t size_vp = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
+    int64_t prev_size_new_vp = 0;  /* last surviving FileSize new_vp */
+    while (size_vp != 0) {
+        uint8_t* fs_slot = pool_resolve(&ctx->pool, size_vp);
+        if (!fs_slot) break;
+
+        uint32_t fs_epoch;
+        int64_t fs_next;
+        nodes_read_filesize(fs_slot, &fs_epoch, NULL, NULL, &fs_next);
+
+        /* Survival rule: soft-deleted → DROP; committed → REWRITE; else KEEP */
+        int keep = 1;
+        int64_t rewrite_epoch = (int64_t)fs_epoch;
+        if (fs_epoch % 2 == 1) {
+            if (mapper_resolve(&ctx->mapper, (int64_t)fs_epoch) != (int64_t)fs_epoch) {
+                if (mapper_traversal_apply(&ctx->mapper, (int64_t)fs_epoch)) {
+                    /* Committed → REWRITE epoch to toEpoch */
+                    rewrite_epoch = mapper_resolve(&ctx->mapper, (int64_t)fs_epoch);
+                } else {
+                    /* Soft-deleted → DROP */
+                    keep = 0;
+                }
+            }
+        }
+
+        if (keep) {
+            GC_NEXT_SLOT();
+            int64_t new_fs_vp = VFS_VPTR_MAKE(
+                VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
+            uint8_t* new_fs_slot = pool_resolve(&ctx->pool, new_fs_vp);
+            if (!new_fs_slot) return VFS_ERR_IO;
+            alloc->cur_slot++;
+
+            gc_copy_entry(gc_map, size_vp, new_fs_vp, fs_slot, new_fs_slot);
+
+            /* Update the epoch field if rewritten */
+            if (rewrite_epoch != (int64_t)fs_epoch) {
+                vfs_wr4(new_fs_slot, FILESIZE_OFF_EPOCH, (uint32_t)rewrite_epoch);
+            }
+        }
+
+        size_vp = fs_next;
+    }
+
+    /* Walk FileContent chain */
+    int64_t fc_vp = vfs_rd8(file_slot, FILENODE_OFF_HEADPTR);
+    int64_t prev_fc_new_vp = 0;
+    while (fc_vp != 0) {
+        uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
+        if (!fc_slot) break;
+
+        int64_t fc_page_root = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
+        int64_t fc_next = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
+
+        /* Walk PageNode chain within this FileContent segment */
+        int64_t pn_vp = fc_page_root;
+        int segment_has_live = 0;
+
+        /* First pass: count live VersionPages to decide if segment survives */
+        while (pn_vp != 0) {
+            uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
+            if (!pn_slot) break;
+
+            int64_t vp_chain = vfs_rd8(pn_slot, PAGENODE_OFF_VERSIONROOT);
+            while (vp_chain != 0) {
+                uint8_t* vp_slot = pool_resolve(&ctx->pool, vp_chain);
+                if (!vp_slot) break;
+                uint32_t vp_epoch;
+                int64_t vp_dataPage, vp_next;
+                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+                (void)vp_dataPage;
+
+                int live = 1;
+                if (vp_epoch % 2 == 1) {
+                    if (mapper_resolve(&ctx->mapper, (int64_t)vp_epoch) != (int64_t)vp_epoch) {
+                        if (!mapper_traversal_apply(&ctx->mapper, (int64_t)vp_epoch)) {
+                            live = 0;  /* soft-deleted → DROP */
+                        }
+                    }
+                }
+                if (live) { segment_has_live = 1; break; }
+                vp_chain = vp_next;
+            }
+            if (segment_has_live) break;
+            pn_vp = vfs_rd8(pn_slot, PAGENODE_OFF_NEXTPTR);
+        }
+
+        if (!segment_has_live) { fc_vp = fc_next; continue; }
+
+        /* Copy the FileContent segment */
+        GC_NEXT_SLOT();
+        int64_t new_fc_vp = VFS_VPTR_MAKE(
+            VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
+        uint8_t* new_fc_slot = pool_resolve(&ctx->pool, new_fc_vp);
+        if (!new_fc_slot) return VFS_ERR_IO;
+        alloc->cur_slot++;
+        gc_copy_entry(gc_map, fc_vp, new_fc_vp, fc_slot, new_fc_slot);
+
+        /* Walk PageNode chain to copy live version pages */
+        pn_vp = fc_page_root;
+        while (pn_vp != 0) {
+            uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
+            if (!pn_slot) break;
+            int64_t pn_next = vfs_rd8(pn_slot, PAGENODE_OFF_NEXTPTR);
+
+            int64_t vp_chain = vfs_rd8(pn_slot, PAGENODE_OFF_VERSIONROOT);
+            int pn_has_live = 0;
+
+            /* Check if any VersionPage in this PageNode survives */
+            int64_t vp_walk = vp_chain;
+            while (vp_walk != 0) {
+                uint8_t* vp_slot = pool_resolve(&ctx->pool, vp_walk);
+                if (!vp_slot) break;
+                uint32_t vp_epoch;
+                int64_t vp_dataPage, vp_next;
+                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+                (void)vp_dataPage;
+
+                int live = 1;
+                if (vp_epoch % 2 == 1) {
+                    if (mapper_resolve(&ctx->mapper, (int64_t)vp_epoch) != (int64_t)vp_epoch) {
+                        if (!mapper_traversal_apply(&ctx->mapper, (int64_t)vp_epoch)) {
+                            live = 0;
+                        }
+                    }
+                }
+                if (live) { pn_has_live = 1; break; }
+                vp_walk = vp_next;
+            }
+            if (!pn_has_live) { pn_vp = pn_next; continue; }
+
+            /* Copy the PageNode */
+            GC_NEXT_SLOT();
+            int64_t new_pn_vp = VFS_VPTR_MAKE(
+                VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
+            uint8_t* new_pn_slot = pool_resolve(&ctx->pool, new_pn_vp);
+            if (!new_pn_slot) return VFS_ERR_IO;
+            alloc->cur_slot++;
+            gc_copy_entry(gc_map, pn_vp, new_pn_vp, pn_slot, new_pn_slot);
+
+            /* Copy live VersionPages */
+            vp_walk = vp_chain;
+            while (vp_walk != 0) {
+                uint8_t* vp_slot = pool_resolve(&ctx->pool, vp_walk);
+                if (!vp_slot) break;
+                uint32_t vp_epoch;
+                int64_t vp_dataPage, vp_next;
+                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+
+                int live = 1;
+                int64_t rewrite_epoch_vp = (int64_t)vp_epoch;
+                if (vp_epoch % 2 == 1) {
+                    if (mapper_resolve(&ctx->mapper, (int64_t)vp_epoch) != (int64_t)vp_epoch) {
+                        if (mapper_traversal_apply(&ctx->mapper, (int64_t)vp_epoch)) {
+                            /* Committed → REWRITE epoch to toEpoch */
+                            rewrite_epoch_vp = mapper_resolve(&ctx->mapper,
+                                                               (int64_t)vp_epoch);
+                        } else {
+                            live = 0;
+                        }
+                    }
+                }
+
+                if (live) {
+                    GC_NEXT_SLOT();
+                    int64_t new_vp_slot_vp = VFS_VPTR_MAKE(
+                        VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
+                    uint8_t* new_vp_slot = pool_resolve(&ctx->pool, new_vp_slot_vp);
+                    if (!new_vp_slot) return VFS_ERR_IO;
+                    alloc->cur_slot++;
+                    gc_copy_entry(gc_map, vp_walk, new_vp_slot_vp,
+                                  vp_slot, new_vp_slot);
+
+                    if (rewrite_epoch_vp != (int64_t)vp_epoch) {
+                        vfs_wr4(new_vp_slot, VERSIONPAGE_OFF_EPOCH,
+                                (uint32_t)rewrite_epoch_vp);
+                    }
+                }
+
+                vp_walk = vp_next;
+            }
+
+            pn_vp = pn_next;
+        }
+
+        fc_vp = fc_next;
+    }
+
+    #undef GC_NEXT_SLOT
+    return VFS_OK;
+}
+
 /* Shadow-compaction helper — walks the pool chain, builds a live set,
    copies live pool entries to fresh pages, then enqueues old pages
    for deferred freeing.  Currently a stub — returns VFS_OK. */

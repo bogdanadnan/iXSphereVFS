@@ -110,6 +110,12 @@ void deferred_free_destroy(DeferredFreeQueue* queue);
 int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                     int64_t dir_vp, int64_t epoch);
 
+/* Walk a FileNode during GC shadow-compaction: copy the FileNode entry,
+   then walk FileContent → PageNode → VersionPage chains and FileSize chain
+   applying survival rules. */
+int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
+                     int64_t file_vp, int64_t epoch);
+
 /* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *
