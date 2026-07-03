@@ -8,16 +8,14 @@
 #ifndef NDEBUG
     #include <assert.h>
     #define VFS_BOUNDS_CHECK(offset, size) assert((offset) + (size) <= VFS_PAGE_SIZE)
+    #define VFS_BOUNDS_CHECK_S(offset, size, ps) assert((offset) + (size) <= (ps))
 #else
     #define VFS_BOUNDS_CHECK(offset, size) ((void)0)
+    #define VFS_BOUNDS_CHECK_S(offset, size, ps) ((void)0)
 #endif
 
 /* ---------------------------------------------------------------------------
- * Integer read/write at byte offsets.
- *
- * These are for VFS-layer metadata (header page, pool entries) where the
- * buffer size is always VFS_PAGE_SIZE.  For StorageBackend buffers of
- * arbitrary page_size, use memcpy directly.
+ * Integer read/write at byte offsets (fixed VFS_PAGE_SIZE buffers).
  * --------------------------------------------------------------------------- */
 
 VFS_INLINE int64_t vfs_rd8(const uint8_t* buf, int offset) {
@@ -53,6 +51,46 @@ VFS_INLINE void vfs_wr4(uint8_t* buf, int offset, int32_t val) {
 
 VFS_INLINE void vfs_wr2(uint8_t* buf, int offset, int16_t val) {
     VFS_BOUNDS_CHECK(offset, 2);
+    memcpy(buf + offset, &val, 2);
+}
+
+/* ---------------------------------------------------------------------------
+ * Integer read/write with explicit page_size (for non-default page sizes).
+ * --------------------------------------------------------------------------- */
+
+VFS_INLINE int64_t vfs_rd8_s(const uint8_t* buf, int offset, int64_t ps) {
+    VFS_BOUNDS_CHECK_S(offset, 8, ps);
+    int64_t val;
+    memcpy(&val, buf + offset, 8);
+    return val;
+}
+
+VFS_INLINE int32_t vfs_rd4_s(const uint8_t* buf, int offset, int64_t ps) {
+    VFS_BOUNDS_CHECK_S(offset, 4, ps);
+    int32_t val;
+    memcpy(&val, buf + offset, 4);
+    return val;
+}
+
+VFS_INLINE int16_t vfs_rd2_s(const uint8_t* buf, int offset, int64_t ps) {
+    VFS_BOUNDS_CHECK_S(offset, 2, ps);
+    int16_t val;
+    memcpy(&val, buf + offset, 2);
+    return val;
+}
+
+VFS_INLINE void vfs_wr8_s(uint8_t* buf, int offset, int64_t val, int64_t ps) {
+    VFS_BOUNDS_CHECK_S(offset, 8, ps);
+    memcpy(buf + offset, &val, 8);
+}
+
+VFS_INLINE void vfs_wr4_s(uint8_t* buf, int offset, int32_t val, int64_t ps) {
+    VFS_BOUNDS_CHECK_S(offset, 4, ps);
+    memcpy(buf + offset, &val, 4);
+}
+
+VFS_INLINE void vfs_wr2_s(uint8_t* buf, int offset, int16_t val, int64_t ps) {
+    VFS_BOUNDS_CHECK_S(offset, 2, ps);
     memcpy(buf + offset, &val, 2);
 }
 
