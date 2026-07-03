@@ -973,6 +973,7 @@ int vfs_gc(vfs_t* vfs) {
     DeferredFreeQueue queue;
     int err = deferred_free_init(&queue, 256);
     if (err != VFS_OK) {
+        ctx->last_error = err;
         tree_lock_release_exclusive(ctx);
         return err;
     }
@@ -990,5 +991,6 @@ int vfs_gc(vfs_t* vfs) {
     /* Release the exclusive lock */
     tree_lock_release_exclusive(ctx);
 
+    if (err != VFS_OK) ctx->last_error = err;
     return err;
 }
