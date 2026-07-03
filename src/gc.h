@@ -162,6 +162,11 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
 int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
                        GCAllocCursor* alloc);
 
+/* Drop all TouchedFile entries during GC (rebuilt fresh for active epochs).
+   Since the touched file chain is rebuilt from scratch for active epochs,
+   all existing entries are discarded by setting touchedFilesPtr = 0. */
+void gc_rebuild_touchedfiles(TreeContext* ctx);
+
 /* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *

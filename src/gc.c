@@ -879,6 +879,18 @@ int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
     return VFS_OK;
 }
 
+/* ---------------------------------------------------------------------------
+ * GC touched file rebuild — drop all entries since they're rebuilt fresh
+ * --------------------------------------------------------------------------- */
+
+void gc_rebuild_touchedfiles(TreeContext* ctx) {
+    if (!ctx) return;
+    /* All existing TouchedFile entries become stale after GC because the
+       VersionPage chains they reference have been rewritten.  Setting the
+       chain head to 0 discards them; pool slots are reclaimed by GC. */
+    ctx->touchedFilesPtr = 0;
+}
+
 /* Shadow-compaction helper — walks the pool chain, builds a live set,
    copies live pool entries to fresh pages, then enqueues old pages
    for deferred freeing.  Currently a stub — returns VFS_OK. */
