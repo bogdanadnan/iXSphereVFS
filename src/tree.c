@@ -604,6 +604,39 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     return VFS_OK;
 }
 
+int vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
+                int max, int64_t epoch) {
+    if (!vfs || !vfs->ctx || !entries || max <= 0) return VFS_ERR_IO;
+    TreeContext* ctx = vfs->ctx;
+
+    /* Verify directory type */
+    uint8_t* dir_slot = pool_resolve(&ctx->pool, (int64_t)dir);
+    if (!dir_slot) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+        return VFS_ERR_NOTDIR;
+
+    /* Always rebuild the cache (optimization: check valid flag later) */
+    int err = dentry_cache_build(&ctx->pool, (int64_t)dir, epoch,
+                                 &ctx->readdir_cache);
+    if (err != VFS_OK) return err;
+
+    /* Copy entries from cache to caller's buffer */
+    int written = 0;
+    int n = ctx->readdir_cache.count;
+    if (n > max) n = max;
+    for (int i = 0; i < n; i++) {
+        entries[i].nodeId = ctx->readdir_cache.entries[i].childNodeId;
+        entries[i].isDir  = ctx->readdir_cache.entries[i].isDir;
+        size_t nlen = strlen(ctx->readdir_cache.entries[i].name);
+        if (nlen >= sizeof(entries[i].name))
+            nlen = sizeof(entries[i].name) - 1;
+        memcpy(entries[i].name, ctx->readdir_cache.entries[i].name, nlen);
+        entries[i].name[nlen] = '\0';
+        written++;
+    }
+    return written;
+}
+
 /* ---------------------------------------------------------------------------
  * vfs_open_file — resolve name to nodeId by walking parent's DirContent chain
  *
