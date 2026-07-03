@@ -2,6 +2,7 @@
 #include "gc.h"
 #include "tree.h"
 #include <stdlib.h>
+#include <string.h>
 
 /* ---------------------------------------------------------------------------
  * Tree Lock (§9.6)
@@ -224,16 +225,77 @@ void gc_copy_entry(GCMap* gc_map, int64_t old_vp, int64_t new_vp,
  * demonstrates the expected pattern.
  * --------------------------------------------------------------------------- */
 
-int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, int64_t dir_vp,
-                    int64_t epoch) {
-    if (!ctx || !gc_map || dir_vp == 0) return VFS_ERR_IO;
+int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
+                    int64_t dir_vp, int64_t epoch) {
+    if (!ctx || !gc_map || !alloc || dir_vp == 0) return VFS_ERR_IO;
+
     uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
     if (!dir_slot) return VFS_ERR_NOTFOUND;
     if (vfs_rd2(dir_slot, DIRNODE_OFF_TYPE) != (int16_t)NODE_TYPE_DIR)
         return VFS_ERR_NOTDIR;
-    /* Phase 8: copy DirNode, walk DirContent chain with survival rules,
-       recurse into child DirNodes/FileNodes. */
-    (void)epoch;
+
+    /* Helper: allocate a destination slot, advancing to a new page if needed */
+    #define GC_NEXT_SLOT() do { \
+        if (alloc->cur_slot >= alloc->slots_per_page) { \
+            alloc->cur_page_vp = gc_allocate_new_pool_page(ctx, gc_map); \
+            if (alloc->cur_page_vp == VFS_VPTR_NULL) return VFS_ERR_FULL; \
+            alloc->cur_slot = 0; \
+        } \
+    } while(0)
+
+    /* Allocate destination for the DirNode entry */
+    GC_NEXT_SLOT();
+    int64_t new_dir_vp = VFS_VPTR_MAKE(VFS_VPTR_PAGE(alloc->cur_page_vp),
+                                        alloc->cur_slot);
+    uint8_t* new_dir_slot = pool_resolve(&ctx->pool, new_dir_vp);
+    if (!new_dir_slot) return VFS_ERR_IO;
+    alloc->cur_slot++;
+
+    /* Copy the DirNode with remapping */
+    gc_copy_entry(gc_map, dir_vp, new_dir_vp, dir_slot, new_dir_slot);
+
+    /* Walk the DirContent chain applying survival rules */
+    int64_t headPtr = vfs_rd8(dir_slot, DIRNODE_OFF_HEADPTR);
+    int64_t walk_vp = headPtr;
+    while (walk_vp != 0) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+
+        uint32_t dc_child, dc_epoch;
+        int64_t dc_childPtr, dc_namePtr, dc_next;
+        nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
+                              &dc_namePtr, &dc_next);
+
+        /* Survival rule: keep DirContent if epoch is still live.
+           TODO: full epoch-rule remapping in Phase 8 — currently keeps
+           all entries at or above the threshold. */
+        int keep = 1;
+        if (dc_epoch > (uint32_t)epoch) keep = 0; /* future epoch — skip */
+
+        if (keep) {
+            GC_NEXT_SLOT();
+            int64_t new_dc_vp = VFS_VPTR_MAKE(
+                VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
+            uint8_t* new_dc_slot = pool_resolve(&ctx->pool, new_dc_vp);
+            if (!new_dc_slot) return VFS_ERR_IO;
+            alloc->cur_slot++;
+
+            gc_copy_entry(gc_map, walk_vp, new_dc_vp, dc_slot, new_dc_slot);
+
+            /* Recursively walk child DirNodes */
+            if (dc_namePtr != 0 && (vfs_rd2(
+                    pool_resolve(&ctx->pool, dc_childPtr),
+                    DIRNODE_OFF_TYPE) == (int16_t)NODE_TYPE_DIR)) {
+                int err = gc_walk_dirnode(ctx, gc_map, alloc,
+                                           dc_childPtr, epoch);
+                if (err != VFS_OK) return err;
+            }
+            /* TODO Phase 8: walk child FileNodes to copy VersionPage chains */
+        }
+
+        walk_vp = dc_next;
+    }
+
     return VFS_OK;
 }
 

@@ -54,6 +54,14 @@ typedef struct DeferredFreeQueue {
  * Allocates the pages array via malloc.  Returns VFS_OK on success. */
 int deferred_free_init(DeferredFreeQueue* queue, int initial_capacity);
 
+/* GC allocation cursor — tracks position in the current destination pool page
+   during shadow-compaction copy.  Used by gc_walk_dirnode and other walkers. */
+typedef struct {
+    int64_t cur_page_vp;    /* VirtualPtr of current destination page (slot 0) */
+    int     cur_slot;       /* next free slot index on current page */
+    int     slots_per_page; /* VFS_POOL_ENTRIES_PER_PAGE for this context */
+} GCAllocCursor;
+
 /* Allocate a fresh pool page, initialize its pool header, and link it
  * into the pool's list.  Records the mapping in gc_map if non-NULL.
  * Returns the new page's VirtualPtr for slot 0, or VFS_VPTR_NULL on error. */
@@ -96,10 +104,11 @@ void deferred_free_destroy(DeferredFreeQueue* queue);
    gc_copy_entry, then traverse its DirContent chain applying survival rules.
    ctx     — VFS tree context (for pool, mapper access)
    gc_map  — VirtualPtr remapping hash map
+   alloc   — allocation cursor for destination pool pages
    dir_vp  — VirtualPtr of the DirNode to walk
    epoch   — current live head epoch (for survival decisions) */
-int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, int64_t dir_vp,
-                    int64_t epoch);
+int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
+                    int64_t dir_vp, int64_t epoch);
 
 /* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
