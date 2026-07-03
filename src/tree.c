@@ -931,7 +931,7 @@ int64_t vfs_file_size(vfs_t* vfs, int64_t file, int64_t epoch) {
     }
 
     int64_t sizePtr = vfs_rd8_s(file_slot, FILENODE_OFF_SIZEPTR, ctx->page_size);
-    uint32_t query_epoch = (uint32_t)epoch;
+    int64_t read_epoch = mapper_resolve(&ctx->mapper, epoch);
 
     int64_t walk_vp = sizePtr;
     while (walk_vp != 0) {
@@ -942,8 +942,12 @@ int64_t vfs_file_size(vfs_t* vfs, int64_t file, int64_t epoch) {
         nodes_read_filesize(fs_slot, &fs_epoch, &fs_modified, &fs_size, &fs_next, ctx->page_size);
         (void)fs_modified;
 
-        if (fs_epoch == query_epoch ||
-            (fs_epoch < query_epoch && fs_epoch % 2 == 0))
+        int64_t effective_epoch = (int64_t)fs_epoch;
+        if (mapper_traversal_apply(&ctx->mapper, (int64_t)fs_epoch))
+            effective_epoch = mapper_resolve(&ctx->mapper, (int64_t)fs_epoch);
+
+        if (effective_epoch == read_epoch ||
+            (effective_epoch < read_epoch && effective_epoch % 2 == 0))
             return fs_size;
 
         walk_vp = fs_next;
@@ -970,7 +974,7 @@ int64_t vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch) {
     }
 
     int64_t sizePtr = vfs_rd8_s(file_slot, FILENODE_OFF_SIZEPTR, ctx->page_size);
-    uint32_t query_epoch = (uint32_t)epoch;
+    int64_t read_epoch = mapper_resolve(&ctx->mapper, epoch);
 
     int64_t walk_vp = sizePtr;
     while (walk_vp != 0) {
@@ -981,8 +985,12 @@ int64_t vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch) {
         nodes_read_filesize(fs_slot, &fs_epoch, &fs_modified, &fs_size, &fs_next, ctx->page_size);
         (void)fs_size;
 
-        if (fs_epoch == query_epoch ||
-            (fs_epoch < query_epoch && fs_epoch % 2 == 0))
+        int64_t effective_epoch = (int64_t)fs_epoch;
+        if (mapper_traversal_apply(&ctx->mapper, (int64_t)fs_epoch))
+            effective_epoch = mapper_resolve(&ctx->mapper, (int64_t)fs_epoch);
+
+        if (effective_epoch == read_epoch ||
+            (effective_epoch < read_epoch && effective_epoch % 2 == 0))
             return fs_modified;
 
         walk_vp = fs_next;
