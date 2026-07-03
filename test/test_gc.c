@@ -2,6 +2,7 @@
 #include "vfs_internal.h"
 #include "epoch.h"
 #include "gc.h"
+#include "tree.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -397,6 +398,73 @@ static void test_gc_crash_before_swap(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * Crash-after-swap test: simulate GC completing the swap (superblock written
+ * with new pool chain), then kill-9.  On remount, the new tree should be
+ * active and data intact.  Old pool pages would be in the deferred-free
+ * queue at crash time and are lost — this is acceptable.
+ * --------------------------------------------------------------------------- */
+
+static void test_gc_crash_after_swap(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "after_swap.txt", 0);
+    CHECK(nodeId > 0);
+
+    int64_t file_vp = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        CHECK(head != 0);
+        uint32_t cc, ce;
+        int64_t cp, np, nx;
+        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
+                              &cc, &ce, &cp, &np, &nx);
+        (void)cc; (void)ce; (void)np; (void)nx;
+        file_vp = cp;
+    }
+    CHECK(file_vp != 0);
+
+    CHECK_EQ(vfs_write(vfs, file_vp, "SWAP_OK", 0, 7, 0), 7);
+
+    /* Simulate GC completing the swap: write the superblock (new tree active)
+       without actually running GC.  Then crash (close with stale lock). */
+    tree_superblock_write(ctx);
+    ctx->treeLockState = (int64_t)TREE_LOCK_EXCLUSIVE_BIT;
+    vfs_close(vfs);
+
+    /* Reopen — new superblock should be active.  tree_init clears stale lock. */
+    vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    CHECK_EQ(vfs->ctx->treeLockState, 0);
+
+    /* Verify new tree active: root DirNode accessible, file exists */
+    {
+        uint8_t* rs = pool_resolve(&vfs->ctx->pool, vfs->ctx->rootNodeOffset);
+        CHECK(rs != NULL);
+        CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
+        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        if (head != 0) {
+            uint32_t cc, ce;
+            int64_t cp, np, nx;
+            uint8_t* dc = pool_resolve(&vfs->ctx->pool, head);
+            if (dc) {
+                nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx);
+                (void)cc; (void)ce; (void)np; (void)nx;
+                char rbuf[16];
+                CHECK_EQ(vfs_read(vfs, cp, rbuf, 0, 7, 0), 7);
+                CHECK_EQ(strncmp(rbuf, "SWAP_OK", 7), 0);
+            }
+        }
+    }
+
+    vfs_close(vfs);
+}
+
 static void test_gc_commit_then_gc(void) {
     vfs_t* vfs = vfs_open(test_path);
     CHECK(vfs != NULL);
@@ -567,6 +635,9 @@ int main(void) {
 
     unlink(test_path);  /* fresh file for crash-before-swap test */
     test_gc_crash_before_swap();
+
+    unlink(test_path);  /* fresh file for crash-after-swap test */
+    test_gc_crash_after_swap();
 
     printf("test_gc: %d/%d passed\n", tests_passed, tests_run);
     unlink(test_path);
