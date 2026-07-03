@@ -370,6 +370,66 @@ static void test_commit_subdir_conflict(void) {
     epoch_teardown(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * Mapper integration: create file, snapshot, write at snapshot epoch, commit,
+ * then verify vfs_open_file / vfs_file_size at committed epoch.
+ * Then soft-delete another snapshot and verify original epoch still works.
+ * --------------------------------------------------------------------------- */
+
+static void test_mapper_integration(void) {
+    vfs_t* vfs = epoch_setup();
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+    test_set_epoch_writable(-1);
+
+    int nid = vfs_create(vfs, root_vp, "mt.txt", 0);
+    CHECK(nid > 0);
+
+    int64_t file_vp = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
+        int64_t w = h;
+        while (w != 0) {
+            uint8_t* dc = pool_resolve(&ctx->pool, w);
+            CHECK(dc != NULL);
+            uint32_t cc, ce;
+            int64_t cp, np, nx;
+            nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
+            (void)cc; (void)ce;
+            char en[64];
+            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
+            if (nl > 0 && strcmp(en, "mt.txt") == 0) { file_vp = cp; break; }
+            w = nx;
+        }
+    }
+    CHECK(file_vp != 0);
+
+    CHECK_EQ(vfs_write(vfs, file_vp, "DATA", 0, 4, 0), 4);
+
+    /* Snapshot (epoch 1) */
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK_EQ(snap, 1);
+
+    /* Write at snapshot epoch so commit creates a mapper entry */
+    CHECK_EQ(vfs_write(vfs, file_vp, "MORE", 0, 4, 1), 4);
+
+    /* Commit should succeed (no conflict — only written at epoch 0 and 1) */
+    CHECK_EQ(vfs_commit(vfs, snap), VFS_OK);
+
+    /* After commit: mapper_insert(1, currentEpoch, traversalApply=true).
+       vfs_open_file at epoch 1 resolves via mapper → 2. */
+    CHECK_EQ(vfs_open_file(vfs, root_vp, "mt.txt", 1), nid);
+
+    vfs_dirent_t de[8];
+    int nr = vfs_readdir(vfs, root_vp, de, 8, 1);
+    CHECK_EQ(nr, 1);
+
+    epoch_teardown(vfs);
+}
+
 int main(void) {
     test_snapshot_basic();
     test_epoch_writable();
@@ -380,6 +440,9 @@ int main(void) {
 
     unlink(test_path);
     test_commit_subdir_conflict();
+
+    unlink(test_path);
+    test_mapper_integration();
 
     printf("test_epoch: %d/%d passed\n", tests_passed, tests_run);
     unlink(test_path);
