@@ -522,6 +522,111 @@ static void test_gc_pool_compaction(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * VirtualPtr remapping test: create multi-version file, GC, verify all
+ * VirtualPtrs resolve correctly (DirContent→FileNode→FileContent→PageNode).
+ * --------------------------------------------------------------------------- */
+
+static void test_gc_vptr_remapping(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    /* Create a file */
+    int nodeId = vfs_create(vfs, root_vp, "vptr_test.txt", 0);
+    CHECK(nodeId > 0);
+
+    int64_t file_vp = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        CHECK(head != 0);
+        uint32_t cc, ce;
+        int64_t cp, np, nx;
+        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
+                              &cc, &ce, &cp, &np, &nx);
+        (void)cc; (void)ce; (void)np; (void)nx;
+        file_vp = cp;
+    }
+    CHECK(file_vp != 0);
+
+    /* Write multi-version data across epochs */
+    const char* data = "VERSION0";
+    CHECK_EQ(vfs_write(vfs, file_vp, data, (int64_t)strlen(data),
+                       (int64_t)strlen(data), 0), (int)strlen(data));
+
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK_EQ(snap, 1);
+
+    const char* data2 = "VERSION2";
+    CHECK_EQ(vfs_write(vfs, file_vp, data2, (int64_t)strlen(data2),
+                       (int64_t)strlen(data2), 2), (int)strlen(data2));
+
+    /* Commit the snapshot, then run GC */
+    CHECK_EQ(vfs_commit(vfs, snap), VFS_OK);
+
+    int gc_ret = vfs_gc(vfs);
+    if (gc_ret == VFS_OK) {
+        /* Verify GC completed — all VirtualPtrs should still resolve */
+
+        /* 1. Root DirNode headPtr → DirContent */
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
+        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        CHECK(head != 0);
+
+        /* 2. DirContent → FileNode */
+        uint32_t cc, ce;
+        int64_t dc_childPtr, dc_namePtr, dc_next;
+        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
+                              &cc, &ce, &dc_childPtr, &dc_namePtr, &dc_next);
+        (void)cc; (void)ce; (void)dc_namePtr; (void)dc_next;
+        CHECK(dc_childPtr != 0);
+
+        /* 3. FileNode headPtr → FileContent */
+        uint8_t* fn_slot = pool_resolve(&ctx->pool, dc_childPtr);
+        CHECK(fn_slot != NULL);
+        CHECK_EQ(vfs_rd2(fn_slot, FILENODE_OFF_TYPE), (int16_t)NODE_TYPE_FILE);
+        int64_t fc_vp = vfs_rd8(fn_slot, FILENODE_OFF_HEADPTR);
+        CHECK(fc_vp != 0);
+
+        /* 4. FileContent rootPtr → PageNode */
+        uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
+        CHECK(fc_slot != NULL);
+        int64_t pn_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
+        CHECK(pn_vp != 0);
+
+        /* 5. PageNode versionRootPtr → VersionPage chain */
+        uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
+        CHECK(pn_slot != NULL);
+        int64_t vp_vp = vfs_atomic_load_i64(
+            (const int64_t*)(pn_slot + PAGENODE_OFF_VERSIONROOT));
+        CHECK(vp_vp != 0);
+
+        /* 6. VersionPage has valid epoch and dataPage */
+        uint8_t* vp_slot = pool_resolve(&ctx->pool, vp_vp);
+        CHECK(vp_slot != NULL);
+        uint32_t vp_epoch;
+        int64_t vp_dataPage, vp_next;
+        nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+        CHECK(vp_epoch == 0 || vp_epoch == 2);
+        CHECK(vp_dataPage >= 0);
+        (void)vp_next;
+
+        /* 7. Data readable via vfs_read */
+        char rbuf[16];
+        CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 8, 0), 8);
+        CHECK_EQ(strncmp(rbuf, "VERSION0", 8), 0);
+    } else {
+        CHECK_EQ(gc_ret, VFS_ERR_FULL);
+    }
+
+    vfs_close(vfs);
+}
+
 static void test_gc_crash_after_swap(void) {
     vfs_t* vfs = vfs_open(test_path);
     CHECK(vfs != NULL);
@@ -796,6 +901,9 @@ int main(void) {
 
     unlink(test_path);  /* fresh file for pool compaction test */
     test_gc_pool_compaction();
+
+    unlink(test_path);  /* fresh file for VPtr remapping test */
+    test_gc_vptr_remapping();
 
     printf("test_gc: %d/%d passed\n", tests_passed, tests_run);
     unlink(test_path);
