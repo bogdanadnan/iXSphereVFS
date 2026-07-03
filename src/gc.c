@@ -133,3 +133,16 @@ bool deferred_free_is_queued(DeferredFreeQueue* queue, int64_t logical_page) {
     }
     return false;
 }
+
+void deferred_free_confirm_and_release(DeferredFreeQueue* queue,
+                                        StorageBackend* sb) {
+    if (!queue || !sb) return;
+    for (int i = 0; i < queue->count; i++) {
+        storage_free(sb, queue->pages[i]);
+    }
+    free(queue->pages);
+    queue->pages = NULL;
+    queue->count = 0;
+    queue->capacity = 0;
+    queue->confirmed = true;
+}
