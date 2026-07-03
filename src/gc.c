@@ -449,8 +449,8 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                                   vp_slot, new_vp_slot);
 
                     if (rewrite_epoch_vp != (int64_t)vp_epoch) {
-                        vfs_wr4(new_vp_slot, VERSIONPAGE_OFF_EPOCH,
-                                (uint32_t)rewrite_epoch_vp);
+                        vfs_wr4_s(new_vp_slot, VERSIONPAGE_OFF_EPOCH,
+                                (uint32_t)rewrite_epoch_vp, ctx->page_size);
                     }
                 }
 
@@ -524,8 +524,8 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
 
             /* Update epoch field if rewritten */
             if (rewrite_epoch != (int64_t)vp_epoch) {
-                vfs_wr4(new_slot, VERSIONPAGE_OFF_EPOCH,
-                        (uint32_t)rewrite_epoch);
+                vfs_wr4_s(new_slot, VERSIONPAGE_OFF_EPOCH,
+                        (uint32_t)rewrite_epoch, ctx->page_size);
             }
         }
 
