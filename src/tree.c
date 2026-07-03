@@ -612,7 +612,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
     if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
         return -1;
 
-    int64_t page_size = VFS_PAGE_SIZE;
+    int64_t page_size = ctx->page_size;
     int64_t first_page = offset / page_size;
     int64_t last_page  = (offset + count - 1) / page_size;
     const uint8_t* src = (const uint8_t*)data;
@@ -789,7 +789,7 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
     if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
         return -1;
 
-    int64_t page_size = VFS_PAGE_SIZE;
+    int64_t page_size = ctx->page_size;
     int64_t first_page = offset / page_size;
     int64_t last_page  = (offset + count - 1) / page_size;
     uint8_t* dst = (uint8_t*)buf;
