@@ -1,5 +1,6 @@
 /* Phase 7: GC — Tree Lock, Deferred Free Queue */
 #include "gc.h"
+#include "tree.h"
 #include <stdlib.h>
 
 /* ---------------------------------------------------------------------------
@@ -154,4 +155,57 @@ void deferred_free_destroy(DeferredFreeQueue* queue) {
     queue->count = 0;
     queue->capacity = 0;
     queue->confirmed = false;
+}
+
+/* ---------------------------------------------------------------------------
+ * GC root scan — shadow-compaction (§12.5)
+ *
+ * Placeholder: walks are deferred to Phase 8.  The structure below
+ * demonstrates the expected pattern.
+ * --------------------------------------------------------------------------- */
+
+/* Shadow-compaction helper — walks the pool chain, builds a live set,
+   copies live pool entries to fresh pages, then enqueues old pages
+   for deferred freeing.  Currently a stub — returns VFS_OK. */
+static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
+    (void)ctx;
+    (void)queue;
+    /* Phase 8: walk pool chain, dentry cache, mapper chain, touched file
+       chain to build live set; allocate fresh pool pages; copy live entries;
+       CAS-switch pool list head; enqueue old pages for deferred free. */
+    return VFS_OK;
+}
+
+int vfs_gc(vfs_t* vfs) {
+    if (!vfs || !vfs->ctx) return VFS_ERR_IO;
+    TreeContext* ctx = vfs->ctx;
+
+    /* Acquire exclusive tree lock — waits for all readers to drain */
+    tree_lock_acquire_exclusive(ctx);
+
+    /* Initialize the deferred-free queue */
+    DeferredFreeQueue queue;
+    int err = deferred_free_init(&queue, 256);
+    if (err != VFS_OK) {
+        tree_lock_release_exclusive(ctx);
+        return err;
+    }
+
+    /* Tell the storage allocator to skip pages in our deferred queue */
+    storage_set_deferred_queue(&queue);
+
+    /* Run shadow-compaction */
+    err = gc_shadow_compact(ctx, &queue);
+
+    /* Release queued pages to storage and clean up */
+    deferred_free_confirm_and_release(&queue, ctx->sb);
+    storage_set_deferred_queue(NULL);
+
+    /* Release the exclusive lock */
+    tree_lock_release_exclusive(ctx);
+
+    /* Flush superblock to persist any pool changes */
+    tree_superblock_write(ctx);
+
+    return err;
 }
