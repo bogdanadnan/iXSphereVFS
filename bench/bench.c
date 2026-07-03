@@ -466,11 +466,11 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     if (count <= 0) return 0;
 
     int64_t cache_cap = vfs_cache_get_max_entries(vfs->ctx->sb);
-    /* Read slightly more than cache capacity to force cache misses.
-       At least cache_cap + 1000 reads ensure the first cache_cap pages
-       miss (filling the cache) and the remaining 1000 hit. */
-    int64_t min_reads = cache_cap + 1000;
-    int reads_needed = (count < (int)(2 * cache_cap)) ? (int)(min_reads) : count;
+    /* Read 2× cache capacity to force misses: the first cache_cap pages
+       fill the cache; the remaining cache_cap pages are all cold misses
+       (triggering LRU eviction on every access). */
+    int64_t min_reads = 2 * cache_cap;
+    int reads_needed = (count < (int)min_reads) ? (int)min_reads : count;
     if (reads_needed > 65536) reads_needed = 65536;
     int file_pages = reads_needed;
 
