@@ -32,6 +32,7 @@ typedef struct {
 
     /* Configuration (from StorageBackend header) */
     uint32_t segment_size;       /* pages per FileContent segment */
+    int64_t  page_size;          /* VFS page size (from sb->page_size) */
 
     /* In-memory page array cache — one entry for the most recently accessed segment */
     SegmentArray seg_array_cache;

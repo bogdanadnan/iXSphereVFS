@@ -38,6 +38,8 @@ vfs_t* vfs_open(const char* path) {
         return NULL;
     }
 
+    ctx->page_size = ctx->sb->page_size;
+
     /* Initialize pool allocator — list_head points into TreeContext */
     pool_init(&ctx->pool, ctx->sb, &ctx->pool_list_head_value);
 
