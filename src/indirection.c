@@ -158,12 +158,16 @@ int indir_ensure_capacity(StorageBackend* sb, int needed) {
         if (new_logical < it->inline_count) {
             it->inline_entries[new_logical] = new_page_phys;
         } else {
-            /* It goes into a previous overflow page */
             int64_t rem = new_logical - it->inline_count;
             int64_t oidx = rem / it->entries_per_overflow;
             int64_t eidx = rem % it->entries_per_overflow;
             if (oidx < it->overflow_count) {
+                /* Entry goes into a previous overflow page */
                 it->overflow_pages[oidx][1 + eidx] = new_page_phys;
+            } else {
+                /* oidx == overflow_count — the new page covers its own entry.
+                   Write into the freshly allocated buffer before appending. */
+                ((int64_t*)buf)[1 + eidx] = new_page_phys;
             }
         }
 
