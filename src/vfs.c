@@ -109,13 +109,31 @@ int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch) {
         return VFS_OK;
     }
 
-    /* Per-epoch lock */
+    /* Per-epoch lock: two-phase locking — acquire global (epoch=0) mutex first,
+       then acquire per-epoch mutex, then release global mutex.  This ensures
+       that a global lock holder blocks per-epoch lock attempts on the same file. */
     if (e->depth > 0 && pthread_equal(e->owner, self)) {
         /* Recursive lock */
         e->depth++;
         return VFS_OK;
     }
+
+    /* Phase 1: acquire global lock for this file */
+    pthread_mutex_lock(&table_lock);
+    LockEntry* global_e = lock_find_or_create(file, 0);
+    if (!global_e) {
+        pthread_mutex_unlock(&table_lock);
+        return VFS_ERR_NOMEM;
+    }
+    pthread_mutex_unlock(&table_lock);
+    pthread_mutex_lock(&global_e->mtx);
+
+    /* Phase 2: acquire per-epoch mutex */
     pthread_mutex_lock(&e->mtx);
+
+    /* Phase 3: release global mutex */
+    pthread_mutex_unlock(&global_e->mtx);
+
     e->owner = self;
     e->depth = 1;
     return VFS_OK;
