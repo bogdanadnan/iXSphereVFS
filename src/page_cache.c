@@ -288,6 +288,24 @@ void cache_flush_page(StorageBackend* sb, int64_t logical_page) {
  * Flush all dirty pages in priority order
  * --------------------------------------------------------------------------- */
 
+void cache_evict_all(PageCache* cache) {
+    for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
+        spin_lock(&cache->bucket_locks[bkt]);
+        CacheEntry* e = cache->buckets[bkt];
+        while (e) {
+            CacheEntry* next = e->hash_next;
+            free(e->payload);
+            free(e);
+            e = next;
+        }
+        cache->buckets[bkt] = NULL;
+        spin_unlock(&cache->bucket_locks[bkt]);
+    }
+    cache->lru_head    = NULL;
+    cache->lru_tail    = NULL;
+    cache->entry_count = 0;
+}
+
 void cache_flush_all(StorageBackend* sb) {
     PageCache* cache = &sb->cache;
 

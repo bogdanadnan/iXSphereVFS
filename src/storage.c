@@ -15,6 +15,14 @@ static DeferredFreeQueue* _deferred_queue = NULL;
 static volatile int64_t _cache_total = 0;
 static volatile int64_t _cache_hits  = 0;
 
+int64_t vfs_cache_get_max_entries(StorageBackend* sb) {
+    return sb ? (int64_t)sb->cache.max_entries : (int64_t)CACHE_DEFAULT_MAX;
+}
+
+void vfs_cache_evict_all(StorageBackend* sb) {
+    if (sb) cache_evict_all(&sb->cache);
+}
+
 void vfs_cache_reset(void) {
     _cache_total = 0;
     _cache_hits  = 0;
