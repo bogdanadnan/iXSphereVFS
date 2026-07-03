@@ -1,10 +1,19 @@
 #include "storage.h"
 #include "page_buf.h"
+#include "gc.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+
+/* Pointer to the GC's deferred-free queue, set during GC to prevent
+   re-allocation of pages still referenced by in-flight readers. */
+static DeferredFreeQueue* _deferred_queue = NULL;
+
+void storage_set_deferred_queue(DeferredFreeQueue* queue) {
+    _deferred_queue = queue;
+}
 
 /* ---------------------------------------------------------------------------
  * Physical offset helpers
@@ -390,6 +399,13 @@ int64_t storage_allocate(StorageBackend* sb, int count) {
 
         for (int64_t i = 2; i < total_entries && run_len < count; i++) {
             if (indir_lookup(sb, i) == 0) {
+                /* Skip pages queued for deferred free — they may still be
+                   referenced by in-flight readers. */
+                if (_deferred_queue && deferred_free_is_queued(_deferred_queue, i)) {
+                    run_start = -1;
+                    run_len   = 0;
+                    continue;
+                }
                 if (run_len == 0) run_start = i;
                 run_len++;
             } else {

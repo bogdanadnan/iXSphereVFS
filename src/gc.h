@@ -42,7 +42,7 @@ void tree_lock_release_exclusive(TreeContext* ctx);
  * that no active readers remain, the pages are actually released.
  * --------------------------------------------------------------------------- */
 
-typedef struct {
+typedef struct DeferredFreeQueue {
     int64_t* pages;      /* dynamic array of logical page indices */
     int      count;
     int      capacity;

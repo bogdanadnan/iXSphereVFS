@@ -119,6 +119,9 @@ typedef struct {
  * Public API (storage.c)
  * --------------------------------------------------------------------------- */
 
+/* Forward declaration — full type in gc.h */
+struct DeferredFreeQueue;
+
 StorageBackend* storage_open(const char* path, int64_t page_size);
 void            storage_close(StorageBackend* sb);
 
@@ -129,6 +132,10 @@ void            storage_free(StorageBackend* sb, int64_t logical_page);
 uint8_t*        storage_read(StorageBackend* sb, int64_t logical_page);
 void            storage_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload, uint32_t priority);
 void            storage_flush(StorageBackend* sb, int64_t logical_page);
+
+/* Set the deferred-free queue — called by GC so storage_allocate skips
+   pages that may still be referenced by in-flight readers. */
+void storage_set_deferred_queue(struct DeferredFreeQueue* queue);
 
 /* ---------------------------------------------------------------------------
  * Internal: raw I/O  (storage.c)
