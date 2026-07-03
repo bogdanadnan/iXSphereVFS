@@ -15,7 +15,7 @@ int touchedfile_add(Pool* pool, int64_t* touchedFilesPtr,
 
         uint32_t entry_epoch, entry_nodeId;
         int64_t entry_next;
-        nodes_read_touchedfile(slot, &entry_epoch, &entry_nodeId, &entry_next, VFS_PAGE_SIZE);
+        nodes_read_touchedfile(slot, &entry_epoch, &entry_nodeId, &entry_next, pool->sb->page_size);
 
         if (entry_epoch == epoch && entry_nodeId == nodeId)
             return VFS_OK;  /* already exists — idempotent */
@@ -34,7 +34,7 @@ int touchedfile_add(Pool* pool, int64_t* touchedFilesPtr,
     int64_t old_head;
     do {
         old_head = vfs_atomic_load_i64(touchedFilesPtr);
-        nodes_write_touchedfile(new_slot, epoch, nodeId, old_head, VFS_PAGE_SIZE);
+        nodes_write_touchedfile(new_slot, epoch, nodeId, old_head, pool->sb->page_size);
         vfs_mb_release();
     } while (vfs_cas_i64(touchedFilesPtr, old_head, new_vp) != old_head);
 
@@ -53,7 +53,7 @@ int touchedfile_collect(Pool* pool, int64_t touchedFilesPtr,
 
         uint32_t entry_epoch, entry_nodeId;
         int64_t entry_next;
-        nodes_read_touchedfile(slot, &entry_epoch, &entry_nodeId, &entry_next, VFS_PAGE_SIZE);
+        nodes_read_touchedfile(slot, &entry_epoch, &entry_nodeId, &entry_next, pool->sb->page_size);
 
         if (entry_epoch == epoch) {
             /* Dedup: check if this nodeId was already collected */
@@ -85,9 +85,9 @@ void touchedfile_drop(Pool* pool, int64_t* touchedFilesPtr, uint32_t epoch) {
         if (!slot) break;
         uint32_t entry_epoch, entry_nodeId;
         int64_t entry_next;
-        nodes_read_touchedfile(slot, &entry_epoch, &entry_nodeId, &entry_next, VFS_PAGE_SIZE);
+        nodes_read_touchedfile(slot, &entry_epoch, &entry_nodeId, &entry_next, pool->sb->page_size);
         if (entry_epoch == epoch) {
-            nodes_write_touchedfile(slot, 0, entry_nodeId, entry_next, VFS_PAGE_SIZE);
+            nodes_write_touchedfile(slot, 0, entry_nodeId, entry_next, pool->sb->page_size);
         }
         vp = entry_next;
     }
