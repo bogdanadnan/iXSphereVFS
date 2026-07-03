@@ -665,6 +665,12 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
         walk_vp = dc_next;
     }
 
+    /* Early return for empty chain — avoids calloc(0, ...) edge cases */
+    if (child_count == 0) {
+        #undef GC_NEXT_SLOT
+        return VFS_OK;
+    }
+
     /* Second pass: copy surviving entries.
        After copy, track which children had at least one kept entry. */
     int* child_has_kept = (int*)calloc((size_t)child_count, sizeof(int));
@@ -702,7 +708,15 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
             keep = 0;  /* deleted epoch, child has no survivor at any epoch */
 
         if (keep) {
-            GC_NEXT_SLOT();
+            /* Inline allocation to free child_has_kept on OOM */
+            if (alloc->cur_slot >= alloc->slots_per_page) {
+                alloc->cur_page_vp = gc_allocate_new_pool_page(ctx, gc_map);
+                if (alloc->cur_page_vp == VFS_VPTR_NULL) {
+                    free(child_has_kept);
+                    return VFS_ERR_FULL;
+                }
+                alloc->cur_slot = 0;
+            }
             int64_t new_dc_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
             uint8_t* new_dc_slot = pool_resolve(&ctx->pool, new_dc_vp);
@@ -735,6 +749,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
         }
 
         if (cidx >= 0 && child_has_kept[cidx] && dc_namePtr != 0 && dc_childPtr != 0) {
+            child_has_kept[cidx] = 0;  /* walk each child exactly once */
             uint8_t* child_slot = pool_resolve(&ctx->pool, dc_childPtr);
             if (child_slot) {
                 int16_t ctype = vfs_rd2(child_slot, DIRNODE_OFF_TYPE);
