@@ -389,3 +389,45 @@ if (oidx < it->overflow_count) {
 - [ ] `vfs_bench --workload write --count 100000` completes without errors
 - [ ] Overflow chain is walkable after creating 10 overflow pages
 - [ ] No double-allocations detected (Valgrind/ASan clean)
+
+---
+
+## Workload 8A.8 — Fix Segment 31 PageNode Resolution Failure
+
+### What
+`vfs_write` fails at logical page 32,385 (segment 31 boundary) with
+VFS_ERR_IO (-1). Both `pool_alloc` and `storage_allocate` succeed in
+isolation at this point — the failure is in `tree_resolve_page` →
+`segment_array_build` where `pool_resolve` returns NULL for a PageNode
+that was just created during segment allocation.
+
+### Root Cause
+
+Segment 31 creation allocates 1,024 PageNodes. When `segment_array_build`
+walks the chain, it calls `pool_resolve` for each PageNode's VirtualPtr.
+If the PageNode's pool page is not in the page cache (evicted or not yet
+flushed), `pool_resolve` → `storage_read` returns NULL, causing the array
+build to fail.
+
+At 32,000+ pages, the page cache (default 32,768 entries) is full of dirty
+data pages. Pool pages (containing the PageNodes) may be evicted from cache
+if they're clean. `storage_read` for a pool page that's not in cache reads
+from disk, but if the page was never flushed (still only dirty in cache),
+the disk read returns NULL.
+
+### Fix
+
+Before building the segment array, ensure all pool pages containing PageNodes
+are in the cache. Or: don't evict pool pages that are referenced by in-memory
+arrays. Or: flush pool pages during segment creation before building the array.
+
+Simplest fix: in `segment_array_build`, if `pool_resolve` returns NULL,
+re-read via `storage_read` to pull the page back from disk, then retry.
+Pages created during segment allocation have been written via `storage_write`
+which marks them dirty in cache — they shouldn't be evicted. The issue may be
+that `pool_resolve` calls `pool_resolve` → `storage_read` → `cache_find`,
+and the pool page wasn't inserted into cache yet.
+
+### Acceptance
+- [ ] `vfs_write` works beyond 100,000 pages without VFS_ERR_IO
+- [ ] `vfs_bench --workload=seqwrite --count=100000` completes successfully
