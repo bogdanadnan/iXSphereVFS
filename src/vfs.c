@@ -10,66 +10,68 @@
  * Per-file locking subsystem
  *
  * Hash table with fixed 256 buckets, chained linked list.
- * Each entry keyed by (file, epoch).  Supports reference-counted
- * recursive locking within the same thread.
- *
- * Two-phase locking rule:
- *   Global lock (epoch=0) must be acquired before any per-epoch lock
- *   on the same file.  Per-epoch locks block other per-epoch locks
- *   for the same (file, epoch), but NOT for different epochs.
+ * Each entry keyed by file nodeId only.  Global lock (epoch=0) is tracked
+ * via a boolean flag; per-epoch locks use a counter.  A condition variable
+ * coordinates global vs per-epoch: when global is held, per-epoch lockers
+ * wait; when per-epoch locks are active, global lockers wait until they
+ * drain.
  * --------------------------------------------------------------------------- */
 
 #define LOCK_BUCKETS 256
 
-typedef struct LockEntry {
-    int64_t           key;          /* (file << 32) | epoch  */
+typedef struct FileLockState {
+    int64_t           nodeId;       /* file nodeId (lock key) */
     pthread_mutex_t   mtx;
-    pthread_t         owner;        /* current owner thread id */
-    int               depth;        /* 0 = unlocked, >0 = locked N times */
+    pthread_cond_t    cv;
+    pthread_t         global_owner; /* thread holding the global lock, 0 if none */
+    int               global_depth; /* recursive count for global lock */
+    int               global_pending; /* threads waiting for global lock */
+    int               epoch_count;  /* number of active per-epoch locks */
     int               refcount;     /* number of references to this entry */
-    struct LockEntry* next;         /* hash chain next pointer */
-} LockEntry;
+    struct FileLockState* next;     /* hash chain next pointer */
+} FileLockState;
 
-static LockEntry* lock_table[LOCK_BUCKETS];
+static FileLockState* lock_table[LOCK_BUCKETS];
 static pthread_mutex_t table_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Hash: combine file and epoch into a bucket index */
-static int lock_hash(int64_t file, int64_t epoch) {
-    uint64_t h = (uint64_t)(file ^ (epoch << 5));
+/* Hash: file nodeId */
+static int lock_hash(int64_t nodeId) {
+    uint64_t h = (uint64_t)nodeId;
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
     return (int)(h % LOCK_BUCKETS);
 }
 
-/* Find or create a LockEntry for (file, epoch).  Returns with table_lock held. */
-static LockEntry* lock_find_or_create(int64_t file, int64_t epoch) {
-    int bkt = lock_hash(file, epoch);
-    int64_t key = (file << 32) | (epoch & 0xFFFFFFFFLL);
-    LockEntry* e = lock_table[bkt];
+/* Find or create a FileLockState for nodeId.  Caller must hold table_lock. */
+static FileLockState* filelock_find_or_create(int64_t nodeId) {
+    int bkt = lock_hash(nodeId);
+    FileLockState* e = lock_table[bkt];
     while (e) {
-        if (e->key == key) {
+        if (e->nodeId == nodeId) {
             e->refcount++;
             return e;
         }
         e = e->next;
     }
-    /* Not found — allocate new entry */
-    e = (LockEntry*)calloc(1, sizeof(LockEntry));
+    e = (FileLockState*)calloc(1, sizeof(FileLockState));
     if (!e) return NULL;
-    e->key = key;
+    e->nodeId = nodeId;
     pthread_mutex_init(&e->mtx, NULL);
-    e->depth = 0;
+    pthread_cond_init(&e->cv, NULL);
     e->refcount = 1;
-    e->owner = 0;
-    /* Prepend to bucket */
+    e->global_owner = 0;
+    e->global_depth = 0;
+    e->global_pending = 0;
+    e->epoch_count = 0;
     e->next = lock_table[bkt];
     lock_table[bkt] = e;
     return e;
 }
 
-static void lock_release_entry(LockEntry* e, int bkt) {
+static void filelock_release(FileLockState* e, int bkt) {
     e->refcount--;
     if (e->refcount <= 0) {
-        /* Remove from chain */
-        LockEntry** pp = &lock_table[bkt];
+        FileLockState** pp = &lock_table[bkt];
         while (*pp) {
             if (*pp == e) {
                 *pp = e->next;
@@ -78,6 +80,7 @@ static void lock_release_entry(LockEntry* e, int bkt) {
             pp = &(*pp)->next;
         }
         pthread_mutex_destroy(&e->mtx);
+        pthread_cond_destroy(&e->cv);
         free(e);
     }
 }
@@ -86,8 +89,8 @@ int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch) {
     if (!vfs || !vfs->ctx) return VFS_ERR_IO;
 
     pthread_mutex_lock(&table_lock);
-    LockEntry* e = lock_find_or_create(file, epoch);
-    if (!e) {
+    FileLockState* fls = filelock_find_or_create(file);
+    if (!fls) {
         pthread_mutex_unlock(&table_lock);
         vfs->ctx->last_error = VFS_ERR_NOMEM;
         return VFS_ERR_NOMEM;
@@ -97,80 +100,90 @@ int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch) {
     pthread_t self = pthread_self();
 
     if (epoch == 0) {
-        /* Global lock: acquire mutex, block until owned */
-        if (e->depth > 0 && pthread_equal(e->owner, self)) {
-            /* Recursive lock */
-            e->depth++;
+        /* Global lock: wait until no per-epoch locks are active */
+        pthread_mutex_lock(&fls->mtx);
+        fls->global_pending++;
+
+        /* If same thread already holds global lock, recursive */
+        if (fls->global_depth > 0 && pthread_equal(fls->global_owner, self)) {
+            fls->global_depth++;
+            fls->global_pending--;
+            pthread_mutex_unlock(&fls->mtx);
             return VFS_OK;
         }
-        pthread_mutex_lock(&e->mtx);
-        e->owner = self;
-        e->depth = 1;
+
+        /* Wait until epoch_count drops to 0 */
+        while (fls->epoch_count > 0)
+            pthread_cond_wait(&fls->cv, &fls->mtx);
+
+        fls->global_owner = self;
+        fls->global_depth = 1;
+        fls->global_pending--;
+        pthread_mutex_unlock(&fls->mtx);
         return VFS_OK;
     }
 
-    /* Per-epoch lock: two-phase locking — acquire global (epoch=0) mutex first,
-       then acquire per-epoch mutex, then release global mutex.  This ensures
-       that a global lock holder blocks per-epoch lock attempts on the same file. */
-    if (e->depth > 0 && pthread_equal(e->owner, self)) {
-        /* Recursive lock */
-        e->depth++;
-        return VFS_OK;
-    }
+    /* Per-epoch lock: wait if global lock is held by another thread */
+    pthread_mutex_lock(&fls->mtx);
 
-    /* Phase 1: acquire global lock for this file */
-    pthread_mutex_lock(&table_lock);
-    LockEntry* global_e = lock_find_or_create(file, 0);
-    if (!global_e) {
-        pthread_mutex_unlock(&table_lock);
-        return VFS_ERR_NOMEM;
-    }
-    pthread_mutex_unlock(&table_lock);
-    pthread_mutex_lock(&global_e->mtx);
+    while (fls->global_depth > 0 && (fls->global_owner == 0 || !pthread_equal(fls->global_owner, self)))
+        pthread_cond_wait(&fls->cv, &fls->mtx);
 
-    /* Phase 2: acquire per-epoch mutex */
-    pthread_mutex_lock(&e->mtx);
-
-    /* Phase 3: release global mutex */
-    pthread_mutex_unlock(&global_e->mtx);
-
-    e->owner = self;
-    e->depth = 1;
+    fls->epoch_count++;
+    pthread_mutex_unlock(&fls->mtx);
     return VFS_OK;
 }
 
 int vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch) {
     if (!vfs || !vfs->ctx) return VFS_ERR_IO;
 
-    int bkt = lock_hash(file, epoch);
-    int64_t key = (file << 32) | (epoch & 0xFFFFFFFFLL);
+    int bkt = lock_hash(file);
 
     pthread_mutex_lock(&table_lock);
-    LockEntry* e = lock_table[bkt];
-    while (e) {
-        if (e->key == key) break;
-        e = e->next;
+    FileLockState* fls = lock_table[bkt];
+    while (fls) {
+        if (fls->nodeId == file) break;
+        fls = fls->next;
     }
-    if (!e) {
+    if (!fls) {
         pthread_mutex_unlock(&table_lock);
         vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
     }
 
     pthread_t self = pthread_self();
-    if (e->depth == 0 || !pthread_equal(e->owner, self)) {
-        pthread_mutex_unlock(&table_lock);
-        vfs->ctx->last_error = VFS_ERR_IO;
-        return VFS_ERR_IO;  /* not locked by this thread */
+
+    if (epoch == 0) {
+        /* Global unlock */
+        pthread_mutex_lock(&fls->mtx);
+        if (fls->global_depth == 0 || !pthread_equal(fls->global_owner, self)) {
+            pthread_mutex_unlock(&fls->mtx);
+            pthread_mutex_unlock(&table_lock);
+            vfs->ctx->last_error = VFS_ERR_IO;
+            return VFS_ERR_IO;
+        }
+        fls->global_depth--;
+        if (fls->global_depth == 0) {
+            fls->global_owner = 0;
+            pthread_cond_broadcast(&fls->cv);
+        }
+        pthread_mutex_unlock(&fls->mtx);
+    } else {
+        /* Per-epoch unlock */
+        pthread_mutex_lock(&fls->mtx);
+        if (fls->epoch_count == 0) {
+            pthread_mutex_unlock(&fls->mtx);
+            pthread_mutex_unlock(&table_lock);
+            vfs->ctx->last_error = VFS_ERR_IO;
+            return VFS_ERR_IO;
+        }
+        fls->epoch_count--;
+        if (fls->epoch_count == 0 && fls->global_pending > 0)
+            pthread_cond_signal(&fls->cv);
+        pthread_mutex_unlock(&fls->mtx);
     }
 
-    e->depth--;
-    if (e->depth == 0) {
-        e->owner = 0;
-        pthread_mutex_unlock(&e->mtx);
-    }
-
-    lock_release_entry(e, bkt);
+    filelock_release(fls, bkt);
     pthread_mutex_unlock(&table_lock);
     return VFS_OK;
 }
