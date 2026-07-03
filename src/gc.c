@@ -283,12 +283,14 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
             gc_copy_entry(gc_map, walk_vp, new_dc_vp, dc_slot, new_dc_slot);
 
             /* Recursively walk child DirNodes */
-            if (dc_namePtr != 0 && (vfs_rd2(
-                    pool_resolve(&ctx->pool, dc_childPtr),
-                    DIRNODE_OFF_TYPE) == (int16_t)NODE_TYPE_DIR)) {
-                int err = gc_walk_dirnode(ctx, gc_map, alloc,
-                                           dc_childPtr, epoch);
-                if (err != VFS_OK) return err;
+            if (dc_namePtr != 0 && dc_childPtr != 0) {
+                uint8_t* child_slot = pool_resolve(&ctx->pool, dc_childPtr);
+                if (child_slot && vfs_rd2(child_slot, DIRNODE_OFF_TYPE)
+                                  == (int16_t)NODE_TYPE_DIR) {
+                    int err = gc_walk_dirnode(ctx, gc_map, alloc,
+                                               dc_childPtr, epoch);
+                    if (err != VFS_OK) return err;
+                }
             }
             /* TODO Phase 8: walk child FileNodes to copy VersionPage chains */
         }
@@ -298,6 +300,8 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
     return VFS_OK;
 }
+
+#undef GC_NEXT_SLOT
 
 /* Shadow-compaction helper — walks the pool chain, builds a live set,
    copies live pool entries to fresh pages, then enqueues old pages
