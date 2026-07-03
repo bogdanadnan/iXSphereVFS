@@ -1,7 +1,7 @@
 #ifndef VFS_STORAGE_H
 #define VFS_STORAGE_H
 
-#include "ixsphere_vfs.h"
+#include "ixsphere/vfs.h"
 #include "platform.h"
 #include "page_buf.h"
 #include <stdio.h>

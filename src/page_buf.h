@@ -1,7 +1,7 @@
 #ifndef VFS_PAGE_BUF_H
 #define VFS_PAGE_BUF_H
 
-#include "ixsphere_vfs.h"
+#include "ixsphere/vfs.h"
 #include "platform.h"
 #include <string.h>
 

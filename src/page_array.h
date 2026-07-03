@@ -1,7 +1,7 @@
 #ifndef VFS_PAGE_ARRAY_H
 #define VFS_PAGE_ARRAY_H
 
-#include "ixsphere_vfs.h"
+#include "ixsphere/vfs.h"
 #include "pool.h"
 #include "page_buf.h"
 #include "nodes.h"

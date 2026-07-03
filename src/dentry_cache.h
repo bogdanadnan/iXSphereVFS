@@ -1,7 +1,7 @@
 #ifndef VFS_DENTRY_CACHE_H
 #define VFS_DENTRY_CACHE_H
 
-#include "ixsphere_vfs.h"
+#include "ixsphere/vfs.h"
 #include "pool.h"
 #include <stdbool.h>
 
