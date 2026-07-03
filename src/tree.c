@@ -637,6 +637,120 @@ int vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
     return written;
 }
 
+int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
+               int64_t dst_parent, const char* dst, int64_t epoch) {
+    if (!vfs || !vfs->ctx || !src || !dst || src[0] == '\0' || dst[0] == '\0')
+        return VFS_ERR_IO;
+    TreeContext* ctx = vfs->ctx;
+
+    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
+
+    /* Verify both parents are DirNodes */
+    uint8_t* src_slot = pool_resolve(&ctx->pool, (int64_t)src_parent);
+    if (!src_slot) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2_s(src_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+        return VFS_ERR_NOTDIR;
+
+    uint8_t* dst_slot = pool_resolve(&ctx->pool, (int64_t)dst_parent);
+    if (!dst_slot) return VFS_ERR_IO;
+    if (vfs_rd2_s(dst_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+        return VFS_ERR_NOTDIR;
+
+    /* Find source entry by walking src_parent's DirContent chain */
+    int64_t src_head = vfs_rd8_s(src_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
+    uint32_t found_childId = 0;
+    int64_t found_childPtr = 0;
+
+    int64_t walk_vp = src_head;
+    while (walk_vp != 0 && found_childPtr == 0) {
+        uint8_t* dc = pool_resolve(&ctx->pool, walk_vp);
+        if (!dc) break;
+        uint32_t cc, ce;
+        int64_t cp, np, nx;
+        nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
+        if (np != 0 && ce <= (uint32_t)epoch) {
+            char en[256];
+            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
+            if (nl > 0 && strcmp(en, src) == 0) {
+                found_childId = cc;
+                found_childPtr = cp;
+            }
+        }
+        walk_vp = nx;
+    }
+    if (found_childPtr == 0) return VFS_ERR_NOTFOUND;
+
+    /* Same-dir same-epoch rename: just atomically update the namePtr */
+    if (src_parent == dst_parent) {
+        /* Allocate NameEntry for the destination name */
+        int64_t new_name_vp;
+        int ns = nodes_write_name(&ctx->pool, dst, &new_name_vp);
+        if (ns == 0) return VFS_ERR_IO;
+
+        /* Atomically store new namePtr into the existing DirContent slot.
+           We need to find the correct DirContent VP for the found entry.
+           Walk again to get the VP of the DirContent to update. */
+        walk_vp = src_head;
+        while (walk_vp != 0) {
+            uint8_t* dc = pool_resolve(&ctx->pool, walk_vp);
+            if (!dc) break;
+            uint32_t cc, ce;
+            int64_t cp, np, nx;
+            nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
+            if (cp == found_childPtr && np != 0 && ce <= (uint32_t)epoch) {
+                /* Update namePtr at offset DIRCONTENT_OFF_NAMEPTR */
+                vfs_mb_release();
+                vfs_atomic_store_i64(
+                    (int64_t*)(dc + DIRCONTENT_OFF_NAMEPTR), new_name_vp);
+                return VFS_OK;
+            }
+            walk_vp = nx;
+        }
+        return VFS_ERR_IO;
+    }
+
+    /* Cross-directory rename: create new entry at dst, tombstone at src */
+    int64_t dst_name_vp;
+    int dst_ns = nodes_write_name(&ctx->pool, dst, &dst_name_vp);
+    if (dst_ns == 0) return VFS_ERR_IO;
+
+    /* Allocate DirContent for dst */
+    int64_t dst_dc_vp = pool_alloc(&ctx->pool);
+    if (dst_dc_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
+    uint8_t* dst_dc_slot = pool_resolve(&ctx->pool, dst_dc_vp);
+    if (!dst_dc_slot) return VFS_ERR_IO;
+
+    /* CAS-prepend to dst_parent's headPtr */
+    int64_t dst_old_head;
+    do {
+        dst_old_head = vfs_atomic_load_i64(
+            (const int64_t*)(dst_slot + DIRNODE_OFF_HEADPTR));
+        nodes_write_dircontent(dst_dc_slot, found_childId, (uint32_t)epoch,
+                               found_childPtr, dst_name_vp, dst_old_head,
+                               ctx->page_size);
+        vfs_mb_release();
+    } while (vfs_cas_i64((int64_t*)(dst_slot + DIRNODE_OFF_HEADPTR),
+                         dst_old_head, dst_dc_vp) != dst_old_head);
+
+    /* Create tombstone at src */
+    int64_t src_dc_vp = pool_alloc(&ctx->pool);
+    if (src_dc_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
+    uint8_t* src_dc_slot = pool_resolve(&ctx->pool, src_dc_vp);
+    if (!src_dc_slot) return VFS_ERR_IO;
+
+    int64_t src_old_head;
+    do {
+        src_old_head = vfs_atomic_load_i64(
+            (const int64_t*)(src_slot + DIRNODE_OFF_HEADPTR));
+        nodes_write_dircontent(src_dc_slot, found_childId, (uint32_t)epoch,
+                               found_childPtr, 0, src_old_head, ctx->page_size);
+        vfs_mb_release();
+    } while (vfs_cas_i64((int64_t*)(src_slot + DIRNODE_OFF_HEADPTR),
+                         src_old_head, src_dc_vp) != src_old_head);
+
+    return VFS_OK;
+}
+
 /* ---------------------------------------------------------------------------
  * vfs_open_file — resolve name to nodeId by walking parent's DirContent chain
  *
