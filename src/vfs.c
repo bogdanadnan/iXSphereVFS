@@ -83,10 +83,7 @@ static void lock_release_entry(LockEntry* e, int bkt) {
 }
 
 int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch) {
-    if (!vfs || !vfs->ctx) {
-        vfs->ctx->last_error = VFS_ERR_IO;
-        return VFS_ERR_IO;
-    }
+    if (!vfs || !vfs->ctx) return VFS_ERR_IO;
 
     pthread_mutex_lock(&table_lock);
     LockEntry* e = lock_find_or_create(file, epoch);
@@ -125,10 +122,7 @@ int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch) {
 }
 
 int vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch) {
-    if (!vfs || !vfs->ctx) {
-        vfs->ctx->last_error = VFS_ERR_IO;
-        return VFS_ERR_IO;
-    }
+    if (!vfs || !vfs->ctx) return VFS_ERR_IO;
 
     int bkt = lock_hash(file, epoch);
     int64_t key = (file << 32) | (epoch & 0xFFFFFFFFLL);
