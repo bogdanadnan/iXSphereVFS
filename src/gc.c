@@ -234,17 +234,12 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     if (vfs_rd2(dir_slot, DIRNODE_OFF_TYPE) != (int16_t)NODE_TYPE_DIR)
         return VFS_ERR_NOTDIR;
 
-    /* Helper: allocate a destination slot, advancing to a new page if needed */
-    #define GC_NEXT_SLOT() do { \
-        if (alloc->cur_slot >= alloc->slots_per_page) { \
-            alloc->cur_page_vp = gc_allocate_new_pool_page(ctx, gc_map); \
-            if (alloc->cur_page_vp == VFS_VPTR_NULL) return VFS_ERR_FULL; \
-            alloc->cur_slot = 0; \
-        } \
-    } while(0)
-
     /* Allocate destination for the DirNode entry */
-    GC_NEXT_SLOT();
+    if (alloc->cur_slot >= alloc->slots_per_page) {
+        alloc->cur_page_vp = gc_allocate_new_pool_page(ctx, gc_map);
+        if (alloc->cur_page_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
+        alloc->cur_slot = 0;
+    }
     int64_t new_dir_vp = VFS_VPTR_MAKE(VFS_VPTR_PAGE(alloc->cur_page_vp),
                                         alloc->cur_slot);
     uint8_t* new_dir_slot = pool_resolve(&ctx->pool, new_dir_vp);
@@ -269,8 +264,6 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
     return VFS_OK;
 }
-
-#undef GC_NEXT_SLOT
 
 /* ---------------------------------------------------------------------------
  * FileNode walk — copy FileNode, walk FileContent/PageNode/VersionPage and
