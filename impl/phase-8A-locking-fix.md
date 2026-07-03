@@ -182,3 +182,69 @@ Thread B: vfs_lock(file, 0)        Thread A: vfs_lock(file, 1)
 - [ ] No shared mutex between per-epoch lock acquisitions on different epochs
 - [ ] Multi-threaded stress: 4 threads doing write/lock/unlock on different files
   for 10 seconds, no deadlocks, no corruption
+
+---
+
+## Workload 8A.4 — Mapper Integration in DirContent/FileSize Walk
+
+### What
+`vfs_open_file`, `vfs_readdir`, `vfs_file_size`, and `vfs_file_mtime` use
+a read rule on DirContent and FileSize chains that does not apply the epoch
+mapper. This makes committed and soft-deleted snapshots invisible/misvisible
+during directory lookups and stat calls.
+
+### Current Code (Broken)
+
+In `vfs_open_file` (tree.c:867), `vfs_readdir`, and `vfs_file_size`:
+```c
+int applies = (ce_epoch == query_epoch) ||
+              (ce_epoch < query_epoch && ce_epoch % 2 == 0);
+```
+
+No `mapper_resolve(epoch)` on the query. No `mapper_traversal_apply` on entries.
+
+### Consequence
+
+- **After commit (1→2):** Reading at epoch 1 — not remapped to 2. Entries at
+  epoch 1 are odd → even check fails → committed files are invisible.
+  `vfs_open_file` returns VFS_ERR_NOTFOUND for committed files.
+- **After soft-delete (3→2):** Reading at epoch 3, entries at epoch 3 match
+  `ce_epoch == 3` → applies. Soft-deleted files remain visible. Should be hidden.
+- **FileSize:** Same gap — committed sizes return baseline, soft-deleted sizes
+  still visible.
+
+### Fix
+
+Apply the same mapper logic already present in `vfs_read` (tree.c:1211, 1266):
+
+```c
+// Query remap (before the chain walk):
+int64_t read_epoch = mapper_resolve(&ctx->mapper, epoch);
+
+// Entry remap (inside the chain walk, per entry):
+int64_t effective_epoch = (int64_t)ce_epoch;
+if (mapper_traversal_apply(&ctx->mapper, (int64_t)ce_epoch)) {
+    effective_epoch = mapper_resolve(&ctx->mapper, (int64_t)ce_epoch);
+}
+int applies = (effective_epoch == read_epoch) ||
+              (effective_epoch < read_epoch && effective_epoch % 2 == 0);
+```
+
+### Files to Update
+
+| File | Function | Chain Type |
+|------|----------|------------|
+| `src/tree.c` | `vfs_open_file` | DirContent |
+| `src/tree.c` | `vfs_readdir` | DirContent |
+| `src/tree.c` | `vfs_file_size` | FileSize |
+| `src/tree.c` | `vfs_file_mtime` | FileSize |
+| `src/tree.c` | `vfs_rename` (lookup) | DirContent |
+| `src/tree.c` | `vfs_delete` (lookup) | DirContent |
+
+### Acceptance
+- [ ] After commit: `vfs_open_file` at snapshot epoch finds committed files
+- [ ] After soft-delete: `vfs_open_file` at deleted epoch returns VFS_ERR_NOTFOUND
+- [ ] After commit: `vfs_file_size` at snapshot epoch returns committed size
+- [ ] After soft-delete: `vfs_file_size` at deleted epoch returns pre-snapshot size
+- [ ] `vfs_readdir` correctly shows/hides entries after commit/soft-delete
+- [ ] All existing tests pass (no regression)
