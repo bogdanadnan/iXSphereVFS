@@ -332,29 +332,30 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     /* Atomically increment nextNodeId */
     uint32_t new_nodeId = (uint32_t)vfs_atomic_add_i32((int32_t*)&ctx->nextNodeId, 1);
     /* nextNodeId starts at 0, first add yields nodeId=1 */
+    if (vfs_lock(vfs, (int64_t)new_nodeId, epoch) != VFS_OK) return VFS_ERR_IO;
 
     /* Allocate FileNode slot and write it */
     int64_t file_vp = pool_alloc(&ctx->pool);
 
-    if (file_vp == VFS_VPTR_NULL) { vfs->ctx->last_error = VFS_ERR_FULL; return VFS_ERR_FULL; }
+    if (file_vp == VFS_VPTR_NULL) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_FULL; return VFS_ERR_FULL; }
     uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
 
-    if (!file_slot) { vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
+    if (!file_slot) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
     nodes_write_filenode(file_slot, new_nodeId, 0, 0, (int64_t)time(NULL), ctx->page_size);
 
     /* Allocate NameEntry chain for the file name */
     int64_t name_vp;
     int name_slots = nodes_write_name(&ctx->pool, name, &name_vp);
 
-    if (name_slots == 0) { vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
+    if (name_slots == 0) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
 
     /* Allocate DirContent slot outside the CAS loop to avoid leaks on retry */
     int64_t dc_vp = pool_alloc(&ctx->pool);
 
-    if (dc_vp == VFS_VPTR_NULL) { vfs->ctx->last_error = VFS_ERR_FULL; return VFS_ERR_FULL; }
+    if (dc_vp == VFS_VPTR_NULL) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_FULL; return VFS_ERR_FULL; }
     uint8_t* dc_slot = pool_resolve(&ctx->pool, dc_vp);
 
-    if (!dc_slot) { vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
+    if (!dc_slot) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
 
     /* CAS-prepend DirContent to parent's headPtr */
     int64_t old_head;
@@ -369,6 +370,7 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                          old_head, dc_vp) != old_head);
 
     dentry_cache_invalidate(&ctx->readdir_cache);
+    vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
     return (int)new_nodeId;
 }
 
@@ -1023,6 +1025,8 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
         return -1;
     }
 
+    if (vfs_lock(vfs, file, epoch) != VFS_OK) return -1;
+
     int64_t page_size = ctx->page_size;
     int64_t first_page = offset / page_size;
     int64_t last_page  = (offset + count - 1) / page_size;
@@ -1042,7 +1046,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
     for (int64_t p = first_page; p <= last_page; p++) {
         /* Resolve or create PageNode for this page */
         uint8_t* pn_slot = tree_resolve_page(ctx, file, p, epoch);
-        if (!pn_slot) return -1;
+        if (!pn_slot) { vfs_unlock(vfs, file, epoch); return -1; }
 
         /* Compute intra-page offset and count */
         int64_t page_offset = (p == first_page) ? offset % page_size : 0;
@@ -1074,7 +1078,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
             if (found_in_place) {
                 /* In-place write: read current page, overlay, write back */
                 uint8_t* page_buf = storage_read(ctx->sb, data_page);
-                if (!page_buf) return -1;
+                if (!page_buf) { vfs_unlock(vfs, file, epoch); return -1; }
                 memcpy(page_buf + page_offset, src, (size_t)page_count);
                 storage_write(ctx->sb, data_page, page_buf, 0);
                 break;  /* exit retry loop — in-place succeeded */
@@ -1100,11 +1104,11 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
 
             /* Allocate new data page */
             int64_t new_dp = storage_allocate(ctx->sb, 1);
-            if (new_dp < 0) return -1;
+            if (new_dp < 0) { vfs_unlock(vfs, file, epoch); return -1; }
 
             /* Read or zero-fill the full page */
             uint8_t* page_buf = (uint8_t*)malloc((size_t)page_size);
-            if (!page_buf) return -1;
+            if (!page_buf) { vfs_unlock(vfs, file, epoch); return -1; }
 
             if (base_page >= 0) {
                 uint8_t* base_buf = storage_read(ctx->sb, base_page);
@@ -1124,9 +1128,9 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
 
             /* Create VersionPage */
             int64_t vp_new = pool_alloc(&ctx->pool);
-            if (vp_new == VFS_VPTR_NULL) return -1;
+            if (vp_new == VFS_VPTR_NULL) { vfs_unlock(vfs, file, epoch); return -1; }
             uint8_t* vp_new_slot = pool_resolve(&ctx->pool, vp_new);
-            if (!vp_new_slot) return -1;
+            if (!vp_new_slot) { vfs_unlock(vfs, file, epoch); return -1; }
             nodes_write_versionpage(vp_new_slot, (uint32_t)epoch, new_dp,
                                     version_root, ctx->page_size);
 
@@ -1161,9 +1165,9 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
             int64_t old_sizePtr = vfs_atomic_load_i64(
                 (const int64_t*)(file_slot + FILENODE_OFF_SIZEPTR));
             int64_t fs_vp = pool_alloc(&ctx->pool);
-            if (fs_vp == VFS_VPTR_NULL) return -1;
+            if (fs_vp == VFS_VPTR_NULL) { vfs_unlock(vfs, file, epoch); return -1; }
             uint8_t* fs_slot = pool_resolve(&ctx->pool, fs_vp);
-            if (!fs_slot) return -1;
+            if (!fs_slot) { vfs_unlock(vfs, file, epoch); return -1; }
             nodes_write_filesize(fs_slot, (uint32_t)epoch, (int64_t)time(NULL),
                                  new_size, old_sizePtr, ctx->page_size);
             vfs_mb_release();
@@ -1175,6 +1179,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
         }
     }
 
+    vfs_unlock(vfs, file, epoch);
     return (int)count;
 }
 
