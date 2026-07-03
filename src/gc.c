@@ -926,11 +926,71 @@ int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
    copies live pool entries to fresh pages, then enqueues old pages
    for deferred freeing.  Currently a stub — returns VFS_OK. */
 static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
-    (void)ctx;
-    (void)queue;
-    /* Phase 8: walk pool chain, dentry cache, mapper chain, touched file
-       chain to build live set; allocate fresh pool pages; copy live entries;
-       CAS-switch pool list head; enqueue old pages for deferred free. */
+    if (!ctx || !queue) return VFS_ERR_IO;
+
+    /* Record the old pool list head to enqueue old pages later */
+    int64_t old_pool_list_head = ctx->pool.list_head ? *ctx->pool.list_head : 0;
+
+    /* Initialize the allocation cursor */
+    GCAllocCursor alloc;
+    alloc.cur_page_vp = VFS_VPTR_NULL;
+    alloc.cur_slot = 0;
+    alloc.slots_per_page = VFS_POOL_SLOTS;
+
+    /* Initialize the VirtualPtr remapping map */
+    GCMap gc_map;
+    int err = gc_map_init(&gc_map, 1024);
+    if (err != VFS_OK) return err;
+
+    /* Allocate the first destination pool page and start copying */
+    alloc.cur_page_vp = gc_allocate_new_pool_page(ctx, &gc_map);
+    if (alloc.cur_page_vp == VFS_VPTR_NULL) {
+        gc_map_destroy(&gc_map);
+        return VFS_ERR_FULL;
+    }
+
+    /* Walk and copy the root DirNode (recursively walks all children) */
+    err = gc_walk_dirnode(ctx, &gc_map, &alloc, ctx->rootNodeOffset, ctx->currentEpoch);
+    if (err != VFS_OK) {
+        gc_map_destroy(&gc_map);
+        return err;
+    }
+
+    /* Rebuild the mapper chain (drop committed/soft-deleted entries) */
+    err = gc_rebuild_mapper(ctx, &gc_map, &alloc);
+    if (err != VFS_OK) {
+        gc_map_destroy(&gc_map);
+        return err;
+    }
+
+    /* Drop all TouchedFile entries */
+    gc_rebuild_touchedfiles(ctx);
+
+    /* Write the new superblock with post-GC values */
+    int64_t new_pool_head = ctx->pool.list_head ? *ctx->pool.list_head : 0;
+    int64_t new_mapper_ptr = ctx->epochMapperPtr;
+    err = gc_build_new_superblock(ctx, new_mapper_ptr, new_pool_head);
+    if (err != VFS_OK) {
+        gc_map_destroy(&gc_map);
+        return err;
+    }
+
+    /* Enqueue old pool pages for deferred free.
+       Walk the old pool list from the pre-GC chain head. */
+    int64_t old_page = old_pool_list_head;
+    while (old_page != 0) {
+        deferred_free_enqueue(queue, old_page, ctx->sb);
+        /* Read next page from the old chain by resolving the old page.
+           Pool pages have a header with next-page pointer at offset 0. */
+        uint8_t* old_header = storage_read(ctx->sb, old_page);
+        if (!old_header) break;
+        int64_t next_page = vfs_rd8(old_header, 0);
+        old_page = next_page;
+    }
+
+    /* Destroy the gc_map */
+    gc_map_destroy(&gc_map);
+
     return VFS_OK;
 }
 
@@ -961,9 +1021,6 @@ int vfs_gc(vfs_t* vfs) {
 
     /* Release the exclusive lock */
     tree_lock_release_exclusive(ctx);
-
-    /* Flush superblock to persist any pool changes */
-    tree_superblock_write(ctx);
 
     return err;
 }
