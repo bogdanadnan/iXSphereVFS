@@ -218,15 +218,16 @@ static int bench_read(vfs_t* vfs, int count, int threads, const char* path) {
  * NOTE: limited to 1024 entries (DENTRY_CACHE_MAX) by VFS readdir.
  * --------------------------------------------------------------------------- */
 
-static int bench_scan(vfs_t* vfs, int count, int threads, const char* path) {
+static int bench_scan(vfs_t* vfs, int* count, int threads, const char* path) {
     (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
     int max_entries = 1024;
-    if (count > max_entries) {
+    if (*count > max_entries) {
         fprintf(stderr, "warning: scan workload capped at %d entries (VFS readdir limit)\n", max_entries);
-        count = max_entries;
+        *count = max_entries;
     }
-    for (int i = 0; i < count; i++) {
+    int capped = *count;
+    for (int i = 0; i < capped; i++) {
         char name[64];
         snprintf(name, sizeof(name), "s%d.txt", i);
         vfs_create(vfs, root_vp, name, 0);
@@ -338,6 +339,7 @@ int main(int argc, char** argv) {
     }
 
     int ok = 0;
+    int scan_count = opts.count;
     if (strcmp(opts.workload, "create") == 0) {
         ok = bench_create(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "write") == 0) {
@@ -345,7 +347,7 @@ int main(int argc, char** argv) {
     } else if (strcmp(opts.workload, "read") == 0) {
         ok = bench_read(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "scan") == 0) {
-        ok = bench_scan(vfs, opts.count, opts.threads, opts.output);
+        ok = bench_scan(vfs, &scan_count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "mixed") == 0) {
         ok = bench_mixed(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "dir") == 0) {
@@ -357,7 +359,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    int total = (strcmp(opts.workload, "mixed") == 0) ? opts.count * 3
+    int total = (strcmp(opts.workload, "scan") == 0) ? scan_count
+              : (strcmp(opts.workload, "mixed") == 0) ? opts.count * 3
               : (strcmp(opts.workload, "dir") == 0) ? opts.count * 5
               : opts.count;
     printf("  completed: %d / %d operations\n", ok, total);
