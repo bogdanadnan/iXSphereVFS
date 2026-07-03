@@ -923,14 +923,13 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
         return VFS_ERR_FULL;
     }
 
-    /* Walk and copy the root DirNode (recursively walks all children) */
-    {
-        LivePageSet* lps = live_page_set_create(256);
-        err = gc_walk_dirnode(ctx, &gc_map, &alloc, ctx->rootNodeOffset,
-                               ctx->currentEpoch, lps);
-        if (lps) live_page_set_destroy(lps);
-    }
+    /* Walk and copy the root DirNode (recursively walks all children).
+       Track live data pages for dead-page reclamation. */
+    LivePageSet* lps = live_page_set_create(256);
+    err = gc_walk_dirnode(ctx, &gc_map, &alloc, ctx->rootNodeOffset,
+                           ctx->currentEpoch, lps);
     if (err != VFS_OK) {
+        if (lps) live_page_set_destroy(lps);
         gc_map_destroy(&gc_map);
         return err;
     }
@@ -940,6 +939,7 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
     /* Rebuild the mapper chain (drop committed/soft-deleted entries) */
     err = gc_rebuild_mapper(ctx, &gc_map, &alloc);
     if (err != VFS_OK) {
+        if (lps) live_page_set_destroy(lps);
         gc_map_destroy(&gc_map);
         return err;
     }
@@ -955,8 +955,22 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
     int64_t new_mapper_ptr = ctx->epochMapperPtr;
     err = gc_build_new_superblock(ctx, new_mapper_ptr, new_pool_head);
     if (err != VFS_OK) {
+        if (lps) live_page_set_destroy(lps);
         gc_map_destroy(&gc_map);
         return err;
+    }
+
+    /* Free dead data pages: iterate all logical pages from 2 upwards.
+       Pool pages (already in deferred-free queue) are skipped.
+       Data pages not in the live set are freed via storage_free. */
+    if (lps) {
+        int64_t total = ctx->sb->total_pages;
+        for (int64_t page = 2; page < total; page++) {
+            if (deferred_free_is_queued(queue, page))
+                continue;
+            if (!live_page_set_contains(lps, page))
+                storage_free(ctx->sb, page);
+        }
     }
 
     /* Enqueue old pool pages for deferred free.
@@ -972,8 +986,9 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
         old_page = next_page;
     }
 
-    /* Destroy the gc_map */
+    /* Destroy the gc_map and live page set */
     gc_map_destroy(&gc_map);
+    if (lps) live_page_set_destroy(lps);
 
     return VFS_OK;
 }
