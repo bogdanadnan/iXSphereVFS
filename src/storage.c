@@ -11,6 +11,18 @@
    re-allocation of pages still referenced by in-flight readers. */
 static DeferredFreeQueue* _deferred_queue = NULL;
 
+/* Cache performance counters (atomic for lock-free reads in benchmark code) */
+static volatile int64_t _cache_total = 0;
+static volatile int64_t _cache_hits  = 0;
+
+void vfs_cache_reset(void) {
+    _cache_total = 0;
+    _cache_hits  = 0;
+}
+
+int64_t vfs_cache_total(void) { return _cache_total; }
+int64_t vfs_cache_hits(void)  { return _cache_hits; }
+
 void storage_set_deferred_queue(DeferredFreeQueue* queue) {
     _deferred_queue = queue;
 }
@@ -527,9 +539,11 @@ void storage_free(StorageBackend* sb, int64_t logical_page) {
  * --------------------------------------------------------------------------- */
 
 uint8_t* storage_read(StorageBackend* sb, int64_t logical_page) {
+    _cache_total++;
+
     /* 1. Check page cache */
     CacheEntry* ce = cache_find(&sb->cache, logical_page);
-    if (ce) return ce->payload;
+    if (ce) { _cache_hits++; return ce->payload; }
 
     /* 2. Check if page is allocated */
     int64_t offset = indir_lookup(sb, logical_page);

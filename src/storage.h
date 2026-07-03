@@ -180,4 +180,28 @@ void        cache_mark_dirty(PageCache* cache, int64_t logical_page, int priorit
 void        cache_flush_page(StorageBackend* sb, int64_t logical_page);
 void        cache_flush_all(StorageBackend* sb);
 
+/* ---------------------------------------------------------------------------
+ * Cache performance counters (for benchmark tracking).
+ * --------------------------------------------------------------------------- */
+
+/* Reset cache counters to zero. */
+void vfs_cache_reset(void);
+
+/* Total number of cache lookups since last reset. */
+int64_t vfs_cache_total(void);
+
+/* Number of cache hits since last reset. */
+int64_t vfs_cache_hits(void);
+
+/* Number of cache misses since last reset (= total - hits). */
+static inline int64_t vfs_cache_misses(void) {
+    return vfs_cache_total() - vfs_cache_hits();
+}
+
+/* Hit ratio as a double between 0.0 and 1.0. */
+static inline double vfs_cache_hit_ratio(void) {
+    int64_t t = vfs_cache_total();
+    return (t > 0) ? (double)vfs_cache_hits() / (double)t : 0.0;
+}
+
 #endif /* VFS_STORAGE_H */

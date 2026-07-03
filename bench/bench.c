@@ -114,6 +114,77 @@ static void report(const char* name, int count, int threads, double elapsed) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Per-operation latency recording and percentile computation.
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    double* latencies;
+    int     capacity;
+    int     count;
+} bench_latency;
+
+static bench_latency g_lat = {NULL, 0, 0};
+
+static void lat_init(int max_ops) {
+    g_lat.count = 0;
+    g_lat.capacity = max_ops > 0 ? max_ops : 1024;
+    g_lat.latencies = (double*)calloc((size_t)g_lat.capacity, sizeof(double));
+}
+
+static void lat_record(double sec) {
+    if (g_lat.count < g_lat.capacity)
+        g_lat.latencies[g_lat.count++] = sec;
+}
+
+static int lat_cmp(const void* a, const void* b) {
+    double da = *(const double*)a;
+    double db = *(const double*)b;
+    return (da > db) - (da < db);
+}
+
+static double lat_percentile(double p) {
+    if (g_lat.count == 0) return 0.0;
+    qsort(g_lat.latencies, (size_t)g_lat.count, sizeof(double), lat_cmp);
+    int idx = (int)((p / 100.0) * (double)g_lat.count);
+    if (idx >= g_lat.count) idx = g_lat.count - 1;
+    if (idx < 0) idx = 0;
+    return g_lat.latencies[idx];
+}
+
+static void lat_destroy(void) {
+    free(g_lat.latencies);
+    g_lat.latencies = NULL;
+    g_lat.count = 0;
+    g_lat.capacity = 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Enhanced report with latencies and cache stats.
+ * --------------------------------------------------------------------------- */
+
+static void report_full(const char* name, int count, int threads, double elapsed) {
+    printf("\n=== %s ===\n", name);
+    printf("  count=%d  threads=%d  elapsed=%.3fs\n", count, threads, elapsed);
+    double ops = (double)count / elapsed;
+    printf("  ops/sec: %.0f\n", ops);
+
+    if (g_lat.count > 0) {
+        double p50 = lat_percentile(50.0);
+        double p95 = lat_percentile(95.0);
+        double p99 = lat_percentile(99.0);
+        printf("  latency (usec): p50=%.0f  p95=%.0f  p99=%.0f\n",
+               p50 * 1e6, p95 * 1e6, p99 * 1e6);
+    }
+
+    int64_t ct = vfs_cache_total();
+    int64_t ch = vfs_cache_hits();
+    double ratio = (ct > 0) ? (double)ch / (double)ct : 0.0;
+    printf("  cache: hits=%lld  total=%lld  ratio=%.1f%%\n",
+           (long long)ch, (long long)ct, ratio * 100.0);
+    printf("\n");
+}
+
+/* ---------------------------------------------------------------------------
  * Helper: resolve a file VirtualPtr under root by name.
  * vfs_create returns a nodeId, but vfs_write expects a VirtualPtr.
  * We walk the root's DirContent chain to find the matching entry's childPtr.
@@ -146,16 +217,20 @@ static int64_t resolve_child_vp(vfs_t* vfs, int64_t parent_vp, const char* name)
 static int bench_create(vfs_t* vfs, int count, int threads, const char* path) {
     (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
+    lat_init(count);
     double t0 = now_sec();
     int ok = 0;
     for (int i = 0; i < count; i++) {
+        double op_t0 = now_sec();
         char name[64];
         snprintf(name, sizeof(name), "f%d.txt", i);
         int ret = vfs_create(vfs, root_vp, name, 0);
         if (ret > 0) ok++;
+        lat_record(now_sec() - op_t0);
     }
     double t1 = now_sec();
-    report("create", ok, threads, t1 - t0);
+    report_full("create", ok, threads, t1 - t0);
+    lat_destroy();
     return ok;
 }
 
@@ -337,6 +412,9 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Failed to open VFS file: %s\n", opts.output);
         return 1;
     }
+
+    /* Reset cache performance counters before running the workload */
+    vfs_cache_reset();
 
     int ok = 0;
     int scan_count = opts.count;
