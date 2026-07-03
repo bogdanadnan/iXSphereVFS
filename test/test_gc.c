@@ -466,24 +466,39 @@ static void test_gc_pool_compaction(void) {
     int pages_before = count_pool_pages(ctx);
     CHECK(pages_before > 0);
 
-    /* Snapshot all files (creates mapper entries for soft-delete) */
+    /* Capture pre-GC state for failure-branch verification */
+    int64_t f0_size_before = vfs_file_size(vfs, file_vps[0], 0);
+    int64_t f0_size_after_2 = vfs_file_size(vfs, file_vps[0], 2);
+    char f0_data_before[8];
+    CHECK_EQ(vfs_read(vfs, file_vps[0], f0_data_before, 0, 4, 0), 4);
+
+    /* Snapshot → epoch 1 (odd — becomes writable snapshot) */
     int64_t snap = vfs_snapshot(vfs);
     CHECK_EQ(snap, 1);
+
+    /* Write at epoch 1 (snapshot epoch) to create VersionPages that will
+       become dead entries after soft-delete */
+    for (int i = 0; i < 20; i++) {
+        CHECK_EQ(vfs_write(vfs, file_vps[i], "SNAP", 0, 4, 1), 4);
+    }
 
     /* Write at epoch 2 to create VersionPages at the live head */
     for (int i = 0; i < 20; i++) {
         CHECK_EQ(vfs_write(vfs, file_vps[i], "NEW", 0, 3, 2), 3);
     }
+    for (int i = 0; i < 20; i++) {
+        CHECK_EQ(vfs_write(vfs, file_vps[i], "NEW", 0, 3, 2), 3);
+    }
 
-    /* Soft-delete the snapshot — dead entries that GC can reclaim */
+    /* Soft-delete the snapshot — epoch 1 VersionPages become dead */
     CHECK_EQ(vfs_delete_snapshot(vfs, snap), VFS_OK);
 
     /* Run GC */
     int gc_ret = vfs_gc(vfs);
     if (gc_ret == VFS_OK) {
-        /* Verify pool pages decreased */
+        /* Verify pool pages strictly decreased (dead entries reclaimed) */
         int pages_after = count_pool_pages(ctx);
-        CHECK(pages_after <= pages_before);
+        CHECK(pages_after < pages_before);
 
         /* Verify data still readable at both epochs */
         char rbuf[16];
@@ -494,8 +509,14 @@ static void test_gc_pool_compaction(void) {
         CHECK_EQ(vfs_read(vfs, file_vps[0], rbuf, 0, 3, 2), 3);
         CHECK_EQ(strncmp(rbuf, "NEW", 3), 0);
     } else {
-        /* GC may fail with VFS_ERR_FULL in small test files */
+        /* GC may fail with VFS_ERR_FULL in small test files — verify state preserved */
         CHECK_EQ(gc_ret, VFS_ERR_FULL);
+        CHECK_EQ(count_pool_pages(ctx), pages_before);
+        CHECK_EQ(vfs_file_size(vfs, file_vps[0], 0), f0_size_before);
+        CHECK_EQ(vfs_file_size(vfs, file_vps[0], 2), f0_size_after_2);
+        char rbuf2[8];
+        CHECK_EQ(vfs_read(vfs, file_vps[0], rbuf2, 0, 4, 0), 4);
+        CHECK_EQ(strncmp(rbuf2, f0_data_before, 4), 0);
     }
 
     vfs_close(vfs);
