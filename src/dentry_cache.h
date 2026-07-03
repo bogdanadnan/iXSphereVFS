@@ -3,6 +3,7 @@
 
 #include "ixsphere/vfs.h"
 #include "pool.h"
+#include "mapper.h"
 #include <stdbool.h>
 
 /* Maximum entries per directory in the dentry cache */
@@ -44,7 +45,7 @@ typedef struct {
  * epoch    — query epoch (for read-rule dedup)
  * arr      — cache array to populate
  */
-int dentry_cache_build(Pool* pool, int64_t root_vp, int64_t epoch,
+int dentry_cache_build(Pool* pool, Mapper* mapper, int64_t root_vp, int64_t epoch,
                        DentryCache* arr);
 
 /* Check whether the cache is still valid for a given headPtr.
