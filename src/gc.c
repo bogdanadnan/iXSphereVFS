@@ -616,12 +616,12 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
         } \
     } while(0)
 
-    /* First pass: collect unique childNodeIds with their best epoch
-       to determine which epochs are deleted (soft-deleted mapper entry). */
+    /* First pass: collect unique childNodeIds, track best epoch and
+       whether ANY entry for each child is a survivor (not deleted, name≠0). */
     #define MAX_CHILDREN 1024
     uint32_t child_ids[MAX_CHILDREN];
     uint32_t child_best_epoch[MAX_CHILDREN];
-    int child_live[MAX_CHILDREN];  /* 1 = has non-tombstone at best epoch */
+    int child_has_survivor[MAX_CHILDREN];  /* 1 = ANY entry is live */
     int child_count = 0;
 
     int64_t walk_vp = head_content_vp;
@@ -635,7 +635,6 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
                               &dc_namePtr, &dc_next);
         (void)dc_childPtr;
 
-        /* Determine if this epoch is deleted (soft-deleted mapper entry) */
         int epoch_deleted = 0;
         if (dc_epoch % 2 == 1) {
             int64_t resolved = mapper_resolve(&ctx->mapper, (int64_t)dc_epoch);
@@ -645,30 +644,31 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
             }
         }
 
-        /* Track the best epoch per childNodeId */
         int found_idx = -1;
         for (int i = 0; i < child_count; i++) {
             if (child_ids[i] == dc_child) { found_idx = i; break; }
         }
 
+        int this_live = (!epoch_deleted && dc_namePtr != 0) ? 1 : 0;
+
         if (found_idx >= 0) {
-            if (dc_epoch > child_best_epoch[found_idx]) {
+            if (dc_epoch > child_best_epoch[found_idx])
                 child_best_epoch[found_idx] = dc_epoch;
-                child_live[found_idx] = (!epoch_deleted && dc_namePtr != 0) ? 1 : 0;
-            }
+            if (this_live) child_has_survivor[found_idx] = 1;
         } else {
             child_ids[child_count] = dc_child;
             child_best_epoch[child_count] = dc_epoch;
-            child_live[child_count] = (!epoch_deleted && dc_namePtr != 0) ? 1 : 0;
+            child_has_survivor[child_count] = this_live;
             child_count++;
         }
 
         walk_vp = dc_next;
     }
 
-    /* Second pass: copy surviving entries, tracking childNodeId liveness */
-    int* surviving = (int*)calloc((size_t)child_count, sizeof(int));
-    if (!surviving) return VFS_ERR_NOMEM;
+    /* Second pass: copy surviving entries.
+       After copy, track which children had at least one kept entry. */
+    int* child_has_kept = (int*)calloc((size_t)child_count, sizeof(int));
+    if (!child_has_kept) return VFS_ERR_NOMEM;
 
     walk_vp = head_content_vp;
     while (walk_vp != 0) {
@@ -680,7 +680,6 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
         nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
                               &dc_namePtr, &dc_next);
 
-        /* Determine if this epoch is deleted */
         int epoch_deleted = 0;
         if (dc_epoch % 2 == 1) {
             int64_t resolved = mapper_resolve(&ctx->mapper, (int64_t)dc_epoch);
@@ -690,43 +689,35 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
             }
         }
 
-        /* Find best entry index for this childNodeId */
-        int best_idx = -1;
+        /* Find child index (match on childNodeId only) */
+        int child_idx = -1;
         for (int i = 0; i < child_count; i++) {
-            if (child_ids[i] == dc_child &&
-                child_best_epoch[i] == dc_epoch) {
-                best_idx = i;
-                break;
-            }
+            if (child_ids[i] == dc_child) { child_idx = i; break; }
         }
 
         /* Apply survival rules */
         int keep = 1;
-        if (dc_namePtr == 0 && epoch_deleted) keep = 0;  /* tombstone for deleted epoch */
-        if (epoch_deleted && best_idx >= 0 && !child_live[best_idx])
-            keep = 0;  /* deleted epoch, no survivor */
-
-        if (keep && best_idx >= 0 && dc_epoch == child_best_epoch[best_idx]) {
-            surviving[best_idx] = 1;  /* mark as the surviving entry */
-        }
+        if (dc_namePtr == 0 && epoch_deleted) keep = 0;  /* tombstone for deleted */
+        if (epoch_deleted && child_idx >= 0 && !child_has_survivor[child_idx])
+            keep = 0;  /* deleted epoch, child has no survivor at any epoch */
 
         if (keep) {
             GC_NEXT_SLOT();
             int64_t new_dc_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
             uint8_t* new_dc_slot = pool_resolve(&ctx->pool, new_dc_vp);
-            if (!new_dc_slot) { free(surviving); return VFS_ERR_IO; }
+            if (!new_dc_slot) { free(child_has_kept); return VFS_ERR_IO; }
             alloc->cur_slot++;
 
             gc_copy_entry(gc_map, walk_vp, new_dc_vp, dc_slot, new_dc_slot);
+
+            if (child_idx >= 0) child_has_kept[child_idx] = 1;
         }
 
         walk_vp = dc_next;
     }
 
-    free(surviving);
-
-    /* Recursively walk child DirNodes/FileNodes for surviving entries */
+    /* Third pass: recursively walk child nodes for any surviving entry */
     walk_vp = head_content_vp;
     while (walk_vp != 0) {
         uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
@@ -737,27 +728,24 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
         nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
                               &dc_namePtr, &dc_next);
 
-        /* Find if this is the surviving entry for its childNodeId */
-        int is_survivor = 0;
+        /* Check if this child has any kept entry */
+        int cidx = -1;
         for (int i = 0; i < child_count; i++) {
-            if (child_ids[i] == dc_child && child_best_epoch[i] == dc_epoch) {
-                if (surviving[i]) { is_survivor = 1; }
-                break;
-            }
+            if (child_ids[i] == dc_child) { cidx = i; break; }
         }
 
-        if (is_survivor && dc_namePtr != 0 && dc_childPtr != 0) {
+        if (cidx >= 0 && child_has_kept[cidx] && dc_namePtr != 0 && dc_childPtr != 0) {
             uint8_t* child_slot = pool_resolve(&ctx->pool, dc_childPtr);
             if (child_slot) {
                 int16_t ctype = vfs_rd2(child_slot, DIRNODE_OFF_TYPE);
                 if (ctype == (int16_t)NODE_TYPE_DIR) {
                     int err = gc_walk_dirnode(ctx, gc_map, alloc,
                                                dc_childPtr, epoch);
-                    if (err != VFS_OK) { free(surviving); return err; }
+                    if (err != VFS_OK) { free(child_has_kept); return err; }
                 } else if (ctype == (int16_t)NODE_TYPE_FILE) {
                     int err = gc_walk_filenode(ctx, gc_map, alloc,
                                                 dc_childPtr, epoch);
-                    if (err != VFS_OK) { free(surviving); return err; }
+                    if (err != VFS_OK) { free(child_has_kept); return err; }
                 }
             }
         }
@@ -765,6 +753,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
         walk_vp = dc_next;
     }
 
+    free(child_has_kept);
     #undef GC_NEXT_SLOT
     return VFS_OK;
 }
