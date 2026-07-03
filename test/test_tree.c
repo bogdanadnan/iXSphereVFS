@@ -1187,6 +1187,39 @@ static void test_rename_notfound(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * last_error: verify vfs_last_error returns the last error, and is NOT
+ * cleared by a successful operation.
+ * --------------------------------------------------------------------------- */
+
+static void test_last_error(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    /* vfs_open_file on a missing file should return NOTFOUND */
+    int64_t res = vfs_open_file(vfs, root_vp, "nonexistent.txt", 0);
+    CHECK_EQ(res, (int64_t)VFS_ERR_NOTFOUND);
+    CHECK_EQ(vfs_last_error(vfs), VFS_ERR_NOTFOUND);
+
+    /* A successful operation should NOT clear last_error */
+    CHECK(vfs_create(vfs, root_vp, "ok.txt", 0) > 0);
+    vfs_error_t le2 = vfs_last_error(vfs);
+    if (le2 != VFS_ERR_NOTFOUND) {
+        printf("  DEBUG: last_error after create = %d (expected %d)\n",
+               (int)le2, (int)VFS_ERR_NOTFOUND);
+        printf("  DEBUG: vfs_create returned positive nodeId > 0\n");
+    }
+    CHECK_EQ(le2, VFS_ERR_NOTFOUND);
+
+    /* Another error should update last_error */
+    CHECK_EQ(vfs_open_file(vfs, root_vp, "nonexistent2.txt", 0),
+             (int64_t)VFS_ERR_NOTFOUND);
+    CHECK_EQ(vfs_last_error(vfs), VFS_ERR_NOTFOUND);
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1271,6 +1304,9 @@ int main(void) {
 
     unlink(test_path);
     test_rename_notfound();
+
+    unlink(test_path);
+    test_last_error();
 
     /* Clean up */
     unlink(test_path);

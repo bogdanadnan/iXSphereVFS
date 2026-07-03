@@ -56,8 +56,8 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
     uint32_t s_epoch = (uint32_t)snapshot_epoch;
 
     /* Validate snapshot_epoch is odd */
-    vfs->ctx->last_error = VFS_ERR_IO;
-    if (snapshot_epoch % 2 == 0) return VFS_ERR_IO;
+
+    if (snapshot_epoch % 2 == 0) { vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
 
     /* Validate snapshot_epoch is still active (no MapperEntry for it) */
     if (mapper_resolve(&ctx->mapper, snapshot_epoch) != snapshot_epoch) {
@@ -161,8 +161,8 @@ int vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch) {
     TreeContext* ctx = vfs->ctx;
 
     /* Validate snapshot_epoch is odd */
-    vfs->ctx->last_error = VFS_ERR_IO;
-    if (snapshot_epoch % 2 == 0) return VFS_ERR_IO;
+
+    if (snapshot_epoch % 2 == 0) { vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
 
     /* Validate snapshot_epoch is still active */
     if (mapper_resolve(&ctx->mapper, snapshot_epoch) != snapshot_epoch) {
