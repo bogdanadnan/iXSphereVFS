@@ -248,3 +248,70 @@ int applies = (effective_epoch == read_epoch) ||
 - [ ] After soft-delete: `vfs_file_size` at deleted epoch returns pre-snapshot size
 - [ ] `vfs_readdir` correctly shows/hides entries after commit/soft-delete
 - [ ] All existing tests pass (no regression)
+
+---
+
+## Workload 8A.5 — GC Data Page & Indirection Cleanup
+
+### What
+GC currently only frees old pool pages. Data pages from dropped VersionPages
+and their indirection table entries are never cleaned. This leaks logical
+pages and physical storage.
+
+### Bugs Found
+
+**1. Data pages are never freed.**
+`gc_shadow_compact` only walks the old pool list (line 946–957). Unreachable
+data pages (from VersionPages dropped during GC) keep their indirection
+entries — the logical page appears allocated forever. `Allocate` eventually
+exhausts free logical pages.
+
+**2. Indirection table is never cleaned.**
+The spec requires "All unreachable logical pages: entries set to 0." GC
+doesn't touch the indirection table at all. Without this, dead logical
+pages remain permanently allocated.
+
+**3. Old pool list may be NULL.**
+Line 895: `ctx->pool.list_head ? *ctx->pool.list_head : 0`. If the pool
+was never allocated (empty tree), `list_head` is NULL and the dereference
+is skipped — but `old_pool_list_head` is 0 and no cleanup happens. The
+old tree's pool pages (if any exist) are not freed.
+
+### Fix
+
+After the tree walk but before writing the new superblock:
+
+1. **Collect live data pages.** During the tree walk, every surviving
+   VersionPage has a `dataPage` field. Record all of these in a hash set
+   or sorted array. These are the live data pages.
+
+2. **Walk the old indirection table.** For every logical page from 2 to
+   `total_pages - 1`:
+   - If it's a pool page AND was already enqueued in the deferred-free
+     queue → skip (already being freed).
+   - If it's a pool page AND was NOT enqueued → add to deferred-free queue
+     (it's an old pool page outside the list chain — shouldn't happen, but
+     safe to catch).
+   - If it's a data page AND NOT in the live set → `indir_set(page, 0)`.
+   - If it's a data page AND in the live set → keep.
+
+3. **Walk old pool pages properly.** Use `indir_lookup` to find the old
+   page's physical offset, read its `next` pointer from the payload.
+   Don't use `storage_read` on already-freed pages.
+
+### Before/After
+
+```
+Before GC:                    After GC (current):           After GC (fixed):
+  pool page A (live)            new pool page A'             new pool page A'
+  pool page B (dead)            new pool page B'             new pool page B'
+  data page X (live)            data page X (still alloc)    data page X (alloc)
+  data page Y (dead)            data page Y (still alloc!)   data page Y (freed → 0)
+  indirection entries all used  indirection entries all used indirection cleared for dead
+```
+
+### Acceptance
+- [ ] After GC with soft-deleted snapshot: dead data pages freed, indirection entries 0
+- [ ] After GC: `Allocate` can reuse freed logical pages
+- [ ] After GC with no soft-deleted data: all data pages survive
+- [ ] Empty tree GC: no crash, no leaked pages
