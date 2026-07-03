@@ -81,7 +81,7 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
             uint8_t* root_slot = pool_resolve(&ctx->pool, root_vp);
             if (!root_slot) { tf_vp = tf_next; continue; }
 
-            int64_t walk_vp = vfs_rd8(root_slot, DIRNODE_OFF_HEADPTR);
+            int64_t walk_vp = vfs_rd8_s(root_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
             while (walk_vp != 0) {
                 uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
                 if (!dc_slot) break;

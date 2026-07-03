@@ -15,15 +15,15 @@ int tree_superblock_read(TreeContext* ctx) {
     uint8_t* payload = storage_read(ctx->sb, SUPERBLOCK_PAGE);
     if (!payload) return VFS_ERR_IO;
 
-    ctx->rootNodeOffset   = vfs_rd8(payload, SB_OFF_ROOT_OFFSET);
-    ctx->currentEpoch     = vfs_rd8(payload, SB_OFF_CURRENT_EPOCH);
-    ctx->epochMapperPtr   = vfs_rd8(payload, SB_OFF_EPOCH_MAPPER_PTR);
-    ctx->treeLockState    = vfs_rd8(payload, SB_OFF_TREE_LOCK_STATE);
-    ctx->nextNodeId       = (uint32_t)vfs_rd4(payload, SB_OFF_NEXT_NODE_ID);
-    ctx->touchedFilesPtr  = vfs_rd8(payload, SB_OFF_TOUCHED_FILES_PTR);
+    ctx->rootNodeOffset   = vfs_rd8_s(payload, SB_OFF_ROOT_OFFSET, ctx->page_size);
+    ctx->currentEpoch     = vfs_rd8_s(payload, SB_OFF_CURRENT_EPOCH, ctx->page_size);
+    ctx->epochMapperPtr   = vfs_rd8_s(payload, SB_OFF_EPOCH_MAPPER_PTR, ctx->page_size);
+    ctx->treeLockState    = vfs_rd8_s(payload, SB_OFF_TREE_LOCK_STATE, ctx->page_size);
+    ctx->nextNodeId       = (uint32_t)vfs_rd4_s(payload, SB_OFF_NEXT_NODE_ID, ctx->page_size);
+    ctx->touchedFilesPtr  = vfs_rd8_s(payload, SB_OFF_TOUCHED_FILES_PTR, ctx->page_size);
 
     /* poolListHead — wire into pool allocator */
-    int64_t pool_list_head = vfs_rd8(payload, SB_OFF_POOL_LIST_HEAD);
+    int64_t pool_list_head = vfs_rd8_s(payload, SB_OFF_POOL_LIST_HEAD, ctx->page_size);
     if (ctx->pool.list_head) *ctx->pool.list_head = pool_list_head;
 
     return VFS_OK;
@@ -35,13 +35,13 @@ int tree_superblock_write(TreeContext* ctx) {
     if (!buf) return VFS_ERR_NOMEM;
     memset(buf, 0, (size_t)ps);
 
-    vfs_wr8(buf, SB_OFF_ROOT_OFFSET,       ctx->rootNodeOffset);
-    vfs_wr8(buf, SB_OFF_CURRENT_EPOCH,     ctx->currentEpoch);
-    vfs_wr8(buf, SB_OFF_EPOCH_MAPPER_PTR,  ctx->epochMapperPtr);
-    vfs_wr8(buf, SB_OFF_POOL_LIST_HEAD,    ctx->pool.list_head ? *ctx->pool.list_head : 0);
-    vfs_wr8(buf, SB_OFF_TREE_LOCK_STATE,   ctx->treeLockState);
-    vfs_wr4(buf, SB_OFF_NEXT_NODE_ID,      (int32_t)ctx->nextNodeId);
-    vfs_wr8(buf, SB_OFF_TOUCHED_FILES_PTR, ctx->touchedFilesPtr);
+    vfs_wr8_s(buf, SB_OFF_ROOT_OFFSET,       ctx->rootNodeOffset, ctx->page_size);
+    vfs_wr8_s(buf, SB_OFF_CURRENT_EPOCH,     ctx->currentEpoch, ctx->page_size);
+    vfs_wr8_s(buf, SB_OFF_EPOCH_MAPPER_PTR,  ctx->epochMapperPtr, ctx->page_size);
+    vfs_wr8_s(buf, SB_OFF_POOL_LIST_HEAD,    ctx->pool.list_head ? *ctx->pool.list_head : 0, ctx->page_size);
+    vfs_wr8_s(buf, SB_OFF_TREE_LOCK_STATE,   ctx->treeLockState, ctx->page_size);
+    vfs_wr4_s(buf, SB_OFF_NEXT_NODE_ID,      (int32_t)ctx->nextNodeId, ctx->page_size);
+    vfs_wr8_s(buf, SB_OFF_TOUCHED_FILES_PTR, ctx->touchedFilesPtr, ctx->page_size);
 
     storage_write(ctx->sb, SUPERBLOCK_PAGE, buf, 3);
     storage_flush(ctx->sb, -1);
@@ -74,7 +74,7 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     /* Read segment_size from StorageBackend header page */
     uint8_t* hdr = storage_read(ctx->sb, 0);
     if (hdr) {
-        ctx->segment_size = (uint32_t)vfs_rd4(hdr, HDR_OFF_SEGMENT_SIZE);
+        ctx->segment_size = (uint32_t)vfs_rd4_s(hdr, HDR_OFF_SEGMENT_SIZE, ctx->page_size);
     } else {
         ctx->segment_size = 1024;  /* default */
     }
@@ -109,7 +109,7 @@ int tree_init(TreeContext* ctx) {
     if (!root_slot) return VFS_ERR_IO;
 
     /* Verify type is DirNode (0x01) */
-    int16_t type = vfs_rd2(root_slot, DIRNODE_OFF_TYPE);
+    int16_t type = vfs_rd2_s(root_slot, DIRNODE_OFF_TYPE, ctx->page_size);
     if (type != (int16_t)NODE_TYPE_DIR) return VFS_ERR_IO;
 
     /* Crash recovery: if exclusive lock (bit 63) was held at crash time,
@@ -130,7 +130,7 @@ int tree_init(TreeContext* ctx) {
     /* Read segment_size from StorageBackend header */
     uint8_t* hdr = storage_read(ctx->sb, 0);
     if (hdr) {
-        ctx->segment_size = (uint32_t)vfs_rd4(hdr, HDR_OFF_SEGMENT_SIZE);
+        ctx->segment_size = (uint32_t)vfs_rd4_s(hdr, HDR_OFF_SEGMENT_SIZE, ctx->page_size);
     } else {
         ctx->segment_size = 1024;
     }
@@ -261,7 +261,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 if (ctx->seg_array_fc_vp != 0)
                     segment_array_destroy(&ctx->seg_array_cache);
 
-                int64_t fc_page_root = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
+                int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
                 int err = segment_array_build(&ctx->pool, fc_page_root,
                                                seg_size, &ctx->seg_array_cache);
                 if (err != VFS_OK) {
@@ -277,7 +277,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
         }
 
         prev_fc_vp = fc_vp;
-        fc_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
+        fc_vp = vfs_rd8_s(fc_slot, FILECONTENT_OFF_NEXTPTR, ctx->page_size);
     }
 
     return NULL;
@@ -299,11 +299,11 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     /* Read parent DirNode, verify type */
     uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
     if (!parent_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2(parent_slot, DIRNODE_OFF_TYPE) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
         return VFS_ERR_NOTDIR;
 
     /* Walk parent's DirContent chain, checking for name collision */
-    int64_t headPtr = vfs_rd8(parent_slot, DIRNODE_OFF_HEADPTR);
+    int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
     int64_t walk_vp = headPtr;
     while (walk_vp != 0) {
         uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
@@ -374,13 +374,13 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     /* Read parent DirNode, verify type */
     uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
     if (!parent_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2(parent_slot, DIRNODE_OFF_TYPE) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
         return VFS_ERR_NOTDIR;
 
     /* Walk parent's DirContent chain to find the entry with matching name
        at epoch ≤ query_epoch. Chain is in descending epoch order,
        so the first match is the most recent at or before query_epoch. */
-    int64_t headPtr = vfs_rd8(parent_slot, DIRNODE_OFF_HEADPTR);
+    int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
     int64_t found_vp = 0;
     uint32_t found_childId = 0;
     int64_t found_childPtr = 0;
@@ -444,10 +444,10 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
 
     uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
     if (!parent_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2(parent_slot, DIRNODE_OFF_TYPE) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
         return VFS_ERR_NOTDIR;
 
-    int64_t headPtr = vfs_rd8(parent_slot, DIRNODE_OFF_HEADPTR);
+    int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
     uint32_t query_epoch = (uint32_t)epoch;
     int64_t best_child = 0;       /* childNodeId of best match */
     int64_t best_childPtr = 0;    /* childPtr of best match */
@@ -517,10 +517,10 @@ int64_t vfs_file_size(vfs_t* vfs, int64_t file, int64_t epoch) {
 
     uint8_t* file_slot = pool_resolve(&ctx->pool, (int64_t)file);
     if (!file_slot) return -1;
-    if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
+    if (vfs_rd2_s(file_slot, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE)
         return -1;
 
-    int64_t sizePtr = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
+    int64_t sizePtr = vfs_rd8_s(file_slot, FILENODE_OFF_SIZEPTR, ctx->page_size);
     uint32_t query_epoch = (uint32_t)epoch;
 
     int64_t walk_vp = sizePtr;
@@ -551,10 +551,10 @@ int64_t vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch) {
 
     uint8_t* file_slot = pool_resolve(&ctx->pool, (int64_t)file);
     if (!file_slot) return -1;
-    if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
+    if (vfs_rd2_s(file_slot, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE)
         return -1;
 
-    int64_t sizePtr = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
+    int64_t sizePtr = vfs_rd8_s(file_slot, FILENODE_OFF_SIZEPTR, ctx->page_size);
     uint32_t query_epoch = (uint32_t)epoch;
 
     int64_t walk_vp = sizePtr;
@@ -585,7 +585,7 @@ int64_t vfs_file_ctime(vfs_t* vfs, int64_t file) {
 
     uint8_t* file_slot = pool_resolve(&ctx->pool, (int64_t)file);
     if (!file_slot) return -1;
-    if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
+    if (vfs_rd2_s(file_slot, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE)
         return -1;
 
     return nodes_read_filenode_ctime(file_slot);
@@ -609,7 +609,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
     /* Read FileNode, verify type */
     uint8_t* file_slot = pool_resolve(&ctx->pool, file);
     if (!file_slot) return -1;
-    if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
+    if (vfs_rd2_s(file_slot, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE)
         return -1;
 
     int64_t page_size = ctx->page_size;
@@ -626,7 +626,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
 
     /* Track first write to this file in this epoch for TouchedFile */
     int touched_this_epoch = 0;
-    uint32_t file_nodeId = (uint32_t)vfs_rd4(file_slot, FILENODE_OFF_NODEID);
+    uint32_t file_nodeId = (uint32_t)vfs_rd4_s(file_slot, FILENODE_OFF_NODEID, ctx->page_size);
 
     for (int64_t p = first_page; p <= last_page; p++) {
         /* Resolve or create PageNode for this page */
@@ -786,7 +786,7 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
     /* Read FileNode, verify type */
     uint8_t* file_slot = pool_resolve(&ctx->pool, file);
     if (!file_slot) return -1;
-    if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
+    if (vfs_rd2_s(file_slot, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE)
         return -1;
 
     int64_t page_size = ctx->page_size;

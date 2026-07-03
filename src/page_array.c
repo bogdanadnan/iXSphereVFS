@@ -27,7 +27,7 @@ int segment_array_build(Pool* pool, int64_t fc_pageRootPtr,
                 arr->vptr_array[i] = VFS_VPTR_NULL;
             break;
         }
-        vp = vfs_rd8(slot, PAGENODE_OFF_NEXTPTR);
+        vp = vfs_rd8_s(slot, PAGENODE_OFF_NEXTPTR, VFS_PAGE_SIZE);
     }
 
     arr->built = true;

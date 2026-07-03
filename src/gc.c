@@ -208,11 +208,11 @@ void gc_copy_entry(GCMap* gc_map, int64_t old_vp, int64_t new_vp,
            but only values that exist as keys in gc_map will be remapped,
            which correctly filters out non-pointer fields. */
         for (int off = 0; off < VFS_POOL_SLOT_SIZE; off += 8) {
-            int64_t val = vfs_rd8(new_slot, off);
+            int64_t val = vfs_rd8_s(new_slot, off, VFS_PAGE_SIZE);
             if (val == 0) continue;  /* skip null — not in map */
             int64_t mapped = gc_map_get(gc_map, val);
             if (mapped != val) {
-                vfs_wr8(new_slot, off, mapped);
+                vfs_wr8_s(new_slot, off, mapped, VFS_PAGE_SIZE);
             }
         }
     }
@@ -231,7 +231,7 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
     uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
     if (!dir_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2(dir_slot, DIRNODE_OFF_TYPE) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
         return VFS_ERR_NOTDIR;
 
     /* Allocate destination for the DirNode entry */
@@ -251,7 +251,7 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
     /* Read the old headPtr and delegate DirContent chain walk to the
        dedicated function which applies full survival rules. */
-    int64_t headPtr = vfs_rd8(dir_slot, DIRNODE_OFF_HEADPTR);
+    int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
     int err = gc_walk_dircontent_chain(ctx, gc_map, alloc, headPtr, epoch);
     if (err != VFS_OK) return err;
 
@@ -260,7 +260,7 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
        old→new VirtualPtr mappings in gc_map.  We look up the old headPtr
        to get the new headPtr for the first DirContent entry. */
     int64_t new_headPtr = gc_map_get(gc_map, headPtr);
-    vfs_wr8(new_dir_slot, DIRNODE_OFF_HEADPTR, new_headPtr);
+    vfs_wr8_s(new_dir_slot, DIRNODE_OFF_HEADPTR, new_headPtr, ctx->page_size);
 
     return VFS_OK;
 }
@@ -277,7 +277,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
     uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
     if (!file_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2(file_slot, FILENODE_OFF_TYPE) != (int16_t)NODE_TYPE_FILE)
+    if (vfs_rd2_s(file_slot, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE)
         return VFS_ERR_IO;
 
     /* Local allocation helper */
@@ -303,7 +303,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     /* Walk FileSize chain via gc_walk_filesize_chain — handles survival rules
        and returns the highest surviving file size for segment pruning. */
     int64_t highest_file_size = 0;
-    int64_t size_vp = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
+    int64_t size_vp = vfs_rd8_s(file_slot, FILENODE_OFF_SIZEPTR, ctx->page_size);
     int err_fs = gc_walk_filesize_chain(ctx, gc_map, alloc, size_vp, epoch,
                                          &highest_file_size);
     if (err_fs != VFS_OK) return err_fs;
@@ -311,7 +311,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     /* Walk FileContent chain.
        Skip segments whose page range is beyond the highest surviving
        file size bound (nothing above that size is reachable). */
-    int64_t fc_vp = vfs_rd8(file_slot, FILENODE_OFF_HEADPTR);
+    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
     int64_t seg_idx = 0;
     while (fc_vp != 0) {
         uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
@@ -320,14 +320,14 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
         /* Skip segments beyond the highest surviving file size */
         if (highest_file_size > 0 &&
             (seg_idx * (int64_t)ctx->segment_size * ctx->sb->page_size) >= highest_file_size) {
-            int64_t fc_next = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
+            int64_t fc_next = vfs_rd8_s(fc_slot, FILECONTENT_OFF_NEXTPTR, ctx->page_size);
             fc_vp = fc_next;
             seg_idx++;
             continue;
         }
 
-        int64_t fc_page_root = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
-        int64_t fc_next = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
+        int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+        int64_t fc_next = vfs_rd8_s(fc_slot, FILECONTENT_OFF_NEXTPTR, ctx->page_size);
 
         /* Walk PageNode chain within this FileContent segment */
         int64_t pn_vp = fc_page_root;
@@ -338,7 +338,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
             uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
             if (!pn_slot) break;
 
-            int64_t vp_chain = vfs_rd8(pn_slot, PAGENODE_OFF_VERSIONROOT);
+            int64_t vp_chain = vfs_rd8_s(pn_slot, PAGENODE_OFF_VERSIONROOT, ctx->page_size);
             while (vp_chain != 0) {
                 uint8_t* vp_slot = pool_resolve(&ctx->pool, vp_chain);
                 if (!vp_slot) break;
@@ -359,7 +359,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                 vp_chain = vp_next;
             }
             if (segment_has_live) break;
-            pn_vp = vfs_rd8(pn_slot, PAGENODE_OFF_NEXTPTR);
+            pn_vp = vfs_rd8_s(pn_slot, PAGENODE_OFF_NEXTPTR, ctx->page_size);
         }
 
         if (!segment_has_live) { fc_vp = fc_next; seg_idx++; continue; }
@@ -378,9 +378,9 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
         while (pn_vp != 0) {
             uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
             if (!pn_slot) break;
-            int64_t pn_next = vfs_rd8(pn_slot, PAGENODE_OFF_NEXTPTR);
+            int64_t pn_next = vfs_rd8_s(pn_slot, PAGENODE_OFF_NEXTPTR, ctx->page_size);
 
-            int64_t vp_chain = vfs_rd8(pn_slot, PAGENODE_OFF_VERSIONROOT);
+            int64_t vp_chain = vfs_rd8_s(pn_slot, PAGENODE_OFF_VERSIONROOT, ctx->page_size);
             int pn_has_live = 0;
 
             /* Check if any VersionPage in this PageNode survives */
@@ -689,7 +689,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
             child_has_kept[cidx] = 0;  /* walk each child exactly once */
             uint8_t* child_slot = pool_resolve(&ctx->pool, dc_childPtr);
             if (child_slot) {
-                int16_t ctype = vfs_rd2(child_slot, DIRNODE_OFF_TYPE);
+                int16_t ctype = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size);
                 if (ctype == (int16_t)NODE_TYPE_DIR) {
                     int err = gc_walk_dirnode(ctx, gc_map, alloc,
                                                dc_childPtr, epoch);
@@ -771,7 +771,7 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
 
             /* Update epoch field if rewritten */
             if (rewrite_epoch != (int64_t)fs_epoch) {
-                vfs_wr4(new_fs_slot, FILESIZE_OFF_EPOCH, (uint32_t)rewrite_epoch);
+                vfs_wr4_s(new_fs_slot, FILESIZE_OFF_EPOCH, (uint32_t)rewrite_epoch, ctx->page_size);
             }
 
             /* Track highest surviving file size */
@@ -870,13 +870,13 @@ int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
     if (!buf) return VFS_ERR_NOMEM;
     memset(buf, 0, (size_t)ps);
 
-    vfs_wr8(buf, SB_OFF_ROOT_OFFSET,       ctx->rootNodeOffset);
-    vfs_wr8(buf, SB_OFF_CURRENT_EPOCH,     ctx->currentEpoch);
-    vfs_wr8(buf, SB_OFF_EPOCH_MAPPER_PTR,  new_epochMapperPtr);
-    vfs_wr8(buf, SB_OFF_POOL_LIST_HEAD,    new_poolListHead);
-    vfs_wr8(buf, SB_OFF_TREE_LOCK_STATE,   0);
-    vfs_wr4(buf, SB_OFF_NEXT_NODE_ID,      (int32_t)ctx->nextNodeId);
-    vfs_wr8(buf, SB_OFF_TOUCHED_FILES_PTR, 0);
+    vfs_wr8_s(buf, SB_OFF_ROOT_OFFSET,       ctx->rootNodeOffset, ctx->page_size);
+    vfs_wr8_s(buf, SB_OFF_CURRENT_EPOCH,     ctx->currentEpoch, ctx->page_size);
+    vfs_wr8_s(buf, SB_OFF_EPOCH_MAPPER_PTR,  new_epochMapperPtr, ctx->page_size);
+    vfs_wr8_s(buf, SB_OFF_POOL_LIST_HEAD,    new_poolListHead, ctx->page_size);
+    vfs_wr8_s(buf, SB_OFF_TREE_LOCK_STATE,   0, ctx->page_size);
+    vfs_wr4_s(buf, SB_OFF_NEXT_NODE_ID,      (int32_t)ctx->nextNodeId, ctx->page_size);
+    vfs_wr8_s(buf, SB_OFF_TOUCHED_FILES_PTR, 0, ctx->page_size);
 
     storage_write(ctx->sb, SUPERBLOCK_PAGE, buf, 3);
     storage_flush(ctx->sb, -1);
@@ -951,7 +951,7 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
            Pool pages have a header with next-page pointer at offset 0. */
         uint8_t* old_header = storage_read(ctx->sb, old_page);
         if (!old_header) break;
-        int64_t next_page = vfs_rd8(old_header, 0);
+        int64_t next_page = vfs_rd8_s(old_header, 0, ctx->page_size);
         old_page = next_page;
     }
 

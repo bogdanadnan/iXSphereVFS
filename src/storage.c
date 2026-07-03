@@ -113,20 +113,20 @@ static int bootstrap_new(StorageBackend* sb) {
     if (!sb->header_buf) return -1;
 
     /* Write header fields */
-    vfs_wr8(sb->header_buf, HDR_OFF_TOTAL_PAGES,  2);     /* pages 0 and 1 reserved */
-    vfs_wr8(sb->header_buf, HDR_OFF_PAGE_SIZE,     ps);
-    vfs_wr4(sb->header_buf, HDR_OFF_SEGMENT_SIZE,  1024);
-    vfs_wr8(sb->header_buf, HDR_OFF_PHYS_TAIL,     2 * (ps + PAGE_HEADER_SIZE));
-    vfs_wr8(sb->header_buf, HDR_OFF_INDIR_HEAD,    0);
+    vfs_wr8_s(sb->header_buf, HDR_OFF_TOTAL_PAGES,  2, VFS_PAGE_SIZE);     /* pages 0 and 1 reserved */
+    vfs_wr8_s(sb->header_buf, HDR_OFF_PAGE_SIZE,     ps, VFS_PAGE_SIZE);
+    vfs_wr4_s(sb->header_buf, HDR_OFF_SEGMENT_SIZE,  1024, VFS_PAGE_SIZE);
+    vfs_wr8_s(sb->header_buf, HDR_OFF_PHYS_TAIL,     (int64_t)(2LL * (ps + PAGE_HEADER_SIZE)), VFS_PAGE_SIZE);
+    vfs_wr8_s(sb->header_buf, HDR_OFF_INDIR_HEAD,    0, VFS_PAGE_SIZE);
 
     /* Indirection entries: page 0 at physical 0, page 1 at physical (ps+16) */
     int ic = inline_entry_count(ps);
     /* Zero all entries first */
     for (int i = 0; i < ic; i++) {
-        vfs_wr8(sb->header_buf, HDR_OFF_ENTRIES + i * 8, 0);
+        vfs_wr8_s(sb->header_buf, HDR_OFF_ENTRIES + i * 8, 0, VFS_PAGE_SIZE);
     }
-    vfs_wr8(sb->header_buf, HDR_OFF_ENTRIES + 0 * 8, 0);                   /* page 0 → offset 0 */
-    vfs_wr8(sb->header_buf, HDR_OFF_ENTRIES + 1 * 8, ps + PAGE_HEADER_SIZE); /* page 1 → offset ps+16 */
+    vfs_wr8_s(sb->header_buf, HDR_OFF_ENTRIES + 0 * 8, 0, VFS_PAGE_SIZE);                   /* page 0 → offset 0 */
+    vfs_wr8_s(sb->header_buf, HDR_OFF_ENTRIES + 1 * 8, ps + PAGE_HEADER_SIZE, VFS_PAGE_SIZE); /* page 1 → offset ps+16 */
 
     /* Write header page to disk with XVFS magic */
     int64_t header_offset = 0;
@@ -199,7 +199,7 @@ static int mount_existing(StorageBackend* sb) {
     n = pread(sb->fd, tmp, 8192, PAGE_HEADER_SIZE);
     if (n != 8192) return -1;
 
-    int64_t ps = vfs_rd8(tmp, HDR_OFF_PAGE_SIZE);
+    int64_t ps = vfs_rd8_s(tmp, HDR_OFF_PAGE_SIZE, VFS_PAGE_SIZE);
     if (ps < 512 || ps > 65536) return -1;
 
     /* Step 2: Read the full page_size payload and validate CRC over ALL of it */
@@ -213,10 +213,10 @@ static int mount_existing(StorageBackend* sb) {
     if (crc != ph.checksum) { free(hdr); return -1; }
 
     sb->page_size       = ps;
-    sb->total_pages      = vfs_rd8(hdr, HDR_OFF_TOTAL_PAGES);
-    sb->segment_size     = (uint32_t)vfs_rd4(hdr, HDR_OFF_SEGMENT_SIZE);
-    sb->physical_tail    = vfs_rd8(hdr, HDR_OFF_PHYS_TAIL);
-    sb->indirection_head = vfs_rd8(hdr, HDR_OFF_INDIR_HEAD);
+    sb->total_pages      = vfs_rd8_s(hdr, HDR_OFF_TOTAL_PAGES, VFS_PAGE_SIZE);
+    sb->segment_size     = (uint32_t)vfs_rd4_s(hdr, HDR_OFF_SEGMENT_SIZE, VFS_PAGE_SIZE);
+    sb->physical_tail    = vfs_rd8_s(hdr, HDR_OFF_PHYS_TAIL, VFS_PAGE_SIZE);
+    sb->indirection_head = vfs_rd8_s(hdr, HDR_OFF_INDIR_HEAD, VFS_PAGE_SIZE);
     sb->header_buf       = hdr;
 
     /* Sync in-memory lazy mirror tracking from on-disk PageHeader */
@@ -584,9 +584,9 @@ void storage_flush(StorageBackend* sb, int64_t logical_page) {
            Crash safety: data pages are written first, header is the atomic
            commit point.  Crash before header write → old header is still valid.
            Crash after header write → all preceding pages are on disk. */
-        vfs_wr8(sb->header_buf, HDR_OFF_TOTAL_PAGES,  sb->total_pages);
-        vfs_wr8(sb->header_buf, HDR_OFF_PHYS_TAIL,    sb->physical_tail);
-        vfs_wr8(sb->header_buf, HDR_OFF_INDIR_HEAD,   sb->indirection_head);
+        vfs_wr8_s(sb->header_buf, HDR_OFF_TOTAL_PAGES,  sb->total_pages, VFS_PAGE_SIZE);
+        vfs_wr8_s(sb->header_buf, HDR_OFF_PHYS_TAIL,    sb->physical_tail, VFS_PAGE_SIZE);
+        vfs_wr8_s(sb->header_buf, HDR_OFF_INDIR_HEAD,   sb->indirection_head, VFS_PAGE_SIZE);
 
         uint32_t hdr_crc = vfs_crc32c(sb->header_buf, (size_t)sb->page_size);
         PageHeader ph;

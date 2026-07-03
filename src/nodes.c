@@ -7,16 +7,16 @@
  * --------------------------------------------------------------------------- */
 
 void nodes_write_dirnode(uint8_t* slot, uint32_t nodeId, int64_t headPtr) {
-    vfs_wr2(slot, DIRNODE_OFF_TYPE, (int16_t)NODE_TYPE_DIR);
-    vfs_wr2(slot, DIRNODE_OFF_RSVD, 0);
-    vfs_wr4(slot, DIRNODE_OFF_NODEID, (int32_t)nodeId);
-    vfs_wr8(slot, DIRNODE_OFF_HEADPTR, headPtr);
+    vfs_wr2_s(slot, DIRNODE_OFF_TYPE, (int16_t)NODE_TYPE_DIR, VFS_PAGE_SIZE);
+    vfs_wr2_s(slot, DIRNODE_OFF_RSVD, 0, VFS_PAGE_SIZE);
+    vfs_wr4_s(slot, DIRNODE_OFF_NODEID, (int32_t)nodeId, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, DIRNODE_OFF_HEADPTR, headPtr, VFS_PAGE_SIZE);
     memset(slot + 16, 0, 16);
 }
 
 void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr) {
-    *nodeId = (uint32_t)vfs_rd4(slot, DIRNODE_OFF_NODEID);
-    *headPtr = vfs_rd8(slot, DIRNODE_OFF_HEADPTR);
+    *nodeId = (uint32_t)vfs_rd4_s(slot, DIRNODE_OFF_NODEID, VFS_PAGE_SIZE);
+    *headPtr = vfs_rd8_s(slot, DIRNODE_OFF_HEADPTR, VFS_PAGE_SIZE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -25,24 +25,24 @@ void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr)
 
 void nodes_write_filenode(uint8_t* slot, uint32_t nodeId, int64_t headPtr,
                           int64_t sizePtr, int64_t createdAt) {
-    vfs_wr2(slot, FILENODE_OFF_TYPE, (int16_t)NODE_TYPE_FILE);
-    vfs_wr2(slot, FILENODE_OFF_RSVD, 0);
-    vfs_wr4(slot, FILENODE_OFF_NODEID, (int32_t)nodeId);
-    vfs_wr8(slot, FILENODE_OFF_HEADPTR, headPtr);
-    vfs_wr8(slot, FILENODE_OFF_SIZEPTR, sizePtr);
-    vfs_wr8(slot, FILENODE_OFF_CTIME, createdAt);
+    vfs_wr2_s(slot, FILENODE_OFF_TYPE, (int16_t)NODE_TYPE_FILE, VFS_PAGE_SIZE);
+    vfs_wr2_s(slot, FILENODE_OFF_RSVD, 0, VFS_PAGE_SIZE);
+    vfs_wr4_s(slot, FILENODE_OFF_NODEID, (int32_t)nodeId, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, FILENODE_OFF_HEADPTR, headPtr, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, FILENODE_OFF_SIZEPTR, sizePtr, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, FILENODE_OFF_CTIME, createdAt, VFS_PAGE_SIZE);
 }
 
 void nodes_read_filenode(const uint8_t* slot, uint32_t* nodeId,
                          int64_t* headPtr, int64_t* sizePtr, int64_t* createdAt) {
-    *nodeId   = (uint32_t)vfs_rd4(slot, FILENODE_OFF_NODEID);
-    *headPtr  = vfs_rd8(slot, FILENODE_OFF_HEADPTR);
-    *sizePtr  = vfs_rd8(slot, FILENODE_OFF_SIZEPTR);
-    *createdAt = vfs_rd8(slot, FILENODE_OFF_CTIME);
+    *nodeId   = (uint32_t)vfs_rd4_s(slot, FILENODE_OFF_NODEID, VFS_PAGE_SIZE);
+    *headPtr  = vfs_rd8_s(slot, FILENODE_OFF_HEADPTR, VFS_PAGE_SIZE);
+    *sizePtr  = vfs_rd8_s(slot, FILENODE_OFF_SIZEPTR, VFS_PAGE_SIZE);
+    *createdAt = vfs_rd8_s(slot, FILENODE_OFF_CTIME, VFS_PAGE_SIZE);
 }
 
 int64_t nodes_read_filenode_ctime(const uint8_t* slot) {
-    return vfs_rd8(slot, FILENODE_OFF_CTIME);
+    return vfs_rd8_s(slot, FILENODE_OFF_CTIME, VFS_PAGE_SIZE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -51,21 +51,21 @@ int64_t nodes_read_filenode_ctime(const uint8_t* slot) {
 
 void nodes_write_dircontent(uint8_t* slot, uint32_t childNodeId, uint32_t epoch,
                             int64_t childPtr, int64_t namePtr, int64_t nextPtr) {
-    vfs_wr4(slot, DIRCONTENT_OFF_CHILDID, (int32_t)childNodeId);
-    vfs_wr4(slot, DIRCONTENT_OFF_EPOCH, (int32_t)epoch);
-    vfs_wr8(slot, DIRCONTENT_OFF_CHILDPTR, childPtr);
-    vfs_wr8(slot, DIRCONTENT_OFF_NAMEPTR, namePtr);
-    vfs_wr8(slot, DIRCONTENT_OFF_NEXTPTR, nextPtr);
+    vfs_wr4_s(slot, DIRCONTENT_OFF_CHILDID, (int32_t)childNodeId, VFS_PAGE_SIZE);
+    vfs_wr4_s(slot, DIRCONTENT_OFF_EPOCH, (int32_t)epoch, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, DIRCONTENT_OFF_CHILDPTR, childPtr, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, DIRCONTENT_OFF_NAMEPTR, namePtr, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, DIRCONTENT_OFF_NEXTPTR, nextPtr, VFS_PAGE_SIZE);
 }
 
 void nodes_read_dircontent(const uint8_t* slot, uint32_t* childNodeId,
                            uint32_t* epoch, int64_t* childPtr,
                            int64_t* namePtr, int64_t* nextPtr) {
-    *childNodeId = (uint32_t)vfs_rd4(slot, DIRCONTENT_OFF_CHILDID);
-    *epoch       = (uint32_t)vfs_rd4(slot, DIRCONTENT_OFF_EPOCH);
-    *childPtr    = vfs_rd8(slot, DIRCONTENT_OFF_CHILDPTR);
-    *namePtr     = vfs_rd8(slot, DIRCONTENT_OFF_NAMEPTR);
-    *nextPtr     = vfs_rd8(slot, DIRCONTENT_OFF_NEXTPTR);
+    *childNodeId = (uint32_t)vfs_rd4_s(slot, DIRCONTENT_OFF_CHILDID, VFS_PAGE_SIZE);
+    *epoch       = (uint32_t)vfs_rd4_s(slot, DIRCONTENT_OFF_EPOCH, VFS_PAGE_SIZE);
+    *childPtr    = vfs_rd8_s(slot, DIRCONTENT_OFF_CHILDPTR, VFS_PAGE_SIZE);
+    *namePtr     = vfs_rd8_s(slot, DIRCONTENT_OFF_NAMEPTR, VFS_PAGE_SIZE);
+    *nextPtr     = vfs_rd8_s(slot, DIRCONTENT_OFF_NEXTPTR, VFS_PAGE_SIZE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -73,14 +73,14 @@ void nodes_read_dircontent(const uint8_t* slot, uint32_t* childNodeId,
  * --------------------------------------------------------------------------- */
 
 void nodes_write_filecontent(uint8_t* slot, int64_t pageRootPtr, int64_t nextPtr) {
-    vfs_wr8(slot, FILECONTENT_OFF_ROOTPTR, pageRootPtr);
-    vfs_wr8(slot, FILECONTENT_OFF_NEXTPTR, nextPtr);
+    vfs_wr8_s(slot, FILECONTENT_OFF_ROOTPTR, pageRootPtr, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, FILECONTENT_OFF_NEXTPTR, nextPtr, VFS_PAGE_SIZE);
     memset(slot + 16, 0, 16);
 }
 
 void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* nextPtr) {
-    *pageRootPtr = vfs_rd8(slot, FILECONTENT_OFF_ROOTPTR);
-    *nextPtr     = vfs_rd8(slot, FILECONTENT_OFF_NEXTPTR);
+    *pageRootPtr = vfs_rd8_s(slot, FILECONTENT_OFF_ROOTPTR, VFS_PAGE_SIZE);
+    *nextPtr     = vfs_rd8_s(slot, FILECONTENT_OFF_NEXTPTR, VFS_PAGE_SIZE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -88,14 +88,14 @@ void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* 
  * --------------------------------------------------------------------------- */
 
 void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr) {
-    vfs_wr8(slot, PAGENODE_OFF_VERSIONROOT, versionRootPtr);
-    vfs_wr8(slot, PAGENODE_OFF_NEXTPTR, nextPtr);
+    vfs_wr8_s(slot, PAGENODE_OFF_VERSIONROOT, versionRootPtr, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, PAGENODE_OFF_NEXTPTR, nextPtr, VFS_PAGE_SIZE);
     memset(slot + 16, 0, 16);
 }
 
 void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr, int64_t* nextPtr) {
-    *versionRootPtr = vfs_rd8(slot, PAGENODE_OFF_VERSIONROOT);
-    *nextPtr        = vfs_rd8(slot, PAGENODE_OFF_NEXTPTR);
+    *versionRootPtr = vfs_rd8_s(slot, PAGENODE_OFF_VERSIONROOT, VFS_PAGE_SIZE);
+    *nextPtr        = vfs_rd8_s(slot, PAGENODE_OFF_NEXTPTR, VFS_PAGE_SIZE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -104,18 +104,18 @@ void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr, int64_t* 
 
 void nodes_write_versionpage(uint8_t* slot, uint32_t epoch, int64_t dataPage,
                              int64_t nextPtr) {
-    vfs_wr4(slot, VERSIONPAGE_OFF_EPOCH, (int32_t)epoch);
-    vfs_wr4(slot, VERSIONPAGE_OFF_RSVD, 0);
-    vfs_wr8(slot, VERSIONPAGE_OFF_DATAPAGE, dataPage);
-    vfs_wr8(slot, VERSIONPAGE_OFF_NEXTPTR, nextPtr);
+    vfs_wr4_s(slot, VERSIONPAGE_OFF_EPOCH, (int32_t)epoch, VFS_PAGE_SIZE);
+    vfs_wr4_s(slot, VERSIONPAGE_OFF_RSVD, 0, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, VERSIONPAGE_OFF_DATAPAGE, dataPage, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, VERSIONPAGE_OFF_NEXTPTR, nextPtr, VFS_PAGE_SIZE);
     memset(slot + 24, 0, 8);
 }
 
 void nodes_read_versionpage(const uint8_t* slot, uint32_t* epoch,
                             int64_t* dataPage, int64_t* nextPtr) {
-    *epoch    = (uint32_t)vfs_rd4(slot, VERSIONPAGE_OFF_EPOCH);
-    *dataPage = vfs_rd8(slot, VERSIONPAGE_OFF_DATAPAGE);
-    *nextPtr  = vfs_rd8(slot, VERSIONPAGE_OFF_NEXTPTR);
+    *epoch    = (uint32_t)vfs_rd4_s(slot, VERSIONPAGE_OFF_EPOCH, VFS_PAGE_SIZE);
+    *dataPage = vfs_rd8_s(slot, VERSIONPAGE_OFF_DATAPAGE, VFS_PAGE_SIZE);
+    *nextPtr  = vfs_rd8_s(slot, VERSIONPAGE_OFF_NEXTPTR, VFS_PAGE_SIZE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -124,19 +124,19 @@ void nodes_read_versionpage(const uint8_t* slot, uint32_t* epoch,
 
 void nodes_write_filesize(uint8_t* slot, uint32_t epoch, int64_t modifiedAt,
                           int64_t fileSize, int64_t nextPtr) {
-    vfs_wr4(slot, FILESIZE_OFF_EPOCH, (int32_t)epoch);
-    vfs_wr8(slot, FILESIZE_OFF_MODIFIEDAT, modifiedAt);
-    vfs_wr8(slot, FILESIZE_OFF_FILESIZE, fileSize);
-    vfs_wr8(slot, FILESIZE_OFF_NEXTPTR, nextPtr);
-    vfs_wr4(slot, 28, 0);
+    vfs_wr4_s(slot, FILESIZE_OFF_EPOCH, (int32_t)epoch, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, FILESIZE_OFF_MODIFIEDAT, modifiedAt, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, FILESIZE_OFF_FILESIZE, fileSize, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, FILESIZE_OFF_NEXTPTR, nextPtr, VFS_PAGE_SIZE);
+    vfs_wr4_s(slot, 28, 0, VFS_PAGE_SIZE);
 }
 
 void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
                          int64_t* modifiedAt, int64_t* fileSize, int64_t* nextPtr) {
-    *epoch      = (uint32_t)vfs_rd4(slot, FILESIZE_OFF_EPOCH);
-    *modifiedAt = vfs_rd8(slot, FILESIZE_OFF_MODIFIEDAT);
-    *fileSize   = vfs_rd8(slot, FILESIZE_OFF_FILESIZE);
-    *nextPtr    = vfs_rd8(slot, FILESIZE_OFF_NEXTPTR);
+    *epoch      = (uint32_t)vfs_rd4_s(slot, FILESIZE_OFF_EPOCH, VFS_PAGE_SIZE);
+    *modifiedAt = vfs_rd8_s(slot, FILESIZE_OFF_MODIFIEDAT, VFS_PAGE_SIZE);
+    *fileSize   = vfs_rd8_s(slot, FILESIZE_OFF_FILESIZE, VFS_PAGE_SIZE);
+    *nextPtr    = vfs_rd8_s(slot, FILESIZE_OFF_NEXTPTR, VFS_PAGE_SIZE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -145,17 +145,17 @@ void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
 
 void nodes_write_touchedfile(uint8_t* slot, uint32_t epoch, uint32_t nodeId,
                              int64_t nextPtr) {
-    vfs_wr4(slot, TOUCHEDFILE_OFF_EPOCH, (int32_t)epoch);
-    vfs_wr4(slot, TOUCHEDFILE_OFF_NODEID, (int32_t)nodeId);
-    vfs_wr8(slot, TOUCHEDFILE_OFF_NEXTPTR, nextPtr);
+    vfs_wr4_s(slot, TOUCHEDFILE_OFF_EPOCH, (int32_t)epoch, VFS_PAGE_SIZE);
+    vfs_wr4_s(slot, TOUCHEDFILE_OFF_NODEID, (int32_t)nodeId, VFS_PAGE_SIZE);
+    vfs_wr8_s(slot, TOUCHEDFILE_OFF_NEXTPTR, nextPtr, VFS_PAGE_SIZE);
     memset(slot + 16, 0, 16);
 }
 
 void nodes_read_touchedfile(const uint8_t* slot, uint32_t* epoch,
                             uint32_t* nodeId, int64_t* nextPtr) {
-    *epoch  = (uint32_t)vfs_rd4(slot, TOUCHEDFILE_OFF_EPOCH);
-    *nodeId = (uint32_t)vfs_rd4(slot, TOUCHEDFILE_OFF_NODEID);
-    *nextPtr = vfs_rd8(slot, TOUCHEDFILE_OFF_NEXTPTR);
+    *epoch  = (uint32_t)vfs_rd4_s(slot, TOUCHEDFILE_OFF_EPOCH, VFS_PAGE_SIZE);
+    *nodeId = (uint32_t)vfs_rd4_s(slot, TOUCHEDFILE_OFF_NODEID, VFS_PAGE_SIZE);
+    *nextPtr = vfs_rd8_s(slot, TOUCHEDFILE_OFF_NEXTPTR, VFS_PAGE_SIZE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -164,20 +164,20 @@ void nodes_read_touchedfile(const uint8_t* slot, uint32_t* epoch,
 
 void nodes_write_mapperentry(uint8_t* slot, uint32_t fromEpoch, uint32_t toEpoch,
                              uint16_t flags, int64_t nextPtr) {
-    vfs_wr4(slot, MAPPER_OFF_FROMEPOCH, (int32_t)fromEpoch);
-    vfs_wr4(slot, MAPPER_OFF_TOEPOCH, (int32_t)toEpoch);
-    vfs_wr2(slot, MAPPER_OFF_FLAGS, (int16_t)flags);
+    vfs_wr4_s(slot, MAPPER_OFF_FROMEPOCH, (int32_t)fromEpoch, VFS_PAGE_SIZE);
+    vfs_wr4_s(slot, MAPPER_OFF_TOEPOCH, (int32_t)toEpoch, VFS_PAGE_SIZE);
+    vfs_wr2_s(slot, MAPPER_OFF_FLAGS, (int16_t)flags, VFS_PAGE_SIZE);
     memset(slot + 10, 0, 6);
-    vfs_wr8(slot, MAPPER_OFF_NEXTPTR, nextPtr);
+    vfs_wr8_s(slot, MAPPER_OFF_NEXTPTR, nextPtr, VFS_PAGE_SIZE);
     memset(slot + 24, 0, 8);
 }
 
 void nodes_read_mapperentry(const uint8_t* slot, uint32_t* fromEpoch,
                             uint32_t* toEpoch, uint16_t* flags, int64_t* nextPtr) {
-    *fromEpoch = (uint32_t)vfs_rd4(slot, MAPPER_OFF_FROMEPOCH);
-    *toEpoch   = (uint32_t)vfs_rd4(slot, MAPPER_OFF_TOEPOCH);
-    *flags     = (uint16_t)vfs_rd2(slot, MAPPER_OFF_FLAGS);
-    *nextPtr   = vfs_rd8(slot, MAPPER_OFF_NEXTPTR);
+    *fromEpoch = (uint32_t)vfs_rd4_s(slot, MAPPER_OFF_FROMEPOCH, VFS_PAGE_SIZE);
+    *toEpoch   = (uint32_t)vfs_rd4_s(slot, MAPPER_OFF_TOEPOCH, VFS_PAGE_SIZE);
+    *flags     = (uint16_t)vfs_rd2_s(slot, MAPPER_OFF_FLAGS, VFS_PAGE_SIZE);
+    *nextPtr   = vfs_rd8_s(slot, MAPPER_OFF_NEXTPTR, VFS_PAGE_SIZE);
 }
 
 /* ---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ void nodes_read_mapperentry(const uint8_t* slot, uint32_t* fromEpoch,
 
 void nodes_write_name_entry(uint8_t* slot, const uint8_t* data_24, int64_t nextPtr) {
     memcpy(slot, data_24, NAMEENTRY_DATA_SIZE);
-    vfs_wr8(slot, NAMEENTRY_OFF_NEXTPTR, nextPtr);
+    vfs_wr8_s(slot, NAMEENTRY_OFF_NEXTPTR, nextPtr, VFS_PAGE_SIZE);
 }
 
 int nodes_write_name(Pool* pool, const char* utf8_name, int64_t* first_slot_vp) {
@@ -255,7 +255,7 @@ int nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_le
             out_buf[total++] = (char)byte;
         }
 
-        vp = vfs_rd8(slot_data, NAMEENTRY_OFF_NEXTPTR);
+        vp = vfs_rd8_s(slot_data, NAMEENTRY_OFF_NEXTPTR, VFS_PAGE_SIZE);
     }
 
     out_buf[total] = '\0';
