@@ -826,6 +826,59 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
     return VFS_OK;
 }
 
+/* ---------------------------------------------------------------------------
+ * GC mapper rebuild — drop entries for soft-deleted and committed epochs
+ * --------------------------------------------------------------------------- */
+
+int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
+                       GCAllocCursor* alloc) {
+    if (!ctx || !gc_map || !alloc) return VFS_ERR_IO;
+
+    #define GC_NEXT_SLOT() do { \
+        if (alloc->cur_slot >= alloc->slots_per_page) { \
+            alloc->cur_page_vp = gc_allocate_new_pool_page(ctx, gc_map); \
+            if (alloc->cur_page_vp == VFS_VPTR_NULL) return VFS_ERR_FULL; \
+            alloc->cur_slot = 0; \
+        } \
+    } while(0)
+
+    /* Walk the mapper entry chain rooted at epochMapperPtr.
+       Keep only entries whose fromEpoch is still active (not committed
+       and not soft-deleted).  Committed and soft-deleted entries are
+       dropped because their VersionPages were already relabeled during
+       the FileNode walk (committed → REWRITE, soft-deleted → DROP). */
+    int64_t vp = ctx->epochMapperPtr;
+    while (vp != 0) {
+        uint8_t* slot = pool_resolve(&ctx->pool, vp);
+        if (!slot) break;
+
+        uint32_t fromEpoch, toEpoch;
+        uint16_t flags;
+        int64_t next;
+        nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &next);
+
+        int keep = 1;
+        if (flags & MAPPER_FLAG_TRAVERSAL_APPLY) keep = 0;  /* committed */
+        else if (fromEpoch % 2 == 1) keep = 0;               /* soft-deleted */
+
+        if (keep) {
+            GC_NEXT_SLOT();
+            int64_t new_vp = VFS_VPTR_MAKE(
+                VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
+            uint8_t* new_slot = pool_resolve(&ctx->pool, new_vp);
+            if (!new_slot) return VFS_ERR_IO;
+            alloc->cur_slot++;
+
+            gc_copy_entry(gc_map, vp, new_vp, slot, new_slot);
+        }
+
+        vp = next;
+    }
+
+    #undef GC_NEXT_SLOT
+    return VFS_OK;
+}
+
 /* Shadow-compaction helper — walks the pool chain, builds a live set,
    copies live pool entries to fresh pages, then enqueues old pages
    for deferred freeing.  Currently a stub — returns VFS_OK. */

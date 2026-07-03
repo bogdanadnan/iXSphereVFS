@@ -154,6 +154,15 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
                             int64_t* out_highest_file_size);
 
 /* ---------------------------------------------------------------------------
+ * GC mapper rebuild
+ * --------------------------------------------------------------------------- */
+
+/* Rebuild the mapper entry chain during GC: drop entries for soft-deleted
+   and committed epochs (VersionPages were already relabeled). */
+int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
+                       GCAllocCursor* alloc);
+
+/* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *
  * Walks the pool chain, the DententryCache, the epoch mapper chain,
