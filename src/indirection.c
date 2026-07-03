@@ -71,7 +71,7 @@ void indir_init(StorageBackend* sb) {
         it->overflow_count++;
 
         /* Follow chain: next is at offset 0 of the overflow page */
-        chain_page = vfs_rd8_s(buf, 0, VFS_PAGE_SIZE);
+        chain_page = vfs_rd8_s(buf, 0, sb->page_size);
     }
 }
 
@@ -145,7 +145,7 @@ int indir_ensure_capacity(StorageBackend* sb, int needed) {
         if (!buf) return -1;
 
         /* Initialize: next = 0, all entries = 0 */
-        vfs_wr8_s(buf, 0, 0, VFS_PAGE_SIZE);  /* next pointer */
+        vfs_wr8_s(buf, 0, 0, sb->page_size);  /* next pointer */
 
         /* Register the new overflow page in the indirection table.
            Its logical page is the next one after current total_pages. */
