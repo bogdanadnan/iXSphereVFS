@@ -338,57 +338,31 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     /* Copy the FileNode with remapping */
     gc_copy_entry(gc_map, file_vp, new_file_vp, file_slot, new_file_slot);
 
-    /* Walk FileSize chain (tracked via FileNode.sizePtr) */
+    /* Walk FileSize chain via gc_walk_filesize_chain — handles survival rules
+       and returns the highest surviving file size for segment pruning. */
+    int64_t highest_file_size = 0;
     int64_t size_vp = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
-    while (size_vp != 0) {
-        uint8_t* fs_slot = pool_resolve(&ctx->pool, size_vp);
-        if (!fs_slot) break;
+    int err_fs = gc_walk_filesize_chain(ctx, gc_map, alloc, size_vp, epoch,
+                                         &highest_file_size);
+    if (err_fs != VFS_OK) return err_fs;
 
-        uint32_t fs_epoch;
-        int64_t fs_modifiedAt, fs_fileSize, fs_next;
-        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modifiedAt,
-                            &fs_fileSize, &fs_next);
-        (void)fs_modifiedAt; (void)fs_fileSize;
-
-        /* Survival rule: soft-deleted → DROP; committed → REWRITE; else KEEP */
-        int keep = 1;
-        int64_t rewrite_epoch = (int64_t)fs_epoch;
-        if (fs_epoch % 2 == 1) {
-            if (mapper_resolve(&ctx->mapper, (int64_t)fs_epoch) != (int64_t)fs_epoch) {
-                if (mapper_traversal_apply(&ctx->mapper, (int64_t)fs_epoch)) {
-                    /* Committed → REWRITE epoch to toEpoch */
-                    rewrite_epoch = mapper_resolve(&ctx->mapper, (int64_t)fs_epoch);
-                } else {
-                    /* Soft-deleted → DROP */
-                    keep = 0;
-                }
-            }
-        }
-
-        if (keep) {
-            GC_NEXT_SLOT();
-            int64_t new_fs_vp = VFS_VPTR_MAKE(
-                VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_fs_slot = pool_resolve(&ctx->pool, new_fs_vp);
-            if (!new_fs_slot) return VFS_ERR_IO;
-            alloc->cur_slot++;
-
-            gc_copy_entry(gc_map, size_vp, new_fs_vp, fs_slot, new_fs_slot);
-
-            /* Update the epoch field if rewritten */
-            if (rewrite_epoch != (int64_t)fs_epoch) {
-                vfs_wr4(new_fs_slot, FILESIZE_OFF_EPOCH, (uint32_t)rewrite_epoch);
-            }
-        }
-
-        size_vp = fs_next;
-    }
-
-    /* Walk FileContent chain */
+    /* Walk FileContent chain.
+       Skip segments whose page range is beyond the highest surviving
+       file size bound (nothing above that size is reachable). */
     int64_t fc_vp = vfs_rd8(file_slot, FILENODE_OFF_HEADPTR);
+    int64_t seg_idx = 0;
     while (fc_vp != 0) {
         uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
         if (!fc_slot) break;
+
+        /* Skip segments beyond the highest surviving file size */
+        if (highest_file_size > 0 &&
+            (seg_idx * (int64_t)ctx->segment_size * VFS_PAGE_SIZE) >= highest_file_size) {
+            int64_t fc_next = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
+            fc_vp = fc_next;
+            seg_idx++;
+            continue;
+        }
 
         int64_t fc_page_root = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
         int64_t fc_next = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
@@ -426,7 +400,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
             pn_vp = vfs_rd8(pn_slot, PAGENODE_OFF_NEXTPTR);
         }
 
-        if (!segment_has_live) { fc_vp = fc_next; continue; }
+        if (!segment_has_live) { fc_vp = fc_next; seg_idx++; continue; }
 
         /* Copy the FileContent segment */
         GC_NEXT_SLOT();
@@ -525,6 +499,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
         }
 
         fc_vp = fc_next;
+        seg_idx++;
     }
 
     #undef GC_NEXT_SLOT
@@ -779,7 +754,8 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
 
 int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
                             GCAllocCursor* alloc,
-                            int64_t head_size_vp, int64_t epoch) {
+                            int64_t head_size_vp, int64_t epoch,
+                            int64_t* out_highest_file_size) {
     if (!ctx || !gc_map || !alloc) return VFS_ERR_IO;
     (void)epoch;
 
@@ -843,11 +819,8 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
         fs_vp = fs_next;
     }
 
-    /* TODO Phase 8: DROP FileContent segments whose page range is beyond
-       the highest surviving FileSize bound (highest_file_size).  This
-       requires walking the FileNode's headPtr chain and checking each
-       FileContent segment's logical page range against the bound, which
-       is done in a separate FileContent walk function. */
+    /* Expose highest surviving file size for FileContent segment pruning */
+    if (out_highest_file_size) *out_highest_file_size = highest_file_size;
 
     #undef GC_NEXT_SLOT
     return VFS_OK;

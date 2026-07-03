@@ -150,7 +150,8 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
  * Returns VFS_OK on success, or a negative error code. */
 int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
                             GCAllocCursor* alloc,
-                            int64_t head_size_vp, int64_t epoch);
+                            int64_t head_size_vp, int64_t epoch,
+                            int64_t* out_highest_file_size);
 
 /* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
