@@ -358,28 +358,53 @@ static void test_gc_integration(void) {
     /* Soft-delete snapshot 1 */
     CHECK_EQ(vfs_delete_snapshot(vfs, snap), VFS_OK);
 
-    /* Run GC */
+    /* Count pool pages before GC */
+    int64_t pool_before = 0;
+    {
+        int64_t p = ctx->pool.list_head ? *ctx->pool.list_head : 0;
+        while (p != 0) {
+            pool_before++;
+            uint8_t* ph = storage_read(ctx->sb, p);
+            if (!ph) break;
+            p = vfs_rd8(ph, 0);
+        }
+    }
+
     int gc_ret = vfs_gc(vfs);
-    /* GC may fail with VFS_ERR_FULL in small test files where the
-       indirection table can't accommodate new pool pages.  This is a
-       known limitation of the test environment, not a correctness bug.
-       Skip further verification if GC failed. */
     if (gc_ret == VFS_OK) {
-        /* Verify: data at epoch 0 unchanged */
-    char rbuf[16];
-    CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 0), 4);
-    CHECK_EQ(strncmp(rbuf, "AAAA", 4), 0);
+        /* Verify pool pages reclaimed (or at least not grown) */
+        int64_t pool_after = 0;
+        {
+            int64_t p = ctx->pool.list_head ? *ctx->pool.list_head : 0;
+            while (p != 0) {
+                pool_after++;
+                uint8_t* ph = storage_read(ctx->sb, p);
+                if (!ph) break;
+                p = vfs_rd8(ph, 0);
+            }
+        }
+        CHECK(pool_after <= pool_before);
 
-    /* Verify: reading at epoch 1 (soft-deleted snapshot) falls through
-       to epoch 0 data, returning "AAAA" not "BBBB" */
-    memset(rbuf, 0, sizeof(rbuf));
-    CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 1), 4);
-    CHECK_EQ(strncmp(rbuf, "AAAA", 4), 0);
+        /* Verify file sizes at live epochs */
+        CHECK_EQ(vfs_file_size(vfs, file_vp, 0), 4);
+        CHECK_EQ(vfs_file_size(vfs, file_vp, 2), 4);
 
-    /* Verify: reading at epoch 2 still returns "BBBB" (live head) */
-    memset(rbuf, 0, sizeof(rbuf));
-    CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 2), 4);
-    CHECK_EQ(strncmp(rbuf, "BBBB", 4), 0);
+        /* Verify data integrity across epochs */
+        char rbuf[16];
+        CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 0), 4);
+        CHECK_EQ(strncmp(rbuf, "AAAA", 4), 0);
+
+        memset(rbuf, 0, sizeof(rbuf));
+        CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 1), 4);
+        CHECK_EQ(strncmp(rbuf, "AAAA", 4), 0);
+
+        memset(rbuf, 0, sizeof(rbuf));
+        CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 2), 4);
+        CHECK_EQ(strncmp(rbuf, "BBBB", 4), 0);
+    } else {
+        /* GC failed — verify pre-GC state is preserved */
+        CHECK_EQ(vfs_file_size(vfs, file_vp, 0), 4);
+        CHECK_EQ(vfs_file_size(vfs, file_vp, 2), 4);
     }
 
     vfs_close(vfs);
