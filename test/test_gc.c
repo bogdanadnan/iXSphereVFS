@@ -190,6 +190,115 @@ static void test_crash_recovery(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Deferred-free queue tests
+ * --------------------------------------------------------------------------- */
+
+static StorageBackend* df_setup(void) {
+    unlink(test_path);
+    return storage_open(test_path, 8192);
+}
+
+static void df_teardown(StorageBackend* sb) {
+    if (sb) storage_close(sb);
+    unlink(test_path);
+}
+
+/* Enqueue prevents allocation */
+static void test_df_enqueue_blocks_alloc(void) {
+    StorageBackend* sb = df_setup();
+    CHECK(sb != NULL);
+
+    DeferredFreeQueue q;
+    CHECK_EQ(deferred_free_init(&q, 8), VFS_OK);
+
+    /* Set the deferred queue so storage_allocate checks it */
+    storage_set_deferred_queue(&q);
+
+    /* Allocate some pages */
+    int64_t p1 = storage_allocate(sb, 1);
+    CHECK(p1 >= 2);  /* pages 0,1 are reserved */
+    int64_t p2 = storage_allocate(sb, 1);
+    CHECK(p2 > p1);
+
+    /* Free p1 so it's available for reuse */
+    storage_free(sb, p1);
+
+    /* Enqueue p1 in the deferred queue */
+    deferred_free_enqueue(&q, p1, sb);
+
+    /* Allocate again — should NOT reuse p1 (it's in the deferred queue) */
+    int64_t p3 = storage_allocate(sb, 1);
+    CHECK(p3 > p2);  /* should get a fresh page beyond p2 */
+    CHECK(p3 != p1); /* should not reuse the deferred page */
+
+    /* Clear deferred queue so later tests are unaffected */
+    storage_set_deferred_queue(NULL);
+    deferred_free_destroy(&q);
+    df_teardown(sb);
+}
+
+/* Confirm releases pages: confirm_and_release frees queued pages */
+static void test_df_confirm_releases(void) {
+    DeferredFreeQueue q;
+    CHECK_EQ(deferred_free_init(&q, 8), VFS_OK);
+
+    /* Enqueue some pages */
+    deferred_free_enqueue(&q, 10, NULL);
+    deferred_free_enqueue(&q, 20, NULL);
+    deferred_free_enqueue(&q, 30, NULL);
+    CHECK_EQ(q.count, 3);
+
+    /* is_queued should find them */
+    CHECK(deferred_free_is_queued(&q, 10));
+    CHECK(deferred_free_is_queued(&q, 20));
+    CHECK(deferred_free_is_queued(&q, 30));
+    CHECK(!deferred_free_is_queued(&q, 99));
+    CHECK(!deferred_free_is_queued(&q, 0));
+
+    /* confirm_and_release needs a StorageBackend.
+       We just check that it clears the queue (pages won't be freed
+       since they don't correspond to real pages in this SB). */
+    StorageBackend* sb = df_setup();
+    CHECK(sb != NULL);
+
+    deferred_free_confirm_and_release(&q, sb);
+
+    /* Queue should be empty and confirmed */
+    CHECK_EQ(q.count, 0);
+    CHECK_EQ(q.pages, NULL);
+    CHECK(q.confirmed);
+
+    deferred_free_destroy(&q);
+    df_teardown(sb);
+}
+
+/* Mirror sibling handling */
+static void test_df_mirror_sibling(void) {
+    DeferredFreeQueue q;
+    CHECK_EQ(deferred_free_init(&q, 8), VFS_OK);
+
+    StorageBackend* sb = df_setup();
+    CHECK(sb != NULL);
+
+    /* Enqueue a page — mirror sibling check uses sb->mirror_pages.
+       For a fresh SB, mirror_pages is uninitialized (NULL/calloc'd to 0).
+       Enqueuing a page with no mirror should not add extra entries. */
+    deferred_free_enqueue(&q, 5, sb);
+    CHECK_EQ(q.count, 1);  /* just page 5, no mirror */
+
+    /* Enqueue another page */
+    deferred_free_enqueue(&q, 6, sb);
+    CHECK_EQ(q.count, 2);
+
+    /* Verify both are in the queue */
+    CHECK(deferred_free_is_queued(&q, 5));
+    CHECK(deferred_free_is_queued(&q, 6));
+
+    deferred_free_destroy(&q);
+    df_teardown(sb);
+}
+
+/* ---------------------------------------------------------------------------
  * main
  * --------------------------------------------------------------------------- */
 
@@ -199,6 +308,10 @@ int main(void) {
     test_exclusive_blocks_shared();
     test_exclusive_drains_readers();
     test_crash_recovery();
+
+    test_df_enqueue_blocks_alloc();
+    test_df_confirm_releases();
+    test_df_mirror_sibling();
 
     printf("test_gc: %d/%d passed\n", tests_passed, tests_run);
     unlink(test_path);
