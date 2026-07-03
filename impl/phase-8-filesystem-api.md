@@ -116,6 +116,53 @@ int     vfs_gc(vfs_t*);
 - Public include dir: `include` (so `#include <ixsphere/vfs.h>` works)
 - Add `src` to internal include path (already done)
 
+---
+
+## Review Iteration 1 — Code vs Spec (2026-07-02)
+
+### Implementation Status
+
+| Deliverable | Status | Location |
+|-------------|--------|----------|
+| `vfs_flush` | ✅ Implemented | `src/vfs.c:247` — thin wrapper around `storage_flush` |
+| `vfs_lock` | ✅ Implemented | `src/vfs.c:85` — hash table, 256 buckets, recursive, two-phase |
+| `vfs_unlock` | ✅ Implemented | `src/vfs.c:142` — depth tracking, recursive unlock |
+| `vfs_last_error` | ✅ Implemented | `src/vfs.c:253` — reads `ctx->last_error` |
+| `vfs_open` | ✅ Already existed | `src/vfs.c:194` — StorageBackend + TreeContext init |
+| `vfs_close` | ✅ Already existed | `src/vfs.c:233` — flush + free + close |
+| `vfs_error_string` | ✅ Already existed | `src/vfs.c:178` — 10 codes including VFS_ERR_EPOCH |
+| Header `nodes.h` → `src/` | ✅ Complete | `src/nodes.h` |
+| Header `ixsphere/vfs.h` | ✅ Complete | All 20 API functions, grouped by category |
+| Header `ixsphere/vfs_internal.h` | ✅ Complete | TreeContext, vfs_t wrapper |
+| `tree_api.h` removed | ✅ Complete | All declarations merged into `vfs.h` |
+| CMakeLists.txt updated | ✅ Complete | `include` and `src` on path |
+
+### Public API Surface (include/ixsphere/vfs.h)
+
+20 functions, one clean header:
+- **Lifecycle**: vfs_open, vfs_close, vfs_flush, vfs_last_error
+- **File**: vfs_create, vfs_delete, vfs_rename, vfs_open_file, vfs_read, vfs_write, vfs_file_size/mtime/ctime
+- **Directory**: vfs_mkdir, vfs_rmdir, vfs_readdir
+- **Locking**: vfs_lock, vfs_unlock
+- **Snapshots**: vfs_snapshot, vfs_commit, vfs_delete_snapshot
+- **GC**: vfs_gc
+- **Utility**: vfs_crc32c, vfs_error_string, vfs_dirent_t, vfs_error_t
+
+### Locking Implementation Notes
+
+Two-phase locking protocol for per-epoch locks:
+1. Acquire global lock (epoch=0) for this file
+2. Acquire per-epoch mutex
+3. Release global lock
+
+This ensures a global lock holder blocks per-epoch lock attempts. Recursive
+locking supported (same thread, same epoch). Hash table with 256 buckets,
+reference-counted entries.
+
+### Phase 8 Gate: ✅ COMPLETE
+
+All deliverables implemented, headers clean, API consistent. No blocking issues.
+
 ## Dependencies
 All previous phases must be complete. This phase is a thin wrapper.
 
