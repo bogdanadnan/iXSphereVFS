@@ -344,3 +344,48 @@ buffer-size correctness independent of the page size constant.
 ### Acceptance
 - [ ] `mount_existing` compiles and passes all existing tests
 - [ ] No `VFS_PAGE_SIZE` references in production code outside of `page_buf.h` legacy functions
+
+---
+
+## Workload 8A.7 — Fix Indirection Overflow Page Self-Reference Bug
+
+### What
+`indir_ensure_capacity` creates a new overflow page but fails to write the
+overflow page's OWN indirection entry when the new page is the one that
+covers its own logical index. The entry stays 0 (free), `storage_allocate`
+reuses the overflow page's logical page for data, corrupting the chain.
+
+### Root Cause
+
+`indirection.c:163`: `if (oidx < it->overflow_count)` excludes `oidx == overflow_count`
+(the page being created). The new overflow page's entry should go into its
+own buffer (`buf[1 + eidx]`) but this case is not handled.
+
+### Impact
+
+Allocation fails beyond ~32,380 pages (point where first overflow page fills
+and second overflow page is needed). The second overflow page's indirection
+entry is never written → appears free → reallocated for data → chain breaks.
+
+### Fix
+
+```c
+// Before (broken):
+if (oidx < it->overflow_count) {
+    it->overflow_pages[oidx][1 + eidx] = new_page_phys;
+}
+
+// After:
+if (oidx < it->overflow_count) {
+    it->overflow_pages[oidx][1 + eidx] = new_page_phys;
+} else if (oidx == it->overflow_count) {
+    // This page covers its own entry — write into the new buffer
+    ((int64_t*)buf)[1 + eidx] = new_page_phys;
+}
+```
+
+### Acceptance
+- [ ] `storage_allocate` succeeds beyond 100,000 pages without corruption
+- [ ] `vfs_bench --workload write --count 100000` completes without errors
+- [ ] Overflow chain is walkable after creating 10 overflow pages
+- [ ] No double-allocations detected (Valgrind/ASan clean)
