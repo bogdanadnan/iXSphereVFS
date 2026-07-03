@@ -75,7 +75,8 @@ int64_t gc_allocate_new_pool_page(TreeContext* ctx, void* gc_map);
  * old_slot — pointer to the source slot data
  * new_slot — pointer to the destination slot data (may be NULL for compute-only) */
 void gc_copy_entry(GCMap* gc_map, int64_t old_vp, int64_t new_vp,
-                   const uint8_t* old_slot, uint8_t* new_slot);
+                   const uint8_t* old_slot, uint8_t* new_slot,
+                   int64_t page_size);
 
 /* Enqueue a logical page for deferred freeing.
  * If the page has a mirror sibling (via StorageBackend), also enqueues

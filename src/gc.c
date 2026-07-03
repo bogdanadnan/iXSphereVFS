@@ -192,7 +192,8 @@ int64_t gc_allocate_new_pool_page(TreeContext* ctx, void* gc_map) {
  * --------------------------------------------------------------------------- */
 
 void gc_copy_entry(GCMap* gc_map, int64_t old_vp, int64_t new_vp,
-                   const uint8_t* old_slot, uint8_t* new_slot) {
+                   const uint8_t* old_slot, uint8_t* new_slot,
+                   int64_t page_size) {
     if (!gc_map || !old_slot) return;
 
     /* Record the mapping: old_vp → new_vp */
@@ -208,11 +209,11 @@ void gc_copy_entry(GCMap* gc_map, int64_t old_vp, int64_t new_vp,
            but only values that exist as keys in gc_map will be remapped,
            which correctly filters out non-pointer fields. */
         for (int off = 0; off < VFS_POOL_SLOT_SIZE; off += 8) {
-            int64_t val = vfs_rd8_s(new_slot, off, VFS_PAGE_SIZE);
+            int64_t val = vfs_rd8_s(new_slot, off, page_size);
             if (val == 0) continue;  /* skip null — not in map */
             int64_t mapped = gc_map_get(gc_map, val);
             if (mapped != val) {
-                vfs_wr8_s(new_slot, off, mapped, VFS_PAGE_SIZE);
+                vfs_wr8_s(new_slot, off, mapped, page_size);
             }
         }
     }
@@ -247,7 +248,7 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     alloc->cur_slot++;
 
     /* Copy the DirNode with remapping */
-    gc_copy_entry(gc_map, dir_vp, new_dir_vp, dir_slot, new_dir_slot);
+    gc_copy_entry(gc_map, dir_vp, new_dir_vp, dir_slot, new_dir_slot, ctx->page_size);
 
     /* Read the old headPtr and delegate DirContent chain walk to the
        dedicated function which applies full survival rules. */
@@ -298,7 +299,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     alloc->cur_slot++;
 
     /* Copy the FileNode with remapping */
-    gc_copy_entry(gc_map, file_vp, new_file_vp, file_slot, new_file_slot);
+    gc_copy_entry(gc_map, file_vp, new_file_vp, file_slot, new_file_slot, ctx->page_size);
 
     /* Walk FileSize chain via gc_walk_filesize_chain — handles survival rules
        and returns the highest surviving file size for segment pruning. */
@@ -371,7 +372,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
         uint8_t* new_fc_slot = pool_resolve(&ctx->pool, new_fc_vp);
         if (!new_fc_slot) return VFS_ERR_IO;
         alloc->cur_slot++;
-        gc_copy_entry(gc_map, fc_vp, new_fc_vp, fc_slot, new_fc_slot);
+        gc_copy_entry(gc_map, fc_vp, new_fc_vp, fc_slot, new_fc_slot, ctx->page_size);
 
         /* Walk PageNode chain to copy live version pages */
         pn_vp = fc_page_root;
@@ -413,7 +414,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
             uint8_t* new_pn_slot = pool_resolve(&ctx->pool, new_pn_vp);
             if (!new_pn_slot) return VFS_ERR_IO;
             alloc->cur_slot++;
-            gc_copy_entry(gc_map, pn_vp, new_pn_vp, pn_slot, new_pn_slot);
+            gc_copy_entry(gc_map, pn_vp, new_pn_vp, pn_slot, new_pn_slot, ctx->page_size);
 
             /* Copy live VersionPages */
             vp_walk = vp_chain;
@@ -446,7 +447,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                     if (!new_vp_slot) return VFS_ERR_IO;
                     alloc->cur_slot++;
                     gc_copy_entry(gc_map, vp_walk, new_vp_slot_vp,
-                                  vp_slot, new_vp_slot);
+                                  vp_slot, new_vp_slot, ctx->page_size);
 
                     if (rewrite_epoch_vp != (int64_t)vp_epoch) {
                         vfs_wr4_s(new_vp_slot, VERSIONPAGE_OFF_EPOCH,
@@ -520,7 +521,7 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
             if (!new_slot) return VFS_ERR_IO;
             alloc->cur_slot++;
 
-            gc_copy_entry(gc_map, vp_walk, new_vp, vp_slot, new_slot);
+            gc_copy_entry(gc_map, vp_walk, new_vp, vp_slot, new_slot, ctx->page_size);
 
             /* Update epoch field if rewritten */
             if (rewrite_epoch != (int64_t)vp_epoch) {
@@ -660,7 +661,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
             if (!new_dc_slot) { free(child_has_kept); return VFS_ERR_IO; }
             alloc->cur_slot++;
 
-            gc_copy_entry(gc_map, walk_vp, new_dc_vp, dc_slot, new_dc_slot);
+            gc_copy_entry(gc_map, walk_vp, new_dc_vp, dc_slot, new_dc_slot, ctx->page_size);
 
             if (child_idx >= 0) child_has_kept[child_idx] = 1;
         }
@@ -767,7 +768,7 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
             if (!new_fs_slot) return VFS_ERR_IO;
             alloc->cur_slot++;
 
-            gc_copy_entry(gc_map, fs_vp, new_fs_vp, fs_slot, new_fs_slot);
+            gc_copy_entry(gc_map, fs_vp, new_fs_vp, fs_slot, new_fs_slot, ctx->page_size);
 
             /* Update epoch field if rewritten */
             if (rewrite_epoch != (int64_t)fs_epoch) {
@@ -831,7 +832,7 @@ int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
             if (!new_slot) return VFS_ERR_IO;
             alloc->cur_slot++;
 
-            gc_copy_entry(gc_map, vp, new_vp, slot, new_slot);
+            gc_copy_entry(gc_map, vp, new_vp, slot, new_slot, ctx->page_size);
         }
 
         vp = next;
