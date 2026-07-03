@@ -9,6 +9,7 @@
  *   scan     — readdir on root, open all files, read data
  *   mixed    — mix of create, write, read, delete
  *   dir      — create N directories, create files inside
+ *   seqwrite — sequential page-sized writes to a single file
  */
 #include "ixsphere/vfs.h"
 #include "ixsphere/vfs_internal.h"
@@ -393,13 +394,9 @@ static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
 }
 
 /* ---------------------------------------------------------------------------
- * Main — dispatch to workload
- * --------------------------------------------------------------------------- */
-
-/* ---------------------------------------------------------------------------
  * Workload: seqwrite — sequential page-sized writes to a single file.
- * Creates one file, then writes 8KB pages sequentially at increasing offsets.
- * Measures per-page throughput and latency.
+ * Phase 1 (untimed): pre-allocate all pages.
+ * Phase 2 (timed): overwrite pages, measuring per-page latency.
  * --------------------------------------------------------------------------- */
 
 static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) {
@@ -408,16 +405,27 @@ static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) 
     int64_t root_vp = vfs->ctx->rootNodeOffset;
     const int page_sz = vfs->ctx->page_size;
 
+    /* Create a single file and resolve its VirtualPtr */
     int nid = vfs_create(vfs, root_vp, "seqwrite.dat", 0);
     if (nid <= 0) return 0;
-
     int64_t file_vp = resolve_child_vp(vfs, root_vp, "seqwrite.dat");
     if (file_vp == 0) return 0;
 
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
     if (!buf) return 0;
-    memset(buf, 'W', (size_t)page_sz);
 
+    /* Phase 1: Pre-allocate all pages (untimed).
+       Write at each offset to force page allocation, then read the data
+       back to warm the cache.  This separates allocation cost from the
+       timed write throughput measurement. */
+    memset(buf, 0, (size_t)page_sz);
+    for (int i = 0; i < count; i++) {
+        int64_t offset = (int64_t)i * (int64_t)page_sz;
+        vfs_write(vfs, file_vp, buf, offset, page_sz, 0);
+    }
+
+    /* Phase 2: Timed sequential writes (pages already exist, in-place). */
+    memset(buf, 'W', (size_t)page_sz);
     lat_init(count);
     vfs_cache_reset();
     double t0 = now_sec();
@@ -436,6 +444,10 @@ static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) 
     lat_destroy();
     return ok;
 }
+
+/* ---------------------------------------------------------------------------
+ * Main — dispatch to workload
+ * --------------------------------------------------------------------------- */
 
 int main(int argc, char** argv) {
     bench_opts opts;
