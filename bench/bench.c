@@ -209,7 +209,7 @@ static int bench_read(vfs_t* vfs, int count, int threads, const char* path) {
         if (r > 0) ok++;
     }
     double t1 = now_sec();
-    report("read", count, threads, t1 - t0);
+    report("read", ok, threads, t1 - t0);
     return ok;
 }
 
@@ -221,7 +221,6 @@ static int bench_read(vfs_t* vfs, int count, int threads, const char* path) {
 static int bench_scan(vfs_t* vfs, int count, int threads, const char* path) {
     (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
-    /* Cap count to DENTRY_CACHE_MAX (1024) for correctness */
     int max_entries = 1024;
     if (count > max_entries) {
         fprintf(stderr, "warning: scan workload capped at %d entries (VFS readdir limit)\n", max_entries);
@@ -281,7 +280,7 @@ static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path) {
         if (vfs_delete(vfs, root_vp, name, 0) == VFS_OK) ok++;
     }
     double t1 = now_sec();
-    report("mixed", count, threads, t1 - t0);
+    report("mixed", ok, threads, t1 - t0);
     return ok;
 }
 
