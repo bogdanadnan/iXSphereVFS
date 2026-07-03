@@ -848,11 +848,11 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
         }
 
     int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
-    uint32_t query_epoch = (uint32_t)epoch;
-    int64_t best_child = 0;       /* childNodeId of best match */
-    int64_t best_childPtr = 0;    /* childPtr of best match */
-    uint32_t best_epoch = 0;
-    int best_name_match = 0;      /* non-zero if name matched */
+    int64_t read_epoch = mapper_resolve(&ctx->mapper, epoch);
+    int64_t best_child = 0;
+    int64_t best_childPtr = 0;
+    int64_t best_effective_epoch = 0;
+    int best_name_match = 0;
 
     int64_t walk_vp = headPtr;
     while (walk_vp != 0) {
@@ -863,21 +863,22 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
                               &ce_namePtr, &ce_next, ctx->page_size);
 
-        /* Read-rule: does this entry apply at query epoch? */
-        int applies = (ce_epoch == query_epoch) ||
-                      (ce_epoch < query_epoch && ce_epoch % 2 == 0);
+        /* Compute effective epoch via mapper remapping */
+        int64_t effective_epoch = (int64_t)ce_epoch;
+        if (mapper_traversal_apply(&ctx->mapper, (int64_t)ce_epoch))
+            effective_epoch = mapper_resolve(&ctx->mapper, (int64_t)ce_epoch);
+
+        /* Read-rule: does this entry apply at read_epoch? */
+        int applies = (effective_epoch == read_epoch) ||
+                      (effective_epoch < read_epoch && effective_epoch % 2 == 0);
         if (!applies) { walk_vp = ce_next; continue; }
 
-        /* If we already have a newer entry for this childNodeId, skip.
-           Exception: a tombstone (namePtr=0) should not preempt a live
-           entry (namePtr≠0) at the same epoch. */
         if ((int64_t)ce_child == best_child && best_name_match &&
-            ce_epoch <= best_epoch)
+            effective_epoch <= best_effective_epoch)
             { walk_vp = ce_next; continue; }
 
-        if (ce_epoch > best_epoch || (int64_t)ce_child != best_child ||
-            (ce_namePtr != 0 && best_name_match == 0 && ce_epoch == best_epoch)) {
-            /* Check name if this is a live entry */
+        if (effective_epoch > best_effective_epoch || (int64_t)ce_child != best_child ||
+            (ce_namePtr != 0 && best_name_match == 0 && effective_epoch == best_effective_epoch)) {
             if (ce_namePtr != 0) {
                 char entry_name[256];
                 int nl = nodes_read_name(&ctx->pool, ce_namePtr,
@@ -885,15 +886,14 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
                 if (nl > 0 && strcmp(entry_name, name) == 0) {
                     best_child = (int64_t)ce_child;
                     best_childPtr = ce_childPtr;
-                    best_epoch = ce_epoch;
+                    best_effective_epoch = effective_epoch;
                     best_name_match = 1;
                 }
             } else {
-                /* Tombstone — mark as best for this child, but no name match */
                 if ((int64_t)ce_child != best_child) {
                     best_child = (int64_t)ce_child;
                     best_childPtr = ce_childPtr;
-                    best_epoch = ce_epoch;
+                    best_effective_epoch = effective_epoch;
                     best_name_match = 0;
                 }
             }
