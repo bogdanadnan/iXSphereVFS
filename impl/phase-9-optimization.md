@@ -1,4 +1,4 @@
-# Phase 10: Optimization & Hardening
+# Phase 9: Optimization & Hardening
 
 ## Goal
 Profile the VFS under realistic workloads, tune the page cache and allocator
@@ -42,7 +42,7 @@ and validation — no new features.
 
 ## Staging Guidance
 
-Phase 10 workloads can be built in parallel with one exception:
+Phase 9 workloads can be built in parallel with one exception:
 
 ### Independent (build in any order):
 - **10.7 (CI)** — just YAML files, no code. Start immediately.
@@ -421,7 +421,7 @@ User-facing `README.md` and `docs/API.md`.
 
 ---
 
-## Final Phase 10 Checklist
+## Final Phase 9 Checklist
 
 - [ ] Benchmark produces repeatable results; hot path analyzed and documented
 - [ ] Cache hit rate ≥95% at default 256 MB

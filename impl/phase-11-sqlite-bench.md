@@ -2,7 +2,7 @@
 
 ## Goal
 Measure iXSphereVFS performance under realistic SQLite workloads. This phase
-is purely measurement and validation — no VFS code changes. Depends on Phase 9
+is purely measurement and validation — no VFS code changes. Depends on Phase 10
 (SQLite VFS Integration) and Phase 10 (Benchmark Harness).
 
 ## Dependencies
@@ -10,7 +10,7 @@ is purely measurement and validation — no VFS code changes. Depends on Phase 9
 | Dependency | Phase | Purpose |
 |------------|-------|---------|
 | Full VFS API | Phase 8 | Backing VFS |
-| SQLite VFS | Phase 9 | CowVfs xOpen/xRead/xWrite callbacks |
+| SQLite VFS | Phase 10 | CowVfs xOpen/xRead/xWrite callbacks |
 | Benchmark harness | Phase 10 | `vfs_bench` CLI framework |
 | SQLite amalgamation | External | `sqlite3.c` + `sqlite3.h` |
 
