@@ -285,8 +285,90 @@ static void test_touchedfile_chain(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * main
+ * Commit subdir conflict: mkdir sub, create file inside, snapshot, modify
+ * at live head, commit → VFS_ERR_CONFLICT.
  * --------------------------------------------------------------------------- */
+
+static void test_commit_subdir_conflict(void) {
+    vfs_t* vfs = epoch_setup();
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+    test_set_epoch_writable(-1);  /* use real epoch implementation */
+
+    CHECK_EQ(vfs_mkdir(vfs, root_vp, "sub", 0), VFS_OK);
+
+    /* Resolve subdir VirtualPtr via pool (vfs_open_file returns nodeId, not VP) */
+    int64_t sub_vp = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
+        int64_t w = h;
+        while (w != 0) {
+            uint8_t* dc = pool_resolve(&ctx->pool, w);
+            CHECK(dc != NULL);
+            uint32_t cc, ce;
+            int64_t cp, np, nx;
+            nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
+            (void)cc; (void)ce;
+            char en[64];
+            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
+            if (nl > 0 && strcmp(en, "sub") == 0) {
+                sub_vp = cp; break;
+            }
+            w = nx;
+        }
+    }
+    CHECK(sub_vp != 0);
+
+    int nid = vfs_create(vfs, sub_vp, "a.txt", 0);
+    CHECK(nid > 0);
+
+    /* Resolve file VirtualPtr from subdir's DirContent chain */
+    int64_t file_vp = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, sub_vp);
+        CHECK(rs != NULL);
+        int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
+        int64_t w = h;
+        while (w != 0) {
+            uint8_t* dc = pool_resolve(&ctx->pool, w);
+            CHECK(dc != NULL);
+            uint32_t cc, ce;
+            int64_t cp, np, nx;
+            nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
+            (void)cc; (void)ce;
+            char en[64];
+            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
+            if (nl > 0 && strcmp(en, "a.txt") == 0) {
+                file_vp = cp; break;
+            }
+            w = nx;
+        }
+    }
+    CHECK(file_vp != 0);
+
+    CHECK_EQ(vfs_write(vfs, file_vp, "AAAA", 0, 4, 0), 4);
+
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK(snap > 0);
+
+    /* Write at snapshot epoch (epoch 1) — creates TouchedFile for epoch 1 */
+    CHECK_EQ(vfs_write(vfs, file_vp, "SNAP", 0, 4, 1), 4);
+
+    /* Write at live head (epoch 2) — creates conflict (same page) */
+    CHECK_EQ(vfs_write(vfs, file_vp, "BBBB", 0, 4, 2), 4);
+
+    int commit_ret = vfs_commit(vfs, snap);
+    if (commit_ret != VFS_ERR_CONFLICT) {
+        printf("  DEBUG: commit returned %d (expected %d)\n",
+               commit_ret, VFS_ERR_CONFLICT);
+    }
+    CHECK_EQ(commit_ret, VFS_ERR_CONFLICT);
+
+    epoch_teardown(vfs);
+}
 
 int main(void) {
     test_snapshot_basic();
@@ -295,6 +377,9 @@ int main(void) {
     test_snapshot_soft_delete();
     test_epoch_invalid();
     test_touchedfile_chain();
+
+    unlink(test_path);
+    test_commit_subdir_conflict();
 
     printf("test_epoch: %d/%d passed\n", tests_passed, tests_run);
     unlink(test_path);
