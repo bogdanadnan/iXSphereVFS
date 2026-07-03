@@ -46,7 +46,7 @@ static void usage(void) {
     fprintf(stderr,
         "Usage: vfs_bench --workload=<name> --count=N [options]\n"
         "Options:\n"
-        "  --workload=<name>   create, write, read, scan, mixed, dir (default: create)\n"
+        "  --workload=<name>   create, write, read, scan, mixed, dir, seqwrite (default: create)\n"
         "  --count=N           number of files/operations (default: 1000)\n"
         "  --threads=N         number of threads (default: 1)\n"
         "  --page-size=N       VFS page size in bytes (default: 8192)\n"
@@ -396,6 +396,47 @@ static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
  * Main — dispatch to workload
  * --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * Workload: seqwrite — sequential page-sized writes to a single file.
+ * Creates one file, then writes 8KB pages sequentially at increasing offsets.
+ * Measures per-page throughput and latency.
+ * --------------------------------------------------------------------------- */
+
+static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) {
+    (void)path;
+    (void)threads;
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+    const int page_sz = vfs->ctx->page_size;
+
+    int nid = vfs_create(vfs, root_vp, "seqwrite.dat", 0);
+    if (nid <= 0) return 0;
+
+    int64_t file_vp = resolve_child_vp(vfs, root_vp, "seqwrite.dat");
+    if (file_vp == 0) return 0;
+
+    uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
+    if (!buf) return 0;
+    memset(buf, 'W', (size_t)page_sz);
+
+    lat_init(count);
+    vfs_cache_reset();
+    double t0 = now_sec();
+    int ok = 0;
+    for (int i = 0; i < count; i++) {
+        double op_t0 = now_sec();
+        int64_t offset = (int64_t)i * (int64_t)page_sz;
+        int written = vfs_write(vfs, file_vp, buf, offset, page_sz, 0);
+        if (written == page_sz) ok++;
+        lat_record(now_sec() - op_t0);
+    }
+    double t1 = now_sec();
+    free(buf);
+
+    report_full("seqwrite", ok, threads, t1 - t0);
+    lat_destroy();
+    return ok;
+}
+
 int main(int argc, char** argv) {
     bench_opts opts;
     int ret = parse_args(argc, argv, &opts);
@@ -430,6 +471,8 @@ int main(int argc, char** argv) {
         ok = bench_mixed(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "dir") == 0) {
         ok = bench_dir(vfs, opts.count, opts.threads, opts.output);
+    } else if (strcmp(opts.workload, "seqwrite") == 0) {
+        ok = bench_seqwrite(vfs, opts.count, opts.threads, opts.output);
     } else {
         fprintf(stderr, "Unknown workload: %s\n", opts.workload);
         usage();
