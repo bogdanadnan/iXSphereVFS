@@ -9,7 +9,7 @@ int dentry_cache_build(Pool* pool, int64_t root_vp, int64_t epoch,
     if (!dir_slot) return VFS_ERR_IO;
 
     /* Read headPtr and record its page for validity checks */
-    int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, VFS_PAGE_SIZE);
+    int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, pool->sb->page_size);
     arr->last_headPtr_page = VFS_VPTR_PAGE(headPtr);
     arr->count = 0;
     uint32_t query_epoch = (uint32_t)epoch;
@@ -78,7 +78,7 @@ int dentry_cache_build(Pool* pool, int64_t root_vp, int64_t epoch,
         /* Determine isDir by reading the child's type field */
         uint8_t* child_slot = pool_resolve(pool, best_childPtr[i]);
         if (child_slot) {
-            int16_t type = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, VFS_PAGE_SIZE);
+            int16_t type = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, pool->sb->page_size);
             entry->isDir = (type == (int16_t)NODE_TYPE_DIR);
         }
 
