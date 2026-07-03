@@ -656,6 +656,72 @@ static void test_gc_vptr_remapping(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * DirContent survival test: create files, snapshot, write more, soft-delete
+ * snapshot, run GC, verify surviving entries remain.
+ * --------------------------------------------------------------------------- */
+
+static void test_gc_dircontent_survival(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    /* Create files at epoch 0 */
+    int f1 = vfs_create(vfs, root_vp, "alive.txt", 0);
+    CHECK(f1 > 0);
+    int f2 = vfs_create(vfs, root_vp, "doomed.txt", 0);
+    CHECK(f2 > 0);
+
+    /* Verify two entries exist at epoch 0 */
+    int entries_before = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        if (rs) {
+            int64_t h = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+            while (h != 0) {
+                uint8_t* dc_s = pool_resolve(&ctx->pool, h);
+                if (!dc_s) break;
+                uint32_t cc, ce; int64_t cp, np, nx;
+                nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx);
+                (void)cc; (void)cp; (void)np; (void)nx;
+                if (ce <= 0) entries_before++;
+                h = nx;
+            }
+        }
+    }
+    CHECK_EQ(entries_before, 2);
+
+    /* Snapshot → epoch 1 */
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK_EQ(snap, 1);
+
+    /* Write at epoch 2 (live head) */
+    int f3 = vfs_create(vfs, root_vp, "after_snap.txt", 2);
+    CHECK(f3 > 0);
+
+    /* Delete "doomed.txt" at epoch 2 (creates tombstone) */
+    CHECK_EQ(vfs_delete(vfs, root_vp, "doomed.txt", 2), VFS_OK);
+
+    /* Soft-delete the snapshot */
+    CHECK_EQ(vfs_delete_snapshot(vfs, snap), VFS_OK);
+
+    /* Run GC */
+    int gc_ret = vfs_gc(vfs);
+    if (gc_ret == VFS_OK) {
+        /* Files created at epoch 0 are still accessible */
+        CHECK_EQ(vfs_open_file(vfs, root_vp, "alive.txt", 0), f1);
+        /* "after_snap.txt" created at epoch 2 survives */
+        CHECK_EQ(vfs_open_file(vfs, root_vp, "after_snap.txt", 2), f3);
+        /* "doomed.txt" was deleted at epoch 2 — open at epoch 2 should fail */
+        CHECK_EQ(vfs_open_file(vfs, root_vp, "doomed.txt", 2), VFS_ERR_NOTFOUND);
+    } else {
+        CHECK_EQ(gc_ret, VFS_ERR_FULL);
+    }
+
+    vfs_close(vfs);
+}
+
 static void test_gc_crash_after_swap(void) {
     vfs_t* vfs = vfs_open(test_path);
     CHECK(vfs != NULL);
@@ -933,6 +999,9 @@ int main(void) {
 
     unlink(test_path);  /* fresh file for VPtr remapping test */
     test_gc_vptr_remapping();
+
+    unlink(test_path);  /* fresh file for DirContent survival test */
+    test_gc_dircontent_survival();
 
     printf("test_gc: %d/%d passed\n", tests_passed, tests_run);
     unlink(test_path);
