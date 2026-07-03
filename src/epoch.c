@@ -167,7 +167,10 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
             /* Get the file's VirtualPtr from the root DirContent chain.
                commit_scan_dir handles recursive subdirectory walks. */
             int err = commit_scan_dir(ctx, ctx->rootNodeOffset, s_epoch);
-            if (err != 0) return err;
+            if (err != 0) {
+                vfs->ctx->last_error = err;
+                return err;
+            }
         }
         tf_vp = tf_next;
     }
