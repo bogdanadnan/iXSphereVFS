@@ -21,6 +21,7 @@ add_library(ixsphere_vfs STATIC
     src/mapper.c
     src/touched.c
     src/gc.c
+    src/gc_map.c
 )
 
 target_include_directories(ixsphere_vfs PUBLIC
