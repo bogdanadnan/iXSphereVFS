@@ -167,6 +167,11 @@ int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
    all existing entries are discarded by setting touchedFilesPtr = 0. */
 void gc_rebuild_touchedfiles(TreeContext* ctx);
 
+/* Write a new superblock with GC-updated values.
+ * Returns VFS_OK on success. */
+int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
+                             int64_t new_poolListHead);
+
 /* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *

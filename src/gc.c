@@ -891,6 +891,37 @@ void gc_rebuild_touchedfiles(TreeContext* ctx) {
     ctx->touchedFilesPtr = 0;
 }
 
+/* ---------------------------------------------------------------------------
+ * GC new superblock builder
+ * --------------------------------------------------------------------------- */
+
+/* Write the superblock page with GC-updated values after shadow-compaction.
+ * rootNodeOffset, currentEpoch, and nextNodeId are preserved from ctx.
+ * epochMapperPtr and poolListHead are the post-GC values.
+ * treeLockState is written as 0 (exclusive lock released for new tree).
+ * touchedFilesPtr is written as 0 (rebuilt for active epochs only). */
+int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
+                             int64_t new_poolListHead) {
+    if (!ctx) return VFS_ERR_IO;
+    int64_t ps = ctx->sb->page_size;
+    uint8_t* buf = (uint8_t*)malloc((size_t)ps);
+    if (!buf) return VFS_ERR_NOMEM;
+    memset(buf, 0, (size_t)ps);
+
+    vfs_wr8(buf, SB_OFF_ROOT_OFFSET,       ctx->rootNodeOffset);
+    vfs_wr8(buf, SB_OFF_CURRENT_EPOCH,     ctx->currentEpoch);
+    vfs_wr8(buf, SB_OFF_EPOCH_MAPPER_PTR,  new_epochMapperPtr);
+    vfs_wr8(buf, SB_OFF_POOL_LIST_HEAD,    new_poolListHead);
+    vfs_wr8(buf, SB_OFF_TREE_LOCK_STATE,   0);
+    vfs_wr4(buf, SB_OFF_NEXT_NODE_ID,      (int32_t)ctx->nextNodeId);
+    vfs_wr8(buf, SB_OFF_TOUCHED_FILES_PTR, 0);
+
+    storage_write(ctx->sb, SUPERBLOCK_PAGE, buf, 3);
+    storage_flush(ctx->sb, -1);
+    free(buf);
+    return VFS_OK;
+}
+
 /* Shadow-compaction helper — walks the pool chain, builds a live set,
    copies live pool entries to fresh pages, then enqueues old pages
    for deferred freeing.  Currently a stub — returns VFS_OK. */
