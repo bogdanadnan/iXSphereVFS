@@ -50,6 +50,93 @@ int64_t vfs_snapshot(vfs_t* vfs) {
     return new_epoch - 1;  /* snapshot epoch is always odd */
 }
 
+/* ---------------------------------------------------------------------------
+ * Recursive commit scan — walk a directory tree checking for version conflicts
+ * during commit.  Returns 0 if no conflict, VFS_ERR_CONFLICT on first conflict.
+ * --------------------------------------------------------------------------- */
+
+static int commit_scan_dir(TreeContext* ctx, int64_t dir_vp, uint32_t s_epoch) {
+    uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
+    if (!dir_slot) return 0;
+    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+        return 0;
+
+    int64_t head = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
+    int64_t walk_vp = head;
+    while (walk_vp != 0) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+        uint32_t dc_child, dc_epoch;
+        int64_t dc_childPtr, dc_namePtr, dc_next;
+        nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
+                              &dc_namePtr, &dc_next, ctx->page_size);
+        (void)dc_child;
+
+        /* Check read-rule: does this DirContent entry apply? */
+        int applies = (dc_epoch == s_epoch) ||
+                      (dc_epoch < s_epoch && dc_epoch % 2 == 0);
+        if (!applies || dc_namePtr == 0) { walk_vp = dc_next; continue; }
+
+        uint8_t* child_slot = pool_resolve(&ctx->pool, dc_childPtr);
+        if (!child_slot) { walk_vp = dc_next; continue; }
+
+        int16_t child_type = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size);
+
+        if (child_type == (int16_t)NODE_TYPE_DIR) {
+            /* Recurse into subdirectory */
+            int err = commit_scan_dir(ctx, dc_childPtr, s_epoch);
+            if (err != 0) return err;
+
+        } else if (child_type == (int16_t)NODE_TYPE_FILE) {
+            /* Compute file size by walking FileNode's sizePtr chain */
+            int64_t fsize = 0;
+            int64_t sizePtr = vfs_rd8_s(child_slot, FILENODE_OFF_SIZEPTR, ctx->page_size);
+            int64_t fs_walk = sizePtr;
+            while (fs_walk != 0) {
+                uint8_t* fs_slot = pool_resolve(&ctx->pool, fs_walk);
+                if (!fs_slot) break;
+                uint32_t fs_epoch;
+                int64_t fs_modified, fs_size, fs_next;
+                nodes_read_filesize(fs_slot, &fs_epoch, &fs_modified, &fs_size, &fs_next, ctx->page_size);
+                (void)fs_modified;
+                if (fs_epoch == s_epoch || (fs_epoch < s_epoch && fs_epoch % 2 == 0))
+                    fsize = fs_size;
+                fs_walk = fs_next;
+            }
+            int64_t num_pages = (fsize + ctx->page_size - 1) / ctx->page_size;
+            if (num_pages < 1) num_pages = 1;
+
+            for (int64_t lp = 0; lp < num_pages; lp++) {
+                uint8_t* pn_slot = tree_resolve_page(ctx, dc_childPtr, lp, 0);
+                if (!pn_slot) break;
+
+                int64_t vp = vfs_atomic_load_i64(
+                    (const int64_t*)(pn_slot + PAGENODE_OFF_VERSIONROOT));
+                int has_snapshot = 0;
+                int has_live = 0;
+
+                while (vp != 0) {
+                    uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
+                    if (!vp_slot) break;
+                    uint32_t v_epoch;
+                    int64_t v_dataPage, v_next;
+                    nodes_read_versionpage(vp_slot, &v_epoch, &v_dataPage,
+                                           &v_next, ctx->page_size);
+                    (void)v_dataPage;
+
+                    if (v_epoch == s_epoch) has_snapshot = 1;
+                    if (v_epoch > s_epoch && v_epoch % 2 == 0) has_live = 1;
+                    vp = v_next;
+                }
+                if (has_snapshot && has_live) return VFS_ERR_CONFLICT;
+            }
+        }
+
+        walk_vp = dc_next;
+    }
+    return 0;
+}
+
 int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
     if (!vfs || !vfs->ctx) return VFS_ERR_IO;
     TreeContext* ctx = vfs->ctx;
@@ -77,66 +164,10 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
         nodes_read_touchedfile(tf_slot, &tf_epoch, &tf_nodeId, &tf_next, ctx->page_size);
 
         if (tf_epoch == s_epoch) {
-            /* Walk root DirContent chain to find the file's VirtualPtr by nodeId.
-               (Subdirectory support deferred — all files are root-level until
-               recursive directory scan is implemented.) */
-            int64_t root_vp = ctx->rootNodeOffset;
-            uint8_t* root_slot = pool_resolve(&ctx->pool, root_vp);
-            if (!root_slot) { tf_vp = tf_next; continue; }
-
-            int64_t walk_vp = vfs_rd8_s(root_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
-            while (walk_vp != 0) {
-                uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
-                if (!dc_slot) break;
-                uint32_t dc_child, dc_epoch;
-                int64_t dc_childPtr, dc_namePtr, dc_next;
-                nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
-                                      &dc_namePtr, &dc_next, ctx->page_size);
-                (void)dc_epoch; (void)dc_namePtr;
-
-                if (dc_child == tf_nodeId) {
-                    /* Found the file — walk its version chains using
-                       tree_resolve_page. Bound the loop by the file's page
-                       count to avoid tree_resolve_page's write-side effects
-                       (it creates new segments beyond existing pages). */
-                    int64_t fsize = vfs_file_size(vfs, dc_childPtr, s_epoch);
-                    int64_t num_pages = (fsize + ctx->page_size - 1) / ctx->page_size;
-                    if (num_pages < 1) num_pages = 1;
-
-                    for (int64_t lp = 0; lp < num_pages; lp++) {
-                        uint8_t* pn_slot = tree_resolve_page(ctx, dc_childPtr,
-                                                              lp, 0);
-                        if (!pn_slot) break;  /* beyond file growth */
-
-                        int64_t vp = vfs_atomic_load_i64(
-                            (const int64_t*)(pn_slot + PAGENODE_OFF_VERSIONROOT));
-                        int has_snapshot = 0;
-                        int has_live = 0;
-
-                        while (vp != 0) {
-                            uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
-                            if (!vp_slot) break;
-                            uint32_t v_epoch;
-                            int64_t v_dataPage, v_next;
-                            nodes_read_versionpage(vp_slot, &v_epoch,
-                                                    &v_dataPage, &v_next, ctx->page_size);
-                            (void)v_dataPage;
-
-                            if (v_epoch == s_epoch) has_snapshot = 1;
-                            if (v_epoch > s_epoch && v_epoch % 2 == 0)
-                                has_live = 1;
-
-                            vp = v_next;
-                        }
-
-                        if (has_snapshot && has_live) {
-                            vfs->ctx->last_error = VFS_ERR_CONFLICT;
-                            return VFS_ERR_CONFLICT;
-                            }
-                    }
-                }
-                walk_vp = dc_next;
-            }
+            /* Get the file's VirtualPtr from the root DirContent chain.
+               commit_scan_dir handles recursive subdirectory walks. */
+            int err = commit_scan_dir(ctx, ctx->rootNodeOffset, s_epoch);
+            if (err != 0) return err;
         }
         tf_vp = tf_next;
     }
