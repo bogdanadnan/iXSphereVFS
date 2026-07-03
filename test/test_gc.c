@@ -21,6 +21,7 @@ static int tests_run = 0, tests_passed = 0;
 #define CHECK_EQ(a, b) CHECK((a) == (b))
 
 static const char* test_path = "/tmp/test_gc.tmp";
+static const char* nonstd_path = "/tmp/test_gc_4k.tmp";
 
 /* ---------------------------------------------------------------------------
  * Helpers
@@ -722,6 +723,57 @@ static void test_gc_dircontent_survival(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * Non-default page size smoke test: open VFS with 4096, write, snapshot,
+ * GC, read back.  Verifies _s variants and page_size work correctly.
+ * --------------------------------------------------------------------------- */
+
+static void test_gc_nonstd_page_size(void) {
+    vfs_t* vfs = vfs_open(nonstd_path, 4096);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    CHECK_EQ(ctx->page_size, 4096);
+
+    int64_t root_vp = ctx->rootNodeOffset;
+    int nodeId = vfs_create(vfs, root_vp, "smoke.txt", 0);
+    CHECK(nodeId > 0);
+
+    int64_t file_vp = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t head = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
+        CHECK(head != 0);
+        uint32_t cc, ce;
+        int64_t cp, np, nx;
+        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
+                              &cc, &ce, &cp, &np, &nx);
+        (void)cc; (void)ce; (void)np; (void)nx;
+        file_vp = cp;
+    }
+    CHECK(file_vp != 0);
+
+    CHECK_EQ(vfs_write(vfs, file_vp, "4K_DATA", 0, 7, 0), 7);
+
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK_EQ(snap, 1);
+
+    CHECK_EQ(vfs_write(vfs, file_vp, "4K_NEW", 0, 6, 2), 6);
+
+    CHECK_EQ(vfs_commit(vfs, snap), VFS_OK);
+
+    int gc_ret = vfs_gc(vfs);
+    if (gc_ret == VFS_OK) {
+        char rbuf[16];
+        CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 7, 0), 7);
+        CHECK_EQ(strncmp(rbuf, "4K_DATA", 7), 0);
+    } else {
+        CHECK_EQ(gc_ret, VFS_ERR_FULL);
+    }
+
+    vfs_close(vfs);
+}
+
 static void test_gc_crash_after_swap(void) {
     vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
@@ -1002,6 +1054,9 @@ int main(void) {
 
     unlink(test_path);  /* fresh file for DirContent survival test */
     test_gc_dircontent_survival();
+
+    unlink(nonstd_path);  /* fresh file for non-default page size test */
+    test_gc_nonstd_page_size();
 
     printf("test_gc: %d/%d passed\n", tests_passed, tests_run);
     unlink(test_path);
