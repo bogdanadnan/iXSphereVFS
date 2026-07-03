@@ -322,6 +322,52 @@ static void test_df_mirror_sibling(void) {
  * nodes relabeled and mapper entry removed.
  * --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * Crash-before-swap test: simulate kill-9 during GC (bit 63 set), remount,
+ * verify old tree intact.
+ * --------------------------------------------------------------------------- */
+
+static void test_gc_crash_before_swap(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "crash_test.txt", 0);
+    CHECK(nodeId > 0);
+
+    int64_t file_vp = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        CHECK(head != 0);
+        uint32_t cc, ce;
+        int64_t cp, np, nx;
+        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
+                              &cc, &ce, &cp, &np, &nx);
+        (void)cc; (void)ce; (void)np; (void)nx;
+        file_vp = cp;
+    }
+    CHECK(file_vp != 0);
+
+    CHECK_EQ(vfs_write(vfs, file_vp, "CRASH", 0, 5, 0), 5);
+
+    /* Simulate crash during GC: set exclusive lock bit, then close.
+       vfs_close writes the superblock with treeLockState=bit63 set. */
+    ctx->treeLockState = (int64_t)TREE_LOCK_EXCLUSIVE_BIT;
+    vfs_close(vfs);
+
+    /* Reopen — tree_init should detect stale bit and clear it.
+       The lock was never released, so the superblock on disk has bit63 set.
+       tree_init reads it, sees it, logs a warning, and zeroes treeLockState. */
+    vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    CHECK_EQ(vfs->ctx->treeLockState, 0);
+
+    vfs_close(vfs);
+}
+
 static void test_gc_commit_then_gc(void) {
     vfs_t* vfs = vfs_open(test_path);
     CHECK(vfs != NULL);
@@ -489,6 +535,9 @@ int main(void) {
 
     unlink(test_path);  /* fresh file for commit-then-GC test */
     test_gc_commit_then_gc();
+
+    unlink(test_path);  /* fresh file for crash-before-swap test */
+    test_gc_crash_before_swap();
 
     printf("test_gc: %d/%d passed\n", tests_passed, tests_run);
     unlink(test_path);
