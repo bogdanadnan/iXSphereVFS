@@ -18,6 +18,10 @@ snapshot lifecycle, and garbage collection.
   be a live-head epoch (validated by the Epoch System).
 - **Node handles are int64_t.** They contain the nodeId in the lower 32 bits.
   Upper 32 bits are always 0. The `vfs_dirent_t.nodeId` is also int64_t.
+- **Pthread only.** The codebase uses pthread for all threading (mutexes,
+  condition variables, thread creation). C11 `<threads.h>` is not used.
+  This is a deliberate choice: pthread is universally available; C11 threads
+  are not supported on macOS and have inconsistent MSVC availability.
 
 ## File Organization
 
