@@ -15,7 +15,11 @@
 #endif
 
 /* ---------------------------------------------------------------------------
- * Integer read/write at byte offsets (fixed VFS_PAGE_SIZE buffers).
+ * Integer read/write at byte offsets — VFS_PAGE_SIZE-bounded (legacy).
+ *
+ * These variants exist for backward compatibility with existing call sites
+ * and test code.  New code should prefer the `_s` variants below that
+ * accept an explicit `page_size` parameter.
  * --------------------------------------------------------------------------- */
 
 VFS_INLINE int64_t vfs_rd8(const uint8_t* buf, int offset) {
@@ -55,7 +59,16 @@ VFS_INLINE void vfs_wr2(uint8_t* buf, int offset, int16_t val) {
 }
 
 /* ---------------------------------------------------------------------------
- * Integer read/write with explicit page_size (for non-default page sizes).
+ * Integer read/write with explicit page_size (primary API).
+ *
+ * These `_s` variants accept an explicit `page_size` parameter and should
+ * be preferred for all new code.  The non-`_s` variants above exist only
+ * for legacy call sites that always use VFS_PAGE_SIZE buffers.
+ *
+ * Call with sb->page_size, ctx->page_size, or pool->sb->page_size
+ * for accurate bounds checking.  Use VFS_PAGE_SIZE only when the buffer
+ * is guaranteed to be a VFS_PAGE_SIZE (8192) page (e.g., pool slots,
+ * header pages).
  * --------------------------------------------------------------------------- */
 
 VFS_INLINE int64_t vfs_rd8_s(const uint8_t* buf, int offset, int64_t ps) {
