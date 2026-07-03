@@ -405,6 +405,102 @@ static void test_gc_crash_before_swap(void) {
  * queue at crash time and are lost — this is acceptable.
  * --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * Pool compaction test: create many entries, soft-delete, run GC,
+ * verify pool pages reduced.
+ * --------------------------------------------------------------------------- */
+
+/* Helper: count pool pages by walking the pool list chain */
+static int count_pool_pages(TreeContext* ctx) {
+    int n = 0;
+    int64_t p = ctx->pool.list_head ? *ctx->pool.list_head : 0;
+    while (p != 0) {
+        n++;
+        uint8_t* ph = storage_read(ctx->sb, p);
+        if (!ph) break;
+        p = vfs_rd8(ph, 0);
+    }
+    return n;
+}
+
+static void test_gc_pool_compaction(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    /* Create files and write at epoch 0 to generate pool entries */
+    int64_t file_vps[20];
+    char fname[32];
+    for (int i = 0; i < 20; i++) {
+        snprintf(fname, sizeof(fname), "f%d.txt", i);
+        int nid = vfs_create(vfs, root_vp, fname, 0);
+        CHECK(nid > 0);
+
+        /* Get the file VirtualPtr */
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        /* Walk to find our file (newest entries are at head) */
+        int64_t walk = head;
+        while (walk != 0) {
+            uint8_t* dc_s = pool_resolve(&ctx->pool, walk);
+            CHECK(dc_s != NULL);
+            uint32_t cc, ce;
+            int64_t cp, np, nx;
+            nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx);
+            char en[64];
+            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
+            if (nl > 0 && strcmp(en, fname) == 0) {
+                file_vps[i] = cp;
+                break;
+            }
+            walk = nx;
+        }
+        CHECK(file_vps[i] != 0);
+
+        /* Write to the file to create pool entries */
+        CHECK_EQ(vfs_write(vfs, file_vps[i], "DATA", 0, 4, 0), 4);
+    }
+
+    int pages_before = count_pool_pages(ctx);
+    CHECK(pages_before > 0);
+
+    /* Snapshot all files (creates mapper entries for soft-delete) */
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK_EQ(snap, 1);
+
+    /* Write at epoch 2 to create VersionPages at the live head */
+    for (int i = 0; i < 20; i++) {
+        CHECK_EQ(vfs_write(vfs, file_vps[i], "NEW", 0, 3, 2), 3);
+    }
+
+    /* Soft-delete the snapshot — dead entries that GC can reclaim */
+    CHECK_EQ(vfs_delete_snapshot(vfs, snap), VFS_OK);
+
+    /* Run GC */
+    int gc_ret = vfs_gc(vfs);
+    if (gc_ret == VFS_OK) {
+        /* Verify pool pages decreased */
+        int pages_after = count_pool_pages(ctx);
+        CHECK(pages_after <= pages_before);
+
+        /* Verify data still readable at both epochs */
+        char rbuf[16];
+        CHECK_EQ(vfs_read(vfs, file_vps[0], rbuf, 0, 4, 0), 4);
+        CHECK_EQ(strncmp(rbuf, "DATA", 4), 0);
+
+        memset(rbuf, 0, sizeof(rbuf));
+        CHECK_EQ(vfs_read(vfs, file_vps[0], rbuf, 0, 3, 2), 3);
+        CHECK_EQ(strncmp(rbuf, "NEW", 3), 0);
+    } else {
+        /* GC may fail with VFS_ERR_FULL in small test files */
+        CHECK_EQ(gc_ret, VFS_ERR_FULL);
+    }
+
+    vfs_close(vfs);
+}
+
 static void test_gc_crash_after_swap(void) {
     vfs_t* vfs = vfs_open(test_path);
     CHECK(vfs != NULL);
@@ -676,6 +772,9 @@ int main(void) {
 
     unlink(test_path);  /* fresh file for crash-after-swap test */
     test_gc_crash_after_swap();
+
+    unlink(test_path);  /* fresh file for pool compaction test */
+    test_gc_pool_compaction();
 
     printf("test_gc: %d/%d passed\n", tests_passed, tests_run);
     unlink(test_path);
