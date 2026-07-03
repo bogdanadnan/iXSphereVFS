@@ -344,7 +344,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                 if (!vp_slot) break;
                 uint32_t vp_epoch;
                 int64_t vp_dataPage, vp_next;
-                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
                 (void)vp_dataPage;
 
                 int live = 1;
@@ -390,7 +390,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                 if (!vp_slot) break;
                 uint32_t vp_epoch;
                 int64_t vp_dataPage, vp_next;
-                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
                 (void)vp_dataPage;
 
                 int live = 1;
@@ -422,7 +422,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                 if (!vp_slot) break;
                 uint32_t vp_epoch;
                 int64_t vp_dataPage, vp_next;
-                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
 
                 int live = 1;
                 int64_t rewrite_epoch_vp = (int64_t)vp_epoch;
@@ -492,7 +492,7 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
 
         uint32_t vp_epoch;
         int64_t vp_dataPage, vp_next;
-        nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+        nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
         (void)vp_dataPage;
 
         int live = 1;
@@ -569,7 +569,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
         uint32_t dc_child, dc_epoch;
         int64_t dc_childPtr, dc_namePtr, dc_next;
         nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
-                              &dc_namePtr, &dc_next);
+                              &dc_namePtr, &dc_next, ctx->page_size);
         (void)dc_childPtr;
 
         int epoch_deleted = 0;
@@ -621,7 +621,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
         uint32_t dc_child, dc_epoch;
         int64_t dc_childPtr, dc_namePtr, dc_next;
         nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
-                              &dc_namePtr, &dc_next);
+                              &dc_namePtr, &dc_next, ctx->page_size);
 
         int epoch_deleted = 0;
         if (dc_epoch % 2 == 1) {
@@ -677,7 +677,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
         uint32_t dc_child, dc_epoch;
         int64_t dc_childPtr, dc_namePtr, dc_next;
         nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
-                              &dc_namePtr, &dc_next);
+                              &dc_namePtr, &dc_next, ctx->page_size);
 
         /* Check if this child has any kept entry */
         int cidx = -1;
@@ -739,7 +739,7 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
         uint32_t fs_epoch;
         int64_t fs_modifiedAt, fs_fileSize, fs_next;
         nodes_read_filesize(fs_slot, &fs_epoch, &fs_modifiedAt,
-                            &fs_fileSize, &fs_next);
+                            &fs_fileSize, &fs_next, ctx->page_size);
         (void)fs_modifiedAt;
 
         int keep = 1;
@@ -817,7 +817,7 @@ int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
         uint32_t fromEpoch, toEpoch;
         uint16_t flags;
         int64_t next;
-        nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &next);
+        nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &next, ctx->page_size);
 
         int keep = 1;
         if (flags & MAPPER_FLAG_TRAVERSAL_APPLY) keep = 0;  /* committed */

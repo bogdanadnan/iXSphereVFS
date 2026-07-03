@@ -117,7 +117,7 @@ static void test_epoch_lifecycle(void) {
         uint32_t cc, ce;
         int64_t cp, np, nx;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx);
+                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
         file_vp = cp;
     }
@@ -188,7 +188,7 @@ static void test_snapshot_soft_delete(void) {
         uint32_t cc, ce;
         int64_t cp, np, nx;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx);
+                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
         file_vp = cp;
     }

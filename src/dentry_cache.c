@@ -30,7 +30,7 @@ int dentry_cache_build(Pool* pool, int64_t root_vp, int64_t epoch,
         uint32_t ce_child, ce_epoch;
         int64_t ce_childPtr, ce_namePtr, ce_next;
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next);
+                              &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
 
         /* Read-rule: entry applies if epoch == query_epoch,
            or epoch < query_epoch AND even */
@@ -91,7 +91,7 @@ int dentry_cache_build(Pool* pool, int64_t root_vp, int64_t epoch,
             uint32_t dc_child, dc_epoch;
             int64_t dc_childPtrv, dc_namePtr, dc_next;
             nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtrv,
-                                  &dc_namePtr, &dc_next);
+                                  &dc_namePtr, &dc_next, VFS_PAGE_SIZE);
             (void)dc_childPtrv;
 
             if ((int64_t)dc_child == best_child[i] &&

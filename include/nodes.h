@@ -34,8 +34,8 @@
 #define DIRNODE_OFF_NODEID    4
 #define DIRNODE_OFF_HEADPTR   8
 
-void nodes_write_dirnode(uint8_t* slot, uint32_t nodeId, int64_t headPtr);
-void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr);
+void nodes_write_dirnode(uint8_t* slot, uint32_t nodeId, int64_t headPtr, int64_t page_size);
+void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
  * FileNode (32 bytes, fully packed)
@@ -58,10 +58,10 @@ void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr)
 #define FILENODE_OFF_CTIME    24
 
 void nodes_write_filenode(uint8_t* slot, uint32_t nodeId, int64_t headPtr,
-                          int64_t sizePtr, int64_t createdAt);
+                          int64_t sizePtr, int64_t createdAt, int64_t page_size);
 void nodes_read_filenode(const uint8_t* slot, uint32_t* nodeId,
-                         int64_t* headPtr, int64_t* sizePtr, int64_t* createdAt);
-int64_t nodes_read_filenode_ctime(const uint8_t* slot);
+                         int64_t* headPtr, int64_t* sizePtr, int64_t* createdAt, int64_t page_size);
+int64_t nodes_read_filenode_ctime(const uint8_t* slot, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
  * DirContent (32 bytes, fully packed)
@@ -82,10 +82,10 @@ int64_t nodes_read_filenode_ctime(const uint8_t* slot);
 #define DIRCONTENT_OFF_NEXTPTR      24
 
 void nodes_write_dircontent(uint8_t* slot, uint32_t childNodeId, uint32_t epoch,
-                            int64_t childPtr, int64_t namePtr, int64_t nextPtr);
+                            int64_t childPtr, int64_t namePtr, int64_t nextPtr, int64_t page_size);
 void nodes_read_dircontent(const uint8_t* slot, uint32_t* childNodeId,
                            uint32_t* epoch, int64_t* childPtr,
-                           int64_t* namePtr, int64_t* nextPtr);
+                           int64_t* namePtr, int64_t* nextPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
  * FileContent (32 bytes, 16 used, 16 reserved)
@@ -100,8 +100,8 @@ void nodes_read_dircontent(const uint8_t* slot, uint32_t* childNodeId,
 #define FILECONTENT_OFF_ROOTPTR     0
 #define FILECONTENT_OFF_NEXTPTR       8
 
-void nodes_write_filecontent(uint8_t* slot, int64_t pageRootPtr, int64_t nextPtr);
-void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* nextPtr);
+void nodes_write_filecontent(uint8_t* slot, int64_t pageRootPtr, int64_t nextPtr, int64_t page_size);
+void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* nextPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
  * PageNode (32 bytes, 16 used, 16 reserved)
@@ -116,8 +116,8 @@ void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* 
 #define PAGENODE_OFF_VERSIONROOT    0
 #define PAGENODE_OFF_NEXTPTR          8
 
-void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr);
-void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr, int64_t* nextPtr);
+void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr, int64_t page_size);
+void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr, int64_t* nextPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
  * VersionPage (32 bytes, 20 used, 12 reserved)
@@ -137,9 +137,9 @@ void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr, int64_t* 
 #define VERSIONPAGE_OFF_NEXTPTR   16
 
 void nodes_write_versionpage(uint8_t* slot, uint32_t epoch, int64_t dataPage,
-                             int64_t nextPtr);
+                             int64_t nextPtr, int64_t page_size);
 void nodes_read_versionpage(const uint8_t* slot, uint32_t* epoch,
-                            int64_t* dataPage, int64_t* nextPtr);
+                            int64_t* dataPage, int64_t* nextPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
  * FileSize (32 bytes, 24 used, 8 reserved)
@@ -159,9 +159,9 @@ void nodes_read_versionpage(const uint8_t* slot, uint32_t* epoch,
 #define FILESIZE_OFF_NEXTPTR    20
 
 void nodes_write_filesize(uint8_t* slot, uint32_t epoch, int64_t modifiedAt,
-                          int64_t fileSize, int64_t nextPtr);
+                          int64_t fileSize, int64_t nextPtr, int64_t page_size);
 void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
-                         int64_t* modifiedAt, int64_t* fileSize, int64_t* nextPtr);
+                         int64_t* modifiedAt, int64_t* fileSize, int64_t* nextPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
  * NameEntry (32 bytes per slot, chains for names > 24 bytes)
@@ -177,7 +177,7 @@ void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
 #define NAMEENTRY_DATA_SIZE   24   /* bytes of name data per slot */
 
 /* Internal helper: write a single NameEntry slot (used by nodes_write_name). */
-void nodes_write_name_entry(uint8_t* slot, const uint8_t* data_24, int64_t nextPtr);
+void nodes_write_name_entry(uint8_t* slot, const uint8_t* data_24, int64_t nextPtr, int64_t page_size);
 
 /* Write a name chain.  Returns number of slots written (1 or more).
    Empty name (len=0): returns 0 and sets *first_slot_vp = VFS_VPTR_NULL. */
@@ -203,9 +203,9 @@ int  nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_l
 #define TOUCHEDFILE_OFF_NEXTPTR  8
 
 void nodes_write_touchedfile(uint8_t* slot, uint32_t epoch, uint32_t nodeId,
-                             int64_t nextPtr);
+                             int64_t nextPtr, int64_t page_size);
 void nodes_read_touchedfile(const uint8_t* slot, uint32_t* epoch,
-                            uint32_t* nodeId, int64_t* nextPtr);
+                            uint32_t* nodeId, int64_t* nextPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
  * MapperEntry (32 bytes, 16 used, 16 reserved)
@@ -226,8 +226,8 @@ void nodes_read_touchedfile(const uint8_t* slot, uint32_t* epoch,
 #define MAPPER_OFF_NEXTPTR   16
 
 void nodes_write_mapperentry(uint8_t* slot, uint32_t fromEpoch, uint32_t toEpoch,
-                             uint16_t flags, int64_t nextPtr);
+                             uint16_t flags, int64_t nextPtr, int64_t page_size);
 void nodes_read_mapperentry(const uint8_t* slot, uint32_t* fromEpoch,
-                            uint32_t* toEpoch, uint16_t* flags, int64_t* nextPtr);
+                            uint32_t* toEpoch, uint16_t* flags, int64_t* nextPtr, int64_t page_size);
 
 #endif /* VFS_NODES_H */

@@ -347,7 +347,7 @@ static void test_gc_crash_before_swap(void) {
         uint32_t cc, ce;
         int64_t cp, np, nx;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx);
+                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
         file_vp = cp;
     }
@@ -365,7 +365,7 @@ static void test_gc_crash_before_swap(void) {
         int64_t cp, np, nx;
         uint8_t* dc = pool_resolve(&ctx->pool, head_check);
         CHECK(dc != NULL);
-        nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx);
+        nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
         char buf[16];
         CHECK_EQ(vfs_read(vfs, cp, buf, 0, 5, 0), 5);
@@ -449,7 +449,7 @@ static void test_gc_pool_compaction(void) {
             CHECK(dc_s != NULL);
             uint32_t cc, ce;
             int64_t cp, np, nx;
-            nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx);
+            nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
             char en[64];
             int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
             if (nl > 0 && strcmp(en, fname) == 0) {
@@ -547,7 +547,7 @@ static void test_gc_vptr_remapping(void) {
         uint32_t cc, ce;
         int64_t cp, np, nx;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx);
+                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
         file_vp = cp;
     }
@@ -582,7 +582,7 @@ static void test_gc_vptr_remapping(void) {
         uint32_t cc, ce;
         int64_t dc_childPtr, dc_namePtr, dc_next;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &dc_childPtr, &dc_namePtr, &dc_next);
+                              &cc, &ce, &dc_childPtr, &dc_namePtr, &dc_next, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)dc_namePtr; (void)dc_next;
         CHECK(dc_childPtr != 0);
 
@@ -611,7 +611,7 @@ static void test_gc_vptr_remapping(void) {
         CHECK(vp_slot != NULL);
         uint32_t vp_e;
         int64_t vp_dp, vp_nx;
-        nodes_read_versionpage(vp_slot, &vp_e, &vp_dp, &vp_nx);
+        nodes_read_versionpage(vp_slot, &vp_e, &vp_dp, &vp_nx, VFS_PAGE_SIZE);
         CHECK(vp_e == 0 || vp_e == 2);
         CHECK(vp_dp >= 0);
         (void)vp_nx;
@@ -635,7 +635,7 @@ static void test_gc_vptr_remapping(void) {
         uint32_t cc, ce;
         int64_t dc_childPtr2, dn2, dx2;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &dc_childPtr2, &dn2, &dx2);
+                              &cc, &ce, &dc_childPtr2, &dn2, &dx2, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)dn2; (void)dx2;
         CHECK(dc_childPtr2 != 0);
 
@@ -684,7 +684,7 @@ static void test_gc_dircontent_survival(void) {
                 uint8_t* dc_s = pool_resolve(&ctx->pool, h);
                 if (!dc_s) break;
                 uint32_t cc, ce; int64_t cp, np, nx;
-                nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx);
+                nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
                 (void)cc; (void)cp; (void)np; (void)nx;
                 if (ce <= 0) entries_before++;
                 h = nx;
@@ -747,7 +747,7 @@ static void test_gc_nonstd_page_size(void) {
         uint32_t cc, ce;
         int64_t cp, np, nx;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx);
+                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
         file_vp = cp;
     }
@@ -792,7 +792,7 @@ static void test_gc_crash_after_swap(void) {
         uint32_t cc, ce;
         int64_t cp, np, nx;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx);
+                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
         file_vp = cp;
     }
@@ -814,7 +814,7 @@ static void test_gc_crash_after_swap(void) {
         int64_t cp, np, nx;
         uint8_t* dc = pool_resolve(&ctx->pool, h);
         CHECK(dc != NULL);
-        nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx);
+        nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
         char buf[16];
         CHECK_EQ(vfs_read(vfs, cp, buf, 0, 7, 0), 7);
@@ -845,7 +845,7 @@ static void test_gc_crash_after_swap(void) {
             int64_t cp, np, nx;
             uint8_t* dc = pool_resolve(&vfs->ctx->pool, head);
             if (dc) {
-                nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx);
+                nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
                 (void)cc; (void)ce; (void)np; (void)nx;
                 char rbuf[16];
                 int ret = vfs_read(vfs, cp, rbuf, 0, 7, 0);
@@ -890,7 +890,7 @@ static void test_gc_commit_then_gc(void) {
         uint32_t cc, ce;
         int64_t cp, np, nx;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx);
+                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
         file_vp = cp;
     }
@@ -950,7 +950,7 @@ static void test_gc_integration(void) {
         uint32_t cc, ce;
         int64_t cp, np, nx;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx);
+                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
         file_vp = cp;
     }

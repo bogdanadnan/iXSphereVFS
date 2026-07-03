@@ -87,7 +87,7 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     if (!root_slot) return VFS_ERR_IO;
 
     /* Write root DirNode: nodeId=0, no children */
-    nodes_write_dirnode(root_slot, 0, 0);
+    nodes_write_dirnode(root_slot, 0, 0, ctx->page_size);
 
     /* Update superblock with root pointer */
     ctx->rootNodeOffset = root_vp;
@@ -144,7 +144,7 @@ int tree_init(TreeContext* ctx) {
         uint32_t fromEpoch, toEpoch;
         uint16_t flags;
         int64_t next;
-        nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &next);
+        nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &next, ctx->page_size);
         (void)fromEpoch; (void)toEpoch; (void)flags;
         mapper_vp = next;
     }
@@ -179,7 +179,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
     uint32_t tmp_nodeId;
     int64_t tmp_headPtr, tmp_sizePtr, tmp_createdAt;
 
-    nodes_read_filenode(file_slot, &tmp_nodeId, &tmp_headPtr, &tmp_sizePtr, &tmp_createdAt);
+    nodes_read_filenode(file_slot, &tmp_nodeId, &tmp_headPtr, &tmp_sizePtr, &tmp_createdAt, ctx->page_size);
     fc_vp = tmp_headPtr;
 
     /* Walk FileContent chain to find the target segment */
@@ -198,7 +198,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 if (pn_vp == VFS_VPTR_NULL) return NULL;
                 uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
                 if (!pn_slot) return NULL;
-                nodes_write_pagenode(pn_slot, 0, prev_pn_vp);
+                nodes_write_pagenode(pn_slot, 0, prev_pn_vp, ctx->page_size);
                 prev_pn_vp = pn_vp;
                 if (p == 0) page_root_vp = pn_vp;
             }
@@ -208,7 +208,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
             if (new_fc_vp == VFS_VPTR_NULL) return NULL;
             uint8_t* fc_slot = pool_resolve(&ctx->pool, new_fc_vp);
             if (!fc_slot) return NULL;
-            nodes_write_filecontent(fc_slot, page_root_vp, 0);
+            nodes_write_filecontent(fc_slot, page_root_vp, 0, ctx->page_size);
 
             /* CAS-link into chain with release barrier */
             vfs_mb_release();
@@ -311,7 +311,7 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         uint32_t ce_child, ce_epoch;
         int64_t ce_childPtr, ce_namePtr, ce_next;
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next);
+                              &ce_namePtr, &ce_next, ctx->page_size);
         (void)ce_child; (void)ce_childPtr;
         if (ce_epoch == (uint32_t)epoch && ce_namePtr != 0) {
             /* Read the name and compare */
@@ -333,7 +333,7 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (file_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
     uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
     if (!file_slot) return VFS_ERR_IO;
-    nodes_write_filenode(file_slot, new_nodeId, 0, 0, (int64_t)time(NULL));
+    nodes_write_filenode(file_slot, new_nodeId, 0, 0, (int64_t)time(NULL), ctx->page_size);
 
     /* Allocate NameEntry chain for the file name */
     int64_t name_vp;
@@ -353,7 +353,7 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
             (const int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR));
 
         nodes_write_dircontent(dc_slot, new_nodeId, (uint32_t)epoch,
-                               file_vp, name_vp, old_head);
+                               file_vp, name_vp, old_head, ctx->page_size);
         vfs_mb_release();
     } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
                          old_head, dc_vp) != old_head);
@@ -392,7 +392,7 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         uint32_t ce_child, ce_epoch;
         int64_t ce_childPtr, ce_namePtr, ce_next;
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next);
+                              &ce_namePtr, &ce_next, ctx->page_size);
         /* Only match non-tombstone entries at or before query epoch */
         if (ce_namePtr != 0 && ce_epoch <= (uint32_t)epoch) {
             char entry_name[256];
@@ -423,7 +423,7 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
         /* Tombstone: namePtr=0 means deleted */
         nodes_write_dircontent(dc_slot, found_childId, (uint32_t)epoch,
-                               found_childPtr, 0, old_head);
+                               found_childPtr, 0, old_head, ctx->page_size);
         vfs_mb_release();
     } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
                          old_head, dc_vp) != old_head);
@@ -461,7 +461,7 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
         uint32_t ce_child, ce_epoch;
         int64_t ce_childPtr, ce_namePtr, ce_next;
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next);
+                              &ce_namePtr, &ce_next, ctx->page_size);
 
         /* Read-rule: does this entry apply at query epoch? */
         int applies = (ce_epoch == query_epoch) ||
@@ -529,7 +529,7 @@ int64_t vfs_file_size(vfs_t* vfs, int64_t file, int64_t epoch) {
         if (!fs_slot) break;
         uint32_t fs_epoch;
         int64_t fs_modified, fs_size, fs_next;
-        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modified, &fs_size, &fs_next);
+        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modified, &fs_size, &fs_next, ctx->page_size);
         (void)fs_modified;
 
         if (fs_epoch == query_epoch ||
@@ -563,7 +563,7 @@ int64_t vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch) {
         if (!fs_slot) break;
         uint32_t fs_epoch;
         int64_t fs_modified, fs_size, fs_next;
-        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modified, &fs_size, &fs_next);
+        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modified, &fs_size, &fs_next, ctx->page_size);
         (void)fs_size;
 
         if (fs_epoch == query_epoch ||
@@ -588,7 +588,7 @@ int64_t vfs_file_ctime(vfs_t* vfs, int64_t file) {
     if (vfs_rd2_s(file_slot, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE)
         return -1;
 
-    return nodes_read_filenode_ctime(file_slot);
+    return nodes_read_filenode_ctime(file_slot, ctx->page_size);
 }
 
 /* ---------------------------------------------------------------------------
@@ -651,7 +651,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
                 if (!vp_slot) break;
                 uint32_t vp_epoch;
                 int64_t vp_dataPage, vp_next;
-                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
                 if (vp_epoch == (uint32_t)epoch) {
                     data_page = vp_dataPage;
                     found_in_place = 1;
@@ -679,7 +679,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
                 if (!vp_slot) break;
                 uint32_t vp_epoch;
                 int64_t vp_dataPage, vp_next;
-                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
                 if (vp_epoch < (uint32_t)epoch && vp_epoch % 2 == 0) {
                     base_page = vp_dataPage;
                     break;
@@ -717,7 +717,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
             uint8_t* vp_new_slot = pool_resolve(&ctx->pool, vp_new);
             if (!vp_new_slot) return -1;
             nodes_write_versionpage(vp_new_slot, (uint32_t)epoch, new_dp,
-                                    version_root);
+                                    version_root, ctx->page_size);
 
             /* Release barrier then CAS */
             vfs_mb_release();
@@ -754,7 +754,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
             uint8_t* fs_slot = pool_resolve(&ctx->pool, fs_vp);
             if (!fs_slot) return -1;
             nodes_write_filesize(fs_slot, (uint32_t)epoch, (int64_t)time(NULL),
-                                 new_size, old_sizePtr);
+                                 new_size, old_sizePtr, ctx->page_size);
             vfs_mb_release();
             int64_t cas_res = vfs_cas_i64(
                 (int64_t*)(file_slot + FILENODE_OFF_SIZEPTR),
@@ -825,7 +825,7 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
             if (!vp_slot) break;
             uint32_t vp_epoch;
             int64_t vp_dataPage, vp_next;
-            nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next);
+            nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
 
             /* Apply mapper traversal remapping: if a mapping exists for this
                entry's epoch and traversalApply is true, treat the entry as if

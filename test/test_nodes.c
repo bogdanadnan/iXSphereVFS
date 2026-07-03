@@ -28,7 +28,7 @@ static void test_dirnode_write_read(void) {
     memset(slot, 0, sizeof(slot));
 
     /* Write DirNode with nodeId=5, headPtr points to page=10, slot=3 */
-    nodes_write_dirnode(slot, 5, VFS_VPTR_MAKE(10, 3));
+    nodes_write_dirnode(slot, 5, VFS_VPTR_MAKE(10, 3), VFS_PAGE_SIZE);
 
     /* Verify type field at byte 0 */
     CHECK_EQ(vfs_rd2(slot, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
@@ -36,7 +36,7 @@ static void test_dirnode_write_read(void) {
     /* Read back all fields */
     uint32_t nodeId;
     int64_t headPtr;
-    nodes_read_dirnode(slot, &nodeId, &headPtr);
+    nodes_read_dirnode(slot, &nodeId, &headPtr, VFS_PAGE_SIZE);
 
     CHECK_EQ(nodeId, 5u);
     CHECK_EQ(VFS_VPTR_PAGE(headPtr), 10);
@@ -72,7 +72,7 @@ static void test_filenode_write_read(void) {
     memset(slot, 0, sizeof(slot));
 
     /* Write FileNode with all fields non-trivial */
-    nodes_write_filenode(slot, 42, VFS_VPTR_MAKE(5, 10), VFS_VPTR_MAKE(6, 20), 987654321);
+    nodes_write_filenode(slot, 42, VFS_VPTR_MAKE(5, 10), VFS_VPTR_MAKE(6, 20), 987654321, VFS_PAGE_SIZE);
 
     /* Verify type field at byte 0 */
     CHECK_EQ(vfs_rd2(slot, FILENODE_OFF_TYPE), (int16_t)NODE_TYPE_FILE);
@@ -80,7 +80,7 @@ static void test_filenode_write_read(void) {
     /* Read back all fields */
     uint32_t nodeId;
     int64_t headPtr, sizePtr, createdAt;
-    nodes_read_filenode(slot, &nodeId, &headPtr, &sizePtr, &createdAt);
+    nodes_read_filenode(slot, &nodeId, &headPtr, &sizePtr, &createdAt, VFS_PAGE_SIZE);
 
     CHECK_EQ(nodeId, 42u);
     CHECK_EQ(VFS_VPTR_PAGE(headPtr), 5);
@@ -98,10 +98,10 @@ static void test_filenode_ctime(void) {
     memset(slot, 0, sizeof(slot));
 
     /* Write FileNode with a specific createdAt */
-    nodes_write_filenode(slot, 1, 0, 0, 123456789);
+    nodes_write_filenode(slot, 1, 0, 0, 123456789, VFS_PAGE_SIZE);
 
     /* Read ctime independently */
-    CHECK_EQ(nodes_read_filenode_ctime(slot), 123456789);
+    CHECK_EQ(nodes_read_filenode_ctime(slot, VFS_PAGE_SIZE), 123456789);
 }
 
 static void test_filenode_dirnode_overlap(void) {
@@ -126,11 +126,11 @@ static void test_dircontent_basic(void) {
     memset(slot, 0, sizeof(slot));
 
     /* Normal DirContent entry */
-    nodes_write_dircontent(slot, 7, 5, VFS_VPTR_MAKE(3, 1), VFS_VPTR_MAKE(3, 2), 0);
+    nodes_write_dircontent(slot, 7, 5, VFS_VPTR_MAKE(3, 1), VFS_VPTR_MAKE(3, 2), 0, VFS_PAGE_SIZE);
 
     uint32_t childNodeId, epoch;
     int64_t childPtr, namePtr, nextPtr;
-    nodes_read_dircontent(slot, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr);
+    nodes_read_dircontent(slot, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr, VFS_PAGE_SIZE);
 
     CHECK_EQ(childNodeId, 7u);
     CHECK_EQ(epoch, 5u);
@@ -146,11 +146,11 @@ static void test_dircontent_tombstone(void) {
     memset(slot, 0, sizeof(slot));
 
     /* Tombstone: namePtr=0 means deleted */
-    nodes_write_dircontent(slot, 7, 5, VFS_VPTR_MAKE(3, 1), 0, 0);
+    nodes_write_dircontent(slot, 7, 5, VFS_VPTR_MAKE(3, 1), 0, 0, VFS_PAGE_SIZE);
 
     uint32_t childNodeId, epoch;
     int64_t childPtr, namePtr, nextPtr;
-    nodes_read_dircontent(slot, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr);
+    nodes_read_dircontent(slot, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr, VFS_PAGE_SIZE);
 
     CHECK_EQ(namePtr, 0);
 }
@@ -167,25 +167,25 @@ static void test_dircontent_chain(void) {
     int64_t vp3 = VFS_VPTR_MAKE(10, 3);
 
     /* Entry 3 (oldest, epoch=1): nextPtr=0 */
-    nodes_write_dircontent(e3, 1, 1, vp3, 0, 0);
+    nodes_write_dircontent(e3, 1, 1, vp3, 0, 0, VFS_PAGE_SIZE);
     /* Entry 2 (epoch=3): nextPtr points to e3 */
-    nodes_write_dircontent(e2, 2, 3, vp2, 0, vp3);
+    nodes_write_dircontent(e2, 2, 3, vp2, 0, vp3, VFS_PAGE_SIZE);
     /* Entry 1 (newest, epoch=5): nextPtr points to e2 */
-    nodes_write_dircontent(e1, 3, 5, vp1, 0, vp2);
+    nodes_write_dircontent(e1, 3, 5, vp1, 0, vp2, VFS_PAGE_SIZE);
 
     uint32_t childNodeId, epoch;
     int64_t childPtr, namePtr, nextPtr;
 
     /* Walk chain: e1 -> e2 -> e3 */
-    nodes_read_dircontent(e1, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr);
+    nodes_read_dircontent(e1, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr, VFS_PAGE_SIZE);
     CHECK_EQ(epoch, 5u);
     CHECK_EQ(nextPtr, vp2);
 
-    nodes_read_dircontent(e2, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr);
+    nodes_read_dircontent(e2, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr, VFS_PAGE_SIZE);
     CHECK_EQ(epoch, 3u);
     CHECK_EQ(nextPtr, vp3);
 
-    nodes_read_dircontent(e3, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr);
+    nodes_read_dircontent(e3, &childNodeId, &epoch, &childPtr, &namePtr, &nextPtr, VFS_PAGE_SIZE);
     CHECK_EQ(epoch, 1u);
     CHECK_EQ(nextPtr, 0);
 
@@ -203,10 +203,10 @@ static void test_filecontent(void) {
     memset(slot, 0, sizeof(slot));
 
     /* Single FileContent entry */
-    nodes_write_filecontent(slot, VFS_VPTR_MAKE(20, 5), 0);
+    nodes_write_filecontent(slot, VFS_VPTR_MAKE(20, 5), 0, VFS_PAGE_SIZE);
 
     int64_t pageRootPtr, nextPtr;
-    nodes_read_filecontent(slot, &pageRootPtr, &nextPtr);
+    nodes_read_filecontent(slot, &pageRootPtr, &nextPtr, VFS_PAGE_SIZE);
 
     CHECK_EQ(VFS_VPTR_PAGE(pageRootPtr), 20);
     CHECK_EQ(VFS_VPTR_SLOT(pageRootPtr), 5);
@@ -228,16 +228,16 @@ static void test_filecontent_chain(void) {
     int64_t vp2 = VFS_VPTR_MAKE(30, 0);
 
     /* Segment 2 (higher range): nextPtr=0 */
-    nodes_write_filecontent(s2, VFS_VPTR_MAKE(30, 0), 0);
+    nodes_write_filecontent(s2, VFS_VPTR_MAKE(30, 0), 0, VFS_PAGE_SIZE);
     /* Segment 1 (lower range): nextPtr points to s2 */
-    nodes_write_filecontent(s1, VFS_VPTR_MAKE(10, 0), vp2);
+    nodes_write_filecontent(s1, VFS_VPTR_MAKE(10, 0), vp2, VFS_PAGE_SIZE);
 
     int64_t root, next;
-    nodes_read_filecontent(s1, &root, &next);
+    nodes_read_filecontent(s1, &root, &next, VFS_PAGE_SIZE);
     CHECK_EQ(VFS_VPTR_PAGE(root), 10);
     CHECK_EQ(next, vp2);
 
-    nodes_read_filecontent(s2, &root, &next);
+    nodes_read_filecontent(s2, &root, &next, VFS_PAGE_SIZE);
     CHECK_EQ(VFS_VPTR_PAGE(root), 30);
     CHECK_EQ(next, 0);
 }
@@ -247,10 +247,10 @@ static void test_pagenode(void) {
     memset(slot, 0, sizeof(slot));
 
     /* PageNode with versionRootPtr=0 (unwritten page) */
-    nodes_write_pagenode(slot, 0, VFS_VPTR_MAKE(5, 0));
+    nodes_write_pagenode(slot, 0, VFS_VPTR_MAKE(5, 0), VFS_PAGE_SIZE);
 
     int64_t vroot, next;
-    nodes_read_pagenode(slot, &vroot, &next);
+    nodes_read_pagenode(slot, &vroot, &next, VFS_PAGE_SIZE);
 
     CHECK_EQ(vroot, 0);
     CHECK_EQ(VFS_VPTR_PAGE(next), 5);
@@ -274,18 +274,18 @@ static void test_pagenode_chain(void) {
     int64_t vp3 = VFS_VPTR_MAKE(10, 3);
 
     /* PageNode 3 (last): nextPtr=0 */
-    nodes_write_pagenode(s3, 0, 0);
+    nodes_write_pagenode(s3, 0, 0, VFS_PAGE_SIZE);
     /* PageNode 2: nextPtr -> s3 */
-    nodes_write_pagenode(s2, 0, vp3);
+    nodes_write_pagenode(s2, 0, vp3, VFS_PAGE_SIZE);
     /* PageNode 1 (first): nextPtr -> s2 */
-    nodes_write_pagenode(s1, 0, vp2);
+    nodes_write_pagenode(s1, 0, vp2, VFS_PAGE_SIZE);
 
     int64_t vroot, next;
-    nodes_read_pagenode(s1, &vroot, &next);
+    nodes_read_pagenode(s1, &vroot, &next, VFS_PAGE_SIZE);
     CHECK_EQ(next, vp2);
-    nodes_read_pagenode(s2, &vroot, &next);
+    nodes_read_pagenode(s2, &vroot, &next, VFS_PAGE_SIZE);
     CHECK_EQ(next, vp3);
-    nodes_read_pagenode(s3, &vroot, &next);
+    nodes_read_pagenode(s3, &vroot, &next, VFS_PAGE_SIZE);
     CHECK_EQ(next, 0);
 }
 
@@ -294,11 +294,11 @@ static void test_versionpage(void) {
     memset(slot, 0, sizeof(slot));
 
     /* VersionPage {epoch=3, dataPage=100, nextPtr=VFS_VPTR_MAKE(5,1)} */
-    nodes_write_versionpage(slot, 3, 100, VFS_VPTR_MAKE(5, 1));
+    nodes_write_versionpage(slot, 3, 100, VFS_VPTR_MAKE(5, 1), VFS_PAGE_SIZE);
 
     uint32_t epoch;
     int64_t dataPage, nextPtr;
-    nodes_read_versionpage(slot, &epoch, &dataPage, &nextPtr);
+    nodes_read_versionpage(slot, &epoch, &dataPage, &nextPtr, VFS_PAGE_SIZE);
 
     CHECK_EQ(epoch, 3u);
     CHECK_EQ(dataPage, 100);
@@ -321,19 +321,19 @@ static void test_versionpage_chain(void) {
     int64_t vp3 = VFS_VPTR_MAKE(5, 1);
 
     /* Older version (epoch=3): nextPtr=0 */
-    nodes_write_versionpage(v3, 3, 50, 0);
+    nodes_write_versionpage(v3, 3, 50, 0, VFS_PAGE_SIZE);
     /* Newer version (epoch=5): nextPtr -> v3 */
-    nodes_write_versionpage(v5, 5, 100, vp3);
+    nodes_write_versionpage(v5, 5, 100, vp3, VFS_PAGE_SIZE);
 
     uint32_t epoch;
     int64_t dataPage, nextPtr;
 
-    nodes_read_versionpage(v5, &epoch, &dataPage, &nextPtr);
+    nodes_read_versionpage(v5, &epoch, &dataPage, &nextPtr, VFS_PAGE_SIZE);
     CHECK_EQ(epoch, 5u);
     CHECK_EQ(dataPage, 100);
     CHECK_EQ(nextPtr, vp3);
 
-    nodes_read_versionpage(v3, &epoch, &dataPage, &nextPtr);
+    nodes_read_versionpage(v3, &epoch, &dataPage, &nextPtr, VFS_PAGE_SIZE);
     CHECK_EQ(epoch, 3u);
     CHECK_EQ(dataPage, 50);
     CHECK_EQ(nextPtr, 0);
@@ -348,11 +348,11 @@ static void test_filesize(void) {
     memset(slot, 0, sizeof(slot));
 
     /* Single FileSize entry {epoch=2, modifiedAt=now, fileSize=500} */
-    nodes_write_filesize(slot, 2, 1000, 500, 0);
+    nodes_write_filesize(slot, 2, 1000, 500, 0, VFS_PAGE_SIZE);
 
     uint32_t epoch;
     int64_t modifiedAt, fileSize, nextPtr;
-    nodes_read_filesize(slot, &epoch, &modifiedAt, &fileSize, &nextPtr);
+    nodes_read_filesize(slot, &epoch, &modifiedAt, &fileSize, &nextPtr, VFS_PAGE_SIZE);
 
     CHECK_EQ(epoch, 2u);
     CHECK_EQ(modifiedAt, 1000);
@@ -371,19 +371,19 @@ static void test_filesize_chain(void) {
     int64_t vp2 = VFS_VPTR_MAKE(10, 2);
 
     /* Older entry (epoch=2, size=500): nextPtr=0 */
-    nodes_write_filesize(s2, 2, 500, 500, 0);
+    nodes_write_filesize(s2, 2, 500, 500, 0, VFS_PAGE_SIZE);
     /* Newer entry (epoch=3, size=1000): nextPtr -> s2 */
-    nodes_write_filesize(s1, 3, 1000, 1000, vp2);
+    nodes_write_filesize(s1, 3, 1000, 1000, vp2, VFS_PAGE_SIZE);
 
     uint32_t epoch;
     int64_t modifiedAt, fileSize, nextPtr;
 
-    nodes_read_filesize(s1, &epoch, &modifiedAt, &fileSize, &nextPtr);
+    nodes_read_filesize(s1, &epoch, &modifiedAt, &fileSize, &nextPtr, VFS_PAGE_SIZE);
     CHECK_EQ(epoch, 3u);
     CHECK_EQ(fileSize, 1000);
     CHECK_EQ(nextPtr, vp2);
 
-    nodes_read_filesize(s2, &epoch, &modifiedAt, &fileSize, &nextPtr);
+    nodes_read_filesize(s2, &epoch, &modifiedAt, &fileSize, &nextPtr, VFS_PAGE_SIZE);
     CHECK_EQ(epoch, 2u);
     CHECK_EQ(fileSize, 500);
     CHECK_EQ(nextPtr, 0);
@@ -398,11 +398,11 @@ static void test_touchedfile(void) {
     memset(slot, 0, sizeof(slot));
 
     /* Single TouchedFile {epoch=3, nodeId=7} */
-    nodes_write_touchedfile(slot, 3, 7, 0);
+    nodes_write_touchedfile(slot, 3, 7, 0, VFS_PAGE_SIZE);
 
     uint32_t epoch, nodeId;
     int64_t nextPtr;
-    nodes_read_touchedfile(slot, &epoch, &nodeId, &nextPtr);
+    nodes_read_touchedfile(slot, &epoch, &nodeId, &nextPtr, VFS_PAGE_SIZE);
 
     CHECK_EQ(epoch, 3u);
     CHECK_EQ(nodeId, 7u);
@@ -425,12 +425,12 @@ static void test_mapperentry(void) {
     memset(slot, 0, sizeof(slot));
 
     /* Commit mapping: {from=1, to=2, traversalApply=true} */
-    nodes_write_mapperentry(slot, 1, 2, MAPPER_FLAG_TRAVERSAL_APPLY, 0);
+    nodes_write_mapperentry(slot, 1, 2, MAPPER_FLAG_TRAVERSAL_APPLY, 0, VFS_PAGE_SIZE);
 
     uint32_t fromEpoch, toEpoch;
     uint16_t flags;
     int64_t nextPtr;
-    nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &nextPtr);
+    nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &nextPtr, VFS_PAGE_SIZE);
 
     CHECK_EQ(fromEpoch, 1u);
     CHECK_EQ(toEpoch, 2u);
@@ -439,8 +439,8 @@ static void test_mapperentry(void) {
 
     /* Soft-delete mapping: {from=3, to=2, flags=0} */
     memset(slot, 0, sizeof(slot));
-    nodes_write_mapperentry(slot, 3, 2, 0, 0);
-    nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &nextPtr);
+    nodes_write_mapperentry(slot, 3, 2, 0, 0, VFS_PAGE_SIZE);
+    nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &nextPtr, VFS_PAGE_SIZE);
     CHECK_EQ(fromEpoch, 3u);
     CHECK_EQ(toEpoch, 2u);
     CHECK_EQ(flags, 0);

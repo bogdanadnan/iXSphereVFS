@@ -71,7 +71,7 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
         if (!tf_slot) break;
         uint32_t tf_epoch, tf_nodeId;
         int64_t tf_next;
-        nodes_read_touchedfile(tf_slot, &tf_epoch, &tf_nodeId, &tf_next);
+        nodes_read_touchedfile(tf_slot, &tf_epoch, &tf_nodeId, &tf_next, ctx->page_size);
 
         if (tf_epoch == s_epoch) {
             /* Walk root DirContent chain to find the file's VirtualPtr by nodeId.
@@ -88,7 +88,7 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
                 uint32_t dc_child, dc_epoch;
                 int64_t dc_childPtr, dc_namePtr, dc_next;
                 nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
-                                      &dc_namePtr, &dc_next);
+                                      &dc_namePtr, &dc_next, ctx->page_size);
                 (void)dc_epoch; (void)dc_namePtr;
 
                 if (dc_child == tf_nodeId) {
@@ -116,7 +116,7 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
                             uint32_t v_epoch;
                             int64_t v_dataPage, v_next;
                             nodes_read_versionpage(vp_slot, &v_epoch,
-                                                    &v_dataPage, &v_next);
+                                                    &v_dataPage, &v_next, ctx->page_size);
                             (void)v_dataPage;
 
                             if (v_epoch == s_epoch) has_snapshot = 1;

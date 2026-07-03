@@ -137,7 +137,7 @@ static void test_create_file(void) {
         uint32_t ce_child, ce_epoch;
         int64_t ce_childPtr, ce_namePtr, ce_next;
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next);
+                              &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
         (void)ce_childPtr;
         if (ce_epoch == 0 && ce_namePtr != 0) {
             char entry_name[256];
@@ -186,7 +186,7 @@ static void test_delete_file(void) {
         uint32_t ce_child, ce_epoch;
         int64_t ce_childPtr, ce_namePtr, ce_next;
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next);
+                              &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
         (void)ce_child; (void)ce_childPtr;
         if (ce_epoch == 0 && ce_namePtr != 0) {
             char entry_name[256];
@@ -217,7 +217,7 @@ static void test_delete_file(void) {
         uint32_t ce_child, ce_epoch;
         int64_t ce_childPtr, ce_namePtr, ce_next;
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next);
+                              &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
         (void)ce_child; (void)ce_childPtr;
         if (ce_epoch == 2 && ce_namePtr == 0)
             found_tombstone = 1;
@@ -263,7 +263,7 @@ static void test_open_file(void) {
         uint32_t ce_c, ce_e;
         int64_t ce_cp, ce_np, ce_nx;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head2),
-                              &ce_c, &ce_e, &ce_cp, &ce_np, &ce_nx);
+                              &ce_c, &ce_e, &ce_cp, &ce_np, &ce_nx, VFS_PAGE_SIZE);
         (void)ce_c; (void)ce_e; (void)ce_np; (void)ce_nx;
         opened = vfs_open_file(vfs, ce_cp, "anything.txt", 0);
         CHECK_EQ(opened, VFS_ERR_NOTDIR);
@@ -347,7 +347,7 @@ static void test_file_stat(void) {
         uint32_t cc, ce;
         int64_t cp, np, nx;
         nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx);
+                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
         file_vp = cp;  /* VirtualPtr to the FileNode */
     }
@@ -404,7 +404,7 @@ static int64_t get_file_vp(Pool* pool, int64_t root_vp) {
     uint32_t cc, ce;
     int64_t cp, np, nx;
     nodes_read_dircontent(pool_resolve(pool, head),
-                          &cc, &ce, &cp, &np, &nx);
+                          &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
     (void)cc; (void)ce; (void)np; (void)nx;
     return cp;
 }
@@ -444,7 +444,7 @@ static void test_file_size_epoch(void) {
     CHECK(file_slot != NULL);
     int64_t old_sizePtr = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
 
-    nodes_write_filesize(fs_slot, 2, 2000, 500, old_sizePtr);
+    nodes_write_filesize(fs_slot, 2, 2000, 500, old_sizePtr, VFS_PAGE_SIZE);
     vfs_mb_release();
     int64_t cas_result = vfs_cas_i64(
         (int64_t*)(file_slot + FILENODE_OFF_SIZEPTR),

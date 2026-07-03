@@ -21,7 +21,7 @@ int mapper_insert(Mapper* m, uint32_t fromEpoch, uint32_t toEpoch,
         uint16_t entry_flags;
         int64_t entry_next;
         nodes_read_mapperentry(slot, &entry_from, &entry_to,
-                               &entry_flags, &entry_next);
+                               &entry_flags, &entry_next, VFS_PAGE_SIZE);
 
         /* Check if fromEpoch is already used as a source */
         if (entry_from == fromEpoch) return VFS_ERR_EXISTS;
@@ -46,7 +46,7 @@ int mapper_insert(Mapper* m, uint32_t fromEpoch, uint32_t toEpoch,
     int64_t old_head;
     do {
         old_head = vfs_atomic_load_i64(m->epochMapperPtr);
-        nodes_write_mapperentry(new_slot, fromEpoch, toEpoch, flags, old_head);
+        nodes_write_mapperentry(new_slot, fromEpoch, toEpoch, flags, old_head, VFS_PAGE_SIZE);
         vfs_mb_release();
     } while (vfs_cas_i64(m->epochMapperPtr, old_head, new_vp) != old_head);
 
@@ -66,7 +66,7 @@ int64_t mapper_resolve(Mapper* m, int64_t epoch) {
         uint16_t entry_flags;
         int64_t entry_next;
         nodes_read_mapperentry(slot, &entry_from, &entry_to,
-                               &entry_flags, &entry_next);
+                               &entry_flags, &entry_next, VFS_PAGE_SIZE);
         (void)entry_flags;
 
         if (entry_from == query) return (int64_t)entry_to;
@@ -89,7 +89,7 @@ bool mapper_traversal_apply(Mapper* m, int64_t epoch) {
         uint16_t entry_flags;
         int64_t entry_next;
         nodes_read_mapperentry(slot, &entry_from, &entry_to,
-                               &entry_flags, &entry_next);
+                               &entry_flags, &entry_next, VFS_PAGE_SIZE);
         (void)entry_to;
 
         if (entry_from == query) return (entry_flags & MAPPER_FLAG_TRAVERSAL_APPLY) != 0;
@@ -112,7 +112,7 @@ int mapper_validate(Mapper* m) {
         uint16_t entry_flags;
         int64_t entry_next;
         nodes_read_mapperentry(slot, &entry_from, &entry_to,
-                               &entry_flags, &entry_next);
+                               &entry_flags, &entry_next, VFS_PAGE_SIZE);
         (void)entry_from; (void)entry_to; (void)entry_flags;
 
         count++;
