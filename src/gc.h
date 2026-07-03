@@ -122,6 +122,7 @@ typedef struct {
 LivePageSet* live_page_set_create(int initial_cap);
 void        live_page_set_destroy(LivePageSet* lps);
 int         live_page_set_add(LivePageSet* lps, int64_t page);
+int         live_page_set_contains(LivePageSet* lps, int64_t page);
 
 int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                     int64_t dir_vp, int64_t epoch,

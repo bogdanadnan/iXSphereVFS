@@ -1001,6 +1001,14 @@ void live_page_set_destroy(LivePageSet* lps) {
 
 int live_page_set_add(LivePageSet* lps, int64_t page) {
     if (!lps) return VFS_ERR_IO;
+    /* Skip if already in set */
+    int lo = 0, hi = lps->count - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (lps->pages[mid] == page) return VFS_OK;
+        if (lps->pages[mid] < page) lo = mid + 1;
+        else hi = mid - 1;
+    }
     if (lps->count >= lps->capacity) {
         int new_cap = lps->capacity * 2;
         int64_t* new_pages = (int64_t*)realloc(lps->pages,
@@ -1009,8 +1017,24 @@ int live_page_set_add(LivePageSet* lps, int64_t page) {
         lps->pages = new_pages;
         lps->capacity = new_cap;
     }
-    lps->pages[lps->count++] = page;
+    /* Insert at lo (shift elements right) */
+    for (int i = lps->count; i > lo; i--)
+        lps->pages[i] = lps->pages[i - 1];
+    lps->pages[lo] = page;
+    lps->count++;
     return VFS_OK;
+}
+
+int live_page_set_contains(LivePageSet* lps, int64_t page) {
+    if (!lps || !lps->pages) return 0;
+    int lo = 0, hi = lps->count - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (lps->pages[mid] == page) return 1;
+        if (lps->pages[mid] < page) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return 0;
 }
 
 int vfs_gc(vfs_t* vfs) {
