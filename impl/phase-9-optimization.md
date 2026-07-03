@@ -47,7 +47,7 @@ Phase 9 workloads can be built in parallel with one exception:
 ### Independent (build in any order):
 - **10.7 (CI)** — just YAML files, no code. Start immediately.
 - **10.8 (Documentation)** — README + API docs. Can be drafted early.
-- **10.5 (Crash)** — needs Phase 7 (GC) functional.
+- **9.5 (Crash)** — needs Phase 7 (GC) functional.
 - **10.6 (Fuzzing)** — needs the backing file format stable.
 
 ### Sequential chain (each builds on prior):
