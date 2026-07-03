@@ -224,6 +224,19 @@ void gc_copy_entry(GCMap* gc_map, int64_t old_vp, int64_t new_vp,
  * demonstrates the expected pattern.
  * --------------------------------------------------------------------------- */
 
+int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, int64_t dir_vp,
+                    int64_t epoch) {
+    if (!ctx || !gc_map || dir_vp == 0) return VFS_ERR_IO;
+    uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
+    if (!dir_slot) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2(dir_slot, DIRNODE_OFF_TYPE) != (int16_t)NODE_TYPE_DIR)
+        return VFS_ERR_NOTDIR;
+    /* Phase 8: copy DirNode, walk DirContent chain with survival rules,
+       recurse into child DirNodes/FileNodes. */
+    (void)epoch;
+    return VFS_OK;
+}
+
 /* Shadow-compaction helper — walks the pool chain, builds a live set,
    copies live pool entries to fresh pages, then enqueues old pages
    for deferred freeing.  Currently a stub — returns VFS_OK. */

@@ -89,6 +89,19 @@ void deferred_free_confirm_and_release(DeferredFreeQueue* queue,
 void deferred_free_destroy(DeferredFreeQueue* queue);
 
 /* ---------------------------------------------------------------------------
+ * GC tree walk (§12.5)
+ * --------------------------------------------------------------------------- */
+
+/* Walk a DirNode during GC shadow-compaction: copy the DirNode entry via
+   gc_copy_entry, then traverse its DirContent chain applying survival rules.
+   ctx     — VFS tree context (for pool, mapper access)
+   gc_map  — VirtualPtr remapping hash map
+   dir_vp  — VirtualPtr of the DirNode to walk
+   epoch   — current live head epoch (for survival decisions) */
+int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, int64_t dir_vp,
+                    int64_t epoch);
+
+/* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *
  * Walks the pool chain, the DententryCache, the epoch mapper chain,
