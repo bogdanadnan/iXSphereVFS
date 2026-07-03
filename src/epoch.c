@@ -56,11 +56,14 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
     uint32_t s_epoch = (uint32_t)snapshot_epoch;
 
     /* Validate snapshot_epoch is odd */
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (snapshot_epoch % 2 == 0) return VFS_ERR_IO;
 
     /* Validate snapshot_epoch is still active (no MapperEntry for it) */
-    if (mapper_resolve(&ctx->mapper, snapshot_epoch) != snapshot_epoch)
+    if (mapper_resolve(&ctx->mapper, snapshot_epoch) != snapshot_epoch) {
+        vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
+        }
 
     /* Conflict detection: walk the TouchedFile chain directly (no fixed buffer).
        For each file modified in this snapshot epoch, scan its version chains
@@ -126,8 +129,10 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
                             vp = v_next;
                         }
 
-                        if (has_snapshot && has_live)
+                        if (has_snapshot && has_live) {
+                            vfs->ctx->last_error = VFS_ERR_CONFLICT;
                             return VFS_ERR_CONFLICT;
+                            }
                     }
                 }
                 walk_vp = dc_next;
@@ -156,11 +161,14 @@ int vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch) {
     TreeContext* ctx = vfs->ctx;
 
     /* Validate snapshot_epoch is odd */
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (snapshot_epoch % 2 == 0) return VFS_ERR_IO;
 
     /* Validate snapshot_epoch is still active */
-    if (mapper_resolve(&ctx->mapper, snapshot_epoch) != snapshot_epoch)
+    if (mapper_resolve(&ctx->mapper, snapshot_epoch) != snapshot_epoch) {
+        vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
+        }
 
     /* Insert soft-delete mapping: snapshot_epoch → (snapshot_epoch - 1)
        without traversalApply flag.  snapshot_epoch - 1 is the even epoch

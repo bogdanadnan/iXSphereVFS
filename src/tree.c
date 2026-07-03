@@ -298,9 +298,12 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     /* Read parent DirNode, verify type */
     uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
+    vfs->ctx->last_error = VFS_ERR_NOTFOUND;
     if (!parent_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+        vfs->ctx->last_error = VFS_ERR_NOTDIR;
         return VFS_ERR_NOTDIR;
+        }
 
     /* Walk parent's DirContent chain, checking for name collision */
     int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
@@ -318,8 +321,10 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
             char entry_name[256];
             int name_len = nodes_read_name(&ctx->pool, ce_namePtr,
                                             entry_name, (int)sizeof(entry_name));
-            if (name_len > 0 && strcmp(entry_name, name) == 0)
+            if (name_len > 0 && strcmp(entry_name, name) == 0) {
+                vfs->ctx->last_error = VFS_ERR_EXISTS;
                 return VFS_ERR_EXISTS;
+                }
         }
         walk_vp = ce_next;
     }
@@ -330,20 +335,25 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     /* Allocate FileNode slot and write it */
     int64_t file_vp = pool_alloc(&ctx->pool);
+    vfs->ctx->last_error = VFS_ERR_FULL;
     if (file_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
     uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (!file_slot) return VFS_ERR_IO;
     nodes_write_filenode(file_slot, new_nodeId, 0, 0, (int64_t)time(NULL), ctx->page_size);
 
     /* Allocate NameEntry chain for the file name */
     int64_t name_vp;
     int name_slots = nodes_write_name(&ctx->pool, name, &name_vp);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (name_slots == 0) return VFS_ERR_IO;
 
     /* Allocate DirContent slot outside the CAS loop to avoid leaks on retry */
     int64_t dc_vp = pool_alloc(&ctx->pool);
+    vfs->ctx->last_error = VFS_ERR_FULL;
     if (dc_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
     uint8_t* dc_slot = pool_resolve(&ctx->pool, dc_vp);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (!dc_slot) return VFS_ERR_IO;
 
     /* CAS-prepend DirContent to parent's headPtr */
@@ -369,9 +379,12 @@ int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
 
     uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
+    vfs->ctx->last_error = VFS_ERR_NOTFOUND;
     if (!parent_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+        vfs->ctx->last_error = VFS_ERR_NOTDIR;
         return VFS_ERR_NOTDIR;
+        }
 
     /* Walk DirContent chain, check for name collision */
     int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
@@ -387,8 +400,10 @@ int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
             char entry_name[256];
             int nl = nodes_read_name(&ctx->pool, np, entry_name,
                                      (int)sizeof(entry_name));
-            if (nl > 0 && strcmp(entry_name, name) == 0)
+            if (nl > 0 && strcmp(entry_name, name) == 0) {
+                vfs->ctx->last_error = VFS_ERR_EXISTS;
                 return VFS_ERR_EXISTS;
+                }
         }
         walk_vp = nx;
     }
@@ -397,18 +412,23 @@ int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         (int32_t*)&ctx->nextNodeId, 1);
 
     int64_t dir_vp = pool_alloc(&ctx->pool);
+    vfs->ctx->last_error = VFS_ERR_FULL;
     if (dir_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
     uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (!dir_slot) return VFS_ERR_IO;
     nodes_write_dirnode(dir_slot, new_nodeId, 0, ctx->page_size);
 
     int64_t name_vp;
     int name_slots = nodes_write_name(&ctx->pool, name, &name_vp);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (name_slots == 0) return VFS_ERR_IO;
 
     int64_t dc_vp = pool_alloc(&ctx->pool);
+    vfs->ctx->last_error = VFS_ERR_FULL;
     if (dc_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
     uint8_t* dc_slot = pool_resolve(&ctx->pool, dc_vp);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (!dc_slot) return VFS_ERR_IO;
 
     int64_t old_head;
@@ -437,9 +457,12 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     /* Read parent DirNode, verify type */
     uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
+    vfs->ctx->last_error = VFS_ERR_NOTFOUND;
     if (!parent_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+        vfs->ctx->last_error = VFS_ERR_NOTDIR;
         return VFS_ERR_NOTDIR;
+        }
 
     /* Walk parent's DirContent chain to find the entry with matching name
        at epoch ≤ query_epoch. Chain is in descending epoch order,
@@ -471,12 +494,15 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         walk_vp = ce_next;
     }
 
+    vfs->ctx->last_error = VFS_ERR_NOTFOUND;
     if (found_vp == 0) return VFS_ERR_NOTFOUND;
 
     /* Allocate tombstone DirContent slot outside CAS loop */
     int64_t dc_vp = pool_alloc(&ctx->pool);
+    vfs->ctx->last_error = VFS_ERR_FULL;
     if (dc_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
     uint8_t* dc_slot = pool_resolve(&ctx->pool, dc_vp);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (!dc_slot) return VFS_ERR_IO;
 
     /* CAS-prepend tombstone to parent's headPtr */
@@ -503,9 +529,12 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
 
     uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
+    vfs->ctx->last_error = VFS_ERR_NOTFOUND;
     if (!parent_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+        vfs->ctx->last_error = VFS_ERR_NOTDIR;
         return VFS_ERR_NOTDIR;
+        }
 
     int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
     int64_t found_vp = 0;
@@ -530,12 +559,16 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         }
         walk_vp = nx;
     }
+    vfs->ctx->last_error = VFS_ERR_NOTFOUND;
     if (found_vp == 0) return VFS_ERR_NOTFOUND;
 
     uint8_t* child_slot = pool_resolve(&ctx->pool, found_childPtr);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (!child_slot) return VFS_ERR_IO;
-    if (vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+        vfs->ctx->last_error = VFS_ERR_NOTDIR;
         return VFS_ERR_NOTDIR;
+        }
 
     /* Check directory is empty using read-rule: for each childNodeId, find the
        entry at the highest epoch ≤ query_epoch.  If any such entry has
@@ -584,14 +617,17 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
         for (int i = 0; i < child_count; i++) {
             if (child_has_name[i]) {
+                vfs->ctx->last_error = VFS_ERR_NOTEMPTY;
                 return VFS_ERR_NOTEMPTY;
             }
         }
     }
 
     int64_t dc_vp = pool_alloc(&ctx->pool);
+    vfs->ctx->last_error = VFS_ERR_FULL;
     if (dc_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
     uint8_t* dc_slot = pool_resolve(&ctx->pool, dc_vp);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (!dc_slot) return VFS_ERR_IO;
 
     int64_t old_head;
@@ -615,9 +651,12 @@ int vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
 
     /* Verify directory type */
     uint8_t* dir_slot = pool_resolve(&ctx->pool, (int64_t)dir);
+    vfs->ctx->last_error = VFS_ERR_NOTFOUND;
     if (!dir_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+        vfs->ctx->last_error = VFS_ERR_NOTDIR;
         return VFS_ERR_NOTDIR;
+        }
 
     /* Always rebuild the cache (optimization: check valid flag later) */
     int err = dentry_cache_build(&ctx->pool, (int64_t)dir, epoch,
@@ -643,22 +682,30 @@ int vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
 
 int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                int64_t dst_parent, const char* dst, int64_t epoch) {
-    if (!vfs || !vfs->ctx || !src || !dst || src[0] == '\0' || dst[0] == '\0')
+    if (!vfs || !vfs->ctx || !src || !dst || src[0] == '\0' || dst[0] == '\0') {
+        vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
+        }
     TreeContext* ctx = vfs->ctx;
 
     if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
 
     /* Verify both parents are DirNodes */
     uint8_t* src_slot = pool_resolve(&ctx->pool, (int64_t)src_parent);
+    vfs->ctx->last_error = VFS_ERR_NOTFOUND;
     if (!src_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(src_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(src_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+        vfs->ctx->last_error = VFS_ERR_NOTDIR;
         return VFS_ERR_NOTDIR;
+        }
 
     uint8_t* dst_slot = pool_resolve(&ctx->pool, (int64_t)dst_parent);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (!dst_slot) return VFS_ERR_IO;
-    if (vfs_rd2_s(dst_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(dst_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+        vfs->ctx->last_error = VFS_ERR_NOTDIR;
         return VFS_ERR_NOTDIR;
+        }
 
     /* Find source entry by walking src_parent's DirContent chain */
     int64_t src_head = vfs_rd8_s(src_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
@@ -684,12 +731,14 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         }
         walk_vp = nx;
     }
+    vfs->ctx->last_error = VFS_ERR_NOTFOUND;
     if (found_childPtr == 0) return VFS_ERR_NOTFOUND;
 
     if (src_parent == dst_parent && found_epoch == (uint32_t)epoch) {
         /* Allocate NameEntry for the destination name */
         int64_t new_name_vp;
         int ns = nodes_write_name(&ctx->pool, dst, &new_name_vp);
+        vfs->ctx->last_error = VFS_ERR_IO;
         if (ns == 0) return VFS_ERR_IO;
 
         /* Atomically store new namePtr into the existing DirContent slot.
@@ -712,18 +761,22 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
             }
             walk_vp = nx;
         }
+        vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
     }
 
     /* Cross-directory rename: create new entry at dst, tombstone at src */
     int64_t dst_name_vp;
     int dst_ns = nodes_write_name(&ctx->pool, dst, &dst_name_vp);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (dst_ns == 0) return VFS_ERR_IO;
 
     /* Allocate DirContent for dst */
     int64_t dst_dc_vp = pool_alloc(&ctx->pool);
+    vfs->ctx->last_error = VFS_ERR_FULL;
     if (dst_dc_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
     uint8_t* dst_dc_slot = pool_resolve(&ctx->pool, dst_dc_vp);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (!dst_dc_slot) return VFS_ERR_IO;
 
     /* CAS-prepend to dst_parent's headPtr */
@@ -740,8 +793,10 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
 
     /* Create tombstone at src */
     int64_t src_dc_vp = pool_alloc(&ctx->pool);
+    vfs->ctx->last_error = VFS_ERR_FULL;
     if (src_dc_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
     uint8_t* src_dc_slot = pool_resolve(&ctx->pool, src_dc_vp);
+    vfs->ctx->last_error = VFS_ERR_IO;
     if (!src_dc_slot) return VFS_ERR_IO;
 
     int64_t src_old_head;
@@ -770,9 +825,12 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
     TreeContext* ctx = vfs->ctx;
 
     uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
+    vfs->ctx->last_error = VFS_ERR_NOTFOUND;
     if (!parent_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+        vfs->ctx->last_error = VFS_ERR_NOTDIR;
         return VFS_ERR_NOTDIR;
+        }
 
     int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
     uint32_t query_epoch = (uint32_t)epoch;
@@ -830,6 +888,7 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
 
     (void)best_childPtr;
 
+    vfs->ctx->last_error = VFS_ERR_NOTFOUND;
     if (!best_name_match) return VFS_ERR_NOTFOUND;
     return best_child;
 }
