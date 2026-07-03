@@ -197,11 +197,12 @@ uint8_t* pool_resolve(Pool* pool, int64_t vptr) {
     uint8_t* payload = storage_read(pool->sb, page_index);
     if (payload == NULL) return NULL;
 
-    /* Mark the cache entry dirty.  Callers routinely write through the
-       returned pointer (nodes_write_*, pool_alloc CAS, etc.), and the
-       page cache does not track pointer-based modifications.  Without
-       this, a clean pool page evicted from cache loses all in-memory
-       writes — corruption on the next read from disk. */
+    /* Mark cache dirty.  Callers write through the returned pointer
+       (pool_alloc CAS, nodes_write_*, tree_resolve_page, etc.) and
+       the cache has no way to detect pointer-based modifications.
+       Pool pages are hot — rarely evicted — so the dirty flag's
+       only cost is including the page in the next explicit Flush,
+       which would include it anyway if any slot was modified. */
     cache_mark_dirty(&pool->sb->cache, page_index, FLUSH_PRIO_POOL);
 
     return payload + VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
