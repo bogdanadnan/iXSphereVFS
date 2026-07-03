@@ -534,18 +534,56 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
         return VFS_ERR_NOTDIR;
 
+    /* Check directory is empty using read-rule: for each childNodeId, find the
+       entry at the highest epoch ≤ query_epoch.  If any such entry has
+       namePtr ≠ 0, the directory is not empty (tombstones with namePtr=0
+       indicate deleted entries). */
     int64_t child_head = vfs_rd8_s(child_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
-    int64_t cw = child_head;
-    while (cw != 0) {
-        uint8_t* cs = pool_resolve(&ctx->pool, cw);
-        if (!cs) break;
-        uint32_t ccc, cce;
-        int64_t ccp, cnp, cnx;
-        nodes_read_dircontent(cs, &ccc, &cce, &ccp, &cnp, &cnx, ctx->page_size);
-        (void)ccc; (void)ccp;
-        if (cnp != 0 && cce <= (uint32_t)epoch)
-            return VFS_ERR_NOTEMPTY;
-        cw = cnx;
+    {
+        /* Simple approach: walk chain and collect unique childNodeIds.
+           For each child, track the highest epoch and whether the entry
+           at that epoch has namePtr != 0. */
+        #define MAX_RMDIR_CHILDREN 1024
+        uint32_t child_ids[MAX_RMDIR_CHILDREN];
+        uint32_t child_best_epoch[MAX_RMDIR_CHILDREN];
+        int     child_has_name[MAX_RMDIR_CHILDREN];
+        int child_count = 0;
+
+        int64_t cw = child_head;
+        while (cw != 0 && child_count < MAX_RMDIR_CHILDREN) {
+            uint8_t* cs = pool_resolve(&ctx->pool, cw);
+            if (!cs) break;
+            uint32_t ccc, cce;
+            int64_t ccp, cnp, cnx;
+            nodes_read_dircontent(cs, &ccc, &cce, &ccp, &cnp, &cnx,
+                                  ctx->page_size);
+            (void)ccp;
+
+            if (cce <= (uint32_t)epoch) {
+                int found = -1;
+                for (int i = 0; i < child_count; i++) {
+                    if (child_ids[i] == ccc) { found = i; break; }
+                }
+                if (found >= 0) {
+                    if (cce > child_best_epoch[found]) {
+                        child_best_epoch[found] = cce;
+                        child_has_name[found] = (cnp != 0) ? 1 : 0;
+                    }
+                } else {
+                    child_ids[child_count] = ccc;
+                    child_best_epoch[child_count] = cce;
+                    child_has_name[child_count] = (cnp != 0) ? 1 : 0;
+                    child_count++;
+                }
+            }
+            cw = cnx;
+        }
+
+        for (int i = 0; i < child_count; i++) {
+            if (child_has_name[i]) {
+                return VFS_ERR_NOTEMPTY;
+            }
+        }
     }
 
     int64_t dc_vp = pool_alloc(&ctx->pool);

@@ -838,6 +838,115 @@ static void test_write_frozen_epoch(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * mkdir basic: create a directory, verify it's in the parent's DirContent
+ * chain and has the DirNode type.
+ * --------------------------------------------------------------------------- */
+
+static void test_mkdir_basic(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int ret = vfs_mkdir(vfs, root_vp, "a", 0);
+    CHECK_EQ(ret, VFS_OK);
+
+    /* Verify entry exists in root's DirContent chain */
+    int64_t head = vfs_rd8_s(pool_resolve(&ctx->pool, root_vp),
+                              DIRNODE_OFF_HEADPTR, ctx->page_size);
+    CHECK(head != 0);
+
+    uint32_t cc, ce;
+    int64_t cp, np, nx;
+    nodes_read_dircontent(pool_resolve(&ctx->pool, head),
+                          &cc, &ce, &cp, &np, &nx, ctx->page_size);
+    (void)cc; (void)ce; (void)np; (void)nx;
+    CHECK(cp != 0);
+
+    /* Verify child is a DirNode */
+    uint8_t* child_slot = pool_resolve(&ctx->pool, cp);
+    CHECK(child_slot != NULL);
+    CHECK_EQ(vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size),
+             (int16_t)NODE_TYPE_DIR);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * mkdir duplicate: same name at same epoch → VFS_ERR_EXISTS.
+ * --------------------------------------------------------------------------- */
+
+static void test_mkdir_duplicate(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    CHECK_EQ(vfs_mkdir(vfs, root_vp, "dup", 0), VFS_OK);
+    CHECK_EQ(vfs_mkdir(vfs, root_vp, "dup", 0), VFS_ERR_EXISTS);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * rmdir empty: mkdir + create file → rmdir fails with NOTEMPTY,
+ * then delete file → rmdir succeeds.
+ * --------------------------------------------------------------------------- */
+
+static void test_rmdir_empty(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    CHECK_EQ(vfs_mkdir(vfs, root_vp, "sub", 0), VFS_OK);
+
+    /* Resolve subdir VirtualPtr */
+    int64_t subdir_vp = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
+        CHECK(h != 0);
+        uint32_t cc, ce;
+        int64_t cp, np, nx;
+        nodes_read_dircontent(pool_resolve(&ctx->pool, h),
+                              &cc, &ce, &cp, &np, &nx, ctx->page_size);
+        (void)cc; (void)ce; (void)np; (void)nx;
+        subdir_vp = cp;
+    }
+    CHECK(subdir_vp != 0);
+
+    /* Create file inside subdir */
+    CHECK(vfs_create(vfs, subdir_vp, "f.txt", 0) > 0);
+
+    /* rmdir should fail — directory not empty */
+    CHECK_EQ(vfs_rmdir(vfs, root_vp, "sub", 0), VFS_ERR_NOTEMPTY);
+
+    /* Delete the file inside subdir */
+    CHECK_EQ(vfs_delete(vfs, subdir_vp, "f.txt", 0), VFS_OK);
+
+    /* Now rmdir should succeed */
+    CHECK_EQ(vfs_rmdir(vfs, root_vp, "sub", 0), VFS_OK);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * rmdir notdir: rmdir on a file (not a directory) → VFS_ERR_NOTDIR.
+ * --------------------------------------------------------------------------- */
+
+static void test_rmdir_notdir(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    CHECK(vfs_create(vfs, root_vp, "not_a_dir.txt", 0) > 0);
+    CHECK_EQ(vfs_rmdir(vfs, root_vp, "not_a_dir.txt", 0), VFS_ERR_NOTDIR);
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -880,6 +989,20 @@ int main(void) {
     unlink(test_path);
 
     test_write_frozen_epoch();
+
+    /* --- mkdir / rmdir tests --- */
+
+    unlink(test_path);
+    test_mkdir_basic();
+
+    unlink(test_path);
+    test_mkdir_duplicate();
+
+    unlink(test_path);
+    test_rmdir_empty();
+
+    unlink(test_path);
+    test_rmdir_notdir();
 
     /* Clean up */
     unlink(test_path);
