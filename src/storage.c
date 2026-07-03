@@ -192,14 +192,14 @@ static int mount_existing(StorageBackend* sb) {
     /* Validate XVFS magic */
     if (ph.flags != XVFS_MAGIC) return -1;
 
-    /* Step 1: Read the first 8192 bytes to discover page_size.
+    /* Step 1: Read only the config area (first 40 bytes) to discover page_size.
        The config fields (total_pages, page_size, etc.) are within the first
-       40 bytes, so 8192 is always sufficient for discovery. */
-    uint8_t tmp[8192];
-    n = pread(sb->fd, tmp, 8192, PAGE_HEADER_SIZE);
-    if (n != 8192) return -1;
+       40 bytes of the payload — this works regardless of actual page_size. */
+    uint8_t tmp[40];
+    n = pread(sb->fd, tmp, 40, PAGE_HEADER_SIZE);
+    if (n != 40) return -1;
 
-    int64_t ps = vfs_rd8_s(tmp, HDR_OFF_PAGE_SIZE, VFS_PAGE_SIZE);
+    int64_t ps = vfs_rd8(tmp, HDR_OFF_PAGE_SIZE);
     if (ps < 512 || ps > 65536) return -1;
 
     /* Step 2: Read the full page_size payload and validate CRC over ALL of it */
