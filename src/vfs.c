@@ -73,3 +73,9 @@ void vfs_close(vfs_t* vfs) {
     }
     free(vfs);
 }
+
+int vfs_flush(vfs_t* vfs) {
+    if (!vfs || !vfs->ctx) return VFS_ERR_IO;
+    storage_flush(vfs->ctx->sb, -1);
+    return VFS_OK;
+}
