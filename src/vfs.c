@@ -79,3 +79,8 @@ int vfs_flush(vfs_t* vfs) {
     storage_flush(vfs->ctx->sb, -1);
     return VFS_OK;
 }
+
+vfs_error_t vfs_last_error(vfs_t* vfs) {
+    if (!vfs || !vfs->ctx) return VFS_ERR_IO;
+    return vfs->ctx->last_error;
+}
