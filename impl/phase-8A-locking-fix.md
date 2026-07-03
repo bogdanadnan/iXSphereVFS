@@ -315,3 +315,32 @@ Before GC:                    After GC (current):           After GC (fixed):
 - [ ] After GC: `Allocate` can reuse freed logical pages
 - [ ] After GC with no soft-deleted data: all data pages survive
 - [ ] Empty tree GC: no crash, no leaked pages
+
+---
+
+## Workload 8A.6 — Remove Legacy vfs_rd8 from mount_existing
+
+### What
+`storage.c:202` uses the legacy `vfs_rd8(tmp, HDR_OFF_PAGE_SIZE)` to read
+`page_size` from a 40-byte tmp buffer. The legacy function asserts
+`offset + 8 ≤ VFS_PAGE_SIZE` (8192) but the buffer is only 40 bytes.
+The assertion passes (8+8=16 ≤ 8192) but is semantically wrong — it
+validates against a full page, not the actual buffer.
+
+### Fix
+
+Replace with direct `memcpy` or a helper that takes the actual buffer size:
+```c
+int64_t ps;
+memcpy(&ps, tmp + HDR_OFF_PAGE_SIZE, 8);
+```
+
+### Why This Matters
+
+If the config area layout ever changes and fields shift, the assertion
+won't catch out-of-bounds access on this small buffer. The fix ensures
+buffer-size correctness independent of the page size constant.
+
+### Acceptance
+- [ ] `mount_existing` compiles and passes all existing tests
+- [ ] No `VFS_PAGE_SIZE` references in production code outside of `page_buf.h` legacy functions
