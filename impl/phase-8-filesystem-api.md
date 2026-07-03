@@ -37,9 +37,84 @@ in the module that owns its implementation:
 | `vfs_snapshot`, `vfs_commit`, `vfs_delete_snapshot` | `src/epoch.c` | 6 | Already implemented |
 | `vfs_gc` | `src/gc.c` | 7 | Already implemented |
 
-Public declarations live in:
-- `include/ixsphere_vfs.h` — `vfs_open`, `vfs_close`, error types, opaque handle
-- `include/tree_api.h` — all other API functions, `vfs_dirent_t`
+Public declarations live in `include/ixsphere/`:
+- `include/ixsphere/vfs.h` — ALL public API declarations, grouped by functionality
+- `include/ixsphere/vfs_internal.h` — internal structures (TreeContext, vfs_t)
+
+Internal headers live in `src/` alongside their `.c` files:
+- `src/nodes.h` — moved from `include/` for consistency
+- `src/tree.h`, `src/pool.h`, `src/gc.h`, etc.
+
+Final include convention:
+```c
+#include <ixsphere/vfs.h>          // public API
+#include "nodes.h"                 // internal (src/ is on include path)
+```
+
+## Header Reorganization Tasks
+
+### Task A — Move `include/nodes.h` → `src/nodes.h`
+- Update all `#include "nodes.h"` to use the src path (already on include path)
+- Remove `include/nodes.h`
+
+### Task B — Move `include/ixsphere_vfs.h` → `include/ixsphere/vfs.h`
+- Create `include/ixsphere/` directory
+- Rename the file
+- Update CMakeLists.txt public include path to `include`
+- Update all internal `#include "ixsphere_vfs.h"` → `#include "vfs.h"` or
+  `#include <ixsphere/vfs.h>`
+
+### Task C — Merge `include/tree_api.h` into `include/ixsphere/vfs.h`
+Move all function declarations into vfs.h, grouped by category:
+
+```c
+// Instance management
+vfs_t*  vfs_open(const char* path, int64_t page_size);
+void    vfs_close(vfs_t* vfs);
+int     vfs_flush(vfs_t* vfs);
+vfs_error_t vfs_last_error(vfs_t* vfs);
+
+// File operations
+int     vfs_create(vfs_t*, int64_t parent, const char* name, int64_t epoch);
+int     vfs_delete(vfs_t*, int64_t parent, const char* name, int64_t epoch);
+int     vfs_rename(vfs_t*, int64_t src_p, const char* src, int64_t dst_p, const char* dst, int64_t epoch);
+int64_t vfs_open_file(vfs_t*, int64_t parent, const char* name, int64_t epoch);
+int     vfs_read(vfs_t*, int64_t file, void* buf, int64_t offset, int64_t count, int64_t epoch);
+int     vfs_write(vfs_t*, int64_t file, const void* data, int64_t offset, int64_t count, int64_t epoch);
+int64_t vfs_file_size(vfs_t*, int64_t file, int64_t epoch);
+int64_t vfs_file_mtime(vfs_t*, int64_t file, int64_t epoch);
+int64_t vfs_file_ctime(vfs_t*, int64_t file);
+
+// Directory operations
+int     vfs_mkdir(vfs_t*, int64_t parent, const char* name, int64_t epoch);
+int     vfs_rmdir(vfs_t*, int64_t parent, const char* name, int64_t epoch);
+int     vfs_readdir(vfs_t*, int64_t dir, vfs_dirent_t* entries, int max, int64_t epoch);
+typedef struct { int64_t nodeId; char name[256]; bool isDir; } vfs_dirent_t;
+
+// Locking
+int     vfs_lock(vfs_t*, int64_t file, int64_t epoch);
+int     vfs_unlock(vfs_t*, int64_t file, int64_t epoch);
+
+// Snapshots & commits
+int64_t vfs_snapshot(vfs_t*);
+int     vfs_commit(vfs_t*, int64_t snapshot_epoch);
+int     vfs_delete_snapshot(vfs_t*, int64_t snapshot_epoch);
+
+// GC
+int     vfs_gc(vfs_t*);
+```
+
+### Task D — Move `include/vfs_internal.h` → `include/ixsphere/vfs_internal.h`
+- Same namespace as public header
+- Update all internal `#include "vfs_internal.h"` references
+
+### Task E — Remove `include/tree_api.h`
+- All declarations now in `include/ixsphere/vfs.h`
+- Remove the file and update all `#include "tree_api.h"` references
+
+### Task F — Update CMakeLists.txt
+- Public include dir: `include` (so `#include <ixsphere/vfs.h>` works)
+- Add `src` to internal include path (already done)
 
 ## Dependencies
 All previous phases must be complete. This phase is a thin wrapper.
