@@ -26,18 +26,18 @@ void pool_page_init(uint8_t* payload, int64_t page_size) {
     /* Build free list: each free slot's bytes 0–1 point to the next free slot */
     for (int i = 0; i < slot_count - 1; i++) {
         int offset = VFS_POOL_ENTRIES_OFFSET + i * VFS_POOL_SLOT_SIZE;
-        vfs_wr2_s(payload, offset, (int16_t)(i + 1), VFS_PAGE_SIZE);
+        vfs_wr2_s(payload, offset, (int16_t)(i + 1), page_size);
     }
 
     /* Terminal sentinel on the last slot */
     int last_offset = VFS_POOL_ENTRIES_OFFSET + (slot_count - 1) * VFS_POOL_SLOT_SIZE;
-    vfs_wr2_s(payload, last_offset, (int16_t)VFS_POOL_FREE_TERMINAL, VFS_PAGE_SIZE);
+    vfs_wr2_s(payload, last_offset, (int16_t)VFS_POOL_FREE_TERMINAL, page_size);
 
     /* Set poolState: all slots free, first free is slot 0 */
-    vfs_wr4_s(payload, POOL_OFF_STATE, (int32_t)pool_state_pack((uint16_t)slot_count, 0), VFS_PAGE_SIZE);
+    vfs_wr4_s(payload, POOL_OFF_STATE, (int32_t)pool_state_pack((uint16_t)slot_count, 0), page_size);
 
     /* nextPoolPage = 0 (not linked yet) */
-    vfs_wr8_s(payload, POOL_OFF_NEXT, 0, VFS_PAGE_SIZE);
+    vfs_wr8_s(payload, POOL_OFF_NEXT, 0, page_size);
 }
 
 /* ---------------------------------------------------------------------------
@@ -61,14 +61,14 @@ void pool_list_add(Pool* pool, int64_t page_index, uint8_t* payload) {
     int64_t old_head = vfs_atomic_load_i64(pool->list_head);
 
     /* Set this page's nextPoolPage to the current head */
-    vfs_wr8_s(payload, POOL_OFF_NEXT, old_head, VFS_PAGE_SIZE);
+    vfs_wr8_s(payload, POOL_OFF_NEXT, old_head, pool->sb->page_size);
 
     /* CAS-prepend: swap *list_head from old_head to page_index.
        If CAS fails (another thread prepended), retry with new head. */
     int64_t current;
     do {
         old_head = vfs_atomic_load_i64(pool->list_head);
-        vfs_wr8_s(payload, POOL_OFF_NEXT, old_head, VFS_PAGE_SIZE);
+        vfs_wr8_s(payload, POOL_OFF_NEXT, old_head, pool->sb->page_size);
         current = vfs_cas_i64(pool->list_head, old_head, page_index);
     } while (current != old_head);
 }
@@ -89,7 +89,7 @@ int64_t pool_list_find_free(Pool* pool) {
         if (payload == NULL) break;  /* corrupt or missing page */
 
         /* Read poolState and check freeCount */
-        uint32_t state = (uint32_t)vfs_rd4_s(payload, POOL_OFF_STATE, VFS_PAGE_SIZE);
+        uint32_t state = (uint32_t)vfs_rd4_s(payload, POOL_OFF_STATE, pool->sb->page_size);
         uint16_t free_count = pool_state_free_count(state);
 
         if (free_count > 0) {
@@ -97,7 +97,7 @@ int64_t pool_list_find_free(Pool* pool) {
         }
 
         /* Follow to next pool page */
-        page = vfs_rd8_s(payload, POOL_OFF_NEXT, VFS_PAGE_SIZE);
+        page = vfs_rd8_s(payload, POOL_OFF_NEXT, pool->sb->page_size);
     }
 
     return 0;  /* all pages full or no pages */
@@ -160,7 +160,7 @@ int64_t pool_alloc(Pool* pool) {
            thread consumed this slot, and first_free may now point to a
            different slot with a different next_free. */
         int slot_offset = VFS_POOL_ENTRIES_OFFSET + first_free * VFS_POOL_SLOT_SIZE;
-        uint16_t next_free = (uint16_t)vfs_rd2_s(payload, slot_offset, VFS_PAGE_SIZE);
+        uint16_t next_free = (uint16_t)vfs_rd2_s(payload, slot_offset, pool->sb->page_size);
 
         /* 9. Compute new poolState */
         uint32_t new_state = pool_state_pack(free_count - 1, next_free);
