@@ -199,7 +199,8 @@ static int mount_existing(StorageBackend* sb) {
     n = pread(sb->fd, tmp, 40, PAGE_HEADER_SIZE);
     if (n != 40) return -1;
 
-    int64_t ps = vfs_rd8(tmp, HDR_OFF_PAGE_SIZE);
+    int64_t ps;
+    memcpy(&ps, tmp + HDR_OFF_PAGE_SIZE, 8);
     if (ps < 512 || ps > 65536) return -1;
 
     /* Step 2: Read the full page_size payload and validate CRC over ALL of it */
