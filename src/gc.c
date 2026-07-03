@@ -158,6 +158,35 @@ void deferred_free_destroy(DeferredFreeQueue* queue) {
 }
 
 /* ---------------------------------------------------------------------------
+ * GC pool page allocation helper
+ * --------------------------------------------------------------------------- */
+
+int64_t gc_allocate_new_pool_page(TreeContext* ctx, void* gc_map) {
+    if (!ctx) return VFS_VPTR_NULL;
+    (void)gc_map;  /* used in Phase 8 to record old→new VirtualPtr mapping */
+
+    /* Allocate a fresh logical page from the storage backend */
+    int64_t page_idx = storage_allocate(ctx->sb, 1);
+    if (page_idx < 0) return VFS_VPTR_NULL;
+
+    /* Get a pointer to the page payload (page cache will allocate on read) */
+    uint8_t* payload = storage_read(ctx->sb, page_idx);
+    if (!payload) {
+        storage_free(ctx->sb, page_idx);
+        return VFS_VPTR_NULL;
+    }
+
+    /* Initialize the pool page header */
+    pool_page_init(payload, VFS_PAGE_SIZE);
+
+    /* Link the new page into the pool's free list */
+    pool_list_add(&ctx->pool, page_idx, payload);
+
+    /* Return the VirtualPtr of slot 0 on the new page (page_idx, slot=0) */
+    return VFS_VPTR_MAKE(page_idx, 0);
+}
+
+/* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *
  * Placeholder: walks are deferred to Phase 8.  The structure below

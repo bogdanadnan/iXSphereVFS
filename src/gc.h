@@ -53,6 +53,11 @@ typedef struct DeferredFreeQueue {
  * Allocates the pages array via malloc.  Returns VFS_OK on success. */
 int deferred_free_init(DeferredFreeQueue* queue, int initial_capacity);
 
+/* Allocate a fresh pool page, initialize its pool header, and link it
+ * into the pool's list.  Records the mapping in gc_map if non-NULL.
+ * Returns the new page's VirtualPtr for slot 0, or VFS_VPTR_NULL on error. */
+int64_t gc_allocate_new_pool_page(TreeContext* ctx, void* gc_map);
+
 /* Enqueue a logical page for deferred freeing.
  * If the page has a mirror sibling (via StorageBackend), also enqueues
  * the sibling so both are freed together. */
