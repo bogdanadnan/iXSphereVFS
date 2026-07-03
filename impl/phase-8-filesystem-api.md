@@ -21,11 +21,25 @@ snapshot lifecycle, and garbage collection.
 
 ## File Organization
 
-| File | Purpose |
-|------|---------|
-| `src/api.c` | All public API function implementations |
-| `include/ixsphere_vfs.h` | Updated with full public API declarations |
-| `test/test_api.c` | Integration tests |
+Phase 8 does not introduce a single `api.c` file. Instead, each function lives
+in the module that owns its implementation:
+
+| Function | Source File | Phase | Notes |
+|----------|-------------|-------|-------|
+| `vfs_open`, `vfs_close` | `src/vfs.c` | 5+8 | Instance lifecycle |
+| `vfs_flush` | `src/vfs.c` | 8 | **NEW — not yet implemented** |
+| `vfs_last_error` | `src/vfs.c` | 8 | **NEW — not yet implemented** |
+| `vfs_lock`, `vfs_unlock` | `src/vfs.c` | 8 | **NEW — not yet implemented** |
+| `vfs_create`, `vfs_delete`, `vfs_mkdir`, `vfs_rmdir`, `vfs_rename` | `src/tree.c` | 5 | Already implemented |
+| `vfs_write`, `vfs_read` | `src/tree.c` | 5 | Already implemented |
+| `vfs_open_file`, `vfs_file_size/mtime/ctime` | `src/tree.c` | 5 | Already implemented |
+| `vfs_readdir` | `src/tree.c` | 5 | Already implemented |
+| `vfs_snapshot`, `vfs_commit`, `vfs_delete_snapshot` | `src/epoch.c` | 6 | Already implemented |
+| `vfs_gc` | `src/gc.c` | 7 | Already implemented |
+
+Public declarations live in:
+- `include/ixsphere_vfs.h` — `vfs_open`, `vfs_close`, error types, opaque handle
+- `include/tree_api.h` — all other API functions, `vfs_dirent_t`
 
 ## Dependencies
 All previous phases must be complete. This phase is a thin wrapper.
@@ -40,43 +54,34 @@ All previous phases must be complete. This phase is a thin wrapper.
 
 ## Workload 8.1 — Instance Management
 
-### `vfs_t* vfs_open(const char* path)`
+### What
+Implement `vfs_flush`, `vfs_last_error`, and complete the `vfs_close` cleanup.
+`vfs_open` is already implemented in `src/vfs.c` (wired to Phase 5 bootstrap).
 
-```
-1. Call storage_open(path, 8192) to create or open the backing file.
-2. If new file: initialize superblock and root directory (Phase 5 Workload 5.1).
-3. If existing file: read superblock, build mapper dictionary, verify root.
-4. Initialize per-instance structures:
-   - Page cache (already initialized by storage_open)
-   - Mapper dictionary (from superblock->epochMapperPtr chain)
-   - File lock hash table (empty, created lazily per Workload 8.4)
-   - Dentry cache (per-directory, created lazily)
-   - Pool list head reference (from superblock->poolListHead)
-   - last_error = VFS_OK
-5. Return vfs_t* handle. NULL on failure (set last_error before returning NULL).
-```
+### New Implementation Required
+
+### `vfs_t* vfs_open(const char* path, int64_t page_size)`
+Already implemented in `src/vfs.c`. Creates or mounts StorageBackend,
+bootstraps tree context (superblock + root directory). Wire the TreeContext's
+`last_error` field for error reporting.
 
 ### `void vfs_close(vfs_t* vfs)`
-
-```
-1. Flush all dirty pages: vfs_flush(vfs).
-2. storage_close(vfs->sb).  // closes fd, frees cache, frees indirection table
-3. Free all in-memory structures: mapper, lock table, dentry caches.
-4. Free the vfs_t struct itself.
-```
+Already implemented. Ensure it calls `vfs_flush` before `storage_close`,
+then frees TreeContext, pool resources, mapper, and the handle itself.
 
 ### `int vfs_flush(vfs_t* vfs)`
-
+**NEW.** Thin wrapper:
 ```
-1. storage_flush(vfs->sb, -1).  // writes all dirty pages + fsync
+1. storage_flush(vfs->ctx->sb, -1)
 2. Return VFS_OK on success, VFS_ERR_IO on failure.
 ```
 
+### `vfs_error_t vfs_last_error(vfs_t* vfs)`
+**NEW.** Add `last_error` field to TreeContext. Return it here. Do NOT clear it.
+
 ### Acceptance
-- [ ] `vfs_open("new.vfs")` → creates file, bootstrap, returns valid handle
+- [ ] `vfs_open("new.vfs", 8192)` → creates file, bootstrap, returns valid handle
 - [ ] `vfs_close(handle)` → flush, free, Valgrind clean
-- [ ] `vfs_open("existing.vfs")` → mounts, data from previous session visible
-- [ ] `vfs_open("/not/a/vfs/file")` → returns NULL, last_error = VFS_ERR_IO
 - [ ] `vfs_flush` → data survives kill -9 + remount
 
 ---
