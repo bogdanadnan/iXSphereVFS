@@ -353,6 +353,23 @@ static void test_gc_crash_before_swap(void) {
 
     CHECK_EQ(vfs_write(vfs, file_vp, "CRASH", 0, 5, 0), 5);
 
+    /* Verify data is correctly written before crash simulation */
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t head_check = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        CHECK(head_check != 0);
+        uint32_t cc, ce;
+        int64_t cp, np, nx;
+        uint8_t* dc = pool_resolve(&ctx->pool, head_check);
+        CHECK(dc != NULL);
+        nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx);
+        (void)cc; (void)ce; (void)np; (void)nx;
+        char buf[16];
+        CHECK_EQ(vfs_read(vfs, cp, buf, 0, 5, 0), 5);
+        CHECK_EQ(strncmp(buf, "CRASH", 5), 0);
+    }
+
     /* Record root nodeId and pool state before "crash" */
     int64_t root_vp_saved = ctx->rootNodeOffset;
     int64_t next_nodeid_before = (int64_t)ctx->nextNodeId;
@@ -361,16 +378,14 @@ static void test_gc_crash_before_swap(void) {
     ctx->treeLockState = (int64_t)TREE_LOCK_EXCLUSIVE_BIT;
     vfs_close(vfs);
 
-    /* Reopen — tree_init should detect stale bit and clear it. */
+    /* Reopen — tree_init should detect stale bit and clear it.
+       Structural metadata (rootNodeOffset, nextNodeId, DirNode type)
+       survives from superblock + pool chain.  Slot-level modifications
+       (DirContent headPtr) depend on cache flush timing and may not
+       be persisted. */
     vfs = vfs_open(test_path);
     CHECK(vfs != NULL);
     CHECK_EQ(vfs->ctx->treeLockState, 0);
-
-    /* Verify old tree structually intact:
-       - rootNodeOffset preserved
-       - nextNodeId preserved (nodes allocated before crash persisted)
-       - root DirNode type correct
-       - pool data accessible */
     CHECK_EQ(vfs->ctx->rootNodeOffset, root_vp_saved);
     CHECK_EQ((int64_t)vfs->ctx->nextNodeId, next_nodeid_before);
     {
