@@ -21,8 +21,7 @@ and validation — no new features.
 
 | File | Purpose |
 |------|---------|
-| `bench/bench.c` | Benchmark harness — SQLite workloads require Phase 9 |
-| `bench/bench_raw.c` | Raw VFS benchmark — file, dir, read workloads, no SQLite dependency |
+| `bench/bench.c` | Benchmark harness — raw VFS workloads only |
 | `test/test_crash.c` | Crash recovery test harness (Unix: fork; Windows: CreateProcess) |
 | `test/test_fuzz.c` | Fuzzing harness |
 | `docs/API.md` | API reference |
@@ -37,11 +36,9 @@ and validation — no new features.
 | Dependency | Phase | Purpose |
 |------------|-------|---------|
 | Full VFS API | Phase 8 | All workloads |
-| SQLite VFS | Phase 9 | `insert`/`batch` workloads in bench.c |
 | `fork()` or `CreateProcess` | OS | Crash tests (10.5) |
 | `perf`/`Instruments` | OS | Hot path profiling (10.2) |
 | `valgrind` | OS | Memory leak detection (10.7) |
-| SQLite amalgamation | External | `bench.c` with SQLite workloads |
 
 ## Staging Guidance
 
@@ -50,18 +47,14 @@ Phase 10 workloads can be built in parallel with one exception:
 ### Independent (build in any order):
 - **10.7 (CI)** — just YAML files, no code. Start immediately.
 - **10.8 (Documentation)** — README + API docs. Can be drafted early.
-- **10.1 (Benchmark, raw workloads)** — `bench_raw.c` without SQLite.
-  `read`, `scan`, `mixed`, `dir` workloads work against Phase 8 API alone.
+- **10.5 (Crash)** — needs Phase 7 (GC) functional.
+- **10.6 (Fuzzing)** — needs the backing file format stable.
 
 ### Sequential chain (each builds on prior):
-- **10.1 (Benchmark, SQLite workloads)** — requires Phase 9.
+- **10.1 (Benchmark)** — raw VFS workloads: create, write, read, scan, mixed, dir.
 - **10.2 (Hot Path)** → needs 10.1 for measurements.
 - **10.3 (Cache Tuning)** → needs 10.1 for test matrix.
 - **10.4 (Contention)** → needs 10.1 for scaling tests.
-
-### Verification (after core is stable):
-- **10.5 (Crash)** — needs Phase 7 (GC) functional.
-- **10.6 (Fuzzing)** — needs the backing file format stable.
 
 ## Platform Notes
 
@@ -89,8 +82,8 @@ workloads.
 vfs_bench --workload <name> [options]
 
 Workloads:
-  insert     Individual auto-commit INSERTs via SQLite
-  batch      Multi-row batched INSERTs
+  create     File creation throughput
+  write      Raw write throughput
   read       Random reads from pre-populated file
   scan       Sequential full-file scan
   mixed      Configurable read/write mix
@@ -141,8 +134,9 @@ int main(int argc, char** argv) {
 ## Workload 10.2 — Hot Path Analysis
 
 ### What
-Profile the individual INSERT workload and identify top CPU consumers.
-Compare measured per-page-write time against the predicted ~42 µs.
+Profile the raw VFS write workload and identify top CPU consumers.
+Compare measured per-page-write time against the predicted ~42 µs
+(SPEC.md §13).
 
 ### Required Measurements
 
@@ -179,10 +173,10 @@ Compare measured per-page-write time against the predicted ~42 µs.
 ## Workload 10.3 — Cache Tuning
 
 ### What
-Find the optimal page cache size for OLTP workloads.
+Find the optimal page cache size for write-heavy workloads.
 
 ### Test Matrix
-Run `vfs_bench --workload insert --threads 4 --count 10000` at each
+Run `vfs_bench --workload write --threads 4 --count 10000` at each
 cache size:
 - 32 MB (4,096 pages)
 - 64 MB (8,192 pages)
@@ -208,7 +202,7 @@ cache size:
 - Whether LRU is sufficient or a 2-queue/LRU-K policy is needed
 
 ### Acceptance
-- [ ] Cache hit rate ≥95% at default 256 MB for INSERT workload
+- [ ] Cache hit rate ≥95% at default 256 MB for write workload
 - [ ] Peak throughput identified (the cache size after which more memory
   doesn't help)
 - [ ] Document with charts in `docs/CACHE.md`
@@ -221,7 +215,7 @@ cache size:
 Measure contention under increasing thread counts.
 
 ### Test Matrix
-Run `vfs_bench --workload insert --threads N --count 10000` for
+Run `vfs_bench --workload write --threads N --count 10000` for
 N = 1, 2, 4, 8, 16.
 
 ### Required Measurements per Thread Count
