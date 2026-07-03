@@ -660,6 +660,7 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
     int64_t src_head = vfs_rd8_s(src_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
     uint32_t found_childId = 0;
     int64_t found_childPtr = 0;
+    uint32_t found_epoch = 0;
 
     int64_t walk_vp = src_head;
     while (walk_vp != 0 && found_childPtr == 0) {
@@ -674,14 +675,14 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
             if (nl > 0 && strcmp(en, src) == 0) {
                 found_childId = cc;
                 found_childPtr = cp;
+                found_epoch = ce;
             }
         }
         walk_vp = nx;
     }
     if (found_childPtr == 0) return VFS_ERR_NOTFOUND;
 
-    /* Same-dir same-epoch rename: just atomically update the namePtr */
-    if (src_parent == dst_parent) {
+    if (src_parent == dst_parent && found_epoch == (uint32_t)epoch) {
         /* Allocate NameEntry for the destination name */
         int64_t new_name_vp;
         int ns = nodes_write_name(&ctx->pool, dst, &new_name_vp);
@@ -788,11 +789,15 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
                       (ce_epoch < query_epoch && ce_epoch % 2 == 0);
         if (!applies) { walk_vp = ce_next; continue; }
 
-        /* If we already have a newer entry for this childNodeId, skip */
-        if ((int64_t)ce_child == best_child && ce_epoch <= best_epoch)
+        /* If we already have a newer entry for this childNodeId, skip.
+           Exception: a tombstone (namePtr=0) should not preempt a live
+           entry (namePtr≠0) at the same epoch. */
+        if ((int64_t)ce_child == best_child && best_name_match &&
+            ce_epoch <= best_epoch)
             { walk_vp = ce_next; continue; }
 
-        if (ce_epoch > best_epoch || (int64_t)ce_child != best_child) {
+        if (ce_epoch > best_epoch || (int64_t)ce_child != best_child ||
+            (ce_namePtr != 0 && best_name_match == 0 && ce_epoch == best_epoch)) {
             /* Check name if this is a live entry */
             if (ce_namePtr != 0) {
                 char entry_name[256];

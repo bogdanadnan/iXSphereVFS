@@ -1060,6 +1060,133 @@ static void test_readdir_tombstone(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * rename same dir: rename "old.txt" → "new.txt" at same epoch.
+ * old name gone, new name exists, nodeId unchanged.
+ * --------------------------------------------------------------------------- */
+
+static void test_rename_same_dir(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nid = vfs_create(vfs, root_vp, "old.txt", 0);
+    CHECK(nid > 0);
+
+    CHECK_EQ(vfs_rename(vfs, root_vp, "old.txt", root_vp, "new.txt", 0), VFS_OK);
+
+    /* old name gone */
+    CHECK_EQ(vfs_open_file(vfs, root_vp, "old.txt", 0), (int64_t)VFS_ERR_NOTFOUND);
+
+    /* new name exists with same nodeId */
+    CHECK_EQ(vfs_open_file(vfs, root_vp, "new.txt", 0), nid);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * rename cross dir: mkdir a, mkdir b, create a/f.txt at epoch 0,
+ * snapshot, then rename a/f.txt to b/g.txt at epoch 2.
+ * "a" loses the entry, "b" gains it at epoch 2, epoch 0 still sees "f.txt".
+ * --------------------------------------------------------------------------- */
+
+static void test_rename_cross_dir(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    CHECK_EQ(vfs_mkdir(vfs, root_vp, "a", 0), VFS_OK);
+    CHECK_EQ(vfs_mkdir(vfs, root_vp, "b", 0), VFS_OK);
+
+    int64_t dir_a = 0, dir_b = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
+        int64_t w = h;
+        while (w != 0) {
+            uint8_t* dc = pool_resolve(&ctx->pool, w);
+            CHECK(dc != NULL);
+            uint32_t cc, ce;
+            int64_t cp, np, nx;
+            nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
+            (void)cc; (void)ce;
+            char en[64];
+            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
+            if (nl > 0 && strcmp(en, "a") == 0) dir_a = cp;
+            if (nl > 0 && strcmp(en, "b") == 0) dir_b = cp;
+            w = nx;
+        }
+    }
+    CHECK(dir_a != 0);
+    CHECK(dir_b != 0);
+
+    int fnid = vfs_create(vfs, dir_a, "f.txt", 0);
+    CHECK(fnid > 0);
+
+    /* Snapshot so rename at epoch 2 uses a clean epoch */
+    vfs_snapshot(vfs);
+
+    CHECK_EQ(vfs_rename(vfs, dir_a, "f.txt", dir_b, "g.txt", 2), VFS_OK);
+
+    /* At epoch 0: source dir still sees "f.txt", dest does not have it */
+    CHECK_EQ(vfs_open_file(vfs, dir_a, "f.txt", 0), fnid);
+    CHECK_EQ(vfs_open_file(vfs, dir_b, "g.txt", 0), (int64_t)VFS_ERR_NOTFOUND);
+
+    /* At epoch 2: source loses the entry, destination gains it */
+    CHECK_EQ(vfs_open_file(vfs, dir_a, "f.txt", 2), (int64_t)VFS_ERR_NOTFOUND);
+    CHECK_EQ(vfs_open_file(vfs, dir_b, "g.txt", 2), fnid);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * rename cross epoch: create f.txt at epoch 0, snapshot, rename at epoch 2.
+ * Epoch 0 sees "f.txt", epoch 2 sees "g.txt".
+ * --------------------------------------------------------------------------- */
+
+static void test_rename_cross_epoch(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nid = vfs_create(vfs, root_vp, "f.txt", 0);
+    CHECK(nid > 0);
+
+    vfs_snapshot(vfs);
+
+    CHECK_EQ(vfs_rename(vfs, root_vp, "f.txt", root_vp, "g.txt", 2), VFS_OK);
+
+    /* Epoch 0 still sees "f.txt" */
+    int64_t f0 = vfs_open_file(vfs, root_vp, "f.txt", 0);
+    int64_t g0 = vfs_open_file(vfs, root_vp, "g.txt", 0);
+    CHECK_EQ(f0, nid);
+    CHECK_EQ(g0, (int64_t)VFS_ERR_NOTFOUND);
+
+    /* Epoch 2 sees "g.txt" */
+    CHECK_EQ(vfs_open_file(vfs, root_vp, "g.txt", 2), nid);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * rename not found: rename nonexistent file → VFS_ERR_NOTFOUND
+ * --------------------------------------------------------------------------- */
+
+static void test_rename_notfound(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    CHECK_EQ(vfs_rename(vfs, root_vp, "nonexistent.txt", root_vp, "x.txt", 0),
+             VFS_ERR_NOTFOUND);
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1130,6 +1257,20 @@ int main(void) {
 
     unlink(test_path);
     test_readdir_tombstone();
+
+    /* --- rename tests --- */
+
+    unlink(test_path);
+    test_rename_same_dir();
+
+    unlink(test_path);
+    test_rename_cross_dir();
+
+    unlink(test_path);
+    test_rename_cross_epoch();
+
+    unlink(test_path);
+    test_rename_notfound();
 
     /* Clean up */
     unlink(test_path);
