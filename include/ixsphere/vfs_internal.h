@@ -1,7 +1,7 @@
-#ifndef VFS_INTERNAL_H
-#define VFS_INTERNAL_H
+#ifndef IXSPHERE_VFS_INTERNAL_H
+#define IXSPHERE_VFS_INTERNAL_H
 
-#include "ixsphere_vfs.h"
+#include "ixsphere/vfs.h"
 #include "storage.h"
 #include "pool.h"
 #include "page_array.h"
@@ -42,6 +42,9 @@ typedef struct {
 
     /* Readdir cache — one directory at a time, zeroed to valid=false */
     DentryCache readdir_cache;
+
+    /* Last error code — set by operations, reset to VFS_OK on success */
+    vfs_error_t last_error;
 } TreeContext;
 
 struct vfs_t {

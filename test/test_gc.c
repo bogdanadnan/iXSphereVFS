@@ -1,5 +1,5 @@
 /* Phase 7: Tree lock unit tests */
-#include "vfs_internal.h"
+#include "ixsphere/vfs_internal.h"
 #include "epoch.h"
 #include "gc.h"
 #include "tree.h"

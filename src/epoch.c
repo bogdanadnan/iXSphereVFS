@@ -1,6 +1,6 @@
 /* Phase 6: Epoch system — replaces Phase 5a stubs. */
 #include "epoch.h"
-#include "vfs_internal.h"
+#include "ixsphere/vfs_internal.h"
 #include "touched.h"
 #include "tree.h"
 #include <stdlib.h>

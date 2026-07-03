@@ -1,5 +1,5 @@
 /* Phase 6c: Comprehensive epoch system tests */
-#include "vfs_internal.h"
+#include "ixsphere/vfs_internal.h"
 #include "epoch.h"
 #include "mapper.h"
 #include "touched.h"

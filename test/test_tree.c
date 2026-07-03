@@ -1,5 +1,5 @@
 /* Phase 5a: Tree bootstrap tests */
-#include "vfs_internal.h"
+#include "ixsphere/vfs_internal.h"
 #include "tree.h"
 #include "nodes.h"
 #include <stdio.h>

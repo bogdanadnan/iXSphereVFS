@@ -1,7 +1,7 @@
 #ifndef VFS_TREE_H
 #define VFS_TREE_H
 
-#include "vfs_internal.h"
+#include "ixsphere/vfs_internal.h"
 #include "nodes.h"
 #include "epoch.h"
 

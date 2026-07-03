@@ -1,7 +1,7 @@
 #ifndef VFS_TOUCHED_H
 #define VFS_TOUCHED_H
 
-#include "vfs_internal.h"
+#include "ixsphere/vfs_internal.h"
 #include "nodes.h"
 #include <stdbool.h>
 

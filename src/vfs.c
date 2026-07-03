@@ -1,6 +1,6 @@
 #include "ixsphere_vfs.h"
 #include "platform.h"
-#include "vfs_internal.h"
+#include "ixsphere/vfs_internal.h"
 #include "tree.h"
 #include <stdlib.h>
 #include <string.h>

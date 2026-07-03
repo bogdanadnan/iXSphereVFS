@@ -1,6 +1,6 @@
 /* Phase 6: Mapper unit tests */
 #include "mapper.h"
-#include "vfs_internal.h"
+#include "ixsphere/vfs_internal.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>

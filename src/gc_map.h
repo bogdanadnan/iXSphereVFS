@@ -1,7 +1,7 @@
 #ifndef VFS_GC_MAP_H
 #define VFS_GC_MAP_H
 
-#include "vfs_internal.h"
+#include "ixsphere/vfs_internal.h"
 #include <stdbool.h>
 
 /* ---------------------------------------------------------------------------

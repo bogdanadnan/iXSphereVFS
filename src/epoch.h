@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "mapper.h"
-#include "vfs_internal.h"
+#include "ixsphere/vfs_internal.h"
 
 /* ---------------------------------------------------------------------------
  * Phase 6: Epoch system — replaces Phase 5a stubs.
