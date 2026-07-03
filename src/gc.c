@@ -311,6 +311,7 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                      int64_t file_vp, int64_t epoch) {
     if (!ctx || !gc_map || !alloc || file_vp == 0) return VFS_ERR_IO;
+    (void)epoch;
 
     uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
     if (!file_slot) return VFS_ERR_NOTFOUND;
@@ -339,14 +340,15 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
     /* Walk FileSize chain (tracked via FileNode.sizePtr) */
     int64_t size_vp = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
-    int64_t prev_size_new_vp = 0;  /* last surviving FileSize new_vp */
     while (size_vp != 0) {
         uint8_t* fs_slot = pool_resolve(&ctx->pool, size_vp);
         if (!fs_slot) break;
 
         uint32_t fs_epoch;
-        int64_t fs_next;
-        nodes_read_filesize(fs_slot, &fs_epoch, NULL, NULL, &fs_next);
+        int64_t fs_modifiedAt, fs_fileSize, fs_next;
+        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modifiedAt,
+                            &fs_fileSize, &fs_next);
+        (void)fs_modifiedAt; (void)fs_fileSize;
 
         /* Survival rule: soft-deleted → DROP; committed → REWRITE; else KEEP */
         int keep = 1;
@@ -384,7 +386,6 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
     /* Walk FileContent chain */
     int64_t fc_vp = vfs_rd8(file_slot, FILENODE_OFF_HEADPTR);
-    int64_t prev_fc_new_vp = 0;
     while (fc_vp != 0) {
         uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
         if (!fc_slot) break;
