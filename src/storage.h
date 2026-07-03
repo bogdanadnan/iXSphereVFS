@@ -204,4 +204,7 @@ static inline double vfs_cache_hit_ratio(void) {
     return (t > 0) ? (double)vfs_cache_hits() / (double)t : 0.0;
 }
 
+/* Maximum number of entries the page cache can hold before eviction. */
+int64_t vfs_cache_max_entries(void);
+
 #endif /* VFS_STORAGE_H */

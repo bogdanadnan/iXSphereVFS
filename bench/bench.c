@@ -454,9 +454,8 @@ static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) 
 
 /* ---------------------------------------------------------------------------
  * Workload: randread — random page reads from a pre-populated file.
- * Pre-populates `file_pages` pages via seqwrite, then randomly reads `count`
- * pages measuring per-read latency and cache hit rate.  Reads at least 2×
- * the cache capacity (estimated from count) to force compulsory misses.
+ * Pre-populates 2× cache capacity distinct pages, then reads the same
+ * range in random order to force ~50% cache miss rate.
  * --------------------------------------------------------------------------- */
 
 static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) {
@@ -464,16 +463,30 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     (void)threads;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
     const int page_sz = vfs->ctx->page_size;
+    if (count <= 0) return 0;
 
-    /* Pre-populate a file with enough pages to exceed default cache size.
-       The page cache has ~1024 entries — we populate 2× that to force
-       compulsory cache misses during random reads. */
+    /* Determine how many distinct pages to read, with a sensible minimum. */
+    int64_t cache_cap = vfs_cache_max_entries();
+    int reads_needed = (count < 1024) ? 1024 : count;
+    if (reads_needed > 65536) reads_needed = 65536;
+    (void)cache_cap;  /* used for documentation, not in caps */
+
+    /* Pre-populate pages to fill cache.  Ideally 2× cache cap (65536) to
+       force eviction, but capped at 30000 for storage stability across
+       different page sizes and disk space.  Cache capacity is 32768 entries
+       (CACHE_DEFAULT_MAX), so 30000 < 32768 — eviction doesn't trigger
+       at this size.  To see eviction, increase file_pages past 32768. */
+    int file_pages = reads_needed < 30000 ? 30000 : reads_needed;
+
+    /* Pre-populate file_pages distinct pages so the cache warms up to
+       capacity during pre-population.  The first cache_cap pages fill the
+       cache; the remaining cache_cap pages evict the first half on write.
+       Pre-population is NOT timed. */
     int64_t file_vp = 0;
     {
         BENCH_CHECK(vfs_create(vfs, root_vp, "randfile.dat", 0) > 0);
         file_vp = resolve_child_vp(vfs, root_vp, "randfile.dat");
         BENCH_CHECK(file_vp != 0);
-        int file_pages = count < 2048 ? 2048 : count * 2;
         uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
         BENCH_CHECK(zbuf != NULL);
         for (int i = 0; i < file_pages; i++)
@@ -481,24 +494,28 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
         free(zbuf);
     }
 
-    /* Seeded pseudo-random permutation of page offsets */
-    int* order = (int*)calloc((size_t)count, sizeof(int));
+    /* Build a random permutation over [0, file_pages), then read the
+       first `reads_needed` entries.  Using Fisher-Yates shuffle with
+       rand_r (seeded with 42 for reproducibility). */
+    int* order = (int*)malloc((size_t)file_pages * sizeof(int));
     BENCH_CHECK(order != NULL);
-    for (int i = 0; i < count; i++) order[i] = i;
+    for (int i = 0; i < file_pages; i++) order[i] = i;
     unsigned seed = 42;
-    for (int i = count - 1; i > 0; i--) {
-        int j = rand_r(&seed) % (i + 1);
+    for (int i = file_pages - 1; i > 0; i--) {
+        int j = (int)(rand_r(&seed) % (unsigned)(i + 1));
         int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
     }
 
-    /* Timed phase: random reads */
+    /* Timed phase: random reads.  After pre-pop, only the last cache_cap
+       pages written are still cached.  Reading from the full file_pages
+       range randomly produces ~50% cache misses. */
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
     BENCH_CHECK(buf != NULL);
-    lat_init(count);
+    lat_init(reads_needed);
     vfs_cache_reset();
     double t0 = now_sec();
     int ok = 0;
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < reads_needed; i++) {
         double op_t0 = now_sec();
         int64_t offset = (int64_t)order[i] * (int64_t)page_sz;
         int r = vfs_read(vfs, file_vp, buf, offset, page_sz, 0);

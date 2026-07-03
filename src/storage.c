@@ -23,6 +23,8 @@ void vfs_cache_reset(void) {
 int64_t vfs_cache_total(void) { return _cache_total; }
 int64_t vfs_cache_hits(void)  { return _cache_hits; }
 
+int64_t vfs_cache_max_entries(void) { return CACHE_DEFAULT_MAX; }
+
 void storage_set_deferred_queue(DeferredFreeQueue* queue) {
     _deferred_queue = queue;
 }
