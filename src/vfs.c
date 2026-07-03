@@ -25,6 +25,7 @@ typedef struct FileLockState {
     pthread_cond_t    cv;
     pthread_t         global_owner; /* thread holding the global lock, 0 if none */
     int               global_depth; /* recursive count for global lock */
+    int               global_held;  /* 1 if global lock is active */
     int               global_pending; /* threads waiting for global lock */
     int               epoch_count;  /* number of active per-epoch locks */
     int               refcount;     /* number of references to this entry */
@@ -61,6 +62,7 @@ static FileLockState* filelock_find_or_create(int64_t nodeId) {
     e->refcount = 1;
     e->global_owner = 0;
     e->global_depth = 0;
+    e->global_held = 0;
     e->global_pending = 0;
     e->epoch_count = 0;
     e->next = lock_table[bkt];
@@ -100,33 +102,33 @@ int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch) {
     pthread_t self = pthread_self();
 
     if (epoch == 0) {
-        /* Global lock: wait until no per-epoch locks are active */
+        /* Global lock: announce intent, wait until per-epoch locks drain */
         pthread_mutex_lock(&fls->mtx);
-        fls->global_pending++;
+        fls->global_pending = 1;
 
-        /* If same thread already holds global lock, recursive */
         if (fls->global_depth > 0 && pthread_equal(fls->global_owner, self)) {
             fls->global_depth++;
-            fls->global_pending--;
+            fls->global_pending = 0;
             pthread_mutex_unlock(&fls->mtx);
             return VFS_OK;
         }
 
-        /* Wait until epoch_count drops to 0 */
         while (fls->epoch_count > 0)
             pthread_cond_wait(&fls->cv, &fls->mtx);
 
         fls->global_owner = self;
         fls->global_depth = 1;
-        fls->global_pending--;
+        fls->global_held = 1;
+        fls->global_pending = 0;
         pthread_mutex_unlock(&fls->mtx);
         return VFS_OK;
     }
 
-    /* Per-epoch lock: wait if global lock is held by another thread */
+    /* Per-epoch lock: wait until global lock is released and no global
+       lock is pending (another thread may be waiting to acquire it). */
     pthread_mutex_lock(&fls->mtx);
 
-    while (fls->global_depth > 0 && (fls->global_owner == 0 || !pthread_equal(fls->global_owner, self)))
+    while (fls->global_held || fls->global_pending)
         pthread_cond_wait(&fls->cv, &fls->mtx);
 
     fls->epoch_count++;
@@ -165,6 +167,7 @@ int vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch) {
         fls->global_depth--;
         if (fls->global_depth == 0) {
             fls->global_owner = 0;
+            fls->global_held = 0;
             pthread_cond_broadcast(&fls->cv);
         }
         pthread_mutex_unlock(&fls->mtx);
