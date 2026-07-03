@@ -187,6 +187,37 @@ int64_t gc_allocate_new_pool_page(TreeContext* ctx, void* gc_map) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Entry copy with VirtualPtr remapping
+ * --------------------------------------------------------------------------- */
+
+void gc_copy_entry(GCMap* gc_map, int64_t old_vp, int64_t new_vp,
+                   const uint8_t* old_slot, uint8_t* new_slot) {
+    if (!gc_map || !old_slot) return;
+
+    /* Record the mapping: old_vp → new_vp */
+    gc_map_put(gc_map, old_vp, new_vp);
+
+    if (new_slot) {
+        /* Copy the 32-byte slot */
+        memcpy(new_slot, old_slot, VFS_POOL_SLOT_SIZE);
+
+        /* Remap VirtualPtrs within the slot.
+           Pool entries contain VirtualPtrs at offsets 0, 8, 16, 24.
+           Not all of these are VirtualPtrs (offset 0 may be a type field),
+           but only values that exist as keys in gc_map will be remapped,
+           which correctly filters out non-pointer fields. */
+        for (int off = 0; off < VFS_POOL_SLOT_SIZE; off += 8) {
+            int64_t val = vfs_rd8(new_slot, off);
+            if (val == 0) continue;  /* skip null — not in map */
+            int64_t mapped = gc_map_get(gc_map, val);
+            if (mapped != val) {
+                vfs_wr8(new_slot, off, mapped);
+            }
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *
  * Placeholder: walks are deferred to Phase 8.  The structure below

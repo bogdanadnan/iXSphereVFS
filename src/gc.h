@@ -2,6 +2,7 @@
 #define VFS_GC_H
 
 #include "vfs_internal.h"
+#include "gc_map.h"
 #include <stdbool.h>
 
 /* ---------------------------------------------------------------------------
@@ -57,6 +58,16 @@ int deferred_free_init(DeferredFreeQueue* queue, int initial_capacity);
  * into the pool's list.  Records the mapping in gc_map if non-NULL.
  * Returns the new page's VirtualPtr for slot 0, or VFS_VPTR_NULL on error. */
 int64_t gc_allocate_new_pool_page(TreeContext* ctx, void* gc_map);
+
+/* Copy a single 32-byte pool entry from old_slot to new_slot.
+ * Updates gc_map with old_vp → new_vp mapping.
+ * Remaps any VirtualPtrs within the entry by looking them up in gc_map.
+ * old_vp — VirtualPtr of the slot being copied (key into the map)
+ * new_vp — VirtualPtr of the destination slot (value in the map)
+ * old_slot — pointer to the source slot data
+ * new_slot — pointer to the destination slot data (may be NULL for compute-only) */
+void gc_copy_entry(GCMap* gc_map, int64_t old_vp, int64_t new_vp,
+                   const uint8_t* old_slot, uint8_t* new_slot);
 
 /* Enqueue a logical page for deferred freeing.
  * If the page has a mirror sibling (via StorageBackend), also enqueues
