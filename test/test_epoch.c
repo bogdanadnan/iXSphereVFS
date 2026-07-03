@@ -408,24 +408,73 @@ static void test_mapper_integration(void) {
     CHECK(file_vp != 0);
 
     CHECK_EQ(vfs_write(vfs, file_vp, "DATA", 0, 4, 0), 4);
+    int64_t size0 = vfs_file_size(vfs, file_vp, 0);
+    CHECK_EQ(size0, 4);
 
-    /* Snapshot (epoch 1) */
+    /* Snapshot (epoch 1), write at epoch 2 as specified */
     int64_t snap = vfs_snapshot(vfs);
     CHECK_EQ(snap, 1);
 
-    /* Write at snapshot epoch so commit creates a mapper entry */
-    CHECK_EQ(vfs_write(vfs, file_vp, "MORE", 0, 4, 1), 4);
+    CHECK_EQ(vfs_write(vfs, file_vp, "MORE", 0, 4, 2), 4);
 
-    /* Commit should succeed (no conflict — only written at epoch 0 and 1) */
+    /* Commit snapshot 1 */
     CHECK_EQ(vfs_commit(vfs, snap), VFS_OK);
 
-    /* After commit: mapper_insert(1, currentEpoch, traversalApply=true).
-       vfs_open_file at epoch 1 resolves via mapper → 2. */
+    /* After commit:
+       (a) vfs_open_file at epoch 1 should find the file (mapper resolves 1→2) */
     CHECK_EQ(vfs_open_file(vfs, root_vp, "mt.txt", 1), nid);
 
+    /* (b) vfs_file_size at committed epoch 1 should return 4 (size from epoch 2 write) */
+    CHECK_EQ(vfs_file_size(vfs, file_vp, 1), 4);
+
+    /* (c) vfs_readdir at epoch 1 should show the file with correct name */
     vfs_dirent_t de[8];
     int nr = vfs_readdir(vfs, root_vp, de, 8, 1);
     CHECK_EQ(nr, 1);
+    CHECK(!de[0].isDir);
+    CHECK(strcmp(de[0].name, "mt.txt") == 0);
+
+    /* Now test soft-delete: take another snapshot (epoch 3) and soft-delete it.
+       After commit, currentEpoch = 2.  vfs_snapshot → epoch 3, currentEpoch→4.
+       Soft-delete epoch 3 → mapper_insert(3, 2, 0) — toEpoch=2 conflicts with
+       commit's 1→2 mapping.  So take ANOTHER snapshot first:
+       vfs_snapshot → epoch 5, currentEpoch→6.
+       Soft-delete snapshot 5 → mapper_insert(5, 4, 0) — toEpoch=4, no conflict. */
+    int64_t snap3 = vfs_snapshot(vfs);   /* epoch 3 */
+    CHECK_EQ(snap3, 3);
+    int64_t snap5 = vfs_snapshot(vfs);   /* epoch 5 */
+    CHECK_EQ(snap5, 5);
+
+    CHECK_EQ(vfs_write(vfs, file_vp, "SNAP5", 0, 5, 5), 5);
+
+    /* Soft-delete snapshot 5 → inserts mapping 5→4 with flags=0 (no traversalApply) */
+    CHECK_EQ(vfs_delete_snapshot(vfs, snap5), VFS_OK);
+
+    /* After soft-delete: read_epoch at epoch 5 resolves to 4 via mapper.
+       The DirContent entry at epoch 0 (creation) applies at epoch 4
+       (0 < 4 and even), so the file is still visible by name.
+       The epoch-5 data is NOT visible (it's skipped by read-rule),
+       but the file itself is found via the epoch-0 entry.
+       We verify the readdir count and file_size at epoch 0 unchanged. */
+    CHECK_EQ(vfs_open_file(vfs, root_vp, "mt.txt", 0), nid);
+
+    /* vfs_file_size at epoch 5 should return 0 (no applicable FileSize) */
+    /* Actually vfs_file_size returns 0 for empty chain.  After soft-delete,
+       the epoch-5 FileSize is skipped (same read-rule logic). */
+    /* vfs_readdir at epoch 5: read_epoch = 4.  The epoch-0 DirContent
+       entry applies (0 < 4 and even), so the file is still visible. */
+    int nr5 = vfs_readdir(vfs, root_vp, de, 8, 5);
+    CHECK_EQ(nr5, 1);
+
+    /* Original epoch 0 still works */
+    CHECK_EQ(vfs_open_file(vfs, root_vp, "mt.txt", 0), nid);
+    CHECK_EQ(vfs_file_size(vfs, file_vp, 0), 4);
+
+    /* readdir at epoch 0 still shows the file */
+    nr = vfs_readdir(vfs, root_vp, de, 8, 0);
+    CHECK_EQ(nr, 1);
+    CHECK(!de[0].isDir);
+    CHECK(strcmp(de[0].name, "mt.txt") == 0);
 
     epoch_teardown(vfs);
 }
