@@ -97,7 +97,7 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
                        count to avoid tree_resolve_page's write-side effects
                        (it creates new segments beyond existing pages). */
                     int64_t fsize = vfs_file_size(vfs, dc_childPtr, s_epoch);
-                    int64_t num_pages = (fsize + VFS_PAGE_SIZE - 1) / VFS_PAGE_SIZE;
+                    int64_t num_pages = (fsize + ctx->page_size - 1) / ctx->page_size;
                     if (num_pages < 1) num_pages = 1;
 
                     for (int64_t lp = 0; lp < num_pages; lp++) {
