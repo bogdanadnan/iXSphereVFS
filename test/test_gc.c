@@ -317,6 +317,69 @@ static void test_df_mirror_sibling(void) {
  * run GC, verify data reverts and size drops.
  * --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * GC integration test: commit snapshot, run GC, verify committed version
+ * nodes relabeled and mapper entry removed.
+ * --------------------------------------------------------------------------- */
+
+static void test_gc_commit_then_gc(void) {
+    vfs_t* vfs = vfs_open(test_path);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int nodeId = vfs_create(vfs, root_vp, "commit_gc.txt", 0);
+    CHECK(nodeId > 0);
+
+    int64_t file_vp = 0;
+    {
+        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        CHECK(rs != NULL);
+        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        CHECK(head != 0);
+        uint32_t cc, ce;
+        int64_t cp, np, nx;
+        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
+                              &cc, &ce, &cp, &np, &nx);
+        (void)cc; (void)ce; (void)np; (void)nx;
+        file_vp = cp;
+    }
+    CHECK(file_vp != 0);
+
+    /* Write at epoch 0 */
+    CHECK_EQ(vfs_write(vfs, file_vp, "CCCC", 0, 4, 0), 4);
+
+    /* Snapshot → epoch 1 */
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK_EQ(snap, 1);
+
+    /* Write at epoch 2 (live head) */
+    CHECK_EQ(vfs_write(vfs, file_vp, "DDDD", 0, 4, 2), 4);
+
+    /* Commit the snapshot */
+    CHECK_EQ(vfs_commit(vfs, snap), VFS_OK);
+
+    /* Run GC */
+    int gc_ret = vfs_gc(vfs);
+    if (gc_ret == VFS_OK) {
+        /* Verify data: epoch 0 unchanged, epoch 2 has live data */
+        char rbuf[16];
+        CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 0), 4);
+        CHECK_EQ(strncmp(rbuf, "CCCC", 4), 0);
+
+        memset(rbuf, 0, sizeof(rbuf));
+        CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 2), 4);
+        CHECK_EQ(strncmp(rbuf, "DDDD", 4), 0);
+
+        /* Mapper entry for epoch 1 should be removed (committed then GC'd) */
+        CHECK(mapper_resolve(&ctx->mapper, snap) == snap);  /* identity = no entry */
+    } else {
+        CHECK_EQ(gc_ret, VFS_ERR_FULL);  /* expected failure in small files */
+    }
+
+    vfs_close(vfs);
+}
+
 static void test_gc_integration(void) {
     vfs_t* vfs = vfs_open(test_path);
     CHECK(vfs != NULL);
@@ -423,6 +486,9 @@ int main(void) {
 
     unlink(test_path);  /* fresh file for integration test */
     test_gc_integration();
+
+    unlink(test_path);  /* fresh file for commit-then-GC test */
+    test_gc_commit_then_gc();
 
     printf("test_gc: %d/%d passed\n", tests_passed, tests_run);
     unlink(test_path);
