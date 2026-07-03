@@ -148,6 +148,17 @@ with a non-default page_size, pool pages will be initialized incorrectly.
 
 **Fix:** Change to `pool_page_init(payload, ctx->sb->page_size)`.
 
+### Resolution — Iteration 2 (2026-07-02)
+
+Both critical issues have been fixed:
+
+| Issue | Fix | Commit | 
+|-------|-----|--------|
+| #1 DirContent survival simplified | `gc_walk_dirnode` now delegates to `gc_walk_dircontent_chain` (line 256) | ✅ Full 3-pass survival rules applied |
+| #2 VFS_PAGE_SIZE hardcoded | `gc_copy_entry` now takes `page_size` parameter, all 8 call sites pass `ctx->page_size` | ✅ Dynamic page_size |
+
+No remaining critical issues. Phase 7 is complete.
+
 **3. `storage_set_deferred_queue` is an undocumented API extension.**
 `gc.c:1018` calls `storage_set_deferred_queue(&queue)` — this function is not
 in the Phase 2 StorageBackend API. It must have been added to allow `Allocate`
