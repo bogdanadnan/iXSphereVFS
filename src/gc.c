@@ -599,6 +599,176 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
     return VFS_OK;
 }
 
+/* ---------------------------------------------------------------------------
+ * DirContent chain walk with survival rules
+ * --------------------------------------------------------------------------- */
+
+int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
+                              GCAllocCursor* alloc,
+                              int64_t head_content_vp, int64_t epoch) {
+    if (!ctx || !gc_map || !alloc) return VFS_ERR_IO;
+
+    #define GC_NEXT_SLOT() do { \
+        if (alloc->cur_slot >= alloc->slots_per_page) { \
+            alloc->cur_page_vp = gc_allocate_new_pool_page(ctx, gc_map); \
+            if (alloc->cur_page_vp == VFS_VPTR_NULL) return VFS_ERR_FULL; \
+            alloc->cur_slot = 0; \
+        } \
+    } while(0)
+
+    /* First pass: collect unique childNodeIds with their best epoch
+       to determine which epochs are deleted (soft-deleted mapper entry). */
+    #define MAX_CHILDREN 1024
+    uint32_t child_ids[MAX_CHILDREN];
+    uint32_t child_best_epoch[MAX_CHILDREN];
+    int child_live[MAX_CHILDREN];  /* 1 = has non-tombstone at best epoch */
+    int child_count = 0;
+
+    int64_t walk_vp = head_content_vp;
+    while (walk_vp != 0 && child_count < MAX_CHILDREN) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+
+        uint32_t dc_child, dc_epoch;
+        int64_t dc_childPtr, dc_namePtr, dc_next;
+        nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
+                              &dc_namePtr, &dc_next);
+        (void)dc_childPtr;
+
+        /* Determine if this epoch is deleted (soft-deleted mapper entry) */
+        int epoch_deleted = 0;
+        if (dc_epoch % 2 == 1) {
+            int64_t resolved = mapper_resolve(&ctx->mapper, (int64_t)dc_epoch);
+            if (resolved != (int64_t)dc_epoch &&
+                !mapper_traversal_apply(&ctx->mapper, (int64_t)dc_epoch)) {
+                epoch_deleted = 1;
+            }
+        }
+
+        /* Track the best epoch per childNodeId */
+        int found_idx = -1;
+        for (int i = 0; i < child_count; i++) {
+            if (child_ids[i] == dc_child) { found_idx = i; break; }
+        }
+
+        if (found_idx >= 0) {
+            if (dc_epoch > child_best_epoch[found_idx]) {
+                child_best_epoch[found_idx] = dc_epoch;
+                child_live[found_idx] = (!epoch_deleted && dc_namePtr != 0) ? 1 : 0;
+            }
+        } else {
+            child_ids[child_count] = dc_child;
+            child_best_epoch[child_count] = dc_epoch;
+            child_live[child_count] = (!epoch_deleted && dc_namePtr != 0) ? 1 : 0;
+            child_count++;
+        }
+
+        walk_vp = dc_next;
+    }
+
+    /* Second pass: copy surviving entries, tracking childNodeId liveness */
+    int* surviving = (int*)calloc((size_t)child_count, sizeof(int));
+    if (!surviving) return VFS_ERR_NOMEM;
+
+    walk_vp = head_content_vp;
+    while (walk_vp != 0) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+
+        uint32_t dc_child, dc_epoch;
+        int64_t dc_childPtr, dc_namePtr, dc_next;
+        nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
+                              &dc_namePtr, &dc_next);
+
+        /* Determine if this epoch is deleted */
+        int epoch_deleted = 0;
+        if (dc_epoch % 2 == 1) {
+            int64_t resolved = mapper_resolve(&ctx->mapper, (int64_t)dc_epoch);
+            if (resolved != (int64_t)dc_epoch &&
+                !mapper_traversal_apply(&ctx->mapper, (int64_t)dc_epoch)) {
+                epoch_deleted = 1;
+            }
+        }
+
+        /* Find best entry index for this childNodeId */
+        int best_idx = -1;
+        for (int i = 0; i < child_count; i++) {
+            if (child_ids[i] == dc_child &&
+                child_best_epoch[i] == dc_epoch) {
+                best_idx = i;
+                break;
+            }
+        }
+
+        /* Apply survival rules */
+        int keep = 1;
+        if (dc_namePtr == 0 && epoch_deleted) keep = 0;  /* tombstone for deleted epoch */
+        if (epoch_deleted && best_idx >= 0 && !child_live[best_idx])
+            keep = 0;  /* deleted epoch, no survivor */
+
+        if (keep && best_idx >= 0 && dc_epoch == child_best_epoch[best_idx]) {
+            surviving[best_idx] = 1;  /* mark as the surviving entry */
+        }
+
+        if (keep) {
+            GC_NEXT_SLOT();
+            int64_t new_dc_vp = VFS_VPTR_MAKE(
+                VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
+            uint8_t* new_dc_slot = pool_resolve(&ctx->pool, new_dc_vp);
+            if (!new_dc_slot) { free(surviving); return VFS_ERR_IO; }
+            alloc->cur_slot++;
+
+            gc_copy_entry(gc_map, walk_vp, new_dc_vp, dc_slot, new_dc_slot);
+        }
+
+        walk_vp = dc_next;
+    }
+
+    free(surviving);
+
+    /* Recursively walk child DirNodes/FileNodes for surviving entries */
+    walk_vp = head_content_vp;
+    while (walk_vp != 0) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+
+        uint32_t dc_child, dc_epoch;
+        int64_t dc_childPtr, dc_namePtr, dc_next;
+        nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
+                              &dc_namePtr, &dc_next);
+
+        /* Find if this is the surviving entry for its childNodeId */
+        int is_survivor = 0;
+        for (int i = 0; i < child_count; i++) {
+            if (child_ids[i] == dc_child && child_best_epoch[i] == dc_epoch) {
+                if (surviving[i]) { is_survivor = 1; }
+                break;
+            }
+        }
+
+        if (is_survivor && dc_namePtr != 0 && dc_childPtr != 0) {
+            uint8_t* child_slot = pool_resolve(&ctx->pool, dc_childPtr);
+            if (child_slot) {
+                int16_t ctype = vfs_rd2(child_slot, DIRNODE_OFF_TYPE);
+                if (ctype == (int16_t)NODE_TYPE_DIR) {
+                    int err = gc_walk_dirnode(ctx, gc_map, alloc,
+                                               dc_childPtr, epoch);
+                    if (err != VFS_OK) { free(surviving); return err; }
+                } else if (ctype == (int16_t)NODE_TYPE_FILE) {
+                    int err = gc_walk_filenode(ctx, gc_map, alloc,
+                                                dc_childPtr, epoch);
+                    if (err != VFS_OK) { free(surviving); return err; }
+                }
+            }
+        }
+
+        walk_vp = dc_next;
+    }
+
+    #undef GC_NEXT_SLOT
+    return VFS_OK;
+}
+
 /* Shadow-compaction helper — walks the pool chain, builds a live set,
    copies live pool entries to fresh pages, then enqueues old pages
    for deferred freeing.  Currently a stub — returns VFS_OK. */
