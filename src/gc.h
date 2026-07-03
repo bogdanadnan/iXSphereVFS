@@ -140,6 +140,18 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
                               GCAllocCursor* alloc,
                               int64_t head_content_vp, int64_t epoch);
 
+/* Walk a FileSize chain applying survival rules.
+ *   - DROP entries for soft-deleted epochs (mapper traversalApply=false)
+ *   - REWRITE epoch for committed epochs (traversalApply=true)
+ *   - KEEP all other entries unchanged
+ *   - DROP FileContent segments whose page range is beyond the highest
+ *     surviving FileSize bound
+ * Copies surviving entries via gc_copy_entry.
+ * Returns VFS_OK on success, or a negative error code. */
+int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
+                            GCAllocCursor* alloc,
+                            int64_t head_size_vp, int64_t epoch);
+
 /* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *

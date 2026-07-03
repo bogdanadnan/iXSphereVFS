@@ -773,6 +773,86 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
     return VFS_OK;
 }
 
+/* ---------------------------------------------------------------------------
+ * FileSize chain walk with survival rules
+ * --------------------------------------------------------------------------- */
+
+int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
+                            GCAllocCursor* alloc,
+                            int64_t head_size_vp, int64_t epoch) {
+    if (!ctx || !gc_map || !alloc) return VFS_ERR_IO;
+    (void)epoch;
+
+    #define GC_NEXT_SLOT() do { \
+        if (alloc->cur_slot >= alloc->slots_per_page) { \
+            alloc->cur_page_vp = gc_allocate_new_pool_page(ctx, gc_map); \
+            if (alloc->cur_page_vp == VFS_VPTR_NULL) return VFS_ERR_FULL; \
+            alloc->cur_slot = 0; \
+        } \
+    } while(0)
+
+    int64_t fs_vp = head_size_vp;
+    int64_t highest_file_size = 0;
+
+    while (fs_vp != 0) {
+        uint8_t* fs_slot = pool_resolve(&ctx->pool, fs_vp);
+        if (!fs_slot) break;
+
+        uint32_t fs_epoch;
+        int64_t fs_modifiedAt, fs_fileSize, fs_next;
+        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modifiedAt,
+                            &fs_fileSize, &fs_next);
+        (void)fs_modifiedAt;
+
+        int keep = 1;
+        int64_t rewrite_epoch = (int64_t)fs_epoch;
+
+        /* Apply epoch survival rules */
+        if (fs_epoch % 2 == 1) {
+            int64_t resolved = mapper_resolve(&ctx->mapper, (int64_t)fs_epoch);
+            if (resolved != (int64_t)fs_epoch) {
+                if (mapper_traversal_apply(&ctx->mapper, (int64_t)fs_epoch)) {
+                    /* Committed — REWRITE epoch to resolved toEpoch */
+                    rewrite_epoch = resolved;
+                } else {
+                    /* Soft-deleted — DROP */
+                    keep = 0;
+                }
+            }
+        }
+
+        if (keep) {
+            GC_NEXT_SLOT();
+            int64_t new_fs_vp = VFS_VPTR_MAKE(
+                VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
+            uint8_t* new_fs_slot = pool_resolve(&ctx->pool, new_fs_vp);
+            if (!new_fs_slot) return VFS_ERR_IO;
+            alloc->cur_slot++;
+
+            gc_copy_entry(gc_map, fs_vp, new_fs_vp, fs_slot, new_fs_slot);
+
+            /* Update epoch field if rewritten */
+            if (rewrite_epoch != (int64_t)fs_epoch) {
+                vfs_wr4(new_fs_slot, FILESIZE_OFF_EPOCH, (uint32_t)rewrite_epoch);
+            }
+
+            /* Track highest surviving file size */
+            if (fs_fileSize > highest_file_size) highest_file_size = fs_fileSize;
+        }
+
+        fs_vp = fs_next;
+    }
+
+    /* TODO Phase 8: DROP FileContent segments whose page range is beyond
+       the highest surviving FileSize bound (highest_file_size).  This
+       requires walking the FileNode's headPtr chain and checking each
+       FileContent segment's logical page range against the bound, which
+       is done in a separate FileContent walk function. */
+
+    #undef GC_NEXT_SLOT
+    return VFS_OK;
+}
+
 /* Shadow-compaction helper — walks the pool chain, builds a live set,
    copies live pool entries to fresh pages, then enqueues old pages
    for deferred freeing.  Currently a stub — returns VFS_OK. */
