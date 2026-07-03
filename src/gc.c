@@ -227,7 +227,8 @@ void gc_copy_entry(GCMap* gc_map, int64_t old_vp, int64_t new_vp,
  * --------------------------------------------------------------------------- */
 
 int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
-                    int64_t dir_vp, int64_t epoch) {
+                    int64_t dir_vp, int64_t epoch,
+                    LivePageSet* lps) {
     if (!ctx || !gc_map || !alloc || dir_vp == 0) return VFS_ERR_IO;
 
     uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
@@ -253,7 +254,7 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     /* Read the old headPtr and delegate DirContent chain walk to the
        dedicated function which applies full survival rules. */
     int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
-    int err = gc_walk_dircontent_chain(ctx, gc_map, alloc, headPtr, epoch);
+    int err = gc_walk_dircontent_chain(ctx, gc_map, alloc, headPtr, epoch, lps);
     if (err != VFS_OK) return err;
 
     /* Remap the new DirNode's headPtr from the old headPtr.
@@ -272,7 +273,8 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
  * --------------------------------------------------------------------------- */
 
 int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
-                     int64_t file_vp, int64_t epoch) {
+                     int64_t file_vp, int64_t epoch,
+                     LivePageSet* lps) {
     if (!ctx || !gc_map || !alloc || file_vp == 0) return VFS_ERR_IO;
     (void)epoch;
 
@@ -449,6 +451,9 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                     gc_copy_entry(gc_map, vp_walk, new_vp_slot_vp,
                                   vp_slot, new_vp_slot, ctx->page_size);
 
+                    if (lps && vp_dataPage > 0)
+                        live_page_set_add(lps, vp_dataPage);
+
                     if (rewrite_epoch_vp != (int64_t)vp_epoch) {
                         vfs_wr4_s(new_vp_slot, VERSIONPAGE_OFF_EPOCH,
                                 (uint32_t)rewrite_epoch_vp, ctx->page_size);
@@ -475,7 +480,8 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
 int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
                                GCAllocCursor* alloc,
-                               int64_t version_root_vp) {
+                               int64_t version_root_vp,
+                               LivePageSet* lps) {
     if (!ctx || !gc_map || !alloc) return VFS_ERR_IO;
 
     #define GC_NEXT_SLOT() do { \
@@ -523,6 +529,10 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
 
             gc_copy_entry(gc_map, vp_walk, new_vp, vp_slot, new_slot, ctx->page_size);
 
+            /* Record the data page in the live set */
+            if (lps && vp_dataPage > 0)
+                live_page_set_add(lps, vp_dataPage);
+
             /* Update epoch field if rewritten */
             if (rewrite_epoch != (int64_t)vp_epoch) {
                 vfs_wr4_s(new_slot, VERSIONPAGE_OFF_EPOCH,
@@ -543,7 +553,8 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
 
 int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
                               GCAllocCursor* alloc,
-                              int64_t head_content_vp, int64_t epoch) {
+                              int64_t head_content_vp, int64_t epoch,
+                              LivePageSet* lps) {
     if (!ctx || !gc_map || !alloc) return VFS_ERR_IO;
 
     #define GC_NEXT_SLOT() do { \
@@ -693,11 +704,11 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
                 int16_t ctype = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size);
                 if (ctype == (int16_t)NODE_TYPE_DIR) {
                     int err = gc_walk_dirnode(ctx, gc_map, alloc,
-                                               dc_childPtr, epoch);
+                                               dc_childPtr, epoch, lps);
                     if (err != VFS_OK) { free(child_has_kept); return err; }
                 } else if (ctype == (int16_t)NODE_TYPE_FILE) {
                     int err = gc_walk_filenode(ctx, gc_map, alloc,
-                                                dc_childPtr, epoch);
+                                                dc_childPtr, epoch, lps);
                     if (err != VFS_OK) { free(child_has_kept); return err; }
                 }
             }
@@ -913,7 +924,12 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
     }
 
     /* Walk and copy the root DirNode (recursively walks all children) */
-    err = gc_walk_dirnode(ctx, &gc_map, &alloc, ctx->rootNodeOffset, ctx->currentEpoch);
+    {
+        LivePageSet* lps = live_page_set_create(256);
+        err = gc_walk_dirnode(ctx, &gc_map, &alloc, ctx->rootNodeOffset,
+                               ctx->currentEpoch, lps);
+        if (lps) live_page_set_destroy(lps);
+    }
     if (err != VFS_OK) {
         gc_map_destroy(&gc_map);
         return err;
@@ -959,6 +975,41 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
     /* Destroy the gc_map */
     gc_map_destroy(&gc_map);
 
+    return VFS_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * Live page set — simple dynamic array of logical page indices.
+ * --------------------------------------------------------------------------- */
+
+LivePageSet* live_page_set_create(int initial_cap) {
+    if (initial_cap <= 0) initial_cap = 64;
+    LivePageSet* lps = (LivePageSet*)calloc(1, sizeof(LivePageSet));
+    if (!lps) return NULL;
+    lps->pages = (int64_t*)calloc((size_t)initial_cap, sizeof(int64_t));
+    if (!lps->pages) { free(lps); return NULL; }
+    lps->count = 0;
+    lps->capacity = initial_cap;
+    return lps;
+}
+
+void live_page_set_destroy(LivePageSet* lps) {
+    if (!lps) return;
+    free(lps->pages);
+    free(lps);
+}
+
+int live_page_set_add(LivePageSet* lps, int64_t page) {
+    if (!lps) return VFS_ERR_IO;
+    if (lps->count >= lps->capacity) {
+        int new_cap = lps->capacity * 2;
+        int64_t* new_pages = (int64_t*)realloc(lps->pages,
+                                (size_t)new_cap * sizeof(int64_t));
+        if (!new_pages) return VFS_ERR_NOMEM;
+        lps->pages = new_pages;
+        lps->capacity = new_cap;
+    }
+    lps->pages[lps->count++] = page;
     return VFS_OK;
 }
 

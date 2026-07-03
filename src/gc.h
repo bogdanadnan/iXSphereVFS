@@ -108,14 +108,31 @@ void deferred_free_destroy(DeferredFreeQueue* queue);
    alloc   — allocation cursor for destination pool pages
    dir_vp  — VirtualPtr of the DirNode to walk
    epoch   — current live head epoch (for survival decisions) */
+
+/* ---------------------------------------------------------------------------
+ * Live page set — tracks data pages still in use after GC compaction.
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    int64_t* pages;    /* sorted array of live logical page indices */
+    int      count;    /* number of entries */
+    int      capacity; /* allocated capacity */
+} LivePageSet;
+
+LivePageSet* live_page_set_create(int initial_cap);
+void        live_page_set_destroy(LivePageSet* lps);
+int         live_page_set_add(LivePageSet* lps, int64_t page);
+
 int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
-                    int64_t dir_vp, int64_t epoch);
+                    int64_t dir_vp, int64_t epoch,
+                    LivePageSet* lps);
 
 /* Walk a FileNode during GC shadow-compaction: copy the FileNode entry,
    then walk FileContent → PageNode → VersionPage chains and FileSize chain
    applying survival rules. */
 int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
-                     int64_t file_vp, int64_t epoch);
+                     int64_t file_vp, int64_t epoch,
+                     LivePageSet* lps);
 
 /* Walk a VersionPage chain applying survival rules.
  * For each VersionPage in the chain starting at version_root_vp:
@@ -127,7 +144,8 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
  * Returns VFS_OK on success, or a negative error code. */
 int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
                                GCAllocCursor* alloc,
-                               int64_t version_root_vp);
+                               int64_t version_root_vp,
+                               LivePageSet* lps);
 
 /* Walk a DirContent chain applying survival rules.
  * For each DirContent entry:
@@ -139,7 +157,8 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
  * Returns VFS_OK on success. */
 int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
                               GCAllocCursor* alloc,
-                              int64_t head_content_vp, int64_t epoch);
+                              int64_t head_content_vp, int64_t epoch,
+                              LivePageSet* lps);
 
 /* Walk a FileSize chain applying survival rules.
  *   - DROP entries for soft-deleted epochs (mapper traversalApply=false)
