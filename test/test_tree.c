@@ -25,7 +25,7 @@ static const char* test_path = "/tmp/test_tree_bootstrap.tmp";
 
 static void test_bootstrap_root(void) {
     /* Open fresh file → bootstrap creates root */
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK(vfs->ctx != NULL);
 
@@ -55,7 +55,7 @@ static void test_bootstrap_root(void) {
 
 static void test_bootstrap_reopen(void) {
     /* Open existing file → reopen */
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK(vfs->ctx != NULL);
 
@@ -96,7 +96,7 @@ static void test_bootstrap_reopen(void) {
 
 static void test_pool_list_head(void) {
     /* poolListHead should be non-zero after bootstrap (pool alloc happened) */
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
 
     CHECK(vfs->ctx->pool_list_head_value != 0);
@@ -109,7 +109,7 @@ static void test_pool_list_head(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_create_file(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK(vfs->ctx != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -163,7 +163,7 @@ static void test_create_file(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_delete_file(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -237,7 +237,7 @@ static void test_delete_file(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_open_file(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -277,7 +277,7 @@ static void test_open_file(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_create_duplicate(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -297,7 +297,7 @@ static void test_create_duplicate(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_delete_epoch_isolation(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -329,7 +329,7 @@ static void test_delete_epoch_isolation(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_file_stat(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -375,7 +375,7 @@ static void test_file_stat(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_stat_not_file(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -418,7 +418,7 @@ static int64_t get_file_vp(Pool* pool, int64_t root_vp) {
  * --------------------------------------------------------------------------- */
 
 static void test_file_size_epoch(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -471,7 +471,7 @@ static void test_file_size_epoch(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_resolve_page_growth(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -542,7 +542,7 @@ static void test_resolve_page_growth(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_write_basic(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -586,7 +586,7 @@ static void test_write_basic(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_read_basic(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -634,7 +634,7 @@ static void test_read_basic(void) {
 
 /* Write 200 bytes at offset 50 (cross-page), read back */
 static void test_write_cross_page(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -664,7 +664,7 @@ static void test_write_cross_page(void) {
 
 /* Same offset, same epoch: second write in-place (VersionPage count unchanged) */
 static void test_write_in_place(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -722,7 +722,7 @@ static void test_write_in_place(void) {
 
 /* Same offset, new epoch: COW creates new VersionPage, old epoch returns old data */
 static void test_write_cow_epoch(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -772,7 +772,7 @@ static void test_write_cow_epoch(void) {
 
 /* Write 2000 pages → second FileContent segment, reads across boundary */
 static void test_write_multi_segment(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -816,7 +816,7 @@ static void test_write_multi_segment(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_write_frozen_epoch(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;

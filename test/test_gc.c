@@ -28,7 +28,7 @@ static const char* test_path = "/tmp/test_gc.tmp";
 
 static vfs_t* setup(void) {
     unlink(test_path);
-    return vfs_open(test_path);
+    return vfs_open(test_path, 8192);
 }
 
 static void teardown(vfs_t* vfs) {
@@ -185,7 +185,7 @@ static void test_crash_recovery(void) {
     vfs->ctx->treeLockState = (int64_t)TREE_LOCK_EXCLUSIVE_BIT;
     vfs_close(vfs);
 
-    vfs = vfs_open(test_path);
+    vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK_EQ(vfs->ctx->treeLockState, 0);
     teardown(vfs);
@@ -329,7 +329,7 @@ static void test_df_mirror_sibling(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_crash_before_swap(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -384,7 +384,7 @@ static void test_gc_crash_before_swap(void) {
        survives from superblock + pool chain.  Slot-level modifications
        (DirContent headPtr) depend on cache flush timing and may not
        be persisted. */
-    vfs = vfs_open(test_path);
+    vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK_EQ(vfs->ctx->treeLockState, 0);
     CHECK_EQ(vfs->ctx->rootNodeOffset, root_vp_saved);
@@ -424,7 +424,7 @@ static int count_pool_pages(TreeContext* ctx) {
 }
 
 static void test_gc_pool_compaction(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -528,7 +528,7 @@ static void test_gc_pool_compaction(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_vptr_remapping(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -662,7 +662,7 @@ static void test_gc_vptr_remapping(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_dircontent_survival(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -723,7 +723,7 @@ static void test_gc_dircontent_survival(void) {
 }
 
 static void test_gc_crash_after_swap(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -776,7 +776,7 @@ static void test_gc_crash_after_swap(void) {
     vfs_close(vfs);
 
     /* Reopen — new superblock should be active.  tree_init clears stale lock. */
-    vfs = vfs_open(test_path);
+    vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK_EQ(vfs->ctx->treeLockState, 0);
 
@@ -821,7 +821,7 @@ static void test_gc_crash_after_swap(void) {
 }
 
 static void test_gc_commit_then_gc(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -879,7 +879,7 @@ static void test_gc_commit_then_gc(void) {
 }
 
 static void test_gc_integration(void) {
-    vfs_t* vfs = vfs_open(test_path);
+    vfs_t* vfs = vfs_open(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;

@@ -28,7 +28,7 @@ static const char* test_path = "/tmp/test_epoch_suite.tmp";
 
 static vfs_t* epoch_setup(void) {
     unlink(test_path);
-    return vfs_open(test_path);
+    return vfs_open(test_path, 8192);
 }
 
 static void epoch_teardown(vfs_t* vfs) {

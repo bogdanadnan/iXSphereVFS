@@ -28,7 +28,7 @@ uint32_t vfs_crc32c(const uint8_t* data, size_t len);
 
 typedef struct vfs_t vfs_t;
 
-vfs_t*  vfs_open(const char* path);
+vfs_t*  vfs_open(const char* path, int64_t page_size);
 void    vfs_close(vfs_t* vfs);
 
 /* Include the full tree API */

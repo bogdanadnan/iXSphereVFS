@@ -21,7 +21,7 @@ const char* vfs_error_string(vfs_error_t err) {
     }
 }
 
-vfs_t* vfs_open(const char* path) {
+vfs_t* vfs_open(const char* path, int64_t page_size) {
     vfs_t* vfs = (vfs_t*)calloc(1, sizeof(vfs_t));
     if (!vfs) return NULL;
 
@@ -31,7 +31,7 @@ vfs_t* vfs_open(const char* path) {
         return NULL;
     }
 
-    ctx->sb = storage_open(path, VFS_PAGE_SIZE);
+    ctx->sb = storage_open(path, page_size);
     if (!ctx->sb) {
         free(ctx);
         free(vfs);
