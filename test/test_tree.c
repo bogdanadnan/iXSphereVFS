@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <pthread.h>
 
 static int tests_run = 0, tests_passed = 0;
 
@@ -1220,6 +1221,135 @@ static void test_last_error(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * Lock basic: lock/unlock same file at same epoch → success
+ * --------------------------------------------------------------------------- */
+
+static void test_lock_basic(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    int nid = vfs_create(vfs, root_vp, "lock_test.txt", 0);
+    CHECK(nid > 0);
+
+    CHECK_EQ(vfs_lock(vfs, nid, 0), VFS_OK);
+    CHECK_EQ(vfs_unlock(vfs, nid, 0), VFS_OK);
+
+    CHECK_EQ(vfs_lock(vfs, nid, 2), VFS_OK);
+    CHECK_EQ(vfs_unlock(vfs, nid, 2), VFS_OK);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * Lock concurrent epochs: lock file at epoch 0 and epoch 2 from simulated
+ * concurrent paths → both succeed since different epochs are independent.
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    vfs_t* vfs;
+    int     nodeId;
+    int64_t epoch;
+    int     result;
+} lock_thread_arg;
+
+static void* lock_thread_fn(void* arg) {
+    lock_thread_arg* a = (lock_thread_arg*)arg;
+    a->result = vfs_lock(a->vfs, a->nodeId, a->epoch);
+    if (a->result == VFS_OK)
+        a->result = vfs_unlock(a->vfs, a->nodeId, a->epoch);
+    return NULL;
+}
+
+static void test_lock_concurrent_epochs(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    int nid = vfs_create(vfs, root_vp, "concur.txt", 0);
+    CHECK(nid > 0);
+
+    lock_thread_arg a1 = {vfs, nid, 0, VFS_ERR_IO};
+    lock_thread_arg a2 = {vfs, nid, 2, VFS_ERR_IO};
+
+    pthread_t t1, t2;
+    CHECK_EQ(pthread_create(&t1, NULL, lock_thread_fn, &a1), 0);
+    CHECK_EQ(pthread_create(&t2, NULL, lock_thread_fn, &a2), 0);
+
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+
+    CHECK_EQ(a1.result, VFS_OK);  /* epoch 0 lock succeeded */
+    CHECK_EQ(a2.result, VFS_OK);  /* epoch 2 lock succeeded (different epoch) */
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * Lock global serializes: global lock (epoch=0) blocks per-epoch lock
+ * on the same file until released.
+ * --------------------------------------------------------------------------- */
+
+static volatile int lock_global_ready = 0;
+static volatile int lock_per_epoch_acquired = 0;
+
+static void* global_serialize_thread(void* arg) {
+    vfs_t* vfs = (vfs_t*)arg;
+    int r = vfs_lock(vfs, 1, 0);
+    if (r != VFS_OK) return NULL;
+    lock_global_ready = 1;
+
+    /* Hold the lock for 100ms so the per-epoch thread has time to try */
+    usleep(100000);
+
+    vfs_unlock(vfs, 1, 0);
+    return NULL;
+}
+
+static void* per_epoch_thread(void* arg) {
+    vfs_t* vfs = (vfs_t*)arg;
+
+    /* Attempt per-epoch lock — should block until global releases */
+    int r = vfs_lock(vfs, 1, 2);
+    if (r == VFS_OK) {
+        lock_per_epoch_acquired = 1;
+        vfs_unlock(vfs, 1, 2);
+    }
+    return NULL;
+}
+
+static void test_lock_global_serializes(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+    CHECK(vfs_create(vfs, root_vp, "serial.txt", 0) > 0);
+
+    lock_global_ready = 0;
+    lock_per_epoch_acquired = 0;
+
+    pthread_t t1;
+    CHECK_EQ(pthread_create(&t1, NULL, global_serialize_thread, vfs), 0);
+    /* Wait for global thread to acquire the lock */
+    while (!lock_global_ready) usleep(100);
+
+    /* Now start the per-epoch thread — it should block */
+    pthread_t t2;
+    CHECK_EQ(pthread_create(&t2, NULL, per_epoch_thread, vfs), 0);
+
+    /* Short wait — per-epoch should still be blocked */
+    usleep(20000);
+    CHECK(!lock_per_epoch_acquired);
+
+    /* Wait for both threads to finish */
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+    CHECK(lock_per_epoch_acquired);
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1307,6 +1437,17 @@ int main(void) {
 
     unlink(test_path);
     test_last_error();
+
+    /* --- lock tests --- */
+
+    unlink(test_path);
+    test_lock_basic();
+
+    unlink(test_path);
+    test_lock_concurrent_epochs();
+
+    unlink(test_path);
+    test_lock_global_serializes();
 
     /* Clean up */
     unlink(test_path);
