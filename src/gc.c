@@ -178,7 +178,7 @@ int64_t gc_allocate_new_pool_page(TreeContext* ctx, void* gc_map) {
     }
 
     /* Initialize the pool page header */
-    pool_page_init(payload, VFS_PAGE_SIZE);
+    pool_page_init(payload, ctx->sb->page_size);
 
     /* Link the new page into the pool's free list */
     pool_list_add(&ctx->pool, page_idx, payload);
@@ -319,7 +319,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
         /* Skip segments beyond the highest surviving file size */
         if (highest_file_size > 0 &&
-            (seg_idx * (int64_t)ctx->segment_size * VFS_PAGE_SIZE) >= highest_file_size) {
+            (seg_idx * (int64_t)ctx->segment_size * ctx->sb->page_size) >= highest_file_size) {
             int64_t fc_next = vfs_rd8(fc_slot, FILECONTENT_OFF_NEXTPTR);
             fc_vp = fc_next;
             seg_idx++;
@@ -897,7 +897,7 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
     GCAllocCursor alloc;
     alloc.cur_page_vp = VFS_VPTR_NULL;
     alloc.cur_slot = 0;
-    alloc.slots_per_page = VFS_POOL_SLOTS;
+    alloc.slots_per_page = VFS_POOL_SLOTS_FOR_PAGE(ctx->sb->page_size);
 
     /* Initialize the VirtualPtr remapping map */
     GCMap gc_map;
