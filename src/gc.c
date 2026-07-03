@@ -254,49 +254,18 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     /* Copy the DirNode with remapping */
     gc_copy_entry(gc_map, dir_vp, new_dir_vp, dir_slot, new_dir_slot);
 
-    /* Walk the DirContent chain applying survival rules */
+    /* Read the old headPtr and delegate DirContent chain walk to the
+       dedicated function which applies full survival rules. */
     int64_t headPtr = vfs_rd8(dir_slot, DIRNODE_OFF_HEADPTR);
-    int64_t walk_vp = headPtr;
-    while (walk_vp != 0) {
-        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
-        if (!dc_slot) break;
+    int err = gc_walk_dircontent_chain(ctx, gc_map, alloc, headPtr, epoch);
+    if (err != VFS_OK) return err;
 
-        uint32_t dc_child, dc_epoch;
-        int64_t dc_childPtr, dc_namePtr, dc_next;
-        nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
-                              &dc_namePtr, &dc_next);
-
-        /* Survival rule: keep DirContent if epoch is still live.
-           TODO: full epoch-rule remapping in Phase 8 — currently keeps
-           all entries at or above the threshold. */
-        int keep = 1;
-        if (dc_epoch > (uint32_t)epoch) keep = 0; /* future epoch — skip */
-
-        if (keep) {
-            GC_NEXT_SLOT();
-            int64_t new_dc_vp = VFS_VPTR_MAKE(
-                VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_dc_slot = pool_resolve(&ctx->pool, new_dc_vp);
-            if (!new_dc_slot) return VFS_ERR_IO;
-            alloc->cur_slot++;
-
-            gc_copy_entry(gc_map, walk_vp, new_dc_vp, dc_slot, new_dc_slot);
-
-            /* Recursively walk child DirNodes */
-            if (dc_namePtr != 0 && dc_childPtr != 0) {
-                uint8_t* child_slot = pool_resolve(&ctx->pool, dc_childPtr);
-                if (child_slot && vfs_rd2(child_slot, DIRNODE_OFF_TYPE)
-                                  == (int16_t)NODE_TYPE_DIR) {
-                    int err = gc_walk_dirnode(ctx, gc_map, alloc,
-                                               dc_childPtr, epoch);
-                    if (err != VFS_OK) return err;
-                }
-            }
-            /* TODO Phase 8: walk child FileNodes to copy VersionPage chains */
-        }
-
-        walk_vp = dc_next;
-    }
+    /* Remap the new DirNode's headPtr from the old headPtr.
+       gc_walk_dircontent_chain copies surviving entries and records their
+       old→new VirtualPtr mappings in gc_map.  We look up the old headPtr
+       to get the new headPtr for the first DirContent entry. */
+    int64_t new_headPtr = gc_map_get(gc_map, headPtr);
+    vfs_wr8(new_dir_slot, DIRNODE_OFF_HEADPTR, new_headPtr);
 
     return VFS_OK;
 }
