@@ -955,6 +955,8 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
         gc_map_destroy(&gc_map);
         return err;
     }
+    /* Update rootNodeOffset to the new VirtualPtr (avoid dangling pointer) */
+    ctx->rootNodeOffset = gc_map_get(&gc_map, ctx->rootNodeOffset);
 
     /* Rebuild the mapper chain (drop committed/soft-deleted entries) */
     err = gc_rebuild_mapper(ctx, &gc_map, &alloc);
@@ -962,6 +964,9 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
         gc_map_destroy(&gc_map);
         return err;
     }
+    /* Update epochMapperPtr — if old head was remapped, use new VP; else 0 */
+    int64_t mapped_mapper = gc_map_get(&gc_map, ctx->epochMapperPtr);
+    ctx->epochMapperPtr = (mapped_mapper != ctx->epochMapperPtr) ? mapped_mapper : 0;
 
     /* Drop all TouchedFile entries */
     gc_rebuild_touchedfiles(ctx);
