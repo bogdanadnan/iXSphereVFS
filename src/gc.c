@@ -982,7 +982,7 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
        Data pages not in the live set are freed via storage_free. */
     if (lps) {
         for (int64_t page = 2; page < old_total_pages; page++) {
-            if (deferred_free_is_queued(queue, page))
+            if (is_pool_page(queue, page))
                 continue;
             if (!live_page_set_contains(lps, page))
                 storage_free(ctx->sb, page);

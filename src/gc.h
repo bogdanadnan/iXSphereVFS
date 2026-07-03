@@ -88,6 +88,13 @@ void deferred_free_enqueue(DeferredFreeQueue* queue, int64_t logical_page,
  * Returns true if the page is enqueued (and not yet confirmed+released). */
 bool deferred_free_is_queued(DeferredFreeQueue* queue, int64_t logical_page);
 
+/* Check if a logical page is a pool page by testing if it was enqueued
+ * for deferred freeing during GC.  Pool pages are enqueued before the
+ * data-page reclamation loop runs. */
+static inline bool is_pool_page(DeferredFreeQueue* queue, int64_t page) {
+    return deferred_free_is_queued(queue, page);
+}
+
 /* Confirm that no active readers remain and release all queued pages
  * back to the StorageBackend.  After this call, the queue is empty. */
 void deferred_free_confirm_and_release(DeferredFreeQueue* queue,
