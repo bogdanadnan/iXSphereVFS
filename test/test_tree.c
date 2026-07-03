@@ -947,6 +947,119 @@ static void test_rmdir_notdir(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * readdir empty: root directory has no files → 0 entries
+ * --------------------------------------------------------------------------- */
+
+static void test_readdir_empty(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    vfs_dirent_t entries[16];
+    int n = vfs_readdir(vfs, root_vp, entries, 16, 0);
+    CHECK_EQ(n, 0);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * readdir with files: create 3 files, verify 3 entries with isDir=false
+ * --------------------------------------------------------------------------- */
+
+static void test_readdir_with_files(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    CHECK(vfs_create(vfs, root_vp, "a.txt", 0) > 0);
+    CHECK(vfs_create(vfs, root_vp, "b.txt", 0) > 0);
+    CHECK(vfs_create(vfs, root_vp, "c.txt", 0) > 0);
+
+    vfs_dirent_t entries[16];
+    int n = vfs_readdir(vfs, root_vp, entries, 16, 0);
+    CHECK_EQ(n, 3);
+
+    int found_a = 0, found_b = 0, found_c = 0;
+    for (int i = 0; i < n; i++) {
+        CHECK(!entries[i].isDir);
+        if (strcmp(entries[i].name, "a.txt") == 0) found_a = 1;
+        if (strcmp(entries[i].name, "b.txt") == 0) found_b = 1;
+        if (strcmp(entries[i].name, "c.txt") == 0) found_c = 1;
+    }
+    CHECK(found_a);
+    CHECK(found_b);
+    CHECK(found_c);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * readdir with dirs: mkdir "sub", verify isDir=true
+ * --------------------------------------------------------------------------- */
+
+static void test_readdir_with_dirs(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    CHECK_EQ(vfs_mkdir(vfs, root_vp, "sub", 0), VFS_OK);
+    CHECK(vfs_create(vfs, root_vp, "f.txt", 0) > 0);
+
+    vfs_dirent_t entries[16];
+    int n = vfs_readdir(vfs, root_vp, entries, 16, 0);
+    CHECK_EQ(n, 2);
+
+    int found_sub = 0, found_f = 0;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(entries[i].name, "sub") == 0) {
+            found_sub = 1;
+            CHECK(entries[i].isDir);
+        }
+        if (strcmp(entries[i].name, "f.txt") == 0) {
+            found_f = 1;
+            CHECK(!entries[i].isDir);
+        }
+    }
+    CHECK(found_sub);
+    CHECK(found_f);
+
+    vfs_close(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * readdir tombstone: create+delete file at epoch 2, readdir at epoch 2
+ * excludes it, at epoch 0 shows it.
+ * --------------------------------------------------------------------------- */
+
+static void test_readdir_tombstone(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    CHECK(vfs_create(vfs, root_vp, "x.txt", 0) > 0);
+    CHECK(vfs_create(vfs, root_vp, "y.txt", 0) > 0);
+    CHECK(vfs_create(vfs, root_vp, "z.txt", 0) > 0);
+
+    /* Snapshot and delete one file at epoch 2 */
+    vfs_snapshot(vfs);
+    CHECK_EQ(vfs_delete(vfs, root_vp, "y.txt", 2), VFS_OK);
+
+    /* readdir at epoch 2 should show only x.txt and z.txt */
+    vfs_dirent_t entries[16];
+    int n2 = vfs_readdir(vfs, root_vp, entries, 16, 2);
+    CHECK_EQ(n2, 2);
+    for (int i = 0; i < n2; i++) {
+        CHECK(strcmp(entries[i].name, "y.txt") != 0);
+    }
+
+    /* readdir at epoch 0 should show all 3 files */
+    int n0 = vfs_readdir(vfs, root_vp, entries, 16, 0);
+    CHECK_EQ(n0, 3);
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1003,6 +1116,20 @@ int main(void) {
 
     unlink(test_path);
     test_rmdir_notdir();
+
+    /* --- readdir tests --- */
+
+    unlink(test_path);
+    test_readdir_empty();
+
+    unlink(test_path);
+    test_readdir_with_files();
+
+    unlink(test_path);
+    test_readdir_with_dirs();
+
+    unlink(test_path);
+    test_readdir_tombstone();
 
     /* Clean up */
     unlink(test_path);
