@@ -21,11 +21,60 @@ and validation — no new features.
 
 | File | Purpose |
 |------|---------|
-| `bench/bench.c` | Benchmark harness |
-| `test/test_crash.c` | Crash recovery test harness |
+| `bench/bench.c` | Benchmark harness — SQLite workloads require Phase 9 |
+| `bench/bench_raw.c` | Raw VFS benchmark — file, dir, read workloads, no SQLite dependency |
+| `test/test_crash.c` | Crash recovery test harness (Unix: fork; Windows: CreateProcess) |
 | `test/test_fuzz.c` | Fuzzing harness |
 | `docs/API.md` | API reference |
+| `docs/PERFORMANCE.md` | Hot path analysis results |
+| `docs/CACHE.md` | Cache tuning results |
+| `docs/CONTENTION.md` | Lock contention analysis results |
+| `docs/FUZZING.md` | Fuzzing results |
 | `README.md` | Build instructions + quick-start |
+
+## Dependencies
+
+| Dependency | Phase | Purpose |
+|------------|-------|---------|
+| Full VFS API | Phase 8 | All workloads |
+| SQLite VFS | Phase 9 | `insert`/`batch` workloads in bench.c |
+| `fork()` or `CreateProcess` | OS | Crash tests (10.5) |
+| `perf`/`Instruments` | OS | Hot path profiling (10.2) |
+| `valgrind` | OS | Memory leak detection (10.7) |
+| SQLite amalgamation | External | `bench.c` with SQLite workloads |
+
+## Staging Guidance
+
+Phase 10 workloads can be built in parallel with one exception:
+
+### Independent (build in any order):
+- **10.7 (CI)** — just YAML files, no code. Start immediately.
+- **10.8 (Documentation)** — README + API docs. Can be drafted early.
+- **10.1 (Benchmark, raw workloads)** — `bench_raw.c` without SQLite.
+  `read`, `scan`, `mixed`, `dir` workloads work against Phase 8 API alone.
+
+### Sequential chain (each builds on prior):
+- **10.1 (Benchmark, SQLite workloads)** — requires Phase 9.
+- **10.2 (Hot Path)** → needs 10.1 for measurements.
+- **10.3 (Cache Tuning)** → needs 10.1 for test matrix.
+- **10.4 (Contention)** → needs 10.1 for scaling tests.
+
+### Verification (after core is stable):
+- **10.5 (Crash)** — needs Phase 7 (GC) functional.
+- **10.6 (Fuzzing)** — needs the backing file format stable.
+
+## Platform Notes
+
+| Workload | Unix | Windows |
+|----------|------|---------|
+| 10.5 crash tests | `fork()` + `kill()` | `CreateProcess` + `TerminateProcess` |
+| 10.6 fuzzing | `pread`/`pwrite` | `_read`/`_write` with `_lseek` |
+| 10.2 profiling | `perf record` | ETW / `xperf` |
+| 10.7 sanitizers | ASan/UBSan/Valgrind | None (not available) |
+
+Windows crash tests: spawn child as separate process via `CreateProcess`,
+write operations, parent `TerminateProcess(child, 0)`, remount and verify.
+No `fork()` equivalent — separate executable or command-line mode.
 
 ---
 
@@ -207,69 +256,30 @@ N = 1, 2, 4, 8, 16.
 
 ### What
 Systematically `kill -9` the process at various points and verify data
-integrity on remount.
+integrity on remount. Each scenario is a standalone function callable from
+the test runner, producing a single pass/fail result — no interactive steps,
+no manual verification.
 
-### Test Harness: `test/test_crash.c`
-
-```
-for each scenario:
-    for iteration = 1..100:
-        child = fork()
-        if child == 0:
-            // CHILD PROCESS
-            vfs_open("crash.vfs")
-            perform scenario-specific operations
-            // NO explicit flush (except where scenario requires it)
-            // PARENT kills at random or controlled point:
-            usleep(random_delay)
-            // child exits or is killed
-        else:
-            // PARENT PROCESS
-            wait for child to finish or kill it
-            vfs_open("crash.vfs")  // remount
-            validate_tree()         // walk all files, verify content
-            vfs_close()
-```
-
-### Crash Scenarios (All 100 iterations Each)
-
-1. **Mid-write, single-copy page.** Write to a page that has never been
-   written before. Kill before the PageHeader is written. Remount: page
-   is NULL (never written) or intact (old data). Never torn.
-2. **Mid-write, mirrored page.** Write to a page that already has a mirror.
-   Kill at random offset within the write. Remount: page is either old or
-   new. Never torn — CRC validates on one half.
-3. **During mirror allocation.** Write to a page for the second time. Kill
-   between sibling write and original's `mirrorPage` update. Remount:
-   original intact (gen=1, mirror=-1). Sibling is zombie.
-4. **During GC, before swap.** Kill after GC has written new pool pages but
-   before superblock swap. Remount: old tree intact.
-5. **During GC, after swap, before deferred-free.** Kill after swap but
-   before old pages freed. Remount: new tree active.
-6. **During snapshot.** Kill after `currentEpoch += 2` but before any write
-   at new epoch. Remount: old epoch, no corruption.
-7. **During commit.** Kill after TouchedFile scan but before mapper write.
-   Remount: snapshot still uncommitted, data intact.
-8. **Power loss during flush.** Kill during `storage_flush(-1)`. Remount:
-   superblock may be old or new. Lazy mirror ensures whichever superblock
-   is active points to a consistent tree.
-
-### Validation Function
+### Structure
 
 ```c
-void validate_tree(vfs_t* vfs) {
-    // Walk entire tree from root
-    // For each file: read every page, verify CRC, verify content matches
-    // expected (pre-recorded before the crash test)
-    // Report any mismatches
-}
+// Each scenario is a separate function returning 0 on success
+int crash_test_single_copy_write(void);      // Scenario 1
+int crash_test_mirrored_write(void);          // Scenario 2
+int crash_test_mirror_allocation(void);       // Scenario 3
+int crash_test_gc_before_swap(void);          // Scenario 4
+int crash_test_gc_after_swap(void);           // Scenario 5
+int crash_test_snapshot(void);                // Scenario 6
+int crash_test_commit_mid(void);              // Scenario 7
+int crash_test_flush_power_loss(void);        // Scenario 8
 ```
 
 ### Acceptance
-- [ ] All 8 scenarios × 100 iterations = 800 crash tests pass
+- [ ] All 8 scenario functions exist and return 0 (pass) or -1 (fail)
+- [ ] Each function runs exactly 100 iterations internally
 - [ ] No data corruption in any scenario
+- [ ] Scenarios are callable from `ctest` via `test_crash --scenario N`
 - [ ] Single-copy write loss is the ONLY acceptable data loss
-- [ ] Document any scenarios where data loss occurred (even if acceptable)
 
 ---
 
