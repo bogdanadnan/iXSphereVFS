@@ -146,3 +146,12 @@ void deferred_free_confirm_and_release(DeferredFreeQueue* queue,
     queue->capacity = 0;
     queue->confirmed = true;
 }
+
+void deferred_free_destroy(DeferredFreeQueue* queue) {
+    if (!queue) return;
+    free(queue->pages);
+    queue->pages = NULL;
+    queue->count = 0;
+    queue->capacity = 0;
+    queue->confirmed = false;
+}

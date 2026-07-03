@@ -68,6 +68,10 @@ bool deferred_free_is_queued(DeferredFreeQueue* queue, int64_t logical_page);
 void deferred_free_confirm_and_release(DeferredFreeQueue* queue,
                                         StorageBackend* sb);
 
+/* Destroy the queue — free the pages array without releasing pages.
+ * For cleanup when GC is aborted or the VFS is closing. */
+void deferred_free_destroy(DeferredFreeQueue* queue);
+
 /* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *
