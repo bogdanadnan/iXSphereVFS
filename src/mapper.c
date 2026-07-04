@@ -196,3 +196,33 @@ bool mapper_table_traversal_apply(MapperTable* tbl, int64_t epoch) {
     }
     return false;
 }
+
+int mapper_table_insert(MapperTable* tbl, uint32_t fromEpoch, uint32_t toEpoch,
+                         bool traversalApply) {
+    if (!tbl || !tbl->pool) return VFS_ERR_IO;
+
+    uint16_t flags = traversalApply ? MAPPER_FLAG_TRAVERSAL_APPLY : 0;
+    {
+        Mapper m;
+        mapper_init(&m, tbl->pool, tbl->epochMapperPtr);
+        int err = mapper_insert(&m, fromEpoch, toEpoch, flags);
+        if (err != VFS_OK) return err;
+    }
+
+    if (tbl->count >= tbl->capacity) {
+        int new_cap = tbl->capacity * 2;
+        MapperEntryRow* new_entries = (MapperEntryRow*)realloc(
+            tbl->entries, (size_t)new_cap * sizeof(MapperEntryRow));
+        if (!new_entries) return VFS_ERR_NOMEM;
+        tbl->entries = new_entries;
+        tbl->capacity = new_cap;
+    }
+
+    tbl->entries[tbl->count].fromEpoch = fromEpoch;
+    tbl->entries[tbl->count].toEpoch = toEpoch;
+    tbl->entries[tbl->count].traversalApply = traversalApply;
+    vfs_mb_release();
+    tbl->count++;
+
+    return VFS_OK;
+}
