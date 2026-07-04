@@ -84,4 +84,23 @@ VFS_INLINE uint32_t tree_segment_size(TreeContext* ctx) {
     return ctx->segment_size;
 }
 
+/* ---------------------------------------------------------------------------
+ * Directory chain lookup
+ * --------------------------------------------------------------------------- */
+
+/* Walk a directory's DirContent chain to find an entry by name at a given
+ * epoch (applying the read-rule and mapper remapping).
+ *
+ * ctx         — VFS tree context
+ * dir_vp      — VirtualPtr of the DirNode to search
+ * name        — entry name to match
+ * epoch       — query epoch (mapper_resolve is applied internally)
+ * out_childPtr — set to the child's VirtualPtr on match, unchanged otherwise
+ * out_nodeId  — set to the child's nodeId on match, unchanged otherwise
+ *
+ * Returns VFS_OK if found, VFS_ERR_NOTFOUND if no matching entry exists. */
+int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
+                        int64_t epoch, int64_t* out_childPtr,
+                        uint32_t* out_nodeId);
+
 #endif /* VFS_TREE_H */
