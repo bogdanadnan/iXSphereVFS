@@ -226,3 +226,47 @@ int mapper_table_insert(MapperTable* tbl, uint32_t fromEpoch, uint32_t toEpoch,
 
     return VFS_OK;
 }
+
+int mapper_table_rebuild(MapperTable* tbl) {
+    if (!tbl || !tbl->pool) return VFS_ERR_IO;
+
+    free(tbl->entries);
+    tbl->entries = NULL;
+    tbl->count = 0;
+    tbl->capacity = 0;
+
+    int64_t* mapper_ptr = tbl->epochMapperPtr;
+    if (mapper_ptr) {
+        int64_t vp = *mapper_ptr;
+        while (vp != 0) {
+            uint8_t* slot = pool_resolve(tbl->pool, vp);
+            if (!slot) return VFS_ERR_IO;
+
+            uint32_t fromE, toE;
+            uint16_t flags;
+            int64_t next;
+            nodes_read_mapperentry(slot, &fromE, &toE, &flags, &next,
+                                    tbl->pool->sb->page_size);
+
+            if (tbl->count >= tbl->capacity) {
+                int new_cap = tbl->capacity > 0 ? tbl->capacity * 2
+                                                : MAPPER_TABLE_INITIAL_CAPACITY;
+                MapperEntryRow* new_entries = (MapperEntryRow*)realloc(
+                    tbl->entries, (size_t)new_cap * sizeof(MapperEntryRow));
+                if (!new_entries) return VFS_ERR_NOMEM;
+                tbl->entries = new_entries;
+                tbl->capacity = new_cap;
+            }
+
+            tbl->entries[tbl->count].fromEpoch = fromE;
+            tbl->entries[tbl->count].toEpoch = toE;
+            tbl->entries[tbl->count].traversalApply =
+                (flags & MAPPER_FLAG_TRAVERSAL_APPLY) != 0;
+            tbl->count++;
+
+            vp = next;
+        }
+    }
+
+    return VFS_OK;
+}
