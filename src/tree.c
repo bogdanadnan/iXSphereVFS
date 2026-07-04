@@ -991,7 +991,7 @@ int64_t vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch) {
     }
 
     int64_t sizePtr = vfs_rd8_s(file_slot, FILENODE_OFF_SIZEPTR, ctx->page_size);
-    int64_t read_epoch = mapper_resolve(&ctx->mapper, epoch);
+    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
 
     int64_t walk_vp = sizePtr;
     while (walk_vp != 0) {
@@ -1003,8 +1003,8 @@ int64_t vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch) {
         (void)fs_size;
 
         int64_t effective_epoch = (int64_t)fs_epoch;
-        if (mapper_traversal_apply(&ctx->mapper, (int64_t)fs_epoch))
-            effective_epoch = mapper_resolve(&ctx->mapper, (int64_t)fs_epoch);
+        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)fs_epoch))
+            effective_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)fs_epoch);
 
         if (effective_epoch == read_epoch ||
             (effective_epoch < read_epoch && effective_epoch % 2 == 0))
