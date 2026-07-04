@@ -1116,26 +1116,10 @@ int64_t vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch) {
     int64_t sizePtr = vfs_rd8_s(file_slot, FILENODE_OFF_SIZEPTR, ctx->page_size);
     int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
 
-    int64_t walk_vp = sizePtr;
-    while (walk_vp != 0) {
-        uint8_t* fs_slot = pool_resolve(&ctx->pool, walk_vp);
-        if (!fs_slot) break;
-        uint32_t fs_epoch;
-        int64_t fs_modified, fs_size, fs_next;
-        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modified, &fs_size, &fs_next, ctx->page_size);
-        (void)fs_size;
-
-        int64_t effective_epoch = (int64_t)fs_epoch;
-        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)fs_epoch))
-            effective_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)fs_epoch);
-
-        if (effective_epoch == read_epoch ||
-            (effective_epoch < read_epoch && effective_epoch % 2 == 0))
-            return fs_modified;
-
-        walk_vp = fs_next;
-    }
-    return 0;
+    int64_t file_size = 0, modified_at = 0;
+    sizechain_get(ctx, sizePtr, read_epoch, &file_size, &modified_at);
+    (void)file_size;
+    return modified_at;
 }
 
 /* ---------------------------------------------------------------------------
