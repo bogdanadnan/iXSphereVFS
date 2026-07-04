@@ -220,6 +220,13 @@ int vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch) {
                             toEpoch, 0);
     if (ret != VFS_OK) return ret;
 
+    /* Update in-memory mapper table (pool write already done above) */
+    {
+        int err = mapper_table_append(&ctx->mapper_table,
+                      (uint32_t)snapshot_epoch, toEpoch, false);
+        if (err != VFS_OK) return err;
+    }
+
     /* Drop TouchedFile chain for this epoch */
     touchedfile_drop(&ctx->pool, &ctx->touchedFilesPtr, (uint32_t)snapshot_epoch);
 
