@@ -37,7 +37,7 @@ typedef struct {
     int         count;      /* number of files/operations */
     int         threads;    /* number of concurrent threads */
     int         page_size;  /* VFS page size (default 8192) */
-    int         cache_mb;   /* not implemented yet — placeholder */
+    int         cache_mb;   /* 0 = use default */
     const char* output;     /* output file path */
 } bench_opts;
 
@@ -186,9 +186,14 @@ static void report_full(const char* name, int count, int threads, double elapsed
 
     int64_t ct = vfs_cache_total();
     int64_t ch = vfs_cache_hits();
+    int64_t dt = vfs_cache_data_total();
+    int64_t dh = vfs_cache_data_hits();
     double ratio = (ct > 0) ? (double)ch / (double)ct : 0.0;
+    double dratio = (dt > 0) ? (double)dh / (double)dt : 0.0;
     printf("  cache: hits=%lld  total=%lld  ratio=%.1f%%\n",
            (long long)ch, (long long)ct, ratio * 100.0);
+    printf("  data-cache: hits=%lld  total=%lld  ratio=%.1f%%\n",
+           (long long)dh, (long long)dt, dratio * 100.0);
     printf("\n");
 }
 
@@ -490,12 +495,14 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
         free(zbuf);
         if (writes_ok < file_pages / 2) return 0;
     }
+    fprintf(stderr, "pre-pop done (%d/%d writes ok), flushing+evicting...\n", writes_ok, file_pages);
 
     /* Flush all dirty pages to disk, then evict the entire page cache.
        This forces subsequent reads to re-read from disk (cache misses). */
     storage_flush(vfs->ctx->sb, -1);
     vfs_cache_evict_all(vfs->ctx->sb);
     vfs_cache_reset();
+    fprintf(stderr, "evicted, building permutation...\n");
 
     /* Build a random permutation over [0, file_pages). */
     int* order = (int*)malloc((size_t)file_pages * sizeof(int));
@@ -550,6 +557,13 @@ int main(int argc, char** argv) {
     if (!vfs) {
         fprintf(stderr, "Failed to open VFS file: %s\n", opts.output);
         return 1;
+    }
+    /* Apply --cache-mb override if specified */
+    if (opts.cache_mb > 0) {
+        int64_t entries = ((int64_t)opts.cache_mb * 1024 * 1024) / (int64_t)vfs->ctx->page_size;
+        if (entries < 256) entries = 256;
+        vfs->ctx->sb->cache.max_entries = (int)entries;
+        vfs->ctx->sb->cache.writeback_threshold = (int)(entries / 4);
     }
 
     /* Reset cache performance counters before running the workload */

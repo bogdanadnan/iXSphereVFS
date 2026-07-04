@@ -192,6 +192,9 @@ void vfs_cache_reset(void);
 
 /* Total number of cache lookups since last reset. */
 int64_t vfs_cache_total(void);
+int64_t vfs_cache_data_total(void);
+int64_t vfs_cache_data_hits(void);
+int     vfs_cache_was_last_hit(void);
 
 /* Number of cache hits since last reset. */
 int64_t vfs_cache_hits(void);
