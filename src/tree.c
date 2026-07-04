@@ -1276,7 +1276,24 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
         int64_t data_page = -1;
         int found = 0;
 
-        while (vp != 0 && !found) {
+        /* Fast path: live-head read with no mapper → first entry is always
+           the answer.  Version chains are prepended (newest first).
+           Verify the first entry's epoch matches read_epoch. */
+        if (ctx->epochMapperPtr == 0 && read_epoch == ctx->currentEpoch && vp != 0) {
+            uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
+            if (vp_slot) {
+                uint32_t vp_epoch;
+                int64_t vp_dataPage, vp_next;
+                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
+                (void)vp_next;
+                if (vp_epoch == (uint32_t)read_epoch) {
+                    data_page = vp_dataPage;
+                    found = 1;
+                }
+            }
+        }
+
+        while (!found && vp != 0) {
             uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
             if (!vp_slot) break;
             uint32_t vp_epoch;
