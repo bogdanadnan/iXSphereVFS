@@ -728,7 +728,7 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
 
     /* Find source entry by walking src_parent's DirContent chain */
     int64_t src_head = vfs_rd8_s(src_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
-    int64_t read_epoch_rn = mapper_resolve(&ctx->mapper, epoch);
+    int64_t read_epoch_rn = mapper_table_resolve(&ctx->mapper_table, epoch);
     uint32_t found_childId = 0;
     int64_t found_childPtr = 0;
     uint32_t found_epoch = 0;
@@ -742,8 +742,8 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
 
         int64_t effective_epoch = (int64_t)ce;
-        if (mapper_traversal_apply(&ctx->mapper, (int64_t)ce))
-            effective_epoch = mapper_resolve(&ctx->mapper, (int64_t)ce);
+        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce))
+            effective_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce);
 
         int applies_rn = (effective_epoch == read_epoch_rn) ||
                          (effective_epoch < read_epoch_rn && effective_epoch % 2 == 0);
