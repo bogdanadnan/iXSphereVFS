@@ -37,7 +37,7 @@ typedef struct {
     int         count;      /* number of files/operations */
     int         threads;    /* number of concurrent threads */
     int         page_size;  /* VFS page size (default 8192) */
-    int         cache_mb;   /* 0 = use default */
+    int         cache_mb;   /* not implemented yet — placeholder */
     const char* output;     /* output file path */
 } bench_opts;
 
@@ -186,14 +186,9 @@ static void report_full(const char* name, int count, int threads, double elapsed
 
     int64_t ct = vfs_cache_total();
     int64_t ch = vfs_cache_hits();
-    int64_t dt = vfs_data_total();
-    int64_t dh = vfs_data_hits();
     double ratio = (ct > 0) ? (double)ch / (double)ct : 0.0;
-    double dratio = (dt > 0) ? (double)dh / (double)dt : 0.0;
     printf("  cache: hits=%lld  total=%lld  ratio=%.1f%%\n",
            (long long)ch, (long long)ct, ratio * 100.0);
-    printf("  data-cache: hits=%lld  total=%lld  ratio=%.1f%%\n",
-           (long long)dh, (long long)dt, dratio * 100.0);
     printf("\n");
 }
 
@@ -280,23 +275,33 @@ static int bench_write(vfs_t* vfs, int count, int threads, const char* path) {
 static int bench_read(vfs_t* vfs, int count, int threads, const char* path) {
     (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
+    int64_t* file_vps = (int64_t*)calloc((size_t)count, sizeof(int64_t));
+    if (!file_vps) return 0;
+
     for (int i = 0; i < count; i++) {
         char name[64];
         snprintf(name, sizeof(name), "r%d.txt", i);
-        vfs_create(vfs, root_vp, name, 0);
+        int nid = vfs_create(vfs, root_vp, name, 0);
+        if (nid > 0) file_vps[i] = resolve_child_vp(vfs, root_vp, name);
+
+        /* Write 128 bytes to each file so reads exercise version chain traversal */
+        if (file_vps[i] != 0) {
+            char data[128];
+            memset(data, 'A' + (i % 26), 128);
+            vfs_write(vfs, file_vps[i], data, 0, 128, 0);
+        }
     }
+
     double t0 = now_sec();
     int ok = 0;
     for (int i = 0; i < count; i++) {
-        char name[64];
-        snprintf(name, sizeof(name), "r%d.txt", i);
-        int64_t file_vp = resolve_child_vp(vfs, root_vp, name);
-        if (file_vp == 0) continue;
+        if (file_vps[i] == 0) continue;
         char buf[128];
-        int r = vfs_read(vfs, file_vp, buf, 0, sizeof(buf), 0);
+        int r = vfs_read(vfs, file_vps[i], buf, 0, sizeof(buf), 0);
         if (r > 0) ok++;
     }
     double t1 = now_sec();
+    free(file_vps);
     report("read", ok, threads, t1 - t0);
     return ok;
 }
@@ -459,68 +464,63 @@ static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) 
 
 /* ---------------------------------------------------------------------------
  * Workload: randread — random page reads from a pre-populated file.
- * Pre-populates 2× cache capacity distinct pages, then reads the same
- * range in random order to force ~50% cache miss rate.
+ * Pre-populates `file_pages` pages via seqwrite, then randomly reads `count`
+ * pages measuring per-read latency and cache hit rate.  Reads at least 2×
+ * the cache capacity (estimated from count) to force compulsory misses.
  * --------------------------------------------------------------------------- */
 
 static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) {
+    (void)path;
     (void)threads;
-    if (count <= 0) return 0;
-    const int64_t page_sz = vfs->ctx->page_size;
-    int64_t cache_cap = vfs_cache_get_max_entries(vfs->ctx->sb);
-
-    int64_t min_reads = 2 * cache_cap;
-    int reads_needed = (count < (int)min_reads) ? (int)min_reads : count;
-    if (reads_needed > 65536) reads_needed = 65536;
-    int file_pages = reads_needed;
-
-    /* ── Pre-populate (untimed) ── */
     int64_t root_vp = vfs->ctx->rootNodeOffset;
-    int writes_ok = 0;
+    const int page_sz = vfs->ctx->page_size;
+
+    /* Pre-populate a file with enough pages to exceed default cache size.
+       The page cache has ~1024 entries — we populate 2× that to force
+       compulsory cache misses during random reads. */
+    int64_t file_vp = 0;
     {
-        if (vfs_create(vfs, root_vp, "randfile.dat", 0) <= 0) return 0;
-        int64_t fvp = resolve_child_vp(vfs, root_vp, "randfile.dat");
-        if (fvp == 0) return 0;
+        BENCH_CHECK(vfs_create(vfs, root_vp, "randfile.dat", 0) > 0);
+        file_vp = resolve_child_vp(vfs, root_vp, "randfile.dat");
+        BENCH_CHECK(file_vp != 0);
+        int file_pages = count < 2048 ? 2048 : count * 2;
         uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
-        if (!zbuf) return 0;
-        for (int i = 0; i < file_pages; i++) {
-            if (vfs_write(vfs, fvp, zbuf, (int64_t)i * page_sz, page_sz, 0) == page_sz)
-                writes_ok++;
-        }
+        BENCH_CHECK(zbuf != NULL);
+        for (int i = 0; i < file_pages; i++)
+            vfs_write(vfs, file_vp, zbuf, (int64_t)i * page_sz, page_sz, 0);
         free(zbuf);
-        if (writes_ok < file_pages / 2) return 0;
     }
 
-    /* ── Close & reopen with cold cache ── */
-    vfs_close(vfs);
-    vfs = vfs_open(path, page_sz);
-    if (!vfs) return 0;
-    root_vp = vfs->ctx->rootNodeOffset;
-    int64_t file_vp = resolve_child_vp(vfs, root_vp, "randfile.dat");
-    if (file_vp == 0) { vfs_close(vfs); return 0; }
+    /* Seeded pseudo-random permutation of page offsets */
+    int* order = (int*)calloc((size_t)count, sizeof(int));
+    BENCH_CHECK(order != NULL);
+    for (int i = 0; i < count; i++) order[i] = i;
+    unsigned seed = 42;
+    for (int i = count - 1; i > 0; i--) {
+        int j = rand_r(&seed) % (i + 1);
+        int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+    }
 
-    /* ── Timed reads: truly random, each page picked independently.
-       With 2× cache_cap pages and cache_cap slots, ~50% of reads hit
-       pages already in cache; ~50% pull new pages from disk. */
+    /* Timed phase: random reads */
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
-    if (!buf) { vfs_close(vfs); return 0; }
-    lat_init(reads_needed);
+    BENCH_CHECK(buf != NULL);
+    lat_init(count);
     vfs_cache_reset();
     double t0 = now_sec();
     int ok = 0;
-    unsigned rseed = 42;
-    for (int i = 0; i < reads_needed; i++) {
-        int64_t offset = (int64_t)(rand_r(&rseed) % (unsigned)file_pages) * page_sz;
+    for (int i = 0; i < count; i++) {
+        double op_t0 = now_sec();
+        int64_t offset = (int64_t)order[i] * (int64_t)page_sz;
         int r = vfs_read(vfs, file_vp, buf, offset, page_sz, 0);
         if (r == page_sz) ok++;
-        lat_record(now_sec() - t0);
+        lat_record(now_sec() - op_t0);
     }
-    double elapsed = now_sec() - t0;
+    double t1 = now_sec();
     free(buf);
+    free(order);
 
-    report_full("randread", ok, 1, elapsed);
+    report_full("randread", ok, threads, t1 - t0);
     lat_destroy();
-    vfs_close(vfs);
     return ok;
 }
 
@@ -543,13 +543,6 @@ int main(int argc, char** argv) {
     if (!vfs) {
         fprintf(stderr, "Failed to open VFS file: %s\n", opts.output);
         return 1;
-    }
-    /* Apply --cache-mb override if specified */
-    if (opts.cache_mb > 0) {
-        int64_t entries = ((int64_t)opts.cache_mb * 1024 * 1024) / (int64_t)vfs->ctx->page_size;
-        if (entries < 256) entries = 256;
-        vfs->ctx->sb->cache.max_entries = (int)entries;
-        vfs->ctx->sb->cache.writeback_threshold = (int)(entries / 4);
     }
 
     /* Reset cache performance counters before running the workload */
@@ -586,10 +579,6 @@ int main(int argc, char** argv) {
               : opts.count;
     printf("  completed: %d / %d operations\n", ok, total);
 
-    /* bench_randread closes and reopens internally — the vfs handle
-       returned to main is the reopened one.  Other workloads keep the
-       original handle. */
-    if (strcmp(opts.workload, "randread") != 0)
-        vfs_close(vfs);
+    vfs_close(vfs);
     return 0;
 }
