@@ -79,16 +79,50 @@ Called after GC. Clears `entries[]`, re-walks the chain, repopulates.
   `mapper_table_insert`, `mapper_table_rebuild`
 - Wire into `vfs_open` (`mapper_table_init`)
 
-### Stage B — Refactor read path
-- Replace `mapper_resolve(&ctx->mapper, epoch)` calls in `vfs_read`,
-  `vfs_file_size`, `vfs_file_mtime`, `vfs_open_file`, `vfs_readdir`,
-  `vfs_epoch_is_writable` with `mapper_table_resolve`
-- Replace `mapper_traversal_apply` calls with `mapper_table_traversal_apply`
+### Stage B — Unified Chain-Walk Helpers (no caching yet)
+Before adding caching, extract all hand-rolled chain walks into shared
+functions. Each function uses `pool_resolve` — same behavior as today,
+but centralized for future optimization.
 
-### Stage C — Wire write path
+**`dirchain_find_child(ctx, dirVp, name, epoch) → childVp, childNodeId`**
+Walk DirContent chain. Find child with matching `name` at `epoch` using
+read-rule dedup (highest `epoch ≤ query`, tombstone-aware). Returns
+child's VirtualPtr and nodeId. Used by: `vfs_open_file`, `vfs_delete`,
+`vfs_rename` (source lookup), `resolve_child_vp` (benchmark).
+
+**`dirchain_list(ctx, dirVp, entries, max, epoch) → count`**
+Walk DirContent chain. Collect all non-tombstone children visible at
+`epoch`, deduplicated by `childNodeId` (highest `epoch ≤ query`).
+Fills `entries[]` with `{nodeId, name, isDir}`. Used by: `vfs_readdir`.
+
+**`verchain_get(ctx, versionRootPtr, readEpoch) → dataPage`**
+Walk VersionPage chain from `versionRootPtr`. Apply read rule: exact
+match at `readEpoch`, or highest even `epoch < readEpoch`. Apply mapper
+traversal. Returns data page index, or -1 if never written. Used by:
+`vfs_read`, `vfs_write` (COW base page lookup).
+
+**`sizechain_get(ctx, sizePtr, epoch) → {fileSize, modifiedAt}`**
+Walk FileSize chain from `sizePtr`. Apply read rule. Returns size and
+mtime. Used by: `vfs_file_size`, `vfs_file_mtime`.
+
+### Stage C — Refactor read path
+- Replace all inline chain walks in `vfs_read`, `vfs_file_size`, `vfs_file_mtime`,
+  `vfs_open_file`, `vfs_readdir`, `vfs_delete`, `vfs_rename` with calls to
+  the shared helpers above.
+- Replace `mapper_resolve(&ctx->mapper, epoch)` calls with `mapper_table_resolve`
+- Replace `mapper_traversal_apply` calls with `mapper_table_traversal_apply`
+- Target: zero hand-rolled `while(vp != 0)` loops in the read path
+
+### Stage D — Wire write path
 - After `mapper_insert` in `vfs_commit` and `vfs_delete_snapshot`,
   call `mapper_table_insert`
 - After GC, call `mapper_table_rebuild`
+
+### Stage E — Add caching (Phase 13 follow-up)
+- Add `VfsNode` cache inside the shared helpers from Stage B
+- First call to `dirchain_find_child` walks the chain and caches children
+- Subsequent calls use the cache
+- Mutations (`vfs_create`, `vfs_delete`, `vfs_rename`) invalidate the cache
 
 ## Acceptance
 - [ ] After mount: `mapper_table_resolve` matches chain-walk result
