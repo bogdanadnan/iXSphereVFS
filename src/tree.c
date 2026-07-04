@@ -558,21 +558,13 @@ int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
  * --------------------------------------------------------------------------- */
 
 
-/* ---------------------------------------------------------------------------
- * dirchain_find_named — walk DirContent chain, find FIRST live entry
- * matching name at read_epoch (early-exit, first-match semantics).
- * Ignores tombstones (namePtr == 0).  Returns childPtr and nodeId.
- * Used by vfs_delete and vfs_rename which need the first visible match.
- * --------------------------------------------------------------------------- */
-
-
 int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
     TreeContext* ctx = vfs->ctx;
 
     if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
 
-    /* Use first-match named helper (same semantics as inline walk) */
+    /* Use dirchain_find_child to locate the entry (read-rule + mapper + dedup) */
     int64_t found_childPtr = 0;
     uint32_t found_childId = 0;
     int r = dirchain_find_child(ctx, parent, name, epoch,
@@ -1081,7 +1073,7 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                     best_name_match = 1;
                 }
             } else {
-                if ((int64_t)ce_child != best_child) {
+                if ((int64_t)ce_child != best_child && best_name_match == 0) {
                     best_child    = (int64_t)ce_child;
                     best_childPtr = ce_childPtr;
                     best_eff_epoch = eff_epoch;
