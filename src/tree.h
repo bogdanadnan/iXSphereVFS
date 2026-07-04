@@ -125,4 +125,11 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
 int64_t verchain_get(TreeContext* ctx, int64_t versionRootPtr,
                      int64_t read_epoch);
 
+/* Walk a FileSize chain starting from sizePtr, apply the read-rule with
+ * mapper remapping, and return the fileSize and modifiedAt at the visible
+ * epoch.  If no entry applies, returns 0 for fileSize and 0 for modifiedAt.
+ * read_epoch should be pre-resolved via mapper_table_resolve. */
+void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
+                   int64_t* out_fileSize, int64_t* out_modifiedAt);
+
 #endif /* VFS_TREE_H */

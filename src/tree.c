@@ -332,6 +332,62 @@ int64_t verchain_get(TreeContext* ctx, int64_t versionRootPtr,
 }
 
 /* ---------------------------------------------------------------------------
+ * sizechain_get — walk FileSize chain, apply read-rule + mapper,
+ * return fileSize and modifiedAt at the visible epoch.  Read-epoch should
+ * be pre-resolved via mapper_table_resolve.
+ * --------------------------------------------------------------------------- */
+
+void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
+                   int64_t* out_fileSize, int64_t* out_modifiedAt) {
+    if (!ctx) return;
+    if (out_fileSize) *out_fileSize = 0;
+    if (out_modifiedAt) *out_modifiedAt = 0;
+    if (sizePtr == 0) return;
+
+    int64_t best_size = 0, best_modified = 0, best_epoch = -1;
+    int64_t walk_vp = sizePtr;
+
+    while (walk_vp != 0) {
+        uint8_t* fs_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!fs_slot) break;
+
+        uint32_t fs_epoch;
+        int64_t fs_modified, fs_size, fs_next;
+        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modified, &fs_size,
+                            &fs_next, ctx->page_size);
+
+        /* Compute effective epoch via mapper remapping */
+        int64_t effective_epoch = (int64_t)fs_epoch;
+        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)fs_epoch))
+            effective_epoch = mapper_table_resolve(&ctx->mapper_table,
+                                                    (int64_t)fs_epoch);
+
+        /* Exact match at read_epoch — use it immediately */
+        if (effective_epoch == read_epoch) {
+            if (out_fileSize) *out_fileSize = fs_size;
+            if (out_modifiedAt) *out_modifiedAt = fs_modified;
+            return;
+        }
+
+        /* Even epoch below read_epoch — candidate if better than current */
+        if (effective_epoch < read_epoch && effective_epoch % 2 == 0) {
+            if (effective_epoch > best_epoch) {
+                best_epoch = effective_epoch;
+                best_size = fs_size;
+                best_modified = fs_modified;
+            }
+        }
+
+        walk_vp = fs_next;
+    }
+
+    if (best_epoch >= 0) {
+        if (out_fileSize) *out_fileSize = best_size;
+        if (out_modifiedAt) *out_modifiedAt = best_modified;
+    }
+}
+
+/* ---------------------------------------------------------------------------
  * vfs_create — create a file under a parent directory
  *
  * Returns new nodeId on success, or negative vfs_error_t on failure.
