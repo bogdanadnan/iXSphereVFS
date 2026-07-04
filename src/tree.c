@@ -1312,7 +1312,12 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
 
         if (found) {
             /* Read data page and copy intra-page portion */
+            int64_t t_before = vfs_cache_total();
+            int64_t h_before = vfs_cache_hits();
             uint8_t* page_data = storage_read(ctx->sb, data_page);
+            vfs_data_inc_total();
+            if (vfs_cache_total() > t_before && vfs_cache_hits() > h_before)
+                vfs_data_inc_hits();
             if (page_data) {
                 memcpy(dst, page_data + page_offset, (size_t)page_count);
             } else {

@@ -186,8 +186,8 @@ static void report_full(const char* name, int count, int threads, double elapsed
 
     int64_t ct = vfs_cache_total();
     int64_t ch = vfs_cache_hits();
-    int64_t dt = vfs_cache_data_total();
-    int64_t dh = vfs_cache_data_hits();
+    int64_t dt = vfs_data_total();
+    int64_t dh = vfs_data_hits();
     double ratio = (ct > 0) ? (double)ch / (double)ct : 0.0;
     double dratio = (dt > 0) ? (double)dh / (double)dt : 0.0;
     printf("  cache: hits=%lld  total=%lld  ratio=%.1f%%\n",

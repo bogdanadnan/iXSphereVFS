@@ -190,14 +190,16 @@ int64_t vfs_cache_get_max_entries(StorageBackend* sb);
 void vfs_cache_evict_all(StorageBackend* sb);
 void vfs_cache_reset(void);
 
-/* Total number of cache lookups since last reset. */
+/* Total cache lookups / hits since last reset (all pages). */
 int64_t vfs_cache_total(void);
-int64_t vfs_cache_data_total(void);
-int64_t vfs_cache_data_hits(void);
+int64_t vfs_cache_hits(void);
 int     vfs_cache_was_last_hit(void);
 
-/* Number of cache hits since last reset. */
-int64_t vfs_cache_hits(void);
+/* Data-page read tracking (counted by vfs_read per data page). */
+int64_t vfs_data_total(void);
+int64_t vfs_data_hits(void);
+void    vfs_data_inc_total(void);
+void    vfs_data_inc_hits(void);
 
 /* Number of cache misses since last reset (= total - hits). */
 static inline int64_t vfs_cache_misses(void) {
@@ -211,6 +213,8 @@ static inline double vfs_cache_hit_ratio(void) {
 }
 
 /* Maximum number of entries the page cache can hold before eviction. */
-int64_t vfs_cache_max_entries(void);
+int64_t vfs_cache_max_entries(void);int64_t vfs_cache_max_entries(void);
 
 #endif /* VFS_STORAGE_H */
+void vfs_data_inc_total(void);
+void vfs_data_inc_hits(void);

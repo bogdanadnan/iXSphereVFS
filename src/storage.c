@@ -14,8 +14,8 @@ static DeferredFreeQueue* _deferred_queue = NULL;
 /* Cache performance counters (atomic for lock-free reads in benchmark code) */
 static volatile int64_t _cache_total = 0;
 static volatile int64_t _cache_hits       = 0;
-static volatile int64_t _cache_data_total = 0;
-static volatile int64_t _cache_data_hits  = 0;
+static volatile int64_t _vfs_data_total = 0;
+static volatile int64_t _vfs_data_hits  = 0;
 static volatile int     _last_was_hit     = 0;
 
 int64_t vfs_cache_get_max_entries(StorageBackend* sb) {
@@ -29,17 +29,19 @@ void vfs_cache_evict_all(StorageBackend* sb) {
 void vfs_cache_reset(void) {
     _cache_total      = 0;
     _cache_hits       = 0;
-    _cache_data_total = 0;
-    _cache_data_hits  = 0;
+    _vfs_data_total = 0;
+    _vfs_data_hits  = 0;
 }
 
 int64_t vfs_cache_total(void)      { return _cache_total; }
 int64_t vfs_cache_hits(void)       { return _cache_hits; }
-int64_t vfs_cache_data_total(void) { return _cache_data_total; }
-int64_t vfs_cache_data_hits(void)  { return _cache_data_hits; }
+int64_t vfs_data_total(void) { return _vfs_data_total; }
+int64_t vfs_data_hits(void)  { return _vfs_data_hits; }
 int     vfs_cache_was_last_hit(void) { return _last_was_hit; }
 int64_t vfs_cache_max_entries(void) { return CACHE_DEFAULT_MAX; }
 
+void vfs_data_inc_total(void) { _vfs_data_total++; }
+void vfs_data_inc_hits(void)  { _vfs_data_hits++; }
 void storage_set_deferred_queue(DeferredFreeQueue* queue) {
     _deferred_queue = queue;
 }
@@ -561,14 +563,7 @@ uint8_t* storage_read(StorageBackend* sb, int64_t logical_page) {
     /* 1. Check page cache */
     CacheEntry* ce = cache_find(&sb->cache, logical_page);
     _last_was_hit = (ce != NULL);
-    if (ce) {
-        _cache_hits++;
-        if (logical_page >= 2) {
-            _cache_data_total++;
-            _cache_data_hits++;
-        }
-        return ce->payload;
-    }
+    if (ce) { _cache_hits++; return ce->payload; }
 
     /* 2. Check if page is allocated */
     int64_t offset = indir_lookup(sb, logical_page);
@@ -585,7 +580,6 @@ uint8_t* storage_read(StorageBackend* sb, int64_t logical_page) {
 
     /* 4. Insert into cache — cache takes ownership of buf (no copy) */
     cache_insert(&sb->cache, logical_page, buf, 0, 0);
-    if (logical_page >= 2) _cache_data_total++;
 
     /* 5. Return the cached payload (cache owns buf now) */
     ce = cache_find(&sb->cache, logical_page);
