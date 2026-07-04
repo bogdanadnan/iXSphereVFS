@@ -846,6 +846,78 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
 }
 
 /* ---------------------------------------------------------------------------
+ * dirchain_find_child — walk DirContent chain, read-rule dedup, return match
+ * --------------------------------------------------------------------------- */
+
+int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
+                        int64_t epoch, int64_t* out_childPtr,
+                        uint32_t* out_nodeId) {
+    if (!ctx || !name || name[0] == '\0') return VFS_ERR_IO;
+    if (!out_childPtr || !out_nodeId) return VFS_ERR_IO;
+
+    uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
+    if (!dir_slot) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+        return VFS_ERR_NOTDIR;
+
+    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
+    int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
+
+    int64_t best_child = 0, best_childPtr = 0, best_eff_epoch = 0;
+    int best_name_match = 0;
+
+    int64_t walk_vp = headPtr;
+    while (walk_vp != 0) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+        uint32_t ce_child, ce_epoch;
+        int64_t ce_childPtr, ce_namePtr, ce_next;
+        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                              &ce_namePtr, &ce_next, ctx->page_size);
+
+        int64_t eff_epoch = (int64_t)ce_epoch;
+        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
+            eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
+
+        int applies = (eff_epoch == read_epoch) ||
+                      (eff_epoch < read_epoch && eff_epoch % 2 == 0);
+        if (!applies) { walk_vp = ce_next; continue; }
+
+        if ((int64_t)ce_child == best_child && best_name_match &&
+            eff_epoch <= best_eff_epoch)
+            { walk_vp = ce_next; continue; }
+
+        if (eff_epoch > best_eff_epoch || (int64_t)ce_child != best_child ||
+            (ce_namePtr != 0 && best_name_match == 0 && eff_epoch == best_eff_epoch)) {
+            if (ce_namePtr != 0) {
+                char entry_name[256];
+                int nl = nodes_read_name(&ctx->pool, ce_namePtr,
+                                          entry_name, (int)sizeof(entry_name));
+                if (nl > 0 && strcmp(entry_name, name) == 0) {
+                    best_child    = (int64_t)ce_child;
+                    best_childPtr = ce_childPtr;
+                    best_eff_epoch = eff_epoch;
+                    best_name_match = 1;
+                }
+            } else {
+                if ((int64_t)ce_child != best_child) {
+                    best_child    = (int64_t)ce_child;
+                    best_childPtr = ce_childPtr;
+                    best_eff_epoch = eff_epoch;
+                    best_name_match = 0;
+                }
+            }
+        }
+        walk_vp = ce_next;
+    }
+
+    if (!best_name_match) return VFS_ERR_NOTFOUND;
+    *out_childPtr = best_childPtr;
+    *out_nodeId   = (uint32_t)best_child;
+    return VFS_OK;
+}
+
+/* ---------------------------------------------------------------------------
  * vfs_open_file — resolve name to nodeId by walking parent's DirContent chain
  *
  * Returns childNodeId on success, or VFS_ERR_NOTFOUND if not found.
