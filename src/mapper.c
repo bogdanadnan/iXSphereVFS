@@ -121,3 +121,58 @@ int mapper_validate(Mapper* m) {
 
     return count;
 }
+
+/* ---------------------------------------------------------------------------
+ * MapperTable — in-memory snapshot for query-heavy workloads
+ * --------------------------------------------------------------------------- */
+
+int mapper_table_init(MapperTable* tbl, Pool* pool, int64_t* epochMapperPtr) {
+    if (!tbl || !pool) return VFS_ERR_IO;
+    tbl->pool = pool;
+    tbl->epochMapperPtr = epochMapperPtr;
+    tbl->count = 0;
+    tbl->capacity = MAPPER_TABLE_INITIAL_CAPACITY;
+    tbl->entries = (MapperEntryRow*)calloc((size_t)tbl->capacity, sizeof(MapperEntryRow));
+    if (!tbl->entries) return VFS_ERR_NOMEM;
+
+    /* Walk pool chain, populate entries */
+    if (epochMapperPtr) {
+        int64_t vp = *epochMapperPtr;
+        while (vp != 0) {
+            uint8_t* slot = pool_resolve(pool, vp);
+            if (!slot) break;
+            uint32_t fromE, toE;
+            uint16_t flags;
+            int64_t next;
+            nodes_read_mapperentry(slot, &fromE, &toE, &flags, &next, pool->sb->page_size);
+
+            /* Grow array if full */
+            if (tbl->count >= tbl->capacity) {
+                int new_cap = tbl->capacity * 2;
+                MapperEntryRow* new_entries = (MapperEntryRow*)realloc(
+                    tbl->entries, (size_t)new_cap * sizeof(MapperEntryRow));
+                if (!new_entries) return VFS_ERR_NOMEM;
+                tbl->entries = new_entries;
+                tbl->capacity = new_cap;
+            }
+
+            tbl->entries[tbl->count].fromEpoch = fromE;
+            tbl->entries[tbl->count].toEpoch = toE;
+            tbl->entries[tbl->count].traversalApply =
+                (flags & MAPPER_FLAG_TRAVERSAL_APPLY) != 0;
+            tbl->count++;
+
+            vp = next;
+        }
+    }
+    return VFS_OK;
+}
+
+void mapper_table_destroy(MapperTable* tbl) {
+    if (tbl) {
+        free(tbl->entries);
+        tbl->entries = NULL;
+        tbl->count = 0;
+        tbl->capacity = 0;
+    }
+}
