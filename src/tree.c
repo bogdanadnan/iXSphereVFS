@@ -894,7 +894,10 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         return VFS_ERR_IO;
     }
 
-    /* Cross-directory rename: create new entry at dst, tombstone at src */
+    /* Cross-directory rename: create new entry at dst, tombstone at src.
+       For same-directory cross-epoch: skip tombstone — the old entry at lower
+       epoch is naturally hidden by read-rule. */
+    int cross_dir = (src_parent != dst_parent);
     int64_t dst_name_vp;
     int dst_ns = nodes_write_name(&ctx->pool, dst, &dst_name_vp);
 
@@ -920,10 +923,10 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
     } while (vfs_cas_i64((int64_t*)(dst_slot + DIRNODE_OFF_HEADPTR),
                          dst_old_head, dst_dc_vp) != dst_old_head);
 
-    /* Create tombstone at src */
-    int64_t src_dc_vp = pool_alloc(&ctx->pool);
-
-    if (src_dc_vp == VFS_VPTR_NULL) { vfs_unlock(vfs, (int64_t)rn_childId, epoch); vfs->ctx->last_error = VFS_ERR_FULL; return VFS_ERR_FULL; }
+    /* Create tombstone at src (cross-directory only) */
+    if (cross_dir) {
+        int64_t src_dc_vp = pool_alloc(&ctx->pool);
+        if (src_dc_vp == VFS_VPTR_NULL) { vfs_unlock(vfs, (int64_t)rn_childId, epoch); vfs->ctx->last_error = VFS_ERR_FULL; return VFS_ERR_FULL; }
     uint8_t* src_dc_slot = pool_resolve(&ctx->pool, src_dc_vp);
 
     if (!src_dc_slot) { vfs_unlock(vfs, (int64_t)rn_childId, epoch); vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
@@ -937,6 +940,7 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         vfs_mb_release();
     } while (vfs_cas_i64((int64_t*)(src_slot + DIRNODE_OFF_HEADPTR),
                          src_old_head, src_dc_vp) != src_old_head);
+    } /* cross_dir */
 
     dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)rn_childId, epoch);
@@ -987,7 +991,7 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
             { walk_vp = ce_next; continue; }
 
         if (eff_epoch > best_eff_epoch || (int64_t)ce_child != best_child ||
-            (ce_namePtr != 0 && best_name_match == 0 && eff_epoch == best_eff_epoch)) {
+            (ce_namePtr != 0 && best_name_match == 0 && eff_epoch > best_eff_epoch)) {
             if (ce_namePtr != 0) {
                 char entry_name[256];
                 int nl = nodes_read_name(&ctx->pool, ce_namePtr,
