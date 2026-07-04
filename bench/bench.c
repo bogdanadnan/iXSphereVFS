@@ -498,7 +498,6 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     root_vp = vfs->ctx->rootNodeOffset;
     int64_t file_vp = resolve_child_vp(vfs, root_vp, "randfile.dat");
     if (file_vp == 0) { vfs_close(vfs); return 0; }
-    fprintf(stderr, "pre-pop %d/%d ok, cold cache ready\n", writes_ok, file_pages);
 
     /* ── Random permutation ── */
     int* order = (int*)malloc((size_t)file_pages * sizeof(int));

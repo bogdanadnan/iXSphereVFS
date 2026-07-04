@@ -218,4 +218,3 @@ int64_t vfs_cache_max_entries(void);int64_t vfs_cache_max_entries(void);
 #endif /* VFS_STORAGE_H */
 void vfs_data_inc_total(void);
 void vfs_data_inc_hits(void);
-void cache_evict(PageCache* cache);
