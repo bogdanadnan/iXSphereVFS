@@ -186,3 +186,13 @@ int64_t mapper_table_resolve(MapperTable* tbl, int64_t epoch) {
     }
     return epoch;
 }
+
+bool mapper_table_traversal_apply(MapperTable* tbl, int64_t epoch) {
+    if (!tbl || !tbl->entries) return false;
+    uint32_t query = (uint32_t)epoch;
+    for (int i = 0; i < tbl->count; i++) {
+        if (tbl->entries[i].fromEpoch == query)
+            return tbl->entries[i].traversalApply;
+    }
+    return false;
+}
