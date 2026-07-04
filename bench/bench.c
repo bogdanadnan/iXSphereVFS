@@ -497,10 +497,11 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     }
     fprintf(stderr, "pre-pop done (%d/%d writes ok), flushing+evicting...\n", writes_ok, file_pages);
 
-    /* Flush dirty pages to disk, then reset counters.  Do NOT evict the
-       cache: the pre-pop warmed it.  First cache_cap reads are hits;
-       remaining reads trigger LRU eviction — the expected ~50% rate. */
+    /* Flush dirty pages to disk.  After flush, all entries are clean.
+       The cache has 2× cache_cap entries (way over capacity).  Evict
+       down to cache_cap: the most recently written pages survive. */
     storage_flush(vfs->ctx->sb, -1);
+    cache_evict(&vfs->ctx->sb->cache);
     vfs_cache_reset();
     fprintf(stderr, "evicted, building permutation...\n");
 

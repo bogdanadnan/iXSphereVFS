@@ -131,7 +131,7 @@ CacheEntry* cache_find(PageCache* cache, int64_t logical_page) {
  * Evict clean pages from LRU tail
  * --------------------------------------------------------------------------- */
 
-static void cache_evict(PageCache* cache) {
+void cache_evict(PageCache* cache) {
     /* Walk from tail, evicting clean pages */
     CacheEntry* e = cache->lru_tail;
     while (e && cache->entry_count >= cache->max_entries) {
