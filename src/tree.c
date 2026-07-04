@@ -294,8 +294,6 @@ int64_t verchain_get(TreeContext* ctx, int64_t versionRootPtr,
                      int64_t read_epoch) {
     if (!ctx || versionRootPtr == 0) return -1;
 
-    int64_t best_page = -1;
-    int64_t best_epoch = -1;
     int64_t vp = versionRootPtr;
 
     while (vp != 0) {
@@ -317,18 +315,16 @@ int64_t verchain_get(TreeContext* ctx, int64_t versionRootPtr,
         if (effective_epoch == read_epoch)
             return vp_dataPage;
 
-        /* Even epoch below read_epoch — candidate if better than current */
-        if (effective_epoch < read_epoch && effective_epoch % 2 == 0) {
-            if (effective_epoch > best_epoch) {
-                best_epoch = effective_epoch;
-                best_page = vp_dataPage;
-            }
-        }
+        /* Even epoch below read_epoch — chains are descending, so the
+           first even below read_epoch is the highest such epoch.  Use it
+           and stop. */
+        if (effective_epoch < read_epoch && effective_epoch % 2 == 0)
+            return vp_dataPage;
 
         vp = vp_next;
     }
 
-    return best_page;
+    return -1;
 }
 
 /* ---------------------------------------------------------------------------
@@ -369,22 +365,18 @@ void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
             return;
         }
 
-        /* Even epoch below read_epoch — candidate if better than current */
+        /* Even epoch below read_epoch — chains are descending, so the
+           first even below read_epoch is the highest such epoch. */
         if (effective_epoch < read_epoch && effective_epoch % 2 == 0) {
-            if (effective_epoch > best_epoch) {
-                best_epoch = effective_epoch;
-                best_size = fs_size;
-                best_modified = fs_modified;
-            }
+            if (out_fileSize) *out_fileSize = fs_size;
+            if (out_modifiedAt) *out_modifiedAt = fs_modified;
+            return;
         }
 
         walk_vp = fs_next;
     }
 
-    if (best_epoch >= 0) {
-        if (out_fileSize) *out_fileSize = best_size;
-        if (out_modifiedAt) *out_modifiedAt = best_modified;
-    }
+    /* No match found — return 0/defaults set at top of function. */
 }
 
 /* ---------------------------------------------------------------------------
@@ -752,6 +744,7 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     int64_t best_childPtr[DENTRY_CACHE_MAX];
     int64_t best_eff_epoch[DENTRY_CACHE_MAX];
     int     best_name_set[DENTRY_CACHE_MAX];
+    int64_t best_namePtr[DENTRY_CACHE_MAX];   /* cached name VirtualPtr */
     int best_count = 0;
 
     int64_t walk_vp = headPtr;
@@ -781,12 +774,14 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
                 best_eff_epoch[found] = eff_epoch;
                 best_childPtr[found] = ce_childPtr;
                 best_name_set[found] = (ce_namePtr != 0);
+                best_namePtr[found] = ce_namePtr;
             }
         } else {
             best_child[best_count] = (int64_t)ce_child;
             best_childPtr[best_count] = ce_childPtr;
             best_eff_epoch[best_count] = eff_epoch;
             best_name_set[best_count] = (ce_namePtr != 0);
+            best_namePtr[best_count] = ce_namePtr;
             best_count++;
         }
         walk_vp = ce_next;
@@ -807,29 +802,11 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
             entries[written].isDir = (ctype == (int16_t)NODE_TYPE_DIR);
         }
 
-        /* Find the name by walking chain for this specific entry */
-        walk_vp = headPtr;
-        while (walk_vp != 0) {
-            uint8_t* cs = pool_resolve(&ctx->pool, walk_vp);
-            if (!cs) break;
-            uint32_t dc_child, dc_epoch;
-            int64_t dc_childPtrv, dc_namePtr, dc_next;
-            nodes_read_dircontent(cs, &dc_child, &dc_epoch, &dc_childPtrv,
-                                  &dc_namePtr, &dc_next, ctx->page_size);
-            (void)dc_childPtrv;
-
-            int64_t dc_eff = (int64_t)dc_epoch;
-            if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)dc_epoch))
-                dc_eff = mapper_table_resolve(&ctx->mapper_table, (int64_t)dc_epoch);
-
-            if ((int64_t)dc_child == best_child[i] &&
-                dc_eff == best_eff_epoch[i] && dc_namePtr != 0) {
-                nodes_read_name(&ctx->pool, dc_namePtr, entries[written].name,
-                                (int)sizeof(entries[written].name));
-                break;
-            }
-            walk_vp = dc_next;
-        }
+        /* Read name from cached namePtr (collected in first pass) */
+        if (best_namePtr[i] != 0)
+            nodes_read_name(&ctx->pool, best_namePtr[i],
+                            entries[written].name,
+                            (int)sizeof(entries[written].name));
         written++;
     }
     return written;
