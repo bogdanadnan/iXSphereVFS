@@ -565,53 +565,6 @@ int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
  * Used by vfs_delete and vfs_rename which need the first visible match.
  * --------------------------------------------------------------------------- */
 
-static int dirchain_find_named(TreeContext* ctx, int64_t dir_vp,
-                                const char* name, int64_t epoch,
-                                int64_t* out_childPtr,
-                                uint32_t* out_nodeId) {
-    if (!ctx || !name || name[0] == '\0') return VFS_ERR_IO;
-    if (!out_childPtr || !out_nodeId) return VFS_ERR_IO;
-
-    uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
-    if (!dir_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
-        return VFS_ERR_NOTDIR;
-
-    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
-    int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
-
-    int64_t walk_vp = headPtr;
-    while (walk_vp != 0) {
-        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
-        if (!dc_slot) break;
-        uint32_t ce_child, ce_epoch;
-        int64_t ce_childPtr, ce_namePtr, ce_next;
-        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next, ctx->page_size);
-
-        /* Skip tombstones */
-        if (ce_namePtr == 0) { walk_vp = ce_next; continue; }
-
-        int64_t eff_epoch = (int64_t)ce_epoch;
-        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
-            eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
-
-        int applies = (eff_epoch == read_epoch) ||
-                      (eff_epoch < read_epoch && eff_epoch % 2 == 0);
-        if (!applies) { walk_vp = ce_next; continue; }
-
-        char entry_name[256];
-        int nl = nodes_read_name(&ctx->pool, ce_namePtr,
-                                  entry_name, (int)sizeof(entry_name));
-        if (nl > 0 && strcmp(entry_name, name) == 0) {
-            *out_childPtr = ce_childPtr;
-            *out_nodeId   = (uint32_t)ce_child;
-            return VFS_OK;
-        }
-        walk_vp = ce_next;
-    }
-    return VFS_ERR_NOTFOUND;
-}
 
 int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
@@ -622,7 +575,7 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     /* Use first-match named helper (same semantics as inline walk) */
     int64_t found_childPtr = 0;
     uint32_t found_childId = 0;
-    int r = dirchain_find_named(ctx, parent, name, epoch,
+    int r = dirchain_find_child(ctx, parent, name, epoch,
                                 &found_childPtr, &found_childId);
     if (r == VFS_ERR_NOTFOUND) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
     if (r == VFS_ERR_NOTDIR)   { vfs->ctx->last_error = VFS_ERR_NOTDIR;   return VFS_ERR_NOTDIR; }
