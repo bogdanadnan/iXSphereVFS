@@ -1233,7 +1233,7 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
     if (!vfs || !vfs->ctx || !buf || count <= 0 || offset < 0) return -1;
     TreeContext* ctx = vfs->ctx;
 
-    int64_t read_epoch = mapper_resolve(&ctx->mapper, epoch);
+    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
 
     uint8_t* file_slot = pool_resolve(&ctx->pool, file);
     if (!file_slot) {
