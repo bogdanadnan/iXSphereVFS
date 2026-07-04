@@ -865,7 +865,7 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
         }
 
     int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
-    int64_t read_epoch = mapper_resolve(&ctx->mapper, epoch);
+    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
     int64_t best_child = 0;
     int64_t best_childPtr = 0;
     int64_t best_effective_epoch = 0;
@@ -882,8 +882,8 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
 
         /* Compute effective epoch via mapper remapping */
         int64_t effective_epoch = (int64_t)ce_epoch;
-        if (mapper_traversal_apply(&ctx->mapper, (int64_t)ce_epoch))
-            effective_epoch = mapper_resolve(&ctx->mapper, (int64_t)ce_epoch);
+        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
+            effective_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
 
         /* Read-rule: does this entry apply at read_epoch? */
         int applies = (effective_epoch == read_epoch) ||
