@@ -1137,73 +1137,15 @@ int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoc
     if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
     TreeContext* ctx = vfs->ctx;
 
-    uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
+    int64_t childPtr = 0;
+    uint32_t nodeId = 0;
+    int err = dirchain_find_child(ctx, parent, name, epoch, &childPtr, &nodeId);
+    if (err == VFS_ERR_NOTFOUND) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
+    if (err == VFS_ERR_NOTDIR) { vfs->ctx->last_error = VFS_ERR_NOTDIR; return VFS_ERR_NOTDIR; }
+    if (err != VFS_OK) { vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
 
-    if (!parent_slot) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
-    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
-        vfs->ctx->last_error = VFS_ERR_NOTDIR;
-        return VFS_ERR_NOTDIR;
-        }
-
-    int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
-    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
-    int64_t best_child = 0;
-    int64_t best_childPtr = 0;
-    int64_t best_effective_epoch = 0;
-    int best_name_match = 0;
-
-    int64_t walk_vp = headPtr;
-    while (walk_vp != 0) {
-        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
-        if (!dc_slot) break;
-        uint32_t ce_child, ce_epoch;
-        int64_t ce_childPtr, ce_namePtr, ce_next;
-        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next, ctx->page_size);
-
-        /* Compute effective epoch via mapper remapping */
-        int64_t effective_epoch = (int64_t)ce_epoch;
-        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
-            effective_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
-
-        /* Read-rule: does this entry apply at read_epoch? */
-        int applies = (effective_epoch == read_epoch) ||
-                      (effective_epoch < read_epoch && effective_epoch % 2 == 0);
-        if (!applies) { walk_vp = ce_next; continue; }
-
-        if ((int64_t)ce_child == best_child && best_name_match &&
-            effective_epoch <= best_effective_epoch)
-            { walk_vp = ce_next; continue; }
-
-        if (effective_epoch > best_effective_epoch || (int64_t)ce_child != best_child ||
-            (ce_namePtr != 0 && best_name_match == 0 && effective_epoch == best_effective_epoch)) {
-            if (ce_namePtr != 0) {
-                char entry_name[256];
-                int nl = nodes_read_name(&ctx->pool, ce_namePtr,
-                                          entry_name, (int)sizeof(entry_name));
-                if (nl > 0 && strcmp(entry_name, name) == 0) {
-                    best_child = (int64_t)ce_child;
-                    best_childPtr = ce_childPtr;
-                    best_effective_epoch = effective_epoch;
-                    best_name_match = 1;
-                }
-            } else {
-                if ((int64_t)ce_child != best_child) {
-                    best_child = (int64_t)ce_child;
-                    best_childPtr = ce_childPtr;
-                    best_effective_epoch = effective_epoch;
-                    best_name_match = 0;
-                }
-            }
-        }
-        walk_vp = ce_next;
-    }
-
-    (void)best_childPtr;
-
-
-    if (!best_name_match) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
-    return best_child;
+    (void)childPtr;
+    return (int64_t)nodeId;
 }
 
 /* ---------------------------------------------------------------------------
