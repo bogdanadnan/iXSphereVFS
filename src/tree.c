@@ -1305,9 +1305,9 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
                its epoch were the mapped toEpoch.  If traversalApply is false,
                keep the entry's original epoch (odd → skipped by read-rule). */
             int64_t effective_epoch = (int64_t)vp_epoch;
-            if (mapper_traversal_apply(&ctx->mapper, (int64_t)vp_epoch)) {
-                effective_epoch = mapper_resolve(&ctx->mapper,
-                                                  (int64_t)vp_epoch);
+            if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)vp_epoch)) {
+                effective_epoch = mapper_table_resolve(&ctx->mapper_table,
+                                                       (int64_t)vp_epoch);
             }
 
             if (effective_epoch == read_epoch) {
