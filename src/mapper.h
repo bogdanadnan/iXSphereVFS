@@ -41,6 +41,23 @@ typedef struct {
     Pool*           pool;           /* pool allocator */
 } MapperTable;
 
+#define MAPPER_TABLE_INITIAL_CAPACITY  8
+
+/* Initialize a MapperTable (allocates initial entries array). Returns VFS_OK or VFS_ERR_NOMEM. */
+int  mapper_table_init(MapperTable* tbl, Pool* pool, int64_t* epochMapperPtr);
+
+/* Destroy a MapperTable (frees entries array). */
+void mapper_table_destroy(MapperTable* tbl);
+
+/* Reload the table by walking the pool chain. Returns count, or negative error. */
+int  mapper_table_reload(MapperTable* tbl);
+
+/* Resolve an epoch through the table (linear scan). Returns toEpoch or epoch itself if not found. */
+int64_t mapper_table_resolve(MapperTable* tbl, int64_t epoch);
+
+/* Insert a new entry into the table (in-memory only, does NOT modify pool chain). */
+int  mapper_table_insert(MapperTable* tbl, uint32_t fromEpoch, uint32_t toEpoch, bool traversalApply);
+
 /* Initialize a Mapper handle.
  * pool — the VFS instance's pool allocator
  * epochMapperPtr — pointer to the int64_t field (e.g., &ctx->epochMapperPtr) */
