@@ -101,7 +101,7 @@ VFS_INLINE uint32_t tree_segment_size(TreeContext* ctx) {
  * Returns VFS_OK if found, VFS_ERR_NOTFOUND if no matching entry exists. */
 int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                         int64_t epoch, int64_t* out_childPtr,
-                        uint32_t* out_nodeId);
+                        uint32_t* out_nodeId, uint32_t* out_epoch);
 
 /* Walk a directory's DirContent chain and list non-tombstone entries at a
  * given epoch (read-rule dedup by childNodeId).  Fills the entries[] array
