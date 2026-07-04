@@ -472,7 +472,7 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
        at epoch ≤ query_epoch. Chain is in descending epoch order,
        so the first match is the most recent at or before query_epoch. */
     int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
-    int64_t read_epoch = mapper_resolve(&ctx->mapper, epoch);
+    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
     int64_t found_vp = 0;
     uint32_t found_childId = 0;
     int64_t found_childPtr = 0;
@@ -487,8 +487,8 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                               &ce_namePtr, &ce_next, ctx->page_size);
 
         int64_t effective_epoch = (int64_t)ce_epoch;
-        if (mapper_traversal_apply(&ctx->mapper, (int64_t)ce_epoch))
-            effective_epoch = mapper_resolve(&ctx->mapper, (int64_t)ce_epoch);
+        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
+            effective_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
 
         int applies = (effective_epoch == read_epoch) ||
                       (effective_epoch < read_epoch && effective_epoch % 2 == 0);
