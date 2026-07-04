@@ -40,6 +40,9 @@ typedef struct {
     /* Epoch mapper */
     Mapper mapper;
 
+    /* In-memory mapper table snapshot for query-heavy workloads */
+    MapperTable mapper_table;
+
     /* Readdir cache — one directory at a time, zeroed to valid=false */
     DentryCache readdir_cache;
 
