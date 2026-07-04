@@ -60,7 +60,8 @@ int64_t mapper_table_resolve(MapperTable* tbl, int64_t epoch);
  * Linear scan of entries[] for fromEpoch match. Returns the flag or false. */
 bool mapper_table_traversal_apply(MapperTable* tbl, int64_t epoch);
 
-/* Insert a new entry into the table (in-memory only, does NOT modify pool chain). */
+/* Insert a new mapping: writes to pool chain first (via mapper_insert),
+ * then appends to in-memory entries[] with release barrier. */
 int  mapper_table_insert(MapperTable* tbl, uint32_t fromEpoch, uint32_t toEpoch, bool traversalApply);
 
 /* Initialize a Mapper handle.

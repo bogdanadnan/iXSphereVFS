@@ -199,7 +199,7 @@ bool mapper_table_traversal_apply(MapperTable* tbl, int64_t epoch) {
 
 int mapper_table_insert(MapperTable* tbl, uint32_t fromEpoch, uint32_t toEpoch,
                          bool traversalApply) {
-    if (!tbl || !tbl->pool) return VFS_ERR_IO;
+    if (!tbl || !tbl->pool || !tbl->entries) return VFS_ERR_IO;
 
     uint16_t flags = traversalApply ? MAPPER_FLAG_TRAVERSAL_APPLY : 0;
     {
