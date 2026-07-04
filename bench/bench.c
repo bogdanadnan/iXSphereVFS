@@ -464,50 +464,45 @@ static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) 
  * --------------------------------------------------------------------------- */
 
 static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) {
-    (void)path;
     (void)threads;
-    int64_t root_vp = vfs->ctx->rootNodeOffset;
-    const int page_sz = vfs->ctx->page_size;
     if (count <= 0) return 0;
-
+    const int64_t page_sz = vfs->ctx->page_size;
     int64_t cache_cap = vfs_cache_get_max_entries(vfs->ctx->sb);
-    /* Read 2× cache capacity to force misses: the first cache_cap pages
-       fill the cache; the remaining cache_cap pages are all cold misses
-       (triggering LRU eviction on every access). */
+
     int64_t min_reads = 2 * cache_cap;
     int reads_needed = (count < (int)min_reads) ? (int)min_reads : count;
     if (reads_needed > 65536) reads_needed = 65536;
     int file_pages = reads_needed;
 
-    /* Pre-populate file_pages distinct pages (untimed). */
-    int64_t file_vp = 0;
+    /* ── Pre-populate (untimed) ── */
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
     int writes_ok = 0;
     {
         if (vfs_create(vfs, root_vp, "randfile.dat", 0) <= 0) return 0;
-        file_vp = resolve_child_vp(vfs, root_vp, "randfile.dat");
-        if (file_vp == 0) return 0;
+        int64_t fvp = resolve_child_vp(vfs, root_vp, "randfile.dat");
+        if (fvp == 0) return 0;
         uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
         if (!zbuf) return 0;
         for (int i = 0; i < file_pages; i++) {
-            if (vfs_write(vfs, file_vp, zbuf, (int64_t)i * page_sz, page_sz, 0) == page_sz)
+            if (vfs_write(vfs, fvp, zbuf, (int64_t)i * page_sz, page_sz, 0) == page_sz)
                 writes_ok++;
         }
         free(zbuf);
         if (writes_ok < file_pages / 2) return 0;
     }
-    fprintf(stderr, "pre-pop done (%d/%d writes ok), flushing+evicting...\n", writes_ok, file_pages);
 
-    /* Flush dirty pages to disk.  After flush, all entries are clean.
-       The cache has 2× cache_cap entries (way over capacity).  Evict
-       down to cache_cap: the most recently written pages survive. */
-    storage_flush(vfs->ctx->sb, -1);
-    cache_evict(&vfs->ctx->sb->cache);
-    vfs_cache_reset();
-    fprintf(stderr, "evicted, building permutation...\n");
+    /* ── Close & reopen with cold cache ── */
+    vfs_close(vfs);
+    vfs = vfs_open(path, page_sz);
+    if (!vfs) return 0;
+    root_vp = vfs->ctx->rootNodeOffset;
+    int64_t file_vp = resolve_child_vp(vfs, root_vp, "randfile.dat");
+    if (file_vp == 0) { vfs_close(vfs); return 0; }
+    fprintf(stderr, "pre-pop %d/%d ok, cold cache ready\n", writes_ok, file_pages);
 
-    /* Build a random permutation over [0, file_pages). */
+    /* ── Random permutation ── */
     int* order = (int*)malloc((size_t)file_pages * sizeof(int));
-    if (!order) return 0;
+    if (!order) { vfs_close(vfs); return 0; }
     for (int i = 0; i < file_pages; i++) order[i] = i;
     unsigned seed = 42;
     for (int i = file_pages - 1; i > 0; i--) {
@@ -515,27 +510,26 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
         int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
     }
 
-    /* Timed phase: read reads_needed pages randomly from [0, file_pages).
-       All reads are cache misses on first access (cold cache). */
+    /* ── Timed reads ── */
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
-    if (!buf) { free(order); return 0; }
+    if (!buf) { free(order); vfs_close(vfs); return 0; }
     lat_init(reads_needed);
     vfs_cache_reset();
     double t0 = now_sec();
     int ok = 0;
     for (int i = 0; i < reads_needed; i++) {
-        double op_t0 = now_sec();
-        int64_t offset = (int64_t)order[i] * (int64_t)page_sz;
+        int64_t offset = (int64_t)order[i % file_pages] * page_sz;
         int r = vfs_read(vfs, file_vp, buf, offset, page_sz, 0);
         if (r == page_sz) ok++;
-        lat_record(now_sec() - op_t0);
+        lat_record(now_sec() - t0);  /* cumulative latency from start */
     }
-    double t1 = now_sec();
+    double elapsed = now_sec() - t0;
     free(buf);
     free(order);
 
-    report_full("randread", ok, threads, t1 - t0);
+    report_full("randread", ok, 1, elapsed);
     lat_destroy();
+    vfs_close(vfs);
     return ok;
 }
 
@@ -601,6 +595,10 @@ int main(int argc, char** argv) {
               : opts.count;
     printf("  completed: %d / %d operations\n", ok, total);
 
-    vfs_close(vfs);
+    /* bench_randread closes and reopens internally — the vfs handle
+       returned to main is the reopened one.  Other workloads keep the
+       original handle. */
+    if (strcmp(opts.workload, "randread") != 0)
+        vfs_close(vfs);
     return 0;
 }
