@@ -12,7 +12,7 @@ int dentry_cache_build(Pool* pool, Mapper* mapper, int64_t root_vp, int64_t epoc
     int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, pool->sb->page_size);
     arr->last_headPtr_page = VFS_VPTR_PAGE(headPtr);
     arr->count = 0;
-    int64_t read_epoch = mapper_resolve(mapper, epoch);
+    int64_t read_epoch = mapper_table_resolve(mapper, epoch);
     (void)read_epoch;
 
     /* Temporary array to track best epoch per childNodeId */
@@ -34,8 +34,8 @@ int dentry_cache_build(Pool* pool, Mapper* mapper, int64_t root_vp, int64_t epoc
 
         /* Compute effective epoch via mapper remapping */
         int64_t effective_epoch = (int64_t)ce_epoch;
-        if (mapper_traversal_apply(mapper, (int64_t)ce_epoch))
-            effective_epoch = mapper_resolve(mapper, (int64_t)ce_epoch);
+        if (mapper_table_traversal_apply(mapper, (int64_t)ce_epoch))
+            effective_epoch = mapper_table_resolve(mapper, (int64_t)ce_epoch);
 
         /* Read-rule: applies if effective_epoch == read_epoch,
            or effective_epoch < read_epoch AND even */
@@ -94,8 +94,8 @@ int dentry_cache_build(Pool* pool, Mapper* mapper, int64_t root_vp, int64_t epoc
 
             /* Compute effective epoch for name matching */
             int64_t dc_eff = (int64_t)dc_epoch;
-            if (mapper_traversal_apply(mapper, (int64_t)dc_epoch))
-                dc_eff = mapper_resolve(mapper, (int64_t)dc_epoch);
+            if (mapper_table_traversal_apply(mapper, (int64_t)dc_epoch))
+                dc_eff = mapper_table_resolve(mapper, (int64_t)dc_epoch);
 
             if ((int64_t)dc_child == best_child[i] &&
                 dc_eff == best_effective_epoch[i] && dc_namePtr != 0) {
