@@ -235,6 +235,12 @@ int mapper_table_rebuild(MapperTable* tbl) {
     tbl->count = 0;
     tbl->capacity = 0;
 
+    /* Pre-allocate initial capacity (matching mapper_table_init) so that
+       insert works even after an empty-chain rebuild. */
+    tbl->capacity = MAPPER_TABLE_INITIAL_CAPACITY;
+    tbl->entries = (MapperEntryRow*)calloc((size_t)tbl->capacity, sizeof(MapperEntryRow));
+    if (!tbl->entries) return VFS_ERR_NOMEM;
+
     int64_t* mapper_ptr = tbl->epochMapperPtr;
     if (mapper_ptr) {
         int64_t vp = *mapper_ptr;
@@ -249,8 +255,7 @@ int mapper_table_rebuild(MapperTable* tbl) {
                                     tbl->pool->sb->page_size);
 
             if (tbl->count >= tbl->capacity) {
-                int new_cap = tbl->capacity > 0 ? tbl->capacity * 2
-                                                : MAPPER_TABLE_INITIAL_CAPACITY;
+                int new_cap = tbl->capacity * 2;
                 MapperEntryRow* new_entries = (MapperEntryRow*)realloc(
                     tbl->entries, (size_t)new_cap * sizeof(MapperEntryRow));
                 if (!new_entries) return VFS_ERR_NOMEM;

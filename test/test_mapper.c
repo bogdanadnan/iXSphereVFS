@@ -231,6 +231,93 @@ static void test_mapper_table_multi(void) {
     mapper_teardown(sb);
 }
 
+/* ---------------------------------------------------------------------------
+ * MapperTable rebuild tests
+ * --------------------------------------------------------------------------- */
+
+static void test_mapper_rebuild_empty(void) {
+    StorageBackend* sb = mapper_setup();
+    CHECK(sb != NULL);
+
+    int64_t list_head = 0;
+    Pool pool;
+    pool_init(&pool, sb, &list_head);
+
+    int64_t chain_head = 0;
+    MapperTable tbl;
+    CHECK_EQ(mapper_table_init(&tbl, &pool, &chain_head), VFS_OK);
+    CHECK(tbl.entries != NULL);
+    CHECK_EQ(tbl.capacity, MAPPER_TABLE_INITIAL_CAPACITY);
+
+    /* Rebuild on empty chain — post-conditions must match init */
+    CHECK_EQ(mapper_table_rebuild(&tbl), VFS_OK);
+    CHECK(tbl.entries != NULL);
+    CHECK_EQ(tbl.count, 0);
+    CHECK_EQ(tbl.capacity, MAPPER_TABLE_INITIAL_CAPACITY);
+
+    /* Insert must work after empty-chain rebuild */
+    CHECK_EQ(mapper_table_insert(&tbl, 1, 2, true), VFS_OK);
+    CHECK_EQ(tbl.count, 1);
+    CHECK_EQ(tbl.entries[0].fromEpoch, (uint32_t)1);
+
+    mapper_table_destroy(&tbl);
+    mapper_teardown(sb);
+}
+
+static void test_mapper_rebuild_with_entries(void) {
+    StorageBackend* sb = mapper_setup();
+    CHECK(sb != NULL);
+
+    int64_t list_head = 0;
+    Pool pool;
+    pool_init(&pool, sb, &list_head);
+
+    int64_t chain_head = 0;
+    Mapper m;
+    mapper_init(&m, &pool, &chain_head);
+    CHECK_EQ(mapper_insert(&m, 1, 2, MAPPER_FLAG_TRAVERSAL_APPLY), VFS_OK);
+    CHECK_EQ(mapper_insert(&m, 3, 4, 0), VFS_OK);
+
+    MapperTable tbl;
+    CHECK_EQ(mapper_table_init(&tbl, &pool, &chain_head), VFS_OK);
+    CHECK_EQ(tbl.count, 2);
+
+    /* Rebuild — all entries should survive round-trip */
+    CHECK_EQ(mapper_table_rebuild(&tbl), VFS_OK);
+    CHECK_EQ(tbl.count, 2);
+    CHECK_EQ(tbl.entries[0].fromEpoch, (uint32_t)3);  /* CAS-prepend order */
+    CHECK_EQ(tbl.entries[0].toEpoch, (uint32_t)4);
+    CHECK(!tbl.entries[0].traversalApply);
+    CHECK_EQ(tbl.entries[1].fromEpoch, (uint32_t)1);
+    CHECK_EQ(tbl.entries[1].toEpoch, (uint32_t)2);
+    CHECK(tbl.entries[1].traversalApply);
+
+    mapper_table_destroy(&tbl);
+    mapper_teardown(sb);
+}
+
+static void test_mapper_rebuild_null_ptr(void) {
+    StorageBackend* sb = mapper_setup();
+    CHECK(sb != NULL);
+
+    int64_t list_head = 0;
+    Pool pool;
+    pool_init(&pool, sb, &list_head);
+
+    MapperTable tbl;
+    CHECK_EQ(mapper_table_init(&tbl, &pool, NULL), VFS_OK);
+    CHECK_EQ(tbl.count, 0);
+
+    /* Rebuild with NULL epochMapperPtr — must produce clean state */
+    CHECK_EQ(mapper_table_rebuild(&tbl), VFS_OK);
+    CHECK(tbl.entries != NULL);
+    CHECK_EQ(tbl.count, 0);
+    CHECK_EQ(tbl.capacity, MAPPER_TABLE_INITIAL_CAPACITY);
+
+    mapper_table_destroy(&tbl);
+    mapper_teardown(sb);
+}
+
 int main(void) {
     test_mapper_init();
     test_mapper_insert_resolve();
@@ -238,6 +325,9 @@ int main(void) {
     test_mapper_table_empty();
     test_mapper_table_single();
     test_mapper_table_multi();
+    test_mapper_rebuild_empty();
+    test_mapper_rebuild_with_entries();
+    test_mapper_rebuild_null_ptr();
 
     printf("test_mapper: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
