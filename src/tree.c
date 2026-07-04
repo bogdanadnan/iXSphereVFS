@@ -284,6 +284,54 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
 }
 
 /* ---------------------------------------------------------------------------
+ * verchain_get — walk VersionPage chain, apply read-rule + mapper,
+ * return data page index, or -1 if none found.
+ *
+ * read_epoch: already resolved via mapper_table_resolve.
+ * --------------------------------------------------------------------------- */
+
+int verchain_get(TreeContext* ctx, int64_t versionRootPtr,
+                 int64_t read_epoch) {
+    if (!ctx || versionRootPtr == 0) return -1;
+
+    int64_t best_page = -1;
+    int64_t best_epoch = -1;
+    int64_t vp = versionRootPtr;
+
+    while (vp != 0) {
+        uint8_t* vp_slot = pool_resolve(&ctx->pool, vp);
+        if (!vp_slot) break;
+
+        uint32_t vp_epoch;
+        int64_t vp_dataPage, vp_next;
+        nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage,
+                               &vp_next, ctx->page_size);
+
+        /* Compute effective epoch via mapper remapping */
+        int64_t effective_epoch = (int64_t)vp_epoch;
+        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)vp_epoch))
+            effective_epoch = mapper_table_resolve(&ctx->mapper_table,
+                                                    (int64_t)vp_epoch);
+
+        /* Exact match always wins */
+        if (effective_epoch == read_epoch)
+            return (int)vp_dataPage;
+
+        /* Even epoch below read_epoch — candidate if better than current */
+        if (effective_epoch < read_epoch && effective_epoch % 2 == 0) {
+            if (effective_epoch > best_epoch) {
+                best_epoch = effective_epoch;
+                best_page = (int)vp_dataPage;
+            }
+        }
+
+        vp = vp_next;
+    }
+
+    return best_page;
+}
+
+/* ---------------------------------------------------------------------------
  * vfs_create — create a file under a parent directory
  *
  * Returns new nodeId on success, or negative vfs_error_t on failure.

@@ -110,4 +110,19 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
 int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
                   vfs_dirent_t* entries, int max);
 
+/* ---------------------------------------------------------------------------
+ * Version chain lookup
+ * --------------------------------------------------------------------------- */
+
+/* Walk a VersionPage chain starting from versionRootPtr and apply the
+ * read-rule with mapper traversal remapping to find the visible data page.
+ *
+ * Returns the logical data page index (for use with storage_read), or -1
+ * if no VersionPage applies at the given epoch (page never written).
+ *
+ * read_epoch is the already-resolved query epoch (caller should call
+ * mapper_table_resolve before passing it). */
+int verchain_get(TreeContext* ctx, int64_t versionRootPtr,
+                 int64_t read_epoch);
+
 #endif /* VFS_TREE_H */
