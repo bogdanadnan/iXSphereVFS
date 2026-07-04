@@ -951,6 +951,16 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
     int64_t mapped_mapper = gc_map_get(&gc_map, ctx->epochMapperPtr);
     ctx->epochMapperPtr = (mapped_mapper != ctx->epochMapperPtr) ? mapped_mapper : 0;
 
+    /* Rebuild the in-memory mapper table to reflect GC'd chain state */
+    {
+        int err_mt = mapper_table_rebuild(&ctx->mapper_table);
+        if (err_mt != VFS_OK) {
+            if (lps) live_page_set_destroy(lps);
+            gc_map_destroy(&gc_map);
+            return err_mt;
+        }
+    }
+
     /* Drop all TouchedFile entries */
     gc_rebuild_touchedfiles(ctx);
 
