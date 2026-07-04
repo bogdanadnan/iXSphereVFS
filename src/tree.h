@@ -122,7 +122,7 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
  *
  * read_epoch is the already-resolved query epoch (caller should call
  * mapper_table_resolve before passing it). */
-int verchain_get(TreeContext* ctx, int64_t versionRootPtr,
-                 int64_t read_epoch);
+int64_t verchain_get(TreeContext* ctx, int64_t versionRootPtr,
+                     int64_t read_epoch);
 
 #endif /* VFS_TREE_H */

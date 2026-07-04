@@ -290,8 +290,8 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
  * read_epoch: already resolved via mapper_table_resolve.
  * --------------------------------------------------------------------------- */
 
-int verchain_get(TreeContext* ctx, int64_t versionRootPtr,
-                 int64_t read_epoch) {
+int64_t verchain_get(TreeContext* ctx, int64_t versionRootPtr,
+                     int64_t read_epoch) {
     if (!ctx || versionRootPtr == 0) return -1;
 
     int64_t best_page = -1;
@@ -315,13 +315,13 @@ int verchain_get(TreeContext* ctx, int64_t versionRootPtr,
 
         /* Exact match always wins */
         if (effective_epoch == read_epoch)
-            return (int)vp_dataPage;
+            return vp_dataPage;
 
         /* Even epoch below read_epoch — candidate if better than current */
         if (effective_epoch < read_epoch && effective_epoch % 2 == 0) {
             if (effective_epoch > best_epoch) {
                 best_epoch = effective_epoch;
-                best_page = (int)vp_dataPage;
+                best_page = vp_dataPage;
             }
         }
 
