@@ -181,20 +181,11 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
                             (uint32_t)current, MAPPER_FLAG_TRAVERSAL_APPLY);
     if (ret != VFS_OK) return ret;
 
-    /* Update in-memory mapper table directly (pool write already done above) */
+    /* Update in-memory mapper table (pool write already done above) */
     {
-        MapperTable* tbl = &ctx->mapper_table;
-        if (tbl->entries && tbl->count < tbl->capacity) {
-            tbl->entries[tbl->count].fromEpoch = (uint32_t)snapshot_epoch;
-            tbl->entries[tbl->count].toEpoch = (uint32_t)current;
-            tbl->entries[tbl->count].traversalApply = true;
-            vfs_mb_release();
-            tbl->count++;
-        } else if (tbl->entries) {
-            /* Grow and append — fallback (shouldn't happen with typical sizes) */
-            mapper_table_insert(tbl, (uint32_t)snapshot_epoch,
-                                (uint32_t)current, true);
-        }
+        int err = mapper_table_append(&ctx->mapper_table,
+                      (uint32_t)snapshot_epoch, (uint32_t)current, true);
+        if (err != VFS_OK) return err;
     }
 
     /* Drop TouchedFile chain for this epoch */

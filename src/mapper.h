@@ -64,6 +64,9 @@ bool mapper_table_traversal_apply(MapperTable* tbl, int64_t epoch);
  * then appends to in-memory entries[] with release barrier. */
 int  mapper_table_insert(MapperTable* tbl, uint32_t fromEpoch, uint32_t toEpoch, bool traversalApply);
 
+/* Append to in-memory entries[] only (no pool write). */
+int  mapper_table_append(MapperTable* tbl, uint32_t fromEpoch, uint32_t toEpoch, bool traversalApply);
+
 /* Initialize a Mapper handle.
  * pool — the VFS instance's pool allocator
  * epochMapperPtr — pointer to the int64_t field (e.g., &ctx->epochMapperPtr) */

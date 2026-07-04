@@ -209,6 +209,13 @@ int mapper_table_insert(MapperTable* tbl, uint32_t fromEpoch, uint32_t toEpoch,
         if (err != VFS_OK) return err;
     }
 
+    return mapper_table_append(tbl, fromEpoch, toEpoch, traversalApply);
+}
+
+int mapper_table_append(MapperTable* tbl, uint32_t fromEpoch, uint32_t toEpoch,
+                         bool traversalApply) {
+    if (!tbl || !tbl->entries) return VFS_ERR_IO;
+
     if (tbl->count >= tbl->capacity) {
         int new_cap = tbl->capacity * 2;
         MapperEntryRow* new_entries = (MapperEntryRow*)realloc(

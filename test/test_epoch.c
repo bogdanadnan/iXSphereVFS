@@ -420,6 +420,10 @@ static void test_mapper_integration(void) {
     /* Commit snapshot 1 */
     CHECK_EQ(vfs_commit(vfs, snap), VFS_OK);
 
+    /* Verify mapper_table in-memory state after commit */
+    CHECK_EQ(mapper_table_resolve(&ctx->mapper_table, snap), (int64_t)2);
+    CHECK(mapper_table_traversal_apply(&ctx->mapper_table, snap));
+
     /* After commit:
        (a) vfs_open_file at epoch 1 should find the file (mapper resolves 1→2) */
     CHECK_EQ(vfs_open_file(vfs, root_vp, "mt.txt", 1), nid);

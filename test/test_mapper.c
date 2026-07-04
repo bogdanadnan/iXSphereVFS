@@ -318,6 +318,47 @@ static void test_mapper_rebuild_null_ptr(void) {
     mapper_teardown(sb);
 }
 
+/* ---------------------------------------------------------------------------
+ * MapperTable append tests
+ * --------------------------------------------------------------------------- */
+
+static void test_mapper_table_append(void) {
+    StorageBackend* sb = mapper_setup();
+    CHECK(sb != NULL);
+
+    int64_t list_head = 0;
+    Pool pool;
+    pool_init(&pool, sb, &list_head);
+
+    int64_t chain_head = 0;
+    MapperTable tbl;
+    CHECK_EQ(mapper_table_init(&tbl, &pool, &chain_head), VFS_OK);
+    CHECK_EQ(tbl.count, 0);
+
+    /* Append without pool write */
+    CHECK_EQ(mapper_table_append(&tbl, 1, 2, true), VFS_OK);
+    CHECK_EQ(tbl.count, 1);
+    CHECK_EQ(tbl.entries[0].fromEpoch, (uint32_t)1);
+    CHECK_EQ(tbl.entries[0].toEpoch, (uint32_t)2);
+    CHECK(tbl.entries[0].traversalApply);
+
+    /* Append another */
+    CHECK_EQ(mapper_table_append(&tbl, 3, 4, false), VFS_OK);
+    CHECK_EQ(tbl.count, 2);
+    CHECK_EQ(tbl.entries[1].fromEpoch, (uint32_t)3);
+    CHECK_EQ(tbl.entries[1].toEpoch, (uint32_t)4);
+    CHECK(!tbl.entries[1].traversalApply);
+
+    /* Verify resolve sees both */
+    CHECK_EQ(mapper_table_resolve(&tbl, 1), (int64_t)2);
+    CHECK_EQ(mapper_table_resolve(&tbl, 3), (int64_t)4);
+    CHECK(mapper_table_traversal_apply(&tbl, 1));
+    CHECK(!mapper_table_traversal_apply(&tbl, 3));
+
+    mapper_table_destroy(&tbl);
+    mapper_teardown(sb);
+}
+
 int main(void) {
     test_mapper_init();
     test_mapper_insert_resolve();
@@ -328,6 +369,7 @@ int main(void) {
     test_mapper_rebuild_empty();
     test_mapper_rebuild_with_entries();
     test_mapper_rebuild_null_ptr();
+    test_mapper_table_append();
 
     printf("test_mapper: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
