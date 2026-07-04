@@ -19,15 +19,26 @@ typedef struct {
 } Mapper;
 
 /* ---------------------------------------------------------------------------
+ * MapperEntry (in-memory cache row, distinct from 32-byte pool slot)
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    uint32_t fromEpoch;
+    uint32_t toEpoch;
+    bool     traversalApply;
+} MapperEntryRow;
+
+/* ---------------------------------------------------------------------------
  * MapperTable — in-memory snapshot of the epoch mapper chain.
  * Used for query-heavy workloads that don't need pool-based iteration.
  * --------------------------------------------------------------------------- */
 
 typedef struct {
-    int64_t*     epochMapperPtr; /* pointer to the chain head in TreeContext */
-    Pool*        pool;           /* pool allocator */
-    int          count;          /* number of live entries (cached) */
-    int          capacity;       /* reserved for future use */
+    MapperEntryRow* entries;        /* dynamic array of cached entries */
+    int             count;          /* number of live entries */
+    int             capacity;       /* allocated capacity */
+    int64_t*        epochMapperPtr; /* pointer to the chain head in TreeContext */
+    Pool*           pool;           /* pool allocator */
 } MapperTable;
 
 /* Initialize a Mapper handle.
