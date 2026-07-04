@@ -4,84 +4,6 @@ Items deferred from current implementation. Not blocking any phase.
 
 ---
 
-## TODO-1 — Directory Index (Hash Table)
-
-### Problem
-DirContent chains are linear. `vfs_create` validates name uniqueness by walking
-the entire chain — O(N) per create. `vfs_open_file` and `resolve_child_vp`
-also walk the chain to find a child by name. At 50,000 files in a single
-directory, this becomes a bottleneck (~125 seconds for creates alone).
-
-### Proposed Solution
-Add a per-directory hash table mapping `(name) → (DirContent VirtualPtr)`.
-On create: check hash table for collision (O(1)), if not found, insert.
-On delete/rename: update hash table.
-On mount: rebuild hash table by walking the DirContent chain once.
-
-The hash table is an in-memory structure — not persisted to disk. It's rebuilt
-from the DirContent chain on mount. This is consistent with the dentry cache
-already in place.
-
-### Impact
-- `vfs_create` collision check: O(N) → O(1)
-- `vfs_open_file`: O(N) → O(1)
-- Mount time: +O(N) to rebuild hash table (already O(N) for tree init)
-- Memory: ~64 bytes per directory entry (name pointer + VirtualPtr + hash overhead)
-
-### Files Affected
-- `src/tree.c` — `vfs_create`, `vfs_open_file`, delete, rename
-- New file `src/dir_index.c` — hash table implementation
-
----
-
-## TODO-2 — pool_resolve Read/Write Split
-
-### Problem
-`pool_resolve` marks the cache entry dirty on every call — including read-only
-access (tree traversal, chain walks, directory listing). This causes unnecessary
-flushing: every pool page accessed (even for reads) is included in the next
-`Flush`, even if no slots were modified.
-
-### Current State
-The dirty-always approach is safe but suboptimal. Pool pages are hot (rarely
-evicted from cache), so the practical impact is limited to `Flush` time —
-extra pages are written that didn't change, which is a no-op write.
-
-### Proposed Solution
-Split into two functions:
-- `pool_resolve(Pool*, int64_t vptr) → const uint8_t*` — read-only, no dirty marking
-- `pool_resolve_rw(Pool*, int64_t vptr) → uint8_t*` — write access, marks dirty
-
-### Impact
-- ~50 call sites need update from `pool_resolve` to `pool_resolve_rw`
-- Write path callers: `pool_alloc`, `nodes_write_*`, `tree_resolve_page` (segment creation), `gc_copy_entry`, `touchedfile_add`, `mapper_insert`
-- Read path callers: tree traversal, version chain walks, directory listing, dentry cache, `vfs_read`, GC survival rule checks
-- Risk: missing a write-path call site → silent data loss on eviction (same class as the original bug)
-
-### Files Affected
-- `src/pool.c`, `src/pool.h` — add `pool_resolve_rw`, make `pool_resolve` return `const`
-- `src/tree.c`, `src/epoch.c`, `src/mapper.c`, `src/touched.c`, `src/gc.c`, `src/nodes.c`, `src/dentry_cache.c`, `src/page_array.c` — update write-path call sites
-
----
-
-## TODO-3 — Linear Directory Chain Dedup
-
-### Problem
-The `vfs_create` collision check and `vfs_readdir` deduplication both walk
-the DirContent chain comparing `childNodeId` values. At large directory sizes,
-this is O(N) per operation.
-
-### Proposed Solution
-Extend TODO-1's directory index to include `childNodeId → childPtr` mapping
-in addition to `name → VirtualPtr`. This makes `vfs_readdir` dedup O(1) per
-child instead of O(N²).
-
-### Impact
-- `vfs_readdir` at large directories: O(N²) dedup → O(N) with index
-- Memory: additional ~16 bytes per unique child
-
----
-
 ## TODO-4 — GC Physical Compaction
 
 ### Problem
@@ -119,3 +41,42 @@ so there is zero fragmentation.
 - `Allocate`: O(1) pop or CAS advance (no change)
 - `Free`: O(1) push (currently just sets entry to 0)
 - Backing file: stops growing between GC cycles
+
+## TODO-6 — NodeId/VirtualPtr API Mismatch [REQUIRED FIX]
+
+### Problem
+The public API documents file/directory handles as `nodeId` (uint32_t, sequential
+identifier). But every internal function (`vfs_write`, `vfs_read`, `vfs_file_size`,
+`vfs_file_mtime`, `pool_resolve`) passes this value directly to `pool_resolve`,
+which expects a **VirtualPtr** (`(page << 16) | slot`). These are different
+namespaces — nodeIds start at 0 and increment by 1, while VirtualPtrs encode
+pool page + slot indices.
+
+All current callers work around this by passing VirtualPtrs (obtained via
+`resolve_child_vp` or `get_file_vp`), not nodeIds. `vfs_create` returns the
+actual nodeId but callers discard it and use `resolve_child_vp` instead.
+The API is inconsistent — it says nodeId but operates on VirtualPtrs.
+
+### Required Fix
+Add a `NodeTable` — an in-memory `nodeId → VirtualPtr` hash table built at
+mount by walking the tree. All internal functions that currently receive a
+"file" parameter use the NodeTable to convert nodeId → VirtualPtr before
+calling `pool_resolve`. This bridges the gap without changing the public API
+signatures.
+
+### Files Affected
+- `src/node_table.c`, `src/node_table.h` — new files
+- `src/vfs.c` — build NodeTable on mount via tree walk
+- `src/tree.c` — `vfs_write`, `vfs_read`, `vfs_file_size`, `vfs_file_mtime`,
+  `vfs_file_ctime` — add `node_table_lookup` before `pool_resolve`
+- `test/test_tree.c` — update tests to pass nodeIds instead of VirtualPtrs
+
+## TODO-7 — Directory Index [Optional]
+
+Same as TODO-1 but marked as optional — may not be implemented.
+
+## TODO-8 — Lazy Tree Caching [Optional]
+
+Unified VfsNode tree with cached children per directory. Eliminates all
+remaining chain walks from the read path. Optional — deferred based on
+benchmark results.
