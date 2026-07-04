@@ -242,6 +242,15 @@ vfs_t* vfs_open(const char* path, int64_t page_size) {
         return NULL;
     }
 
+    /* Initialize the in-memory mapper table snapshot */
+    err = mapper_table_init(&ctx->mapper_table, &ctx->pool, &ctx->epochMapperPtr);
+    if (err != VFS_OK) {
+        storage_close(ctx->sb);
+        free(ctx);
+        free(vfs);
+        return NULL;
+    }
+
     vfs->ctx = ctx;
     return vfs;
 }
