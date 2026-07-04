@@ -499,32 +499,24 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     int64_t file_vp = resolve_child_vp(vfs, root_vp, "randfile.dat");
     if (file_vp == 0) { vfs_close(vfs); return 0; }
 
-    /* ── Random permutation ── */
-    int* order = (int*)malloc((size_t)file_pages * sizeof(int));
-    if (!order) { vfs_close(vfs); return 0; }
-    for (int i = 0; i < file_pages; i++) order[i] = i;
-    unsigned seed = 42;
-    for (int i = file_pages - 1; i > 0; i--) {
-        int j = (int)(rand_r(&seed) % (unsigned)(i + 1));
-        int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
-    }
-
-    /* ── Timed reads ── */
+    /* ── Timed reads: truly random, each page picked independently.
+       With 2× cache_cap pages and cache_cap slots, ~50% of reads hit
+       pages already in cache; ~50% pull new pages from disk. */
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
-    if (!buf) { free(order); vfs_close(vfs); return 0; }
+    if (!buf) { vfs_close(vfs); return 0; }
     lat_init(reads_needed);
     vfs_cache_reset();
     double t0 = now_sec();
     int ok = 0;
+    unsigned rseed = 42;
     for (int i = 0; i < reads_needed; i++) {
-        int64_t offset = (int64_t)order[i % file_pages] * page_sz;
+        int64_t offset = (int64_t)(rand_r(&rseed) % (unsigned)file_pages) * page_sz;
         int r = vfs_read(vfs, file_vp, buf, offset, page_sz, 0);
         if (r == page_sz) ok++;
-        lat_record(now_sec() - t0);  /* cumulative latency from start */
+        lat_record(now_sec() - t0);
     }
     double elapsed = now_sec() - t0;
     free(buf);
-    free(order);
 
     report_full("randread", ok, 1, elapsed);
     lat_destroy();
