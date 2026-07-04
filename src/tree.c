@@ -680,14 +680,14 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
 
     /* Temporary per-child tracking arrays (max entries == max output) */
-    int64_t best_child[1024];
-    int64_t best_childPtr[1024];
-    int64_t best_eff_epoch[1024];
-    int     best_name_set[1024];
+    int64_t best_child[DENTRY_CACHE_MAX];
+    int64_t best_childPtr[DENTRY_CACHE_MAX];
+    int64_t best_eff_epoch[DENTRY_CACHE_MAX];
+    int     best_name_set[DENTRY_CACHE_MAX];
     int best_count = 0;
 
     int64_t walk_vp = headPtr;
-    while (walk_vp != 0 && best_count < 1024) {
+    while (walk_vp != 0 && best_count < DENTRY_CACHE_MAX) {
         uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
         if (!dc_slot) break;
         uint32_t ce_child, ce_epoch;

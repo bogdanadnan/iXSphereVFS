@@ -1350,6 +1350,62 @@ static void test_lock_global_serializes(void) {
     vfs_close(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * dirchain_list tests
+ * --------------------------------------------------------------------------- */
+
+static void test_dirchain_list_basic(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    CHECK(vfs_create(vfs, root_vp, "a.txt", 0) > 0);
+    CHECK(vfs_create(vfs, root_vp, "b.txt", 0) > 0);
+    CHECK_EQ(vfs_mkdir(vfs, root_vp, "sub", 0), VFS_OK);
+
+    vfs_dirent_t entries[16];
+    int n = dirchain_list(ctx, root_vp, 0, entries, 16);
+    CHECK_EQ(n, 3);
+
+    int found_a = 0, found_b = 0, found_sub = 0;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(entries[i].name, "a.txt") == 0) { found_a = 1; CHECK(!entries[i].isDir); }
+        if (strcmp(entries[i].name, "b.txt") == 0) { found_b = 1; CHECK(!entries[i].isDir); }
+        if (strcmp(entries[i].name, "sub") == 0) { found_sub = 1; CHECK(entries[i].isDir); }
+    }
+    CHECK(found_a);
+    CHECK(found_b);
+    CHECK(found_sub);
+
+    vfs_close(vfs);
+}
+
+static void test_dirchain_list_tombstone(void) {
+    vfs_t* vfs = vfs_open(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    CHECK(vfs_create(vfs, root_vp, "x.txt", 0) > 0);
+    CHECK(vfs_create(vfs, root_vp, "y.txt", 0) > 0);
+    CHECK(vfs_create(vfs, root_vp, "z.txt", 0) > 0);
+
+    vfs_snapshot(vfs);
+    CHECK_EQ(vfs_delete(vfs, root_vp, "y.txt", 2), VFS_OK);
+
+    vfs_dirent_t entries[16];
+    int n = dirchain_list(ctx, root_vp, 2, entries, 16);
+    CHECK_EQ(n, 2);
+    for (int i = 0; i < n; i++)
+        CHECK(strcmp(entries[i].name, "y.txt") != 0);
+
+    n = dirchain_list(ctx, root_vp, 0, entries, 16);
+    CHECK_EQ(n, 3);
+
+    vfs_close(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1420,6 +1476,14 @@ int main(void) {
 
     unlink(test_path);
     test_readdir_tombstone();
+
+    /* --- dirchain_list tests --- */
+
+    unlink(test_path);
+    test_dirchain_list_basic();
+
+    unlink(test_path);
+    test_dirchain_list_tombstone();
 
     /* --- rename tests --- */
 
