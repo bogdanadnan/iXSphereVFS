@@ -18,6 +18,18 @@ typedef struct {
     int64_t*     epochMapperPtr;    /* pointer to the chain head in TreeContext */
 } Mapper;
 
+/* ---------------------------------------------------------------------------
+ * MapperTable — in-memory snapshot of the epoch mapper chain.
+ * Used for query-heavy workloads that don't need pool-based iteration.
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    int64_t*     epochMapperPtr; /* pointer to the chain head in TreeContext */
+    Pool*        pool;           /* pool allocator */
+    int          count;          /* number of live entries (cached) */
+    int          capacity;       /* reserved for future use */
+} MapperTable;
+
 /* Initialize a Mapper handle.
  * pool — the VFS instance's pool allocator
  * epochMapperPtr — pointer to the int64_t field (e.g., &ctx->epochMapperPtr) */
