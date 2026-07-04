@@ -45,7 +45,7 @@ typedef struct {
  * epoch    — query epoch (for read-rule dedup)
  * arr      — cache array to populate
  */
-int dentry_cache_build(Pool* pool, Mapper* mapper, int64_t root_vp, int64_t epoch,
+int dentry_cache_build(Pool* pool, MapperTable* mapper_table, int64_t root_vp, int64_t epoch,
                        DentryCache* arr);
 
 /* Check whether the cache is still valid for a given headPtr.

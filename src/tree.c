@@ -677,7 +677,7 @@ int vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
         }
 
     /* Always rebuild the cache (optimization: check valid flag later) */
-    int err = dentry_cache_build(&ctx->pool, &ctx->mapper, (int64_t)dir, epoch,
+    int err = dentry_cache_build(&ctx->pool, &ctx->mapper_table, (int64_t)dir, epoch,
                                  &ctx->readdir_cache);
     if (err != VFS_OK) return err;
 
