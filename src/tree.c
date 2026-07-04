@@ -662,6 +662,111 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     return VFS_OK;
 }
 
+/* ---------------------------------------------------------------------------
+ * dirchain_list — walk DirContent chain, collect non-tombstone entries
+ * at epoch via read-rule dedup by childNodeId, fill vfs_dirent_t array.
+ * --------------------------------------------------------------------------- */
+
+int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
+                  vfs_dirent_t* entries, int max) {
+    if (!ctx || !entries || max <= 0) return VFS_ERR_IO;
+
+    uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
+    if (!dir_slot) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+        return VFS_ERR_NOTDIR;
+
+    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
+    int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
+
+    /* Temporary per-child tracking arrays (max entries == max output) */
+    int64_t best_child[1024];
+    int64_t best_childPtr[1024];
+    int64_t best_eff_epoch[1024];
+    int     best_name_set[1024];
+    int best_count = 0;
+
+    int64_t walk_vp = headPtr;
+    while (walk_vp != 0 && best_count < 1024) {
+        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+        uint32_t ce_child, ce_epoch;
+        int64_t ce_childPtr, ce_namePtr, ce_next;
+        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                              &ce_namePtr, &ce_next, ctx->page_size);
+
+        int64_t eff_epoch = (int64_t)ce_epoch;
+        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
+            eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
+
+        int applies = (eff_epoch == read_epoch) ||
+                      (eff_epoch < read_epoch && eff_epoch % 2 == 0);
+        if (!applies) { walk_vp = ce_next; continue; }
+
+        /* Find or insert in tracking arrays */
+        int found = -1;
+        for (int i = 0; i < best_count; i++) {
+            if (best_child[i] == (int64_t)ce_child) { found = i; break; }
+        }
+        if (found >= 0) {
+            if (eff_epoch > best_eff_epoch[found]) {
+                best_eff_epoch[found] = eff_epoch;
+                best_childPtr[found] = ce_childPtr;
+                best_name_set[found] = (ce_namePtr != 0);
+            }
+        } else {
+            best_child[best_count] = (int64_t)ce_child;
+            best_childPtr[best_count] = ce_childPtr;
+            best_eff_epoch[best_count] = eff_epoch;
+            best_name_set[best_count] = (ce_namePtr != 0);
+            best_count++;
+        }
+        walk_vp = ce_next;
+    }
+
+    /* Build output from tracking arrays, skipping tombstones */
+    int written = 0;
+    for (int i = 0; i < best_count && written < max; i++) {
+        if (!best_name_set[i]) continue;
+        entries[written].nodeId = best_child[i];
+        entries[written].name[0] = '\0';
+        entries[written].isDir = false;
+
+        /* Determine isDir by reading child's type field */
+        uint8_t* child_slot = pool_resolve(&ctx->pool, best_childPtr[i]);
+        if (child_slot) {
+            int16_t ctype = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size);
+            entries[written].isDir = (ctype == (int16_t)NODE_TYPE_DIR);
+        }
+
+        /* Find the name by walking chain for this specific entry */
+        walk_vp = headPtr;
+        while (walk_vp != 0) {
+            uint8_t* cs = pool_resolve(&ctx->pool, walk_vp);
+            if (!cs) break;
+            uint32_t dc_child, dc_epoch;
+            int64_t dc_childPtrv, dc_namePtr, dc_next;
+            nodes_read_dircontent(cs, &dc_child, &dc_epoch, &dc_childPtrv,
+                                  &dc_namePtr, &dc_next, ctx->page_size);
+            (void)dc_childPtrv;
+
+            int64_t dc_eff = (int64_t)dc_epoch;
+            if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)dc_epoch))
+                dc_eff = mapper_table_resolve(&ctx->mapper_table, (int64_t)dc_epoch);
+
+            if ((int64_t)dc_child == best_child[i] &&
+                dc_eff == best_eff_epoch[i] && dc_namePtr != 0) {
+                nodes_read_name(&ctx->pool, dc_namePtr, entries[written].name,
+                                (int)sizeof(entries[written].name));
+                break;
+            }
+            walk_vp = dc_next;
+        }
+        written++;
+    }
+    return written;
+}
+
 int vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
                 int max, int64_t epoch) {
     if (!vfs || !vfs->ctx || !entries || max <= 0) return VFS_ERR_IO;

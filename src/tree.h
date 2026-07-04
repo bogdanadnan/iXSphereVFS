@@ -103,4 +103,11 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                         int64_t epoch, int64_t* out_childPtr,
                         uint32_t* out_nodeId);
 
+/* Walk a directory's DirContent chain and list non-tombstone entries at a
+ * given epoch (read-rule dedup by childNodeId).  Fills the entries[] array
+ * (up to max entries) with childNodeId, name, and isDir.  Returns the number
+ * of entries written, or a negative error code. */
+int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
+                  vfs_dirent_t* entries, int max);
+
 #endif /* VFS_TREE_H */
