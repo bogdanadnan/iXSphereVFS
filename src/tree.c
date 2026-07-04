@@ -557,32 +557,31 @@ int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
  * vfs_delete — delete a file by prepending a tombstone DirContent
  * --------------------------------------------------------------------------- */
 
-int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
-    if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
-    TreeContext* ctx = vfs->ctx;
 
-    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
+/* ---------------------------------------------------------------------------
+ * dirchain_find_named — walk DirContent chain, find FIRST live entry
+ * matching name at read_epoch (early-exit, first-match semantics).
+ * Ignores tombstones (namePtr == 0).  Returns childPtr and nodeId.
+ * Used by vfs_delete and vfs_rename which need the first visible match.
+ * --------------------------------------------------------------------------- */
 
-    /* Read parent DirNode, verify type */
-    uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
+static int dirchain_find_named(TreeContext* ctx, int64_t dir_vp,
+                                const char* name, int64_t epoch,
+                                int64_t* out_childPtr,
+                                uint32_t* out_nodeId) {
+    if (!ctx || !name || name[0] == '\0') return VFS_ERR_IO;
+    if (!out_childPtr || !out_nodeId) return VFS_ERR_IO;
 
-    if (!parent_slot) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
-    if (vfs_rd2_s(parent_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
-        vfs->ctx->last_error = VFS_ERR_NOTDIR;
+    uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
+    if (!dir_slot) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
         return VFS_ERR_NOTDIR;
-        }
 
-    /* Walk parent's DirContent chain to find the entry with matching name
-       at epoch ≤ query_epoch. Chain is in descending epoch order,
-       so the first match is the most recent at or before query_epoch. */
-    int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
     int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
-    int64_t found_vp = 0;
-    uint32_t found_childId = 0;
-    int64_t found_childPtr = 0;
+    int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
 
     int64_t walk_vp = headPtr;
-    while (walk_vp != 0 && found_vp == 0) {
+    while (walk_vp != 0) {
         uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
         if (!dc_slot) break;
         uint32_t ce_child, ce_epoch;
@@ -590,28 +589,48 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
                               &ce_namePtr, &ce_next, ctx->page_size);
 
-        int64_t effective_epoch = (int64_t)ce_epoch;
+        /* Skip tombstones */
+        if (ce_namePtr == 0) { walk_vp = ce_next; continue; }
+
+        int64_t eff_epoch = (int64_t)ce_epoch;
         if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
-            effective_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
+            eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
 
-        int applies = (effective_epoch == read_epoch) ||
-                      (effective_epoch < read_epoch && effective_epoch % 2 == 0);
+        int applies = (eff_epoch == read_epoch) ||
+                      (eff_epoch < read_epoch && eff_epoch % 2 == 0);
+        if (!applies) { walk_vp = ce_next; continue; }
 
-        if (ce_namePtr != 0 && applies) {
-            char entry_name[256];
-            int name_len = nodes_read_name(&ctx->pool, ce_namePtr,
-                                            entry_name, (int)sizeof(entry_name));
-            if (name_len > 0 && strcmp(entry_name, name) == 0) {
-                found_vp = walk_vp;
-                found_childId = ce_child;
-                found_childPtr = ce_childPtr;
-            }
+        char entry_name[256];
+        int nl = nodes_read_name(&ctx->pool, ce_namePtr,
+                                  entry_name, (int)sizeof(entry_name));
+        if (nl > 0 && strcmp(entry_name, name) == 0) {
+            *out_childPtr = ce_childPtr;
+            *out_nodeId   = (uint32_t)ce_child;
+            return VFS_OK;
         }
         walk_vp = ce_next;
     }
+    return VFS_ERR_NOTFOUND;
+}
 
+int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
+    if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
+    TreeContext* ctx = vfs->ctx;
 
-    if (found_vp == 0) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
+    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
+
+    /* Use first-match named helper (same semantics as inline walk) */
+    int64_t found_childPtr = 0;
+    uint32_t found_childId = 0;
+    int r = dirchain_find_named(ctx, parent, name, epoch,
+                                &found_childPtr, &found_childId);
+    if (r == VFS_ERR_NOTFOUND) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
+    if (r == VFS_ERR_NOTDIR)   { vfs->ctx->last_error = VFS_ERR_NOTDIR;   return VFS_ERR_NOTDIR; }
+    if (r != VFS_OK)           { vfs->ctx->last_error = VFS_ERR_IO;       return VFS_ERR_IO; }
+
+    uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
+    if (!parent_slot) { vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
+
     if (vfs_lock(vfs, (int64_t)found_childId, epoch) != VFS_OK) return VFS_ERR_IO;
 
     /* Allocate tombstone DirContent slot outside CAS loop */
