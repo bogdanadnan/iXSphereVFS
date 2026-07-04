@@ -46,9 +46,11 @@ Linear scan. Return `traversalApply` flag if `fromEpoch == epoch`,
 else false.
 
 ### `mapper_table_insert(table, fromEpoch, toEpoch, traversalApply)`
-Append to `entries[]`. Also write the MapperEntry to the pool chain
-(CAS-prepend to `*epochMapperPtr`) via `mapper_insert` (existing code
-in mapper.c). Both updates must succeed.
+1. Write the MapperEntry to the pool chain via `mapper_insert` (CAS-prepend
+   to `*epochMapperPtr`). This is the durable write — it MUST succeed first.
+2. Append `{fromEpoch, toEpoch, traversalApply}` to `entries[]`.
+3. Write barrier before incrementing `count` — ensures readers see the
+   new entry's data when they see the updated count.
 
 ### `mapper_table_rebuild(table)`
 Called after GC. Clears `entries[]`, re-walks the chain, repopulates.
@@ -67,10 +69,20 @@ Called after GC. Clears `entries[]`, re-walks the chain, repopulates.
 
 - **Pool chain remains source of truth.** The `entries[]` array is a cache.
   On mount, it is rebuilt from the chain. If corrupted, discard and rebuild.
-- **Mutations update both.** Every insert into the pool chain also inserts
-  into `entries[]`. No divergence.
+- **Mutations update both atomically.** Every insert into the pool chain also
+  inserts into `entries[]`. The pool write (CAS-prepend) MUST succeed first.
+  Only then is `entries[]` updated. If the pool write fails, the in-memory
+  update is skipped — no divergence risk.
 - **Reads never touch pool for mapper.** After mount, all reads use
   `entries[]`. The MapperTable is small — typically 0–3 entries.
+- **Lock-free reads, serialized writes.** `mapper_table_resolve` and
+  `mapper_table_traversal_apply` are read-only and need no synchronization.
+  `mapper_table_insert` is called only from `vfs_commit` and
+  `vfs_delete_snapshot`, which are serialized by the per-epoch lock.
+  `mapper_table_rebuild` is called only from GC, which holds the exclusive
+  tree lock. No concurrent inserts or rebuilds are possible. Entries are
+  appended to the end of the array with a release barrier before `count`
+  is incremented, ensuring readers see fully initialized data.
 
 ## Staging
 
