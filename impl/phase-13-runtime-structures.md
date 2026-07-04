@@ -79,10 +79,9 @@ Called after GC. Clears `entries[]`, re-walks the chain, repopulates.
   `mapper_table_insert`, `mapper_table_rebuild`
 - Wire into `vfs_open` (`mapper_table_init`)
 
-### Stage B — Unified Chain-Walk Helpers (no caching yet)
-Before adding caching, extract all hand-rolled chain walks into shared
-functions. Each function uses `pool_resolve` — same behavior as today,
-but centralized for future optimization.
+### Stage B — Unified Chain-Walk Helpers
+Extract all hand-rolled chain walks into shared functions. Each function
+uses `pool_resolve` — same behavior as today, centralized in one place.
 
 **`dirchain_find_child(ctx, dirVp, name, epoch) → childVp, childNodeId`**
 Walk DirContent chain. Find child with matching `name` at `epoch` using
@@ -105,24 +104,18 @@ traversal. Returns data page index, or -1 if never written. Used by:
 Walk FileSize chain from `sizePtr`. Apply read rule. Returns size and
 mtime. Used by: `vfs_file_size`, `vfs_file_mtime`.
 
-### Stage C — Refactor read path
+### Stage C — Refactor Callers
 - Replace all inline chain walks in `vfs_read`, `vfs_file_size`, `vfs_file_mtime`,
   `vfs_open_file`, `vfs_readdir`, `vfs_delete`, `vfs_rename` with calls to
   the shared helpers above.
 - Replace `mapper_resolve(&ctx->mapper, epoch)` calls with `mapper_table_resolve`
 - Replace `mapper_traversal_apply` calls with `mapper_table_traversal_apply`
-- Target: zero hand-rolled `while(vp != 0)` loops in the read path
+- Replace `vfs_epoch_is_writable` mapper check with `mapper_table_resolve`
 
-### Stage D — Wire write path
+### Stage D — Wire Write Path
 - After `mapper_insert` in `vfs_commit` and `vfs_delete_snapshot`,
   call `mapper_table_insert`
 - After GC, call `mapper_table_rebuild`
-
-### Stage E — Add caching (Phase 13 follow-up)
-- Add `VfsNode` cache inside the shared helpers from Stage B
-- First call to `dirchain_find_child` walks the chain and caches children
-- Subsequent calls use the cache
-- Mutations (`vfs_create`, `vfs_delete`, `vfs_rename`) invalidate the cache
 
 ## Acceptance
 - [ ] After mount: `mapper_table_resolve` matches chain-walk result
