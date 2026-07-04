@@ -27,7 +27,7 @@ bool vfs_epoch_is_writable(TreeContext* ctx, int64_t epoch) {
     /* Odd epoch (snapshot): writable if NOT in the mapper chain.
        Being in the mapper means it was committed or soft-deleted. */
     if (epoch % 2 == 1) {
-        int64_t resolved = mapper_resolve(&ctx->mapper, epoch);
+        int64_t resolved = mapper_table_resolve(&ctx->mapper_table, epoch);
         return resolved == epoch;
     }
 
