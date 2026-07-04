@@ -1005,6 +1005,7 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
     int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
 
     int64_t best_child = 0, best_childPtr = 0, best_eff_epoch = 0;
+    int64_t best_raw_epoch = 0;
     int best_name_match = 0;
 
     int64_t walk_vp = headPtr;
@@ -1038,6 +1039,7 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                     best_child    = (int64_t)ce_child;
                     best_childPtr = ce_childPtr;
                     best_eff_epoch = eff_epoch;
+                    best_raw_epoch = (int64_t)ce_epoch;
                     best_name_match = 1;
                 }
             } else {
@@ -1045,6 +1047,7 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                     best_child    = (int64_t)ce_child;
                     best_childPtr = ce_childPtr;
                     best_eff_epoch = eff_epoch;
+                    best_raw_epoch = (int64_t)ce_epoch;
                     best_name_match = 0;
                 }
             }
@@ -1055,7 +1058,7 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
     if (!best_name_match) return VFS_ERR_NOTFOUND;
     *out_childPtr = best_childPtr;
     *out_nodeId   = (uint32_t)best_child;
-    if (out_epoch) *out_epoch = (uint32_t)best_eff_epoch;
+    if (out_epoch) *out_epoch = (uint32_t)best_raw_epoch;
     return VFS_OK;
 }
 

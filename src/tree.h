@@ -97,6 +97,8 @@ VFS_INLINE uint32_t tree_segment_size(TreeContext* ctx) {
  * epoch       — query epoch (mapper_resolve is applied internally)
  * out_childPtr — set to the child's VirtualPtr on match, unchanged otherwise
  * out_nodeId  — set to the child's nodeId on match, unchanged otherwise
+ * out_epoch   — set to the raw stored epoch of the matching DirContent entry,
+ *               or unchanged if NULL.
  *
  * Returns VFS_OK if found, VFS_ERR_NOTFOUND if no matching entry exists. */
 int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
