@@ -427,6 +427,6 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
-build/
+build*/
 Testing/
 build_clean/

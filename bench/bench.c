@@ -37,7 +37,7 @@ typedef struct {
     int         count;      /* number of files/operations */
     int         threads;    /* number of concurrent threads */
     int         page_size;  /* VFS page size (default 8192) */
-    int         cache_mb;   /* not implemented yet — placeholder */
+    int         cache_mb;   /* 0 = use default */
     const char* output;     /* output file path */
 } bench_opts;
 
@@ -186,9 +186,14 @@ static void report_full(const char* name, int count, int threads, double elapsed
 
     int64_t ct = vfs_cache_total();
     int64_t ch = vfs_cache_hits();
+    int64_t dt = vfs_data_total();
+    int64_t dh = vfs_data_hits();
     double ratio = (ct > 0) ? (double)ch / (double)ct : 0.0;
+    double dratio = (dt > 0) ? (double)dh / (double)dt : 0.0;
     printf("  cache: hits=%lld  total=%lld  ratio=%.1f%%\n",
            (long long)ch, (long long)ct, ratio * 100.0);
+    printf("  data:  hits=%lld  total=%lld  ratio=%.1f%%\n",
+           (long long)dh, (long long)dt, dratio * 100.0);
     printf("\n");
 }
 
@@ -497,9 +502,13 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     }
 
     /* ── Close & reopen — clears cache, forces cold reads ── */
+    int saved_max_entries = (int)cache_cap;
     vfs_close(vfs);
     vfs = vfs_open(path, page_sz);
     if (!vfs) return 0;
+    /* Restore cache size from first open (--cache-mb override) */
+    vfs->ctx->sb->cache.max_entries = saved_max_entries;
+    vfs->ctx->sb->cache.writeback_threshold = saved_max_entries / 4;
     root_vp = vfs->ctx->rootNodeOffset;
     int64_t file_vp = resolve_child_vp(vfs, root_vp, "randfile.dat");
     if (file_vp == 0) { vfs_close(vfs); return 0; }
@@ -550,6 +559,15 @@ int main(int argc, char** argv) {
 
     /* Reset cache performance counters before running the workload */
     vfs_cache_reset();
+
+    /* Apply --cache-mb override if specified */
+    if (opts.cache_mb > 0) {
+        int64_t pg = vfs->ctx->page_size;
+        int64_t entries = ((int64_t)opts.cache_mb * 1024 * 1024) / pg;
+        if (entries < 256) entries = 256;
+        vfs->ctx->sb->cache.max_entries = (int)entries;
+        vfs->ctx->sb->cache.writeback_threshold = (int)(entries / 4);
+    }
 
     int ok = 0;
     int scan_count = opts.count;
