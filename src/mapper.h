@@ -49,11 +49,16 @@ int  mapper_table_init(MapperTable* tbl, Pool* pool, int64_t* epochMapperPtr);
 /* Destroy a MapperTable (frees entries array). */
 void mapper_table_destroy(MapperTable* tbl);
 
-/* Reload the table by walking the pool chain. Returns count, or negative error. */
-int  mapper_table_reload(MapperTable* tbl);
+/* Rebuild the table by clearing entries and re-walking the pool chain.
+ * Called after GC compaction to refresh the in-memory cache. Returns count, or negative error. */
+int  mapper_table_rebuild(MapperTable* tbl);
 
 /* Resolve an epoch through the table (linear scan). Returns toEpoch or epoch itself if not found. */
 int64_t mapper_table_resolve(MapperTable* tbl, int64_t epoch);
+
+/* Check whether traversalApply is set for a given epoch in the table.
+ * Linear scan of entries[] for fromEpoch match. Returns the flag or false. */
+bool mapper_table_traversal_apply(MapperTable* tbl, int64_t epoch);
 
 /* Insert a new entry into the table (in-memory only, does NOT modify pool chain). */
 int  mapper_table_insert(MapperTable* tbl, uint32_t fromEpoch, uint32_t toEpoch, bool traversalApply);
