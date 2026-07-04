@@ -134,10 +134,110 @@ static void test_mapper_invariants(void) {
     mapper_teardown(sb);
 }
 
+/* ---------------------------------------------------------------------------
+ * MapperTable tests
+ * --------------------------------------------------------------------------- */
+
+static void test_mapper_table_empty(void) {
+    StorageBackend* sb = mapper_setup();
+    CHECK(sb != NULL);
+
+    int64_t list_head = 0;
+    Pool pool;
+    pool_init(&pool, sb, &list_head);
+
+    int64_t chain_head = 0;
+    MapperTable tbl;
+
+    /* Empty chain (epochMapperPtr == 0) */
+    CHECK_EQ(mapper_table_init(&tbl, &pool, &chain_head), VFS_OK);
+    CHECK_EQ(tbl.count, 0);
+    CHECK(tbl.entries != NULL);
+    CHECK_EQ(tbl.capacity, MAPPER_TABLE_INITIAL_CAPACITY);
+
+    mapper_table_destroy(&tbl);
+    CHECK(tbl.entries == NULL);
+    CHECK_EQ(tbl.count, 0);
+    CHECK_EQ(tbl.capacity, 0);
+
+    /* NULL epochMapperPtr */
+    CHECK_EQ(mapper_table_init(&tbl, &pool, NULL), VFS_OK);
+    CHECK_EQ(tbl.count, 0);
+    mapper_table_destroy(&tbl);
+
+    mapper_teardown(sb);
+}
+
+static void test_mapper_table_single(void) {
+    StorageBackend* sb = mapper_setup();
+    CHECK(sb != NULL);
+
+    int64_t list_head = 0;
+    Pool pool;
+    pool_init(&pool, sb, &list_head);
+
+    int64_t chain_head = 0;
+    Mapper m;
+    mapper_init(&m, &pool, &chain_head);
+
+    /* Insert one entry with traversalApply */
+    CHECK_EQ(mapper_insert(&m, 1, 2, MAPPER_FLAG_TRAVERSAL_APPLY), VFS_OK);
+
+    MapperTable tbl;
+    CHECK_EQ(mapper_table_init(&tbl, &pool, &chain_head), VFS_OK);
+    CHECK_EQ(tbl.count, 1);
+    CHECK_EQ(tbl.entries[0].fromEpoch, (uint32_t)1);
+    CHECK_EQ(tbl.entries[0].toEpoch, (uint32_t)2);
+    CHECK(tbl.entries[0].traversalApply);
+
+    mapper_table_destroy(&tbl);
+    mapper_teardown(sb);
+}
+
+static void test_mapper_table_multi(void) {
+    StorageBackend* sb = mapper_setup();
+    CHECK(sb != NULL);
+
+    int64_t list_head = 0;
+    Pool pool;
+    pool_init(&pool, sb, &list_head);
+
+    int64_t chain_head = 0;
+    Mapper m;
+    mapper_init(&m, &pool, &chain_head);
+
+    CHECK_EQ(mapper_insert(&m, 1, 2, MAPPER_FLAG_TRAVERSAL_APPLY), VFS_OK);
+    CHECK_EQ(mapper_insert(&m, 3, 4, 0), VFS_OK);
+    CHECK_EQ(mapper_insert(&m, 5, 6, MAPPER_FLAG_TRAVERSAL_APPLY), VFS_OK);
+
+    MapperTable tbl;
+    CHECK_EQ(mapper_table_init(&tbl, &pool, &chain_head), VFS_OK);
+    CHECK_EQ(tbl.count, 3);
+
+    /* Note: chain is in reverse order (CAS-prepend) */
+    CHECK_EQ(tbl.entries[0].fromEpoch, (uint32_t)5);
+    CHECK_EQ(tbl.entries[0].toEpoch, (uint32_t)6);
+    CHECK(tbl.entries[0].traversalApply);
+
+    CHECK_EQ(tbl.entries[1].fromEpoch, (uint32_t)3);
+    CHECK_EQ(tbl.entries[1].toEpoch, (uint32_t)4);
+    CHECK(!tbl.entries[1].traversalApply);
+
+    CHECK_EQ(tbl.entries[2].fromEpoch, (uint32_t)1);
+    CHECK_EQ(tbl.entries[2].toEpoch, (uint32_t)2);
+    CHECK(tbl.entries[2].traversalApply);
+
+    mapper_table_destroy(&tbl);
+    mapper_teardown(sb);
+}
+
 int main(void) {
     test_mapper_init();
     test_mapper_insert_resolve();
     test_mapper_invariants();
+    test_mapper_table_empty();
+    test_mapper_table_single();
+    test_mapper_table_multi();
 
     printf("test_mapper: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

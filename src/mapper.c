@@ -140,7 +140,7 @@ int mapper_table_init(MapperTable* tbl, Pool* pool, int64_t* epochMapperPtr) {
         int64_t vp = *epochMapperPtr;
         while (vp != 0) {
             uint8_t* slot = pool_resolve(pool, vp);
-            if (!slot) break;
+            if (!slot) return VFS_ERR_IO;
             uint32_t fromE, toE;
             uint16_t flags;
             int64_t next;
