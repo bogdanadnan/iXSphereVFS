@@ -1,115 +1,99 @@
-# Phase 13: In-Memory Lazy Tree
+# Phase 13: Mapper Table Cache
 
 ## Goal
-Build a unified in-memory tree that mirrors the on-disk pool structure.
-Every node (DirNode, FileNode) caches its children and metadata in memory.
-On first access, the tree is populated by walking pool chains. On mutation,
-both the pool page and the in-memory cache are updated. After mount, the
-entire read path uses only the in-memory tree — zero `pool_resolve` calls.
+Replace `mapper_resolve` and `mapper_traversal_apply` chain walks with an
+in-memory table. Built once at mount from the on-disk mapper chain. Updated
+on commit, soft-delete, and GC. O(1) lookup instead of walking VirtualPtr
+chains through pool pages.
 
-## Principle
-There is exactly ONE way to walk the tree. Every operation that needs
-directory contents, file metadata, or node lookups uses the same shared
-implementation. No operation has its own hand-rolled chain walk.
+## Current State
+Every `vfs_read`, `vfs_write`, `vfs_epoch_is_writable` walks the mapper
+chain via `pool_resolve` → `storage_read` → `cache_find`. For a 3-entry
+chain, that's 3 hash lookups + 3 bucket locks. Per operation. Even when
+the pool pages are cached, the chain walk overhead is measurable.
 
 ## Data Structure
 
 ```c
-typedef struct VfsNode {
-    uint32_t nodeId;
-    int64_t  vp;           // VirtualPtr to the pool entry
-    uint16_t type;         // NODE_TYPE_DIR or NODE_TYPE_FILE
-
-    /* Directory children — populated lazily */
-    struct {
-        DirChild* children;   // dynamic array, sorted by name
-        int       count;
-        int       capacity;
-        bool      loaded;     // false = not yet loaded from pool
-    } dir;
-
-    /* File metadata — loaded with the FileNode */
-    struct {
-        int64_t  sizePtr;     // VirtualPtr to first FileSize
-        int64_t  createdAt;
-        int64_t* pageArray;   // in-memory segment array (Phase 5)
-    } file;
-} VfsNode;
+typedef struct {
+    uint32_t fromEpoch;
+    uint32_t toEpoch;
+    bool     traversalApply;
+} MapperEntry;
 
 typedef struct {
-    char*     name;
-    uint32_t  childNodeId;
-    int64_t   childVp;       // VirtualPtr to child node
-    bool      isDir;
-    uint32_t  epoch;         // highest epoch ≤ live head for this entry
-    bool      deleted;       // namePtr == 0 at this epoch
-} DirChild;
+    MapperEntry* entries;    // dynamic array
+    int          count;
+    int          capacity;
+    int64_t*      epochMapperPtr;  // pointer to TreeContext.epochMapperPtr
+    Pool*         pool;            // for writing to pool on mutations
+} MapperTable;
 ```
 
 ## Operations
 
-### `vfs_node_get(nodeId) → VfsNode*`
-Return the in-memory node. If not yet loaded, allocate and populate:
-- For DirNode: walk DirContent chain, populate `dir.children[]`
-  (deduplicated by childNodeId, highest epoch rules applied)
-- For FileNode: read sizePtr, createdAt from pool entry
-- Mark `loaded = true`
+### `mapper_table_init(table, pool, epochMapperPtr)`
+Walk the on-disk mapper chain from `*epochMapperPtr`. For each MapperEntry,
+append `{fromEpoch, toEpoch, traversalApply}` to `entries[]`. Called once
+at mount from `vfs_open` → `tree_init`.
 
-### `vfs_node_lookup(parent, name) → DirChild*`
-Binary search `parent->dir.children[]` by name. If `parent->dir.loaded`
-is false, lazy-load first. Returns NULL if not found.
+### `mapper_table_resolve(table, epoch) → int64_t`
+Linear scan of `entries[]` (max ~10 entries). Return `toEpoch` if
+`fromEpoch == epoch`, else return `epoch` unchanged. O(N) where N ≤ 10.
 
-### `vfs_node_list(parent, entries, max) → count`
-Copy `parent->dir.children[]` (excluding deleted entries) into `entries[]`.
+### `mapper_table_traversal_apply(table, epoch) → bool`
+Linear scan. Return `traversalApply` flag if `fromEpoch == epoch`,
+else false.
 
-### `vfs_node_add(parent, name, childNodeId, childVp, isDir, epoch)`
-Binary-search-insert into `parent->dir.children[]`. Also writes the
-corresponding DirContent entry to the pool (CAS-prepend to headPtr).
+### `mapper_table_insert(table, fromEpoch, toEpoch, traversalApply)`
+Append to `entries[]`. Also write the MapperEntry to the pool chain
+(CAS-prepend to `*epochMapperPtr`) via `mapper_insert` (existing code
+in mapper.c). Both updates must succeed.
 
-### `vfs_node_remove(parent, name, epoch)`
-Mark the child as `deleted = true`. Also CAS-prepends a tombstone
-DirContent to the pool.
+### `mapper_table_rebuild(table)`
+Called after GC. Clears `entries[]`, re-walks the chain, repopulates.
 
-### `vfs_node_rename(parent, oldName, newName, epoch)`
-Update the DirChild entry in-place. Also updates the pool.
+## Changes to Existing Code
 
-### `vfs_node_invalidate(parent)`
-Called after GC or when the pool chain is rebuilt. Sets `loaded = false`.
-Next access lazy-loads fresh data.
+| File | Change |
+|------|--------|
+| `src/mapper.c` | Add `mapper_table_*` functions. Existing chain-walk functions remain for GC/write paths. |
+| `src/vfs.c` | `vfs_open` → after `mapper_init`, call `mapper_table_init` |
+| `src/tree.c` | `vfs_read` → replace `mapper_resolve`/`mapper_traversal_apply` chain walks with `mapper_table_resolve`/`mapper_table_traversal_apply` |
+| `src/epoch.c` | `vfs_commit`, `vfs_delete_snapshot` → after `mapper_insert`, call `mapper_table_insert`. `vfs_epoch_is_writable` → use `mapper_table_resolve`. |
+| `src/gc.c` | After GC rebuilds pool pages, call `mapper_table_rebuild` |
 
-## What Gets Replaced
+## Non-Negotiable Constraints
 
-| Current Code | Replaced By | Lines Removed |
-|-------------|-------------|---------------|
-| `vfs_create`: walk chain for name collision | `vfs_node_lookup` | ~20 |
-| `vfs_delete`: walk chain for target | `vfs_node_lookup` | ~15 |
-| `vfs_open_file`: walk chain for name match | `vfs_node_lookup` | ~20 |
-| `vfs_readdir`: walk chain + dedup | `vfs_node_list` | ~25 |
-| `vfs_rename`: walk chain ×2 (src+dst) | `vfs_node_lookup` ×2 | ~30 |
-| `vfs_rmdir`: walk chain for child | `vfs_node_lookup` | ~10 |
-| Epoch mapper chain walk | `MapperTable` (still separate, ~5 entries) | ~10 |
-| **Total hand-rolled chain walks eliminated** | | **~130 lines** |
+- **Pool chain remains source of truth.** The `entries[]` array is a cache.
+  On mount, it is rebuilt from the chain. If corrupted, discard and rebuild.
+- **Mutations update both.** Every insert into the pool chain also inserts
+  into `entries[]`. No divergence.
+- **Reads never touch pool for mapper.** After mount, all reads use
+  `entries[]`. The MapperTable is small — typically 0–3 entries.
 
 ## Staging
 
-### Stage A — Lazy Tree Core (no read-path changes yet)
-- `VfsNode` struct, `vfs_node_get`, `vfs_node_lookup`, `vfs_node_list`, `vfs_node_add/remove/rename`
-- MapperTable as a simple hash (max 10 entries, linear scan is fine)
-- Tests: create node, add children, lookup, verify pool writes match
+### Stage A — MapperTable core
+- `mapper_table_init`, `mapper_table_resolve`, `mapper_table_traversal_apply`,
+  `mapper_table_insert`, `mapper_table_rebuild`
+- Wire into `vfs_open` (`mapper_table_init`)
 
-### Stage B — Refactor Read Path
-- `vfs_read`: `vfs_node_get(file)` → use in-memory pageArray
-- `vfs_open_file`: `vfs_node_lookup(parent, name)`
-- `vfs_readdir`: `vfs_node_list(parent)`
-- `vfs_file_size/mtime/ctime`: read from VfsNode.file fields
-- `vfs_epoch_is_writable`: MapperTable lookup
-- Zero `pool_resolve` calls in the read path
+### Stage B — Refactor read path
+- Replace `mapper_resolve(&ctx->mapper, epoch)` calls in `vfs_read`,
+  `vfs_file_size`, `vfs_file_mtime`, `vfs_open_file`, `vfs_readdir`,
+  `vfs_epoch_is_writable` with `mapper_table_resolve`
+- Replace `mapper_traversal_apply` calls with `mapper_table_traversal_apply`
 
-### Stage C — Refactor Write Path
-- `vfs_create`: `vfs_node_add` (writes pool + updates cache)
-- `vfs_delete`: `vfs_node_remove` (writes tombstone + marks deleted)
-- `vfs_rename`: `vfs_node_rename` (in-place update + pool write)
-- `vfs_write` (COW path): unchanged (already minimal pool access)
+### Stage C — Wire write path
+- After `mapper_insert` in `vfs_commit` and `vfs_delete_snapshot`,
+  call `mapper_table_insert`
+- After GC, call `mapper_table_rebuild`
 
-### Stage D — GC Integration
-- `vfs_gc` rebuilds pool pages → invalidates all `VfsNode` entries → lazy reload on next access
+## Acceptance
+- [ ] After mount: `mapper_table_resolve` matches chain-walk result
+- [ ] After commit: new mapping in table AND on disk
+- [ ] After soft-delete: new mapping in table AND on disk
+- [ ] After GC: table rebuilt correctly
+- [ ] All existing tests pass without modification
+- [ ] `vfs_read` shows measurable latency reduction (>10%)
