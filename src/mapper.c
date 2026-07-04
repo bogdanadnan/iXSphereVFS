@@ -176,3 +176,13 @@ void mapper_table_destroy(MapperTable* tbl) {
         tbl->capacity = 0;
     }
 }
+
+int64_t mapper_table_resolve(MapperTable* tbl, int64_t epoch) {
+    if (!tbl || !tbl->entries) return epoch;
+    uint32_t query = (uint32_t)epoch;
+    for (int i = 0; i < tbl->count; i++) {
+        if (tbl->entries[i].fromEpoch == query)
+            return (int64_t)tbl->entries[i].toEpoch;
+    }
+    return epoch;
+}
