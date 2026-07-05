@@ -56,7 +56,7 @@ static void usage(void) {
     fprintf(stderr,
         "Usage: vfs_bench --workload=<name> --count=N [options]\n"
         "Options:\n"
-        "  --workload=<name>   create, write, read, scan, mixed, dir, seqwrite, randread, seqread (default: create)\n"
+        "  --workload=<name>   create, small_create, write, read, scan, mixed, dir, seqwrite, randread, seqread (default: create)\n"
         "  --count=N           number of files/operations (default: 1000)\n"
         "  --threads=N         number of threads (default: 1)\n"
         "  --page-size=N       VFS page size in bytes (default: 8192)\n"
@@ -285,6 +285,36 @@ static int bench_create(vfs_t* vfs, int count, int threads, const char* path) {
     }
     double t1 = now_sec();
     report_full("create", ok, threads, t1 - t0);
+    lat_destroy();
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
+ * Workload: small file create — create + 128-byte write, measure latency
+ * --------------------------------------------------------------------------- */
+
+static int bench_small_file_create(vfs_t* vfs, int count, int threads,
+                                   const char* path) {
+    (void)path;
+    (void)threads;
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+    lat_init(count);
+    double t0 = now_sec();
+    int ok = 0;
+    char data[128];
+    memset(data, 'A', sizeof(data));
+    for (int i = 0; i < count; i++) {
+        double op_t0 = now_sec();
+        char name[64];
+        snprintf(name, sizeof(name), "s%d.txt", i);
+        int64_t file_vp = vfs_create(vfs, root_vp, name, 0);
+        if (file_vp <= 0) continue;
+        int written = vfs_write(vfs, file_vp, data, 0, sizeof(data), 0);
+        if (written == (int)sizeof(data)) ok++;
+        lat_record(now_sec() - op_t0);
+    }
+    double t1 = now_sec();
+    report_full("small_create", ok, threads, t1 - t0);
     lat_destroy();
     return ok;
 }
@@ -750,6 +780,8 @@ int main(int argc, char** argv) {
     int scan_count = opts.count;
     if (strcmp(opts.workload, "create") == 0) {
         ok = bench_create(vfs, opts.count, opts.threads, opts.output);
+    } else if (strcmp(opts.workload, "small_create") == 0) {
+        ok = bench_small_file_create(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "write") == 0) {
         ok = bench_write(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "read") == 0) {
