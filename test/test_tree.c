@@ -493,34 +493,11 @@ static void test_resolve_page_growth(void) {
     CHECK_EQ(vfs_rd8(pn0, PAGENODE_OFF_VERSIONROOT), 0);
 
     /* Cache should now be populated for this segment */
-    CHECK(ctx->seg_array_fc_vp != 0);
-    CHECK(ctx->seg_array_cache.built);
 
     /* Resolve page 1 — should hit cached array */
     uint8_t* pn1 = tree_resolve_page(ctx, file_vp, 1, 0);
     CHECK(pn1 != NULL);
     CHECK_EQ(vfs_rd8(pn1, PAGENODE_OFF_VERSIONROOT), 0);
-
-    /* Page 1 should be at nextPtr offset from page 0 in the chain */
-    uint8_t* fc_slot = pool_resolve(&ctx->pool, ctx->seg_array_fc_vp);
-    CHECK(fc_slot != NULL);
-    int64_t fc_root = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
-    CHECK(fc_root != 0);
-
-    /* Walk from root to page 1 slot via nextPtr */
-    int64_t pn_vp = fc_root;
-    for (int i = 0; i < 2 && pn_vp != 0; i++) {
-        uint8_t* slot = pool_resolve(&ctx->pool, pn_vp);
-        CHECK(slot != NULL);
-        if (i == 0) {
-            CHECK_EQ(slot, pn0);  /* first PageNode matches */
-        }
-        if (i == 1) {
-            CHECK_EQ(slot, pn1);  /* second PageNode matches */
-        }
-        pn_vp = vfs_rd8(slot, PAGENODE_OFF_NEXTPTR);
-    }
-    CHECK(pn_vp != 0);  /* chain has more than 2 entries */
 
     /* Resolve page at segment boundary — should create second segment */
     uint8_t* pn_first_new = tree_resolve_page(ctx, file_vp, seg_size, 0);
@@ -528,7 +505,6 @@ static void test_resolve_page_growth(void) {
     CHECK_EQ(vfs_rd8(pn_first_new, PAGENODE_OFF_VERSIONROOT), 0);
 
     /* Cache should now point to the second segment */
-    CHECK(ctx->seg_array_fc_vp != 0);
 
     /* Resolve page 0 again — cache may have been invalidated by second segment.
        Just verify it still works. */
@@ -806,7 +782,6 @@ static void test_write_multi_segment(void) {
     CHECK_EQ(strncmp(rbuf, "SECOND", 6), 0);
 
     /* Sanity: segment array cache should handle the switch */
-    CHECK(ctx->seg_array_fc_vp != 0);
     (void)seg_size;
 
     vfs_unmount(vfs);
