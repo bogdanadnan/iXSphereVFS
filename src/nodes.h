@@ -117,6 +117,7 @@ void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* 
 #define PAGENODE_OFF_VERSIONROOT    0
 #define PAGENODE_OFF_NEXTPTR          8
 #define PAGENODE_OFF_PAGEINDEX       16
+#define PAGENODE_OFF_RESERVED2       20
 
 void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr,
                           uint32_t page_index, int64_t page_size);
