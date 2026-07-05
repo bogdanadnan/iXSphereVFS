@@ -38,6 +38,7 @@ typedef struct {
     int         threads;    /* number of concurrent threads */
     int         page_size;  /* VFS page size (default 8192) */
     int         cache_mb;   /* 0 = use default */
+    int         read_ratio; /* for mixed workload, default 80 */
     const char* output;     /* output file path */
 } bench_opts;
 
@@ -47,6 +48,7 @@ static bench_opts defaults = {
     .threads   = 1,
     .page_size = 8192,
     .cache_mb  = 0,
+    .read_ratio = 80,
     .output    = "/tmp/vfs_bench.vfs",
 };
 
@@ -59,6 +61,7 @@ static void usage(void) {
         "  --threads=N         number of threads (default: 1)\n"
         "  --page-size=N       VFS page size in bytes (default: 8192)\n"
         "  --cache-mb=N        page cache size in MB (default: 0 = auto)\n"
+        "  --read-ratio=N      mixed workload: %% reads (default: 80)\n"
         "  --output=<path>     VFS file path (default: /tmp/vfs_bench.vfs)\n"
     );
 }
@@ -93,6 +96,7 @@ static int parse_args(int argc, char** argv, bench_opts* opts) {
         if (parse_int(argv[i], "--threads=", &opts->threads)) continue;
         if (parse_int(argv[i], "--page-size=", &opts->page_size)) continue;
         if (parse_int(argv[i], "--cache-mb=", &opts->cache_mb)) continue;
+        if (parse_int(argv[i], "--read-ratio=", &opts->read_ratio)) continue;
         if (parse_str(argv[i], "--output=", &opts->output)) continue;
         fprintf(stderr, "Unknown option: %s\n", argv[i]);
         usage();
@@ -353,32 +357,62 @@ static int bench_scan(vfs_t* vfs, int* count, int threads, const char* path) {
  * Workload: mixed — create, write, read, delete
  * --------------------------------------------------------------------------- */
 
-static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path) {
-    (void)path;
-    int64_t root_vp = vfs->ctx->rootNodeOffset;
-    double t0 = now_sec();
-    int ok = 0;
+/* ---------------------------------------------------------------------------
+ * Workload: mixed — configurable read/write ratio on pre-populated files.
+ * Pre-populates count files with page-sized data, then runs count operations
+ * with --read-ratio (default 80) controlling read vs write mix at random offsets.
+ * --------------------------------------------------------------------------- */
 
-    for (int i = 0; i < count; i++) {
+static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path,
+                        int read_ratio) {
+    (void)path;
+    if (read_ratio < 0) read_ratio = 80; /* default 80% reads */
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+    const int page_sz = vfs->ctx->page_size;
+    int nfiles = count > 1000 ? 1000 : count;
+    int64_t* file_vps = (int64_t*)calloc((size_t)nfiles, sizeof(int64_t));
+
+    /* Pre-populate nfiles with data */
+    int populated = 0;
+    for (int i = 0; i < nfiles && populated < nfiles; i++) {
         char name[64];
         snprintf(name, sizeof(name), "m%d.txt", i);
+        if (vfs_create(vfs, root_vp, name, 0) <= 0) continue;
+        file_vps[i] = resolve_child_vp(vfs, root_vp, name);
+        if (file_vps[i] == 0) continue;
+        /* Write 4 pages per file */
+        uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
+        if (!zbuf) break;
+        for (int p = 0; p < 4; p++)
+            vfs_write(vfs, file_vps[i], zbuf, (int64_t)p * page_sz, page_sz, 0);
+        free(zbuf);
+        populated++;
+    }
+    if (populated == 0) { free(file_vps); return 0; }
 
-        int nid = vfs_create(vfs, root_vp, name, 0);
-        if (nid <= 0) continue;
+    double t0 = now_sec();
+    int ok = 0;
+    unsigned rseed = 42;
+    uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
+    if (!buf) { free(file_vps); return 0; }
+    memset(buf, 'Z', (size_t)page_sz);
 
-        int64_t file_vp = resolve_child_vp(vfs, root_vp, name);
-        if (file_vp == 0) continue;
-
-        char data[64];
-        memset(data, 'X', sizeof(data));
-        if (vfs_write(vfs, file_vp, data, 0, sizeof(data), 0) > 0) ok++;
-
-        char buf[64];
-        if (vfs_read(vfs, file_vp, buf, 0, sizeof(buf), 0) > 0) ok++;
-
-        if (vfs_delete(vfs, root_vp, name, 0) == VFS_OK) ok++;
+    for (int i = 0; i < count; i++) {
+        int fi = rand_r(&rseed) % populated;
+        if (file_vps[fi] == 0) continue;
+        int is_read = (rand_r(&rseed) % 100) < read_ratio;
+        int64_t off = (int64_t)(rand_r(&rseed) % 4) * page_sz;
+        if (is_read) {
+            int r = vfs_read(vfs, file_vps[fi], buf, off, page_sz, 0);
+            if (r == page_sz) ok++;
+        } else {
+            int w = vfs_write(vfs, file_vps[fi], buf, off, page_sz, 0);
+            if (w == page_sz) ok++;
+        }
     }
     double t1 = now_sec();
+    free(buf);
+    free(file_vps);
     report("mixed", ok, threads, t1 - t0);
     return ok;
 }
@@ -661,7 +695,8 @@ int main(int argc, char** argv) {
     } else if (strcmp(opts.workload, "scan") == 0) {
         ok = bench_scan(vfs, &scan_count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "mixed") == 0) {
-        ok = bench_mixed(vfs, opts.count, opts.threads, opts.output);
+        ok = bench_mixed(vfs, opts.count, opts.threads, opts.output,
+                         opts.read_ratio);
     } else if (strcmp(opts.workload, "dir") == 0) {
         ok = bench_dir(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "seqwrite") == 0) {
