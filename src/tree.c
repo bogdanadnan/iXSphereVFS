@@ -255,7 +255,6 @@ int tree_migrate_walk_file(TreeContext* ctx, int64_t file_vp) {
 uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                            int64_t logical_page, int64_t epoch, bool is_write) {
     (void)epoch;  /* not yet used — future: segment growth decisions */
-    (void)is_write;  /* not yet used — future: lazy allocation + CAS retry */
 
     uint32_t seg_size = ctx->segment_size;
     int64_t segment_idx = logical_page / seg_size;
@@ -278,21 +277,22 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
 
     for (int64_t i = 0; i <= segment_idx; i++) {
         if (fc_vp == VFS_VPTR_NULL) {
-            /* Segment doesn't exist yet — file growth:
-               allocate new FileContent + all PageNodes */
-            int64_t page_root_vp = VFS_VPTR_NULL;
-            int64_t prev_pn_vp = 0;
+            /* Segment doesn't exist yet.  If this is the target segment and
+             * the caller is writing, allocate FileContent + one PageNode.
+             * Otherwise allocate an empty FileContent (or return NULL). */
+            if (i == segment_idx && !is_write) return NULL;
 
-            /* Allocate PageNodes in reverse order (last→first) */
-            for (int64_t p = seg_size - 1; p >= 0; p--) {
+            int64_t page_root_vp = VFS_VPTR_NULL;
+            if (i == segment_idx && is_write) {
+                /* Lazy: allocate exactly one PageNode for the requested page */
                 int64_t pn_vp = pool_alloc(&ctx->pool);
                 if (pn_vp == VFS_VPTR_NULL) return NULL;
                 uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
                 if (!pn_slot) return NULL;
-                nodes_write_pagenode(pn_slot, 0, prev_pn_vp, (uint32_t)p, ctx->page_size);
-                prev_pn_vp = pn_vp;
-                if (p == 0) page_root_vp = pn_vp;
+                nodes_write_pagenode(pn_slot, 0, 0, (uint32_t)page_in_segment, ctx->page_size);
+                page_root_vp = pn_vp;
             }
+            /* else: empty segment (page_root_vp stays 0) */
 
             /* Allocate FileContent entry */
             int64_t new_fc_vp = pool_alloc(&ctx->pool);
@@ -304,24 +304,18 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
             /* CAS-link into chain with release barrier */
             vfs_mb_release();
             if (i == 0) {
-                /* First segment — CAS into FileNode headPtr */
                 int64_t expected = 0;
                 int64_t desired = new_fc_vp;
                 int64_t old = vfs_cas_i64(
                     (int64_t*)(file_slot + FILENODE_OFF_HEADPTR),
                     expected, desired);
                 if (old != expected) {
-                    /* CAS failed — another thread already set headPtr.
-                       Our orphaned FileContent+PageNodes will be GC'd.
-                       Fall through to walk the existing chain. */
                     fc_vp = old;
                     i--;  /* retry this segment */
                     continue;
                 }
                 fc_vp = new_fc_vp;
             } else {
-                /* Subsequent segment — CAS into previous FC's nextPtr.
-                   Expected value is 0 (nextPtr not yet set). */
                 uint8_t* prev_slot = pool_resolve(&ctx->pool, prev_fc_vp);
                 if (prev_slot) {
                     int64_t expected = 0;
@@ -330,9 +324,6 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                     int64_t old = vfs_cas_i64(
                         (int64_t*)(prev_slot + off), expected, desired);
                     if (old != expected) {
-                        /* CAS failed — another thread linked a segment.
-                           Our orphaned slots will be GC'd.
-                           Walk the existing chain starting from old value. */
                         fc_vp = old;
                         i--;  /* retry this segment */
                         continue;
@@ -340,46 +331,80 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 }
                 fc_vp = new_fc_vp;
             }
+            if (i == segment_idx && is_write) {
+                return pool_resolve(&ctx->pool, page_root_vp);
+            }
+            /* Empty intermediate segment — advance to next */
+            prev_fc_vp = fc_vp;
+            fc_vp = 0;  /* next segment doesn't exist yet */
+            continue;
         }
 
         uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
         if (!fc_slot) return NULL;
 
-                if (i == segment_idx) {
-            /* Per-thread segment cache — lock-free, 16 entries, 128KB/thread. */
-            #define TCACHE_SIZE 16
-            static __thread struct {
-                int64_t  key;
-                int64_t  vptr_array[1024];
-                uint32_t seg_size;
-            } tcache[TCACHE_SIZE];
-            static __thread int tcache_next = 0;
-            int64_t cache_key = (file_vp << 20) | (segment_idx & 0xFFFFF);
-            for (int ci = 0; ci < TCACHE_SIZE; ci++) {
-                if (tcache[ci].key == cache_key &&
-                    tcache[ci].seg_size == seg_size) {
-                    int64_t pn_vp = tcache[ci].vptr_array[page_in_segment];
-                    if (pn_vp && pn_vp != VFS_VPTR_NULL)
-                        return pool_resolve(&ctx->pool, pn_vp);
-                    break;
-                }
-            }
+        if (i == segment_idx) {
             int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
-            int64_t vp = fc_page_root;
-            int slot = tcache_next % TCACHE_SIZE;
-            for (uint32_t j = 0; j < seg_size; j++) {
-                tcache[slot].vptr_array[j] = vp;
-                if (vp != 0) {
-                    uint8_t* pn = pool_resolve(&ctx->pool, vp);
-                    vp = pn ? vfs_rd8_s(pn, PAGENODE_OFF_NEXTPTR, ctx->page_size) : 0;
-                }
+
+            /* Walk the sparse PageNode chain looking for our page */
+            int64_t pn_vp = fc_page_root;
+            while (pn_vp != 0) {
+                uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
+                if (!pn_slot) break;
+                uint32_t pn_idx;
+                int64_t pn_next;
+                int64_t pn_ver_root;
+                nodes_read_pagenode(pn_slot, &pn_ver_root, &pn_next, &pn_idx, ctx->page_size);
+                (void)pn_ver_root;
+                if ((int64_t)pn_idx == page_in_segment)
+                    return pool_resolve(&ctx->pool, pn_vp);
+                pn_vp = pn_next;
             }
-            tcache[slot].key = cache_key;
-            tcache[slot].seg_size = seg_size;
-            tcache_next++;
-            int64_t pn_vp = tcache[slot].vptr_array[page_in_segment];
-            if (pn_vp == 0 || pn_vp == VFS_VPTR_NULL) return NULL;
-            return pool_resolve(&ctx->pool, pn_vp);
+
+            /* PageNode not found in chain */
+            if (!is_write) return NULL;  /* read: zero-fill */
+
+            /* Write: allocate new PageNode and CAS-prepend to chain */
+            int64_t new_pn_vp = pool_alloc(&ctx->pool);
+            if (new_pn_vp == VFS_VPTR_NULL) return NULL;
+            uint8_t* new_pn_slot = pool_resolve(&ctx->pool, new_pn_vp);
+            if (!new_pn_slot) return NULL;
+
+            /* Prepend: new_pn → nextPtr = old_root */
+            nodes_write_pagenode(new_pn_slot, 0, fc_page_root,
+                                 (uint32_t)page_in_segment, ctx->page_size);
+            vfs_mb_release();
+
+            int64_t expected_root = fc_page_root;
+            int64_t desired_root = new_pn_vp;
+            int64_t old_root = vfs_cas_i64(
+                (int64_t*)(fc_slot + FILECONTENT_OFF_ROOTPTR),
+                expected_root, desired_root);
+            if (old_root != expected_root) {
+                /* CAS failed — another thread prepended.  Our orphaned
+                 * PageNode will be GC'd.  Re-walk the chain. */
+                fc_page_root = old_root;
+                pn_vp = fc_page_root;
+                while (pn_vp != 0) {
+                    uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
+                    if (!pn_slot) break;
+                    uint32_t pn_idx;
+                    int64_t pn_next;
+                    int64_t pn_ver_root;
+                    nodes_read_pagenode(pn_slot, &pn_ver_root, &pn_next, &pn_idx, ctx->page_size);
+                    (void)pn_ver_root;
+                    if ((int64_t)pn_idx == page_in_segment)
+                        return pool_resolve(&ctx->pool, pn_vp);
+                    pn_vp = pn_next;
+                }
+                /* Still not found — another thread's insert must be a
+                 * different page.  Retry our own CAS-prepend. */
+                i--;  /* retry this segment */
+                prev_fc_vp = 0;  /* reset for re-walk */
+                fc_vp = tmp_headPtr;
+                continue;
+            }
+            return pool_resolve(&ctx->pool, new_pn_vp);
         }
 
         prev_fc_vp = fc_vp;

@@ -456,7 +456,7 @@ static void test_resolve_page_growth(void) {
     CHECK(seg_size > 0);
 
     /* Resolve page 0 — should create first segment */
-    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0, false);
+    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0, true);
     CHECK(pn0 != NULL);
 
     /* Verify it's a PageNode with versionRootPtr=0 (never written) */
@@ -465,12 +465,12 @@ static void test_resolve_page_growth(void) {
     /* Cache should now be populated for this segment */
 
     /* Resolve page 1 — should hit cached array */
-    uint8_t* pn1 = tree_resolve_page(ctx, file_vp, 1, 0, false);
+    uint8_t* pn1 = tree_resolve_page(ctx, file_vp, 1, 0, true);
     CHECK(pn1 != NULL);
     CHECK_EQ(vfs_rd8(pn1, PAGENODE_OFF_VERSIONROOT), 0);
 
     /* Resolve page at segment boundary — should create second segment */
-    uint8_t* pn_first_new = tree_resolve_page(ctx, file_vp, seg_size, 0, false);
+    uint8_t* pn_first_new = tree_resolve_page(ctx, file_vp, seg_size, 0, true);
     CHECK(pn_first_new != NULL);
     CHECK_EQ(vfs_rd8(pn_first_new, PAGENODE_OFF_VERSIONROOT), 0);
 
