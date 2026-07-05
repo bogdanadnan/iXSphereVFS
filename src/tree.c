@@ -400,7 +400,7 @@ void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
  * Returns new nodeId on success, or negative vfs_error_t on failure.
  * --------------------------------------------------------------------------- */
 
-int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
+int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
     TreeContext* ctx = vfs->ctx;
 
@@ -482,10 +482,10 @@ int vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
-    return (int)new_nodeId;
+    return file_vp;
 }
 
-int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
+int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
     TreeContext* ctx = vfs->ctx;
 
@@ -557,7 +557,7 @@ int vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
-    return VFS_OK;
+    return dir_vp;
 }
 
 /* ---------------------------------------------------------------------------

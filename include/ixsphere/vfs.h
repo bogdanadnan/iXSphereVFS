@@ -82,9 +82,9 @@ vfs_error_t vfs_last_error(vfs_t* vfs);
  * File Operations (§12.2)
  * --------------------------------------------------------------------------- */
 
-/* Create a file under parent directory.  Returns the new nodeId on success,
-   or a negative error code on failure. */
-int     vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
+/* Create a file under parent directory.  Returns the child's VirtualPtr on
+   success (always > 0), or a negative error code on failure. */
+int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
 
 /* Delete a file under parent directory. */
 int     vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
@@ -121,8 +121,9 @@ int64_t vfs_file_ctime(vfs_t* vfs, int64_t file);
  * Directory Operations (§12.3)
  * --------------------------------------------------------------------------- */
 
-/* Create a directory under parent. */
-int     vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
+/* Create a directory under parent.  Returns the child's VirtualPtr on success
+   (always > 0), or a negative error code on failure. */
+int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
 
 /* Remove an empty directory. */
 int     vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
