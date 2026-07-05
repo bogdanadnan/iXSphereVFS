@@ -247,18 +247,20 @@ static void test_pagenode(void) {
     memset(slot, 0, sizeof(slot));
 
     /* PageNode with versionRootPtr=0 (unwritten page) */
-    nodes_write_pagenode(slot, 0, VFS_VPTR_MAKE(5, 0), VFS_PAGE_SIZE);
+    nodes_write_pagenode(slot, 0, VFS_VPTR_MAKE(5, 0), 0, VFS_PAGE_SIZE);
 
     int64_t vroot, next;
-    nodes_read_pagenode(slot, &vroot, &next, VFS_PAGE_SIZE);
+    uint32_t pidx;
+    nodes_read_pagenode(slot, &vroot, &next, &pidx, VFS_PAGE_SIZE);
 
     CHECK_EQ(vroot, 0);
     CHECK_EQ(VFS_VPTR_PAGE(next), 5);
     CHECK_EQ(VFS_VPTR_SLOT(next), 0);
+    CHECK_EQ(pidx, 0u);
 
-    /* Verify reserved bytes 16-31 are zero */
+    /* Verify reserved bytes 20-31 are zero */
     int all_zero = 1;
-    for (int i = 16; i < 32; i++) {
+    for (int i = 20; i < 32; i++) {
         if (slot[i] != 0) { all_zero = 0; break; }
     }
     CHECK(all_zero);
@@ -274,18 +276,18 @@ static void test_pagenode_chain(void) {
     int64_t vp3 = VFS_VPTR_MAKE(10, 3);
 
     /* PageNode 3 (last): nextPtr=0 */
-    nodes_write_pagenode(s3, 0, 0, VFS_PAGE_SIZE);
+    nodes_write_pagenode(s3, 0, 0, 0, VFS_PAGE_SIZE);
     /* PageNode 2: nextPtr -> s3 */
-    nodes_write_pagenode(s2, 0, vp3, VFS_PAGE_SIZE);
+    nodes_write_pagenode(s2, 0, vp3, 0, VFS_PAGE_SIZE);
     /* PageNode 1 (first): nextPtr -> s2 */
-    nodes_write_pagenode(s1, 0, vp2, VFS_PAGE_SIZE);
+    nodes_write_pagenode(s1, 0, vp2, 0, VFS_PAGE_SIZE);
 
     int64_t vroot, next;
-    nodes_read_pagenode(s1, &vroot, &next, VFS_PAGE_SIZE);
+    nodes_read_pagenode(s1, &vroot, &next, NULL, VFS_PAGE_SIZE);
     CHECK_EQ(next, vp2);
-    nodes_read_pagenode(s2, &vroot, &next, VFS_PAGE_SIZE);
+    nodes_read_pagenode(s2, &vroot, &next, NULL, VFS_PAGE_SIZE);
     CHECK_EQ(next, vp3);
-    nodes_read_pagenode(s3, &vroot, &next, VFS_PAGE_SIZE);
+    nodes_read_pagenode(s3, &vroot, &next, NULL, VFS_PAGE_SIZE);
     CHECK_EQ(next, 0);
 }
 

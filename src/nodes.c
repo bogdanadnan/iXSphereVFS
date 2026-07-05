@@ -102,10 +102,11 @@ void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr
     memset(slot + 20, 0, 12);
 }
 
-void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr, int64_t* nextPtr,
-                          int64_t page_size) {
+void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr,
+                         int64_t* nextPtr, uint32_t* page_index, int64_t page_size) {
     *versionRootPtr = vfs_rd8_s(slot, PAGENODE_OFF_VERSIONROOT, page_size);
     *nextPtr        = vfs_rd8_s(slot, PAGENODE_OFF_NEXTPTR, page_size);
+    if (page_index) *page_index = (uint32_t)vfs_rd4_s(slot, PAGENODE_OFF_PAGEINDEX, page_size);
 }
 
 /* ---------------------------------------------------------------------------

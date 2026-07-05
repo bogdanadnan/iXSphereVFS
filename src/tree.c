@@ -198,7 +198,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 if (pn_vp == VFS_VPTR_NULL) return NULL;
                 uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
                 if (!pn_slot) return NULL;
-                nodes_write_pagenode(pn_slot, 0, prev_pn_vp, ctx->page_size);
+                nodes_write_pagenode(pn_slot, 0, prev_pn_vp, (uint32_t)p, ctx->page_size);
                 prev_pn_vp = pn_vp;
                 if (p == 0) page_root_vp = pn_vp;
             }
