@@ -23,45 +23,62 @@ The chain becomes sparse — some entries are missing.
 
 ### Sparse Chain Walk
 
-When resolving a page in a segment, walk the existing chain to the target
-position. Every NULL in the chain is lazily allocated — there are no gaps.
+Each PageNode in the chain has a `page_index` (new field, uint32_t).
+The chain is a singly-linked list sorted by `page_index`. Gaps are allowed —
+`nextPtr` skips directly to the next allocated PageNode regardless of how
+many pages are between them.
 
 ```c
-int64_t vp = fc_page_root;   // first PageNode, may be NULL for empty segment
-int64_t prev_vp = 0;
-int pages_seen = 0;
-
-for (int64_t j = 0; j <= page_in_segment; j++) {
-    if (vp == 0 || vp == VFS_VPTR_NULL) {
-        // Gap in the chain — allocate this PageNode now.
-        // This happens for ALL pages between the chain end and the target.
-        vp = pool_alloc(&ctx->pool);
-        uint8_t* pn = pool_resolve(&ctx->pool, vp);
-        nodes_write_pagenode(pn, 0, 0, ctx->page_size);  // versionRoot=0, nextPtr=0
-        // Link into chain: CAS prev.nextPtr = vp (or fc_root = vp if j==0)
-    } else {
-        pages_seen++;
-    }
-    if (j == page_in_segment) return pool_resolve(&ctx->pool, vp);
-    uint8_t* pn = pool_resolve(&ctx->pool, vp);
-    prev_vp = vp;
-    vp = (pn) ? vfs_rd8_s(pn, PAGENODE_OFF_NEXTPTR, ctx->page_size) : 0;
-}
+// New field in PageNode layout:
+#define PAGENODE_OFF_PAGEINDEX  8   // uint32_t — page index within segment
 ```
 
-**Example**: segment is empty (fc_page_root = NULL). First write at page 5.
-Loop iterates j=0..5. Every iteration hits `vp == NULL` → allocates.
-Result: 6 PageNodes created, pages 0-4 have `versionRootPtr=0`, page 5 has
-the VersionPage from the write. Next write at page 3: chain walk traverses
-pages 0,1,2,3. No allocations needed (`vp != NULL` for all). Returns page 3's
-PageNode. `pages_seen = 6 ≥ 64?` No, still below threshold.
+Chain walk with gaps:
+```c
+int64_t vp = fc_page_root;
+int64_t prev_vp = 0;
+int total_pages = 0;
 
-**Threshold trigger**: at write #64, `pages_seen = 64 ≥ 64` → build the
-full 1024-entry array. Walk chain one more time, filling `array[j] = vp`
-for positions 0-63 (valid VirtualPtrs) and positions 64-1023 (NULL —
-not yet allocated). Cache the array. Subsequent reads within the segment
-hit the array. Writes to pages > 63 allocate new PageNodes, update the
-array entry in-place.
+while (vp != 0) {
+    uint8_t* pn = pool_resolve(&ctx->pool, vp);
+    uint32_t idx = vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+
+    if (idx == page_in_segment) {
+        total_pages++;
+        return pn;   // found it
+    }
+    if (idx > page_in_segment) {
+        // Target page doesn't exist — allocate it now, link before this one
+        int64_t new_vp = pool_alloc(&ctx->pool);
+        uint8_t* new_pn = pool_resolve(&ctx->pool, new_vp);
+        nodes_write_pagenode(new_pn, 0, vp, ctx->page_size);
+        vfs_wr4_s(new_pn, PAGENODE_OFF_PAGEINDEX, (uint32_t)page_in_segment, ctx->page_size);
+        // Link: CAS prev.nextPtr = new_vp (or fc_root = new_vp)
+        total_pages++;
+        return new_pn;
+    }
+
+    total_pages++;
+    prev_vp = vp;
+    vp = vfs_rd8_s(pn, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+}
+
+// Chain exhausted — target is beyond the last entry. Allocate at end.
+int64_t new_vp = pool_alloc(&ctx->pool);
+uint8_t* new_pn = pool_resolve(&ctx->pool, new_vp);
+nodes_write_pagenode(new_pn, 0, 0, ctx->page_size);
+vfs_wr4_s(new_pn, PAGENODE_OFF_PAGEINDEX, (uint32_t)page_in_segment, ctx->page_size);
+// Link: CAS prev.nextPtr = new_vp (or fc_root = new_vp if segment empty)
+total_pages++;
+return new_pn;
+```
+
+**Example**: segment has pages 0 and 5 allocated. Chain: [PageNode(idx=0) → PageNode(idx=5)].
+Write at page 3: walk finds idx=0 < 3, advance. idx=5 > 3 → create PageNode(idx=3),
+link between them. Chain becomes [0 → 3 → 5]. No allocation of pages 1,2,4.
+
+Write at page 8: walk exhausts chain at idx=5 < 8 → create PageNode(idx=8),
+append at end. Chain becomes [0 → 3 → 5 → 8].
 
 ### Small-File Impact
 
@@ -97,13 +114,13 @@ for (int64_t j = 0; j <= page_in_segment; j++) {
 }
 ```
 
-### Threshold check
+### Threshold-Based Array Caching
 
-```c
-if (segment_page_count >= CACHE_THRESHOLD) {
-    // Build full array, cache in thread-local table
-}
-```
+`total_pages` counts how many PageNodes exist in this segment (tracked during
+the walk). If `total_pages >= CACHE_THRESHOLD` (e.g., 64), build the sparse
+array from the chain and cache it in the thread-local table. Unwritten pages
+are NULL (0) in the array. Access to a NULL entry triggers the chain walk,
+which finds or creates the PageNode and updates the cached entry.
 
 ## Files Changed
 
