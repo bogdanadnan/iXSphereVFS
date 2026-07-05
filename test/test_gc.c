@@ -363,23 +363,8 @@ static void test_gc_crash_before_swap(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "crash_test.txt", 0);
-    CHECK(nodeId > 0);
-
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(head != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)np; (void)nx;
-        file_vp = cp;
-    }
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "crash_test.txt", 0);
+    CHECK(file_vp > 0);
 
     CHECK_EQ(vfs_write(vfs, file_vp, "CRASH", 0, 5, 0), 5);
 
@@ -541,23 +526,8 @@ static void test_gc_vptr_remapping(void) {
     int64_t root_vp = ctx->rootNodeOffset;
 
     /* Create a file */
-    int64_t nodeId = vfs_create(vfs, root_vp, "vptr_test.txt", 0);
-    CHECK(nodeId > 0);
-
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(head != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)np; (void)nx;
-        file_vp = cp;
-    }
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "vptr_test.txt", 0);
+    CHECK(file_vp > 0);
 
     /* Write multi-version data across epochs */
     const char* data = "VERSION0";
@@ -823,23 +793,8 @@ static void test_gc_crash_after_swap(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "after_swap.txt", 0);
-    CHECK(nodeId > 0);
-
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(head != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)np; (void)nx;
-        file_vp = cp;
-    }
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "after_swap.txt", 0);
+    CHECK(file_vp > 0);
 
     CHECK_EQ(vfs_write(vfs, file_vp, "SWAP_OK", 0, 7, 0), 7);
 
@@ -921,23 +876,8 @@ static void test_gc_commit_then_gc(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "commit_gc.txt", 0);
-    CHECK(nodeId > 0);
-
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(head != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)np; (void)nx;
-        file_vp = cp;
-    }
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "commit_gc.txt", 0);
+    CHECK(file_vp > 0);
 
     /* Write at epoch 0 */
     CHECK_EQ(vfs_write(vfs, file_vp, "CCCC", 0, 4, 0), 4);
@@ -980,24 +920,8 @@ static void test_gc_integration(void) {
     int64_t root_vp = ctx->rootNodeOffset;
 
     /* Create a file at epoch 0 */
-    int64_t nodeId = vfs_create(vfs, root_vp, "gc_test.txt", 0);
-    CHECK(nodeId > 0);
-
-    /* Get file VirtualPtr */
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(head != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)np; (void)nx;
-        file_vp = cp;
-    }
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "gc_test.txt", 0);
+    CHECK(file_vp > 0);
 
     /* Write "AAAA" at epoch 0 */
     CHECK_EQ(vfs_write(vfs, file_vp, "AAAA", 0, 4, 0), 4);
