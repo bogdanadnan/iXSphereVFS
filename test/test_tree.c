@@ -1438,6 +1438,54 @@ static void test_sparse_chain_mid_insert(void) {
     vfs_unmount(vfs);
 }
 
+static void test_sparse_chain_tail_append(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "tail.txt", 0);
+    CHECK(file_vp > 0);
+
+    /* Resolve page 2 first */
+    uint8_t* pn2 = tree_resolve_page(ctx, file_vp, 2, 0, true);
+    CHECK(pn2 != NULL);
+    uint32_t idx2 = (uint32_t)vfs_rd4_s(pn2, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+    CHECK_EQ(idx2, 2u);
+
+    /* Resolve page 7 — should append at tail (after idx=2) */
+    uint8_t* pn7 = tree_resolve_page(ctx, file_vp, 7, 0, true);
+    CHECK(pn7 != NULL);
+    uint32_t idx7 = (uint32_t)vfs_rd4_s(pn7, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+    CHECK_EQ(idx7, 7u);
+
+    /* Walk chain: idx=2 at head, idx=7 at tail */
+    uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
+    CHECK(file_slot != NULL);
+    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    CHECK(fc_vp != 0);
+    uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
+    CHECK(fc_slot != NULL);
+    int64_t pn_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+    CHECK(pn_root != 0);
+
+    int pn_count = 0;
+    int64_t walk = pn_root;
+    while (walk != 0) {
+        pn_count++;
+        uint8_t* pn = pool_resolve(&ctx->pool, walk);
+        CHECK(pn != NULL);
+        uint32_t idx = (uint32_t)vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+        if (pn_count == 1) CHECK_EQ(idx, 2u);
+        if (pn_count == 2) CHECK_EQ(idx, 7u);
+        int64_t next = vfs_rd8_s(pn, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+        walk = next;
+    }
+    CHECK_EQ(pn_count, 2);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1554,6 +1602,9 @@ int main(void) {
 
     unlink(test_path);
     test_sparse_chain_mid_insert();
+
+    unlink(test_path);
+    test_sparse_chain_tail_append();
 
     /* Clean up */
     unlink(test_path);
