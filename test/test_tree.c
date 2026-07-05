@@ -394,23 +394,6 @@ static void test_stat_not_file(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * Helper: get file VirtualPtr from parent's first DirContent entry
- * --------------------------------------------------------------------------- */
-
-static int64_t get_file_vp(Pool* pool, int64_t root_vp) {
-    uint8_t* rs = pool_resolve(pool, root_vp);
-    if (!rs) return 0;
-    int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-    if (head == 0) return 0;
-    uint32_t cc, ce;
-    int64_t cp, np, nx;
-    nodes_read_dircontent(pool_resolve(pool, head),
-                          &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-    (void)cc; (void)ce; (void)np; (void)nx;
-    return cp;
-}
-
-/* ---------------------------------------------------------------------------
  * File size with epoch isolation test
  *
  * Directly writes a FileSize entry to simulate a file write.
