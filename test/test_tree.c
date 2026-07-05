@@ -1640,6 +1640,88 @@ static void test_sparse_cow_chain(void) {
     vfs_unmount(vfs);
 }
 
+/* Two-phase concurrent insert test.  Pre-resolves page 3 to create the chain,
+ * then two threads concurrently insert pages 7 and 11 via synchronized start.
+ * This defeats the global file lock serialization and tests CAS-based insertion
+ * under genuine contention. */
+
+typedef struct {
+    vfs_t*  vfs;
+    int64_t file_vp;
+    int64_t page_idx;
+    volatile int* ready;
+    bool    success;
+} conc_thread_args;
+
+static void* conc_insert_thread(void* arg) {
+    conc_thread_args* a = (conc_thread_args*)arg;
+    /* Signal ready and wait for the other thread */
+    __sync_fetch_and_add(a->ready, 1);
+    while (__sync_fetch_and_add(a->ready, 0) < 2) { /* spin */ }
+    uint8_t* pn = tree_resolve_page(a->vfs->ctx, a->file_vp,
+                                     a->page_idx, 0, true);
+    if (pn) {
+        uint32_t idx = (uint32_t)vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, a->vfs->ctx->page_size);
+        a->success = (idx == (uint32_t)a->page_idx);
+    }
+    return NULL;
+}
+
+static void test_sparse_concurrent_insert(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "conc.txt", 0);
+    CHECK(file_vp > 0);
+
+    /* Phase 1: pre-resolve page 3 so the FileContent chain exists */
+    uint8_t* pn3 = tree_resolve_page(ctx, file_vp, 3, 0, true);
+    CHECK(pn3 != NULL);
+    CHECK_EQ((uint32_t)vfs_rd4_s(pn3, PAGENODE_OFF_PAGEINDEX, ctx->page_size), 3u);
+
+    /* Phase 2: concurrent inserts of pages 7 and 11 */
+    volatile int ready = 0;
+    conc_thread_args a1 = {vfs, file_vp, 7, &ready, false};
+    conc_thread_args a2 = {vfs, file_vp, 11, &ready, false};
+
+    pthread_t t1, t2;
+    CHECK_EQ(pthread_create(&t1, NULL, conc_insert_thread, &a1), 0);
+    CHECK_EQ(pthread_create(&t2, NULL, conc_insert_thread, &a2), 0);
+
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+
+    CHECK(a1.success);
+    CHECK(a2.success);
+
+    /* Verify all 3 pages are in the chain in sorted order */
+    uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
+    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
+    int64_t pn_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+
+    int pn_count = 0;
+    int64_t walk = pn_root;
+    uint32_t seen[3] = {0, 0, 0};
+    while (walk != 0) {
+        CHECK(pn_count < 3);
+        uint8_t* pw = pool_resolve(&ctx->pool, walk);
+        uint32_t idx = (uint32_t)vfs_rd4_s(pw, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+        seen[pn_count] = idx;
+        pn_count++;
+        int64_t next = vfs_rd8_s(pw, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+        walk = next;
+    }
+    CHECK_EQ(pn_count, 3);
+    CHECK_EQ(seen[0], 3u);
+    CHECK_EQ(seen[1], 7u);
+    CHECK_EQ(seen[2], 11u);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1772,6 +1854,9 @@ int main(void) {
 
     unlink(test_path);
     test_sparse_cow_chain();
+
+    unlink(test_path);
+    test_sparse_concurrent_insert();
 
     /* Clean up */
     unlink(test_path);
