@@ -191,36 +191,47 @@ int tree_migrate_walk_dir(TreeContext* ctx, int64_t dir_vp) {
             int err = tree_migrate_walk_dir(ctx, entries[i].vp);
             if (err != VFS_OK) return err;
         } else {
-            /* Walk FileContent→PageNode chain, write pageIndex */
-            uint8_t* file_slot = pool_resolve(&ctx->pool, entries[i].vp);
-            if (!file_slot) return VFS_ERR_IO;
-            int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
-            int64_t page_idx = 0;
-            int64_t walk = fc_vp;
-            while (walk != 0) {
-                uint8_t* fc_slot = pool_resolve(&ctx->pool, walk);
-                if (!fc_slot) return VFS_ERR_IO;
-                int64_t pn_vp, fc_next;
-                nodes_read_filecontent(fc_slot, &pn_vp, &fc_next, ctx->page_size);
-                /* Walk PageNode chain in this segment */
-                int64_t pn_walk = pn_vp;
-                while (pn_walk != 0) {
-                    uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_walk);
-                    if (!pn_slot) return VFS_ERR_IO;
-                    /* Write pageIndex at offset 16 */
-                    vfs_wr4_s(pn_slot, PAGENODE_OFF_PAGEINDEX,
-                              (int32_t)page_idx, ctx->page_size);
-                    uint32_t dummy_idx;
-                    int64_t pn_next;
-                    int64_t pn_ver_root;
-                    nodes_read_pagenode(pn_slot, &pn_ver_root, &pn_next, &dummy_idx, ctx->page_size);
-                    (void)pn_ver_root; (void)dummy_idx;
-                    page_idx++;
-                    pn_walk = pn_next;
-                }
-                walk = fc_next;
-            }
+            int err = tree_migrate_walk_file(ctx, entries[i].vp);
+            if (err != VFS_OK) return err;
         }
+    }
+    return VFS_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * Migration: walk a single file's FileContent→PageNode chain, writing
+ * sequential pageIndex values (0, 1, 2, ...) into each PageNode at offset 16.
+ * --------------------------------------------------------------------------- */
+
+int tree_migrate_walk_file(TreeContext* ctx, int64_t file_vp) {
+    if (!ctx || file_vp <= 0) return VFS_ERR_IO;
+
+    uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
+    if (!file_slot) return VFS_ERR_IO;
+    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    int64_t page_idx = 0;
+    int64_t walk = fc_vp;
+    while (walk != 0) {
+        uint8_t* fc_slot = pool_resolve(&ctx->pool, walk);
+        if (!fc_slot) return VFS_ERR_IO;
+        int64_t pn_vp, fc_next;
+        nodes_read_filecontent(fc_slot, &pn_vp, &fc_next, ctx->page_size);
+        /* Walk PageNode chain in this segment */
+        int64_t pn_walk = pn_vp;
+        while (pn_walk != 0) {
+            uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_walk);
+            if (!pn_slot) return VFS_ERR_IO;
+            vfs_wr4_s(pn_slot, PAGENODE_OFF_PAGEINDEX,
+                      (int32_t)page_idx, ctx->page_size);
+            uint32_t dummy_idx;
+            int64_t pn_next;
+            int64_t pn_ver_root;
+            nodes_read_pagenode(pn_slot, &pn_ver_root, &pn_next, &dummy_idx, ctx->page_size);
+            (void)pn_ver_root; (void)dummy_idx;
+            page_idx++;
+            pn_walk = pn_next;
+        }
+        walk = fc_next;
     }
     return VFS_OK;
 }
