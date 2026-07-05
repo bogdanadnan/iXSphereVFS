@@ -80,3 +80,22 @@ Same as TODO-1 but marked as optional — may not be implemented.
 Unified VfsNode tree with cached children per directory. Eliminates all
 remaining chain walks from the read path. Optional — deferred based on
 benchmark results.
+
+## TODO-9 — VFS Multi-Threaded Concurrency [REQUIRED FIX]
+
+### Problem
+The VFS crashes (segfault) with 2+ threads sharing a single `vfs_t` handle.
+Benchmark works around this with per-thread handles — measuring multi-connection
+throughput, not true VFS concurrency. The VFS is designed for thread safety
+(CAS allocators, per-bucket page cache locks, per-epoch file locks) but
+has not been stress-tested at the shared-handle level.
+
+### Required Fix
+Run `vfs_bench --threads=2` under lldb/gdb to identify the crash site.
+Likely candidates: `ensure_mirror_arrays` or `indir_ensure_capacity` realloc
+race, page cache bucket corruption, or `pool_resolve` dirty-marking race.
+Fix the crash, then validate with `--threads=4,8,16`.
+
+### Files Affected
+- VFS internals — crash site to be identified by debugger
+- `bench/bench.c` — switch workers from per-handle mounts to shared `vfs_t*`
