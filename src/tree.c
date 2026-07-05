@@ -172,6 +172,12 @@ int tree_init(TreeContext* ctx) {
  * --------------------------------------------------------------------------- */
 
 int tree_migrate_v1_to_v2(TreeContext* ctx) {
+    /* NOTE: this migration walks every FileContent→PageNode chain in the
+     * entire filesystem tree.  No progress indication is provided — for very
+     * large trees the first open after upgrade may be noticeably slow.  The
+     * operation is idempotent (rewriting the same pageIndex values) so a
+     * partial run followed by a crash is safe — the next mount will re-run
+     * the full migration. */
     if (!ctx) return VFS_ERR_IO;
     return tree_migrate_walk_dir(ctx, ctx->rootNodeOffset);
 }
