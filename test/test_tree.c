@@ -335,24 +335,9 @@ static void test_file_stat(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    /* Create a file and get its VirtualPtr from the DirContent chain */
-    int64_t nodeId = vfs_create(vfs, root_vp, "stat.txt", 0);
-    CHECK(nodeId > 0);
-
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(head != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)np; (void)nx;
-        file_vp = cp;  /* VirtualPtr to the FileNode */
-    }
-    CHECK(file_vp != 0);
+    /* Create a file and get its VirtualPtr directly from vfs_create */
+    int64_t file_vp = vfs_create(vfs, root_vp, "stat.txt", 0);
+    CHECK(file_vp > 0);
 
     /* New file: size=0, ctime set, mtime=0 (no FileSize chain yet) */
     int64_t size = vfs_file_size(vfs, file_vp, 0);
