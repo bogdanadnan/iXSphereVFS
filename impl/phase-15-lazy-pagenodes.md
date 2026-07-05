@@ -24,62 +24,44 @@ The chain becomes sparse — some entries are missing.
 ### Sparse Chain Walk
 
 When resolving a page in a segment, walk the existing chain to the target
-position. Missing PageNodes are allocated on-demand and linked into the chain.
+position. Every NULL in the chain is lazily allocated — there are no gaps.
 
 ```c
-int64_t vp = fc_page_root;
+int64_t vp = fc_page_root;   // first PageNode, may be NULL for empty segment
 int64_t prev_vp = 0;
 int pages_seen = 0;
 
 for (int64_t j = 0; j <= page_in_segment; j++) {
     if (vp == 0 || vp == VFS_VPTR_NULL) {
-        // PageNode doesn't exist at this position — allocate it
+        // Gap in the chain — allocate this PageNode now.
+        // This happens for ALL pages between the chain end and the target.
         vp = pool_alloc(&ctx->pool);
         uint8_t* pn = pool_resolve(&ctx->pool, vp);
-        nodes_write_pagenode(pn, 0, 0, ctx->page_size);
-        // Link into chain at prev_vp.nextPtr (CAS)
+        nodes_write_pagenode(pn, 0, 0, ctx->page_size);  // versionRoot=0, nextPtr=0
+        // Link into chain: CAS prev.nextPtr = vp (or fc_root = vp if j==0)
     } else {
-        pages_seen++;  // page existed before this access
+        pages_seen++;
     }
-
     if (j == page_in_segment) return pool_resolve(&ctx->pool, vp);
-
-    // Advance to next PageNode
     uint8_t* pn = pool_resolve(&ctx->pool, vp);
     prev_vp = vp;
-    vp = (pn) ? nextPtr(pn) : 0;
+    vp = (pn) ? vfs_rd8_s(pn, PAGENODE_OFF_NEXTPTR, ctx->page_size) : 0;
 }
 ```
 
-### Threshold-Based Array Caching
+**Example**: segment is empty (fc_page_root = NULL). First write at page 5.
+Loop iterates j=0..5. Every iteration hits `vp == NULL` → allocates.
+Result: 6 PageNodes created, pages 0-4 have `versionRootPtr=0`, page 5 has
+the VersionPage from the write. Next write at page 3: chain walk traverses
+pages 0,1,2,3. No allocations needed (`vp != NULL` for all). Returns page 3's
+PageNode. `pages_seen = 6 ≥ 64?` No, still below threshold.
 
-No separate counter needed. During the chain walk, we already count pages
-encountered. If `pages_seen >= CACHE_THRESHOLD` (e.g., 64), build the array
-from the chain and cache it BEFORE returning:
-
-```c
-if (pages_seen >= CACHE_THRESHOLD && !already_cached) {
-    // Build full array: re-walk the chain, fill array entries.
-    // Missing positions get NULL — allocated on-demand later.
-    int64_t array[1024];
-    vp = fc_page_root;
-    for (j = 0; j < seg_size; j++) {
-        array[j] = vp;   // might be 0 or VFS_VPTR_NULL
-        if (vp) vp = nextPtr(pool_resolve(vp));
-    }
-    // Cache in thread-local table
-}
-```
-
-The cached array has NULLs for unwritten pages. When a future access hits a
-NULL slot, the chain walk finds or allocates the PageNode and updates the
-cached array entry. This is a write to the thread-local cache — safe, lock-free.
-
-### What "Build the Array" Means
-
-Build from EXISTING pages. Don't allocate missing pages. Missing positions
-are NULL in the array. The array mirrors the chain as-is at the time of
-building. New pages are added to the array incrementally as they're created.
+**Threshold trigger**: at write #64, `pages_seen = 64 ≥ 64` → build the
+full 1024-entry array. Walk chain one more time, filling `array[j] = vp`
+for positions 0-63 (valid VirtualPtrs) and positions 64-1023 (NULL —
+not yet allocated). Cache the array. Subsequent reads within the segment
+hit the array. Writes to pages > 63 allocate new PageNodes, update the
+array entry in-place.
 
 ### Small-File Impact
 
@@ -137,3 +119,11 @@ if (segment_page_count >= CACHE_THRESHOLD) {
 - [ ] GC handles sparse segments correctly
 - [ ] Small-file write benchmark: >10,000 ops/sec (was 1,255)
 - [ ] All 8 tests pass
+
+## GC Impact
+
+GC walks the FileContent chain to find PageNodes. Sparse segments have fewer
+PageNodes — GC is FASTER for segments below the threshold (fewer entries to
+copy). Above threshold, the full array is built and used — same as today.
+GC rebuilds pool pages, which invalidates thread-local caches. Next access
+after GC does a fresh chain walk — pages are re-allocated lazily.
