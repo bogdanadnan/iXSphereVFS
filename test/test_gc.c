@@ -29,11 +29,11 @@ static const char* nonstd_path = "/tmp/test_gc_4k.tmp";
 
 static vfs_t* setup(void) {
     unlink(test_path);
-    return vfs_open(test_path, 8192);
+    return vfs_mount(test_path, 8192);
 }
 
 static void teardown(vfs_t* vfs) {
-    if (vfs) vfs_close(vfs);
+    if (vfs) vfs_unmount(vfs);
     unlink(test_path);
 }
 
@@ -184,9 +184,9 @@ static void test_crash_recovery(void) {
     vfs_t* vfs = setup();
     CHECK(vfs != NULL);
     vfs->ctx->treeLockState = (int64_t)TREE_LOCK_EXCLUSIVE_BIT;
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 
-    vfs = vfs_open(test_path, 8192);
+    vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK_EQ(vfs->ctx->treeLockState, 0);
     teardown(vfs);
@@ -330,7 +330,7 @@ static void test_df_mirror_sibling(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_crash_before_swap(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -378,14 +378,14 @@ static void test_gc_crash_before_swap(void) {
 
     /* Simulate crash during GC: set exclusive lock bit, then close. */
     ctx->treeLockState = (int64_t)TREE_LOCK_EXCLUSIVE_BIT;
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 
     /* Reopen — tree_init should detect stale bit and clear it.
        Structural metadata (rootNodeOffset, nextNodeId, DirNode type)
        survives from superblock + pool chain.  Slot-level modifications
        (DirContent headPtr) depend on cache flush timing and may not
        be persisted. */
-    vfs = vfs_open(test_path, 8192);
+    vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK_EQ(vfs->ctx->treeLockState, 0);
     CHECK_EQ(vfs->ctx->rootNodeOffset, root_vp_saved);
@@ -396,7 +396,7 @@ static void test_gc_crash_before_swap(void) {
         CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
     }
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -425,7 +425,7 @@ static int count_pool_pages(TreeContext* ctx) {
 }
 
 static void test_gc_pool_compaction(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -520,7 +520,7 @@ static void test_gc_pool_compaction(void) {
         CHECK_EQ(strncmp(rbuf2, f0_data_before, 4), 0);
     }
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -529,7 +529,7 @@ static void test_gc_pool_compaction(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_vptr_remapping(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -654,7 +654,7 @@ static void test_gc_vptr_remapping(void) {
         CHECK_EQ(strncmp(rbuf, "VERSION0", 8), 0);
     }
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -663,7 +663,7 @@ static void test_gc_vptr_remapping(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_dircontent_survival(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -711,16 +711,16 @@ static void test_gc_dircontent_survival(void) {
     int gc_ret = vfs_gc(vfs);
     if (gc_ret == VFS_OK) {
         /* Files created at epoch 0 are still accessible */
-        CHECK_EQ(vfs_open_file(vfs, root_vp, "alive.txt", 0), f1);
+        CHECK_EQ(vfs_open(vfs, root_vp, "alive.txt", 0), f1);
         /* "after_snap.txt" created at epoch 2 survives */
-        CHECK_EQ(vfs_open_file(vfs, root_vp, "after_snap.txt", 2), f3);
+        CHECK_EQ(vfs_open(vfs, root_vp, "after_snap.txt", 2), f3);
         /* "doomed.txt" was deleted at epoch 2 — open at epoch 2 should fail */
-        CHECK_EQ(vfs_open_file(vfs, root_vp, "doomed.txt", 2), VFS_ERR_NOTFOUND);
+        CHECK_EQ(vfs_open(vfs, root_vp, "doomed.txt", 2), VFS_ERR_NOTFOUND);
     } else {
         CHECK_EQ(gc_ret, VFS_ERR_FULL);
     }
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -729,7 +729,7 @@ static void test_gc_dircontent_survival(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_nonstd_page_size(void) {
-    vfs_t* vfs = vfs_open(nonstd_path, 4096);
+    vfs_t* vfs = vfs_mount(nonstd_path, 4096);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     CHECK_EQ(ctx->page_size, 4096);
@@ -771,7 +771,7 @@ static void test_gc_nonstd_page_size(void) {
         CHECK_EQ(gc_ret, VFS_ERR_FULL);
     }
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -780,7 +780,7 @@ static void test_gc_nonstd_page_size(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_data_page_reclaim(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -829,7 +829,7 @@ static void test_gc_data_page_reclaim(void) {
     int gc_ret = vfs_gc(vfs);
     if (gc_ret != VFS_OK) {
         CHECK_EQ(gc_ret, VFS_ERR_FULL);
-        vfs_close(vfs);
+        vfs_unmount(vfs);
         return;
     }
 
@@ -844,11 +844,11 @@ static void test_gc_data_page_reclaim(void) {
         /* Accept either outcome since allocation patterns vary */
     }
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 static void test_gc_crash_after_swap(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -898,10 +898,10 @@ static void test_gc_crash_after_swap(void) {
        without actually running GC.  Then crash (close with stale lock). */
     tree_superblock_write(ctx);
     ctx->treeLockState = (int64_t)TREE_LOCK_EXCLUSIVE_BIT;
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 
     /* Reopen — new superblock should be active.  tree_init clears stale lock. */
-    vfs = vfs_open(test_path, 8192);
+    vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK_EQ(vfs->ctx->treeLockState, 0);
 
@@ -942,11 +942,11 @@ static void test_gc_crash_after_swap(void) {
         CHECK(old_count > 0);
     }
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 static void test_gc_commit_then_gc(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -1000,11 +1000,11 @@ static void test_gc_commit_then_gc(void) {
         CHECK_EQ(gc_ret, VFS_ERR_FULL);  /* expected failure in small files */
     }
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 static void test_gc_integration(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -1093,7 +1093,7 @@ static void test_gc_integration(void) {
         CHECK_EQ(vfs_file_size(vfs, file_vp, 2), 4);
     }
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 int main(void) {

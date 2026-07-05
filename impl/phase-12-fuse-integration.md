@@ -57,7 +57,7 @@ int64_t resolve_full_path(vfs_t* vfs, const char* path, int64_t epoch) {
     char* tok = strtok(copy, "/");
     int64_t current = 0;
     while (tok) {
-        current = vfs_open_file(vfs, parent, tok, epoch);
+        current = vfs_mount(vfs, parent, tok, epoch);
         if (current < 0) break;
         parent = current;
         tok = strtok(NULL, "/");
@@ -173,7 +173,7 @@ Parse FUSE mount options passed via `-o key=value`.
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `epoch=N` | -1 | Read epoch for this mount. -1 = live head |
-| `page_size=N` | 8192 | Passed to `vfs_open` on mount |
+| `page_size=N` | 8192 | Passed to `vfs_mount` on mount |
 | `readonly` | off | Mount read-only — all writes rejected |
 | `allow_other` | off | Allow other users to access the mount |
 

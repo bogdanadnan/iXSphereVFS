@@ -1091,8 +1091,8 @@ Passing a specific epoch provides snapshot isolation for that point in time.
 ### 12.1 Instance
 
 ```
-vfs_t*    vfs_open(const char* path);
-void      vfs_close(vfs_t* vfs);
+vfs_t*    vfs_mount(const char* path);
+void      vfs_unmount(vfs_t* vfs);
 int       vfs_flush(vfs_t* vfs);
 ```
 
@@ -1104,7 +1104,7 @@ int       vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch
 int       vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                      int64_t dst_parent, const char* dst, int64_t epoch);
 
-int64_t   vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
+int64_t   vfs_mount_TMP(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
 int       vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
                    int64_t count, int64_t epoch);
 int       vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
@@ -1126,7 +1126,7 @@ int       vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch);
 
 - `vfs_create`: returns the nodeId of the created file. Node handles use `int64_t` for API consistency
   but on-disk `nodeId` is `uint32`; the upper 32 bits are always zero., or -1 on error.
-- `vfs_open_file`: resolves a path to a file nodeId. Returns -1 if not found.
+- `vfs_mount_TMP`: resolves a path to a file nodeId. Returns -1 if not found.
 - `vfs_read`/`vfs_write`: return bytes transferred, or -1 on error. Short
   reads/writes are possible at file boundaries.
 - `vfs_file_size`/`mtime`/`ctime`: stat-like queries at a given epoch.

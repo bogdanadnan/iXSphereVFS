@@ -30,13 +30,13 @@ in the module that owns its implementation:
 
 | Function | Source File | Phase | Notes |
 |----------|-------------|-------|-------|
-| `vfs_open`, `vfs_close` | `src/vfs.c` | 5+8 | Instance lifecycle |
+| `vfs_mount`, `vfs_unmount` | `src/vfs.c` | 5+8 | Instance lifecycle |
 | `vfs_flush` | `src/vfs.c` | 8 | **NEW — not yet implemented** |
 | `vfs_last_error` | `src/vfs.c` | 8 | **NEW — not yet implemented** |
 | `vfs_lock`, `vfs_unlock` | `src/vfs.c` | 8 | **NEW — not yet implemented** |
 | `vfs_create`, `vfs_delete`, `vfs_mkdir`, `vfs_rmdir`, `vfs_rename` | `src/tree.c` | 5 | Already implemented |
 | `vfs_write`, `vfs_read` | `src/tree.c` | 5 | Already implemented |
-| `vfs_open_file`, `vfs_file_size/mtime/ctime` | `src/tree.c` | 5 | Already implemented |
+| `vfs_mount`, `vfs_file_size/mtime/ctime` | `src/tree.c` | 5 | Already implemented |
 | `vfs_readdir` | `src/tree.c` | 5 | Already implemented |
 | `vfs_snapshot`, `vfs_commit`, `vfs_delete_snapshot` | `src/epoch.c` | 6 | Already implemented |
 | `vfs_gc` | `src/gc.c` | 7 | Already implemented |
@@ -73,8 +73,8 @@ Move all function declarations into vfs.h, grouped by category:
 
 ```c
 // Instance management
-vfs_t*  vfs_open(const char* path, int64_t page_size);
-void    vfs_close(vfs_t* vfs);
+vfs_t*  vfs_mount(const char* path, int64_t page_size);
+void    vfs_unmount(vfs_t* vfs);
 int     vfs_flush(vfs_t* vfs);
 vfs_error_t vfs_last_error(vfs_t* vfs);
 
@@ -82,7 +82,7 @@ vfs_error_t vfs_last_error(vfs_t* vfs);
 int     vfs_create(vfs_t*, int64_t parent, const char* name, int64_t epoch);
 int     vfs_delete(vfs_t*, int64_t parent, const char* name, int64_t epoch);
 int     vfs_rename(vfs_t*, int64_t src_p, const char* src, int64_t dst_p, const char* dst, int64_t epoch);
-int64_t vfs_open_file(vfs_t*, int64_t parent, const char* name, int64_t epoch);
+int64_t vfs_mount(vfs_t*, int64_t parent, const char* name, int64_t epoch);
 int     vfs_read(vfs_t*, int64_t file, void* buf, int64_t offset, int64_t count, int64_t epoch);
 int     vfs_write(vfs_t*, int64_t file, const void* data, int64_t offset, int64_t count, int64_t epoch);
 int64_t vfs_file_size(vfs_t*, int64_t file, int64_t epoch);
@@ -132,8 +132,8 @@ int     vfs_gc(vfs_t*);
 | `vfs_lock` | ✅ Implemented | `src/vfs.c:85` — hash table, 256 buckets, recursive, two-phase |
 | `vfs_unlock` | ✅ Implemented | `src/vfs.c:142` — depth tracking, recursive unlock |
 | `vfs_last_error` | ✅ Implemented | `src/vfs.c:253` — reads `ctx->last_error` |
-| `vfs_open` | ✅ Already existed | `src/vfs.c:194` — StorageBackend + TreeContext init |
-| `vfs_close` | ✅ Already existed | `src/vfs.c:233` — flush + free + close |
+| `vfs_mount` | ✅ Already existed | `src/vfs.c:194` — StorageBackend + TreeContext init |
+| `vfs_unmount` | ✅ Already existed | `src/vfs.c:233` — flush + free + close |
 | `vfs_error_string` | ✅ Already existed | `src/vfs.c:178` — 10 codes including VFS_ERR_EPOCH |
 | Header `nodes.h` → `src/` | ✅ Complete | `src/nodes.h` |
 | Header `ixsphere/vfs.h` | ✅ Complete | All 20 API functions, grouped by category |
@@ -144,8 +144,8 @@ int     vfs_gc(vfs_t*);
 ### Public API Surface (include/ixsphere/vfs.h)
 
 20 functions, one clean header:
-- **Lifecycle**: vfs_open, vfs_close, vfs_flush, vfs_last_error
-- **File**: vfs_create, vfs_delete, vfs_rename, vfs_open_file, vfs_read, vfs_write, vfs_file_size/mtime/ctime
+- **Lifecycle**: vfs_mount, vfs_unmount, vfs_flush, vfs_last_error
+- **File**: vfs_create, vfs_delete, vfs_rename, vfs_mount, vfs_read, vfs_write, vfs_file_size/mtime/ctime
 - **Directory**: vfs_mkdir, vfs_rmdir, vfs_readdir
 - **Locking**: vfs_lock, vfs_unlock
 - **Snapshots**: vfs_snapshot, vfs_commit, vfs_delete_snapshot
@@ -181,17 +181,17 @@ All previous phases must be complete. This phase is a thin wrapper.
 ## Workload 8.1 — Instance Management
 
 ### What
-Implement `vfs_flush`, `vfs_last_error`, and complete the `vfs_close` cleanup.
-`vfs_open` is already implemented in `src/vfs.c` (wired to Phase 5 bootstrap).
+Implement `vfs_flush`, `vfs_last_error`, and complete the `vfs_unmount` cleanup.
+`vfs_mount` is already implemented in `src/vfs.c` (wired to Phase 5 bootstrap).
 
 ### New Implementation Required
 
-### `vfs_t* vfs_open(const char* path, int64_t page_size)`
+### `vfs_t* vfs_mount(const char* path, int64_t page_size)`
 Already implemented in `src/vfs.c`. Creates or mounts StorageBackend,
 bootstraps tree context (superblock + root directory). Wire the TreeContext's
 `last_error` field for error reporting.
 
-### `void vfs_close(vfs_t* vfs)`
+### `void vfs_unmount(vfs_t* vfs)`
 Already implemented. Ensure it calls `vfs_flush` before `storage_close`,
 then frees TreeContext, pool resources, mapper, and the handle itself.
 
@@ -206,8 +206,8 @@ then frees TreeContext, pool resources, mapper, and the handle itself.
 **NEW.** Add `last_error` field to TreeContext. Return it here. Do NOT clear it.
 
 ### Acceptance
-- [ ] `vfs_open("new.vfs", 8192)` → creates file, bootstrap, returns valid handle
-- [ ] `vfs_close(handle)` → flush, free, Valgrind clean
+- [ ] `vfs_mount("new.vfs", 8192)` → creates file, bootstrap, returns valid handle
+- [ ] `vfs_unmount(handle)` → flush, free, Valgrind clean
 - [ ] `vfs_flush` → data survives kill -9 + remount
 
 ---
@@ -222,7 +222,7 @@ then frees TreeContext, pool resources, mapper, and the handle itself.
 3. On success: return new nodeId. On failure: set last_error, return -1.
 ```
 
-### `int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`
+### `int64_t vfs_mount(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`
 
 ```
 1. Resolve epoch.
@@ -476,7 +476,7 @@ Every API function that can fail must:
 | VFS_ERR_NOMEM | -8 | Out of memory |
 
 ### Acceptance
-- [ ] `vfs_open_file` on missing file → returns -1, last_error = VFS_ERR_NOTFOUND
+- [ ] `vfs_mount` on missing file → returns -1, last_error = VFS_ERR_NOTFOUND
 - [ ] `vfs_write` to frozen epoch → returns -1, last_error = VFS_ERR_IO
 - [ ] `vfs_last_error` after successful operation returns previous error (not cleared)
 - [ ] `vfs_error_string` returns non-NULL for every defined code

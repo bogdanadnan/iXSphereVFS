@@ -35,7 +35,7 @@ typedef struct {
 ### `mapper_table_init(table, pool, epochMapperPtr)`
 Walk the on-disk mapper chain from `*epochMapperPtr`. For each MapperEntry,
 append `{fromEpoch, toEpoch, traversalApply}` to `entries[]`. Called once
-at mount from `vfs_open` → `tree_init`.
+at mount from `vfs_mount` → `tree_init`.
 
 ### `mapper_table_resolve(table, epoch) → int64_t`
 Linear scan of `entries[]` (max ~10 entries). Return `toEpoch` if
@@ -60,7 +60,7 @@ Called after GC. Clears `entries[]`, re-walks the chain, repopulates.
 | File | Change |
 |------|--------|
 | `src/mapper.c` | Add `mapper_table_*` functions. Existing chain-walk functions remain for GC/write paths. |
-| `src/vfs.c` | `vfs_open` → after `mapper_init`, call `mapper_table_init` |
+| `src/vfs.c` | `vfs_mount` → after `mapper_init`, call `mapper_table_init` |
 | `src/tree.c` | `vfs_read` → replace `mapper_resolve`/`mapper_traversal_apply` chain walks with `mapper_table_resolve`/`mapper_table_traversal_apply` |
 | `src/epoch.c` | `vfs_commit`, `vfs_delete_snapshot` → after `mapper_insert`, call `mapper_table_insert`. `vfs_epoch_is_writable` → use `mapper_table_resolve`. |
 | `src/gc.c` | After GC rebuilds pool pages, call `mapper_table_rebuild` |
@@ -89,7 +89,7 @@ Called after GC. Clears `entries[]`, re-walks the chain, repopulates.
 ### Stage A — MapperTable core
 - `mapper_table_init`, `mapper_table_resolve`, `mapper_table_traversal_apply`,
   `mapper_table_insert`, `mapper_table_rebuild`
-- Wire into `vfs_open` (`mapper_table_init`)
+- Wire into `vfs_mount` (`mapper_table_init`)
 
 ### Stage B — Unified Chain-Walk Helpers
 Extract all hand-rolled chain walks into shared functions. Each function
@@ -98,7 +98,7 @@ uses `pool_resolve` — same behavior as today, centralized in one place.
 **`dirchain_find_child(ctx, dirVp, name, epoch) → childVp, childNodeId`**
 Walk DirContent chain. Find child with matching `name` at `epoch` using
 read-rule dedup (highest `epoch ≤ query`, tombstone-aware). Returns
-child's VirtualPtr and nodeId. Used by: `vfs_open_file`, `vfs_delete`,
+child's VirtualPtr and nodeId. Used by: `vfs_mount`, `vfs_delete`,
 `vfs_rename` (source lookup), `resolve_child_vp` (benchmark).
 
 **`dirchain_list(ctx, dirVp, entries, max, epoch) → count`**
@@ -118,7 +118,7 @@ mtime. Used by: `vfs_file_size`, `vfs_file_mtime`.
 
 ### Stage C — Refactor Callers
 - Replace all inline chain walks in `vfs_read`, `vfs_file_size`, `vfs_file_mtime`,
-  `vfs_open_file`, `vfs_readdir`, `vfs_delete`, `vfs_rename` with calls to
+  `vfs_mount`, `vfs_readdir`, `vfs_delete`, `vfs_rename` with calls to
   the shared helpers above.
 - Replace `mapper_resolve(&ctx->mapper, epoch)` calls with `mapper_table_resolve`
 - Replace `mapper_traversal_apply` calls with `mapper_table_traversal_apply`

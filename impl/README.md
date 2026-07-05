@@ -15,7 +15,7 @@ All code optimized for throughput — hot paths avoid allocations, use inline fu
 | 5 | Tree Operations | Create, read, write, delete, rename, directory listing, in-memory arrays |
 | 6 | Epoch System | Snapshot, commit, conflict detection, soft-delete, epoch mapper |
 | 7 | Garbage Collection | Shadow compaction, deferred-free queue |
-| 8 | Filesystem API | vfs_open/close/read/write/mkdir/readdir/lock/snapshot/commit/gc |
+| 8 | Filesystem API | vfs_mount/close/read/write/mkdir/readdir/lock/snapshot/commit/gc |
 | 9 | SQLite VFS | CowVfs integration layer |
 | 10 | Optimization | Profiling, cache tuning, lock contention, allocation hot paths |
 

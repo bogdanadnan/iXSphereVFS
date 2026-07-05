@@ -28,11 +28,11 @@ static const char* test_path = "/tmp/test_epoch_suite.tmp";
 
 static vfs_t* epoch_setup(void) {
     unlink(test_path);
-    return vfs_open(test_path, 8192);
+    return vfs_mount(test_path, 8192);
 }
 
 static void epoch_teardown(vfs_t* vfs) {
-    if (vfs) vfs_close(vfs);
+    if (vfs) vfs_unmount(vfs);
     unlink(test_path);
 }
 
@@ -298,7 +298,7 @@ static void test_commit_subdir_conflict(void) {
 
     CHECK_EQ(vfs_mkdir(vfs, root_vp, "sub", 0), VFS_OK);
 
-    /* Resolve subdir VirtualPtr via pool (vfs_open_file returns nodeId, not VP) */
+    /* Resolve subdir VirtualPtr via pool (vfs_mount returns nodeId, not VP) */
     int64_t sub_vp = 0;
     {
         uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
@@ -372,7 +372,7 @@ static void test_commit_subdir_conflict(void) {
 
 /* ---------------------------------------------------------------------------
  * Mapper integration: create file, snapshot, write at snapshot epoch, commit,
- * then verify vfs_open_file / vfs_file_size at committed epoch.
+ * then verify vfs_mount / vfs_file_size at committed epoch.
  * Then soft-delete another snapshot and verify original epoch still works.
  * --------------------------------------------------------------------------- */
 
@@ -425,8 +425,8 @@ static void test_mapper_integration(void) {
     CHECK(mapper_table_traversal_apply(&ctx->mapper_table, snap));
 
     /* After commit:
-       (a) vfs_open_file at epoch 1 should find the file (mapper resolves 1→2) */
-    CHECK_EQ(vfs_open_file(vfs, root_vp, "mt.txt", 1), nid);
+       (a) vfs_mount at epoch 1 should find the file (mapper resolves 1→2) */
+    CHECK_EQ(vfs_open(vfs, root_vp, "mt.txt", 1), nid);
 
     /* (b) vfs_file_size at committed epoch 1 should return 4 (size from epoch 2 write) */
     CHECK_EQ(vfs_file_size(vfs, file_vp, 1), 4);
@@ -460,7 +460,7 @@ static void test_mapper_integration(void) {
        The epoch-5 data is NOT visible (it's skipped by read-rule),
        but the file itself is found via the epoch-0 entry.
        We verify the readdir count and file_size at epoch 0 unchanged. */
-    CHECK_EQ(vfs_open_file(vfs, root_vp, "mt.txt", 0), nid);
+    CHECK_EQ(vfs_open(vfs, root_vp, "mt.txt", 0), nid);
 
     /* vfs_file_size at epoch 5 should return 0 (no applicable FileSize) */
     /* Actually vfs_file_size returns 0 for empty chain.  After soft-delete,
@@ -471,7 +471,7 @@ static void test_mapper_integration(void) {
     CHECK_EQ(nr5, 1);
 
     /* Original epoch 0 still works */
-    CHECK_EQ(vfs_open_file(vfs, root_vp, "mt.txt", 0), nid);
+    CHECK_EQ(vfs_open(vfs, root_vp, "mt.txt", 0), nid);
     CHECK_EQ(vfs_file_size(vfs, file_vp, 0), 4);
 
     /* readdir at epoch 0 still shows the file */

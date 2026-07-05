@@ -503,19 +503,19 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
 
     /* ── Close & reopen — clears cache, forces cold reads ── */
     int saved_max_entries = (int)cache_cap;
-    vfs_close(vfs);
-    vfs = vfs_open(path, page_sz);
+    vfs_unmount(vfs);
+    vfs = vfs_mount(path, page_sz);
     if (!vfs) return 0;
     /* Restore cache size from first open (--cache-mb override) */
     vfs->ctx->sb->cache.max_entries = saved_max_entries;
     vfs->ctx->sb->cache.writeback_threshold = saved_max_entries / 4;
     root_vp = vfs->ctx->rootNodeOffset;
     int64_t file_vp = resolve_child_vp(vfs, root_vp, "randfile.dat");
-    if (file_vp == 0) { vfs_close(vfs); return 0; }
+    if (file_vp == 0) { vfs_unmount(vfs); return 0; }
 
     /* ── Timed: truly random reads, each page picked independently ── */
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
-    if (!buf) { vfs_close(vfs); return 0; }
+    if (!buf) { vfs_unmount(vfs); return 0; }
     lat_init(reads_needed);
     vfs_cache_reset();
     double t0 = now_sec();
@@ -532,7 +532,7 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
 
     report_full("randread", ok, 1, elapsed);
     lat_destroy();
-    vfs_close(vfs);
+    vfs_unmount(vfs);
     return ok;
 }
 
@@ -573,18 +573,18 @@ static int bench_seqread(vfs_t* vfs, int count, int threads, const char* path,
         double mb = (double)file_pages * page_sz / (1024.0 * 1024.0);
         printf("  wrote %d/%d pages (%.1f MB) in %.3fs (%.1f MB/s)\n\n",
                writes_ok, file_pages, mb, elapsed, mb / elapsed);
-        vfs_close(vfs);
+        vfs_unmount(vfs);
         return writes_ok;
     }
 
     /* ── Read phase ── */
     root_vp = vfs->ctx->rootNodeOffset;
     int64_t file_vp = resolve_child_vp(vfs, root_vp, "seqfile.dat");
-    if (file_vp == 0) { vfs_close(vfs); return 0; }
+    if (file_vp == 0) { vfs_unmount(vfs); return 0; }
 
     int reads = file_pages;
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
-    if (!buf) { vfs_close(vfs); return 0; }
+    if (!buf) { vfs_unmount(vfs); return 0; }
     vfs_cache_reset();
     double t0 = now_sec();
     int ok = 0;
@@ -610,7 +610,7 @@ static int bench_seqread(vfs_t* vfs, int count, int threads, const char* path,
     printf("  data:  hits=%lld total=%lld ratio=%.1f%%\n",
            (long long)dh, (long long)dt, (dt > 0 ? 100.0*dh/dt : 0));
     printf("  completed: %d / %d operations\n\n", ok, reads);
-    vfs_close(vfs);
+    vfs_unmount(vfs);
     return ok;
 }
 
@@ -632,7 +632,7 @@ int main(int argc, char** argv) {
     if (opts.threads > 1)
         fprintf(stderr, "warning: --threads not yet implemented, running single-threaded\n");
 
-    vfs_t* vfs = vfs_open(opts.output, opts.page_size);
+    vfs_t* vfs = vfs_mount(opts.output, opts.page_size);
     if (!vfs) {
         fprintf(stderr, "Failed to open VFS file: %s\n", opts.output);
         return 1;
@@ -675,7 +675,7 @@ int main(int argc, char** argv) {
     } else {
         fprintf(stderr, "Unknown workload: %s\n", opts.workload);
         usage();
-        vfs_close(vfs);
+        vfs_unmount(vfs);
         return 1;
     }
 
@@ -687,6 +687,6 @@ int main(int argc, char** argv) {
 
     if (strcmp(opts.workload, "randread") != 0 &&
         strncmp(opts.workload, "seqread", 7) != 0)
-        vfs_close(vfs);
+        vfs_unmount(vfs);
     return 0;
 }

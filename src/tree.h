@@ -28,11 +28,11 @@
  * --------------------------------------------------------------------------- */
 
 /* Initialize the superblock on a fresh file: create root DirNode,
-   write superblock fields.  Called by vfs_open when backing file is new. */
+   write superblock fields.  Called by vfs_mount when backing file is new. */
 int tree_bootstrap_superblock(TreeContext* ctx);
 
 /* Re-initialize TreeContext from an existing file: read superblock page,
-   populate ctx fields, verify root DirNode.  Called by vfs_open on reopen. */
+   populate ctx fields, verify root DirNode.  Called by vfs_mount on reopen. */
 int tree_init(TreeContext* ctx);
 
 /* ---------------------------------------------------------------------------

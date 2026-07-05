@@ -26,7 +26,7 @@ static const char* test_path = "/tmp/test_tree_bootstrap.tmp";
 
 static void test_bootstrap_root(void) {
     /* Open fresh file → bootstrap creates root */
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK(vfs->ctx != NULL);
 
@@ -51,12 +51,12 @@ static void test_bootstrap_root(void) {
     /* nextNodeId should be 0 (node 0 used for root, next available is 0) */
     CHECK_EQ((int)ctx->nextNodeId, 0);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 static void test_bootstrap_reopen(void) {
     /* Open existing file → reopen */
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK(vfs->ctx != NULL);
 
@@ -92,17 +92,17 @@ static void test_bootstrap_reopen(void) {
     /* treeLockState should be 0 */
     CHECK_EQ(ctx->treeLockState, 0);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 static void test_pool_list_head(void) {
     /* poolListHead should be non-zero after bootstrap (pool alloc happened) */
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
 
     CHECK(vfs->ctx->pool_list_head_value != 0);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ static void test_pool_list_head(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_create_file(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK(vfs->ctx != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -156,7 +156,7 @@ static void test_create_file(void) {
     /* nextNodeId should now be 1 */
     CHECK_EQ((int)ctx->nextNodeId, 1);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ static void test_create_file(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_delete_file(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -230,15 +230,15 @@ static void test_delete_file(void) {
     ret = vfs_delete(vfs, root_vp, "nonexistent.txt", 2);
     CHECK_EQ(ret, VFS_ERR_NOTFOUND);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
- * vfs_open_file test
+ * vfs_mount test
  * --------------------------------------------------------------------------- */
 
 static void test_open_file(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -248,11 +248,11 @@ static void test_open_file(void) {
     CHECK(nodeId > 0);
 
     /* Open it by name */
-    int64_t opened = vfs_open_file(vfs, root_vp, "found.txt", 0);
+    int64_t opened = vfs_open(vfs, root_vp, "found.txt", 0);
     CHECK_EQ(opened, (int64_t)nodeId);
 
     /* Open non-existent → VFS_ERR_NOTFOUND */
-    opened = vfs_open_file(vfs, root_vp, "missing.txt", 0);
+    opened = vfs_open(vfs, root_vp, "missing.txt", 0);
     CHECK_EQ(opened, VFS_ERR_NOTFOUND);
 
     /* Open from a file VirtualPtr → VFS_ERR_NOTDIR */
@@ -266,11 +266,11 @@ static void test_open_file(void) {
         nodes_read_dircontent(pool_resolve(&ctx->pool, head2),
                               &ce_c, &ce_e, &ce_cp, &ce_np, &ce_nx, VFS_PAGE_SIZE);
         (void)ce_c; (void)ce_e; (void)ce_np; (void)ce_nx;
-        opened = vfs_open_file(vfs, ce_cp, "anything.txt", 0);
+        opened = vfs_open(vfs, ce_cp, "anything.txt", 0);
         CHECK_EQ(opened, VFS_ERR_NOTDIR);
     }
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@ static void test_open_file(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_create_duplicate(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -290,7 +290,7 @@ static void test_create_duplicate(void) {
     int r2 = vfs_create(vfs, root_vp, "dup.txt", 0);
     CHECK_EQ(r2, VFS_ERR_EXISTS);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -298,7 +298,7 @@ static void test_create_duplicate(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_delete_epoch_isolation(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -307,7 +307,7 @@ static void test_delete_epoch_isolation(void) {
     CHECK(nodeId > 0);
 
     /* Verify it's visible at epoch 0 */
-    int64_t found = vfs_open_file(vfs, root_vp, "epoch_test.txt", 0);
+    int64_t found = vfs_open(vfs, root_vp, "epoch_test.txt", 0);
     CHECK_EQ(found, (int64_t)nodeId);
 
     /* Delete at epoch 2 */
@@ -315,14 +315,14 @@ static void test_delete_epoch_isolation(void) {
     CHECK_EQ(ret, VFS_OK);
 
     /* Verify it's NOT visible at epoch 2 */
-    found = vfs_open_file(vfs, root_vp, "epoch_test.txt", 2);
+    found = vfs_open(vfs, root_vp, "epoch_test.txt", 2);
     CHECK_EQ(found, VFS_ERR_NOTFOUND);
 
     /* Verify it IS still visible at epoch 0 (older epoch unaffected) */
-    found = vfs_open_file(vfs, root_vp, "epoch_test.txt", 0);
+    found = vfs_open(vfs, root_vp, "epoch_test.txt", 0);
     CHECK_EQ(found, (int64_t)nodeId);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -330,7 +330,7 @@ static void test_delete_epoch_isolation(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_file_stat(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -368,7 +368,7 @@ static void test_file_stat(void) {
     size = vfs_file_size(vfs, root_vp, 0);
     CHECK_EQ(size, -1);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -376,7 +376,7 @@ static void test_file_stat(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_stat_not_file(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -390,7 +390,7 @@ static void test_stat_not_file(void) {
     int64_t ctime = vfs_file_ctime(vfs, root_vp);
     CHECK_EQ(ctime, -1);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -419,7 +419,7 @@ static int64_t get_file_vp(Pool* pool, int64_t root_vp) {
  * --------------------------------------------------------------------------- */
 
 static void test_file_size_epoch(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -464,7 +464,7 @@ static void test_file_size_epoch(void) {
     int64_t ctime_after = vfs_file_ctime(vfs, file_vp);
     CHECK_EQ(ctime_after, ctime_before);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -472,7 +472,7 @@ static void test_file_size_epoch(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_resolve_page_growth(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -535,7 +535,7 @@ static void test_resolve_page_growth(void) {
     pn0 = tree_resolve_page(ctx, file_vp, 0, 0);
     CHECK(pn0 != NULL);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -543,7 +543,7 @@ static void test_resolve_page_growth(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_write_basic(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -579,7 +579,7 @@ static void test_write_basic(void) {
     sz = vfs_file_size(vfs, file_vp, 0);
     CHECK_EQ(sz, 8180 + (int64_t)strlen(data3));
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -587,7 +587,7 @@ static void test_write_basic(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_read_basic(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -626,7 +626,7 @@ static void test_read_basic(void) {
     for (int i = 0; i < 32; i++) { if (rbuf[i] != 0) { all_zero = 0; break; } }
     CHECK(all_zero);  /* never written at offset 8180 in this test */
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -635,7 +635,7 @@ static void test_read_basic(void) {
 
 /* Write 200 bytes at offset 50 (cross-page), read back */
 static void test_write_cross_page(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -660,12 +660,12 @@ static void test_write_cross_page(void) {
     /* Bytes 50-249 match the data */
     for (int i = 0; i < 200; i++) CHECK_EQ(rbuf[50 + i], data[i]);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* Same offset, same epoch: second write in-place (VersionPage count unchanged) */
 static void test_write_in_place(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -718,12 +718,12 @@ static void test_write_in_place(void) {
     CHECK_EQ(ret, 4);
     CHECK_EQ(strncmp(rbuf, "BBBB", 4), 0);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* Same offset, new epoch: COW creates new VersionPage, old epoch returns old data */
 static void test_write_cow_epoch(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -768,12 +768,12 @@ static void test_write_cow_epoch(void) {
     }
     CHECK_EQ(count, 2);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* Write 2000 pages → second FileContent segment, reads across boundary */
 static void test_write_multi_segment(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -809,7 +809,7 @@ static void test_write_multi_segment(void) {
     CHECK(ctx->seg_array_fc_vp != 0);
     (void)seg_size;
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -817,7 +817,7 @@ static void test_write_multi_segment(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_write_frozen_epoch(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -836,7 +836,7 @@ static void test_write_frozen_epoch(void) {
     /* Unfreeze for cleanup */
     test_set_epoch_writable(1);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -845,7 +845,7 @@ static void test_write_frozen_epoch(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_mkdir_basic(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -871,7 +871,7 @@ static void test_mkdir_basic(void) {
     CHECK_EQ(vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size),
              (int16_t)NODE_TYPE_DIR);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -879,14 +879,14 @@ static void test_mkdir_basic(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_mkdir_duplicate(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
     CHECK_EQ(vfs_mkdir(vfs, root_vp, "dup", 0), VFS_OK);
     CHECK_EQ(vfs_mkdir(vfs, root_vp, "dup", 0), VFS_ERR_EXISTS);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -895,7 +895,7 @@ static void test_mkdir_duplicate(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rmdir_empty(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -930,7 +930,7 @@ static void test_rmdir_empty(void) {
     /* Now rmdir should succeed */
     CHECK_EQ(vfs_rmdir(vfs, root_vp, "sub", 0), VFS_OK);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -938,14 +938,14 @@ static void test_rmdir_empty(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rmdir_notdir(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
     CHECK(vfs_create(vfs, root_vp, "not_a_dir.txt", 0) > 0);
     CHECK_EQ(vfs_rmdir(vfs, root_vp, "not_a_dir.txt", 0), VFS_ERR_NOTDIR);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -953,7 +953,7 @@ static void test_rmdir_notdir(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_readdir_empty(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -961,7 +961,7 @@ static void test_readdir_empty(void) {
     int n = vfs_readdir(vfs, root_vp, entries, 16, 0);
     CHECK_EQ(n, 0);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -969,7 +969,7 @@ static void test_readdir_empty(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_readdir_with_files(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -992,7 +992,7 @@ static void test_readdir_with_files(void) {
     CHECK(found_b);
     CHECK(found_c);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1000,7 +1000,7 @@ static void test_readdir_with_files(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_readdir_with_dirs(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -1025,7 +1025,7 @@ static void test_readdir_with_dirs(void) {
     CHECK(found_sub);
     CHECK(found_f);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1034,7 +1034,7 @@ static void test_readdir_with_dirs(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_readdir_tombstone(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -1058,7 +1058,7 @@ static void test_readdir_tombstone(void) {
     int n0 = vfs_readdir(vfs, root_vp, entries, 16, 0);
     CHECK_EQ(n0, 3);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1067,7 +1067,7 @@ static void test_readdir_tombstone(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rename_same_dir(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -1078,12 +1078,12 @@ static void test_rename_same_dir(void) {
     CHECK_EQ(vfs_rename(vfs, root_vp, "old.txt", root_vp, "new.txt", 0), VFS_OK);
 
     /* old name gone */
-    CHECK_EQ(vfs_open_file(vfs, root_vp, "old.txt", 0), (int64_t)VFS_ERR_NOTFOUND);
+    CHECK_EQ(vfs_open(vfs, root_vp, "old.txt", 0), (int64_t)VFS_ERR_NOTFOUND);
 
     /* new name exists with same nodeId */
-    CHECK_EQ(vfs_open_file(vfs, root_vp, "new.txt", 0), nid);
+    CHECK_EQ(vfs_open(vfs, root_vp, "new.txt", 0), nid);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1093,7 +1093,7 @@ static void test_rename_same_dir(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rename_cross_dir(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -1133,14 +1133,14 @@ static void test_rename_cross_dir(void) {
     CHECK_EQ(vfs_rename(vfs, dir_a, "f.txt", dir_b, "g.txt", 2), VFS_OK);
 
     /* At epoch 0: source dir still sees "f.txt", dest does not have it */
-    CHECK_EQ(vfs_open_file(vfs, dir_a, "f.txt", 0), fnid);
-    CHECK_EQ(vfs_open_file(vfs, dir_b, "g.txt", 0), (int64_t)VFS_ERR_NOTFOUND);
+    CHECK_EQ(vfs_open(vfs, dir_a, "f.txt", 0), fnid);
+    CHECK_EQ(vfs_open(vfs, dir_b, "g.txt", 0), (int64_t)VFS_ERR_NOTFOUND);
 
     /* At epoch 2: source loses the entry, destination gains it */
-    CHECK_EQ(vfs_open_file(vfs, dir_a, "f.txt", 2), (int64_t)VFS_ERR_NOTFOUND);
-    CHECK_EQ(vfs_open_file(vfs, dir_b, "g.txt", 2), fnid);
+    CHECK_EQ(vfs_open(vfs, dir_a, "f.txt", 2), (int64_t)VFS_ERR_NOTFOUND);
+    CHECK_EQ(vfs_open(vfs, dir_b, "g.txt", 2), fnid);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1149,7 +1149,7 @@ static void test_rename_cross_dir(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rename_cross_epoch(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -1162,15 +1162,15 @@ static void test_rename_cross_epoch(void) {
     CHECK_EQ(vfs_rename(vfs, root_vp, "f.txt", root_vp, "g.txt", 2), VFS_OK);
 
     /* Epoch 0 still sees "f.txt" */
-    int64_t f0 = vfs_open_file(vfs, root_vp, "f.txt", 0);
-    int64_t g0 = vfs_open_file(vfs, root_vp, "g.txt", 0);
+    int64_t f0 = vfs_open(vfs, root_vp, "f.txt", 0);
+    int64_t g0 = vfs_open(vfs, root_vp, "g.txt", 0);
     CHECK_EQ(f0, nid);
     CHECK_EQ(g0, (int64_t)VFS_ERR_NOTFOUND);
 
     /* Epoch 2 sees "g.txt" */
-    CHECK_EQ(vfs_open_file(vfs, root_vp, "g.txt", 2), nid);
+    CHECK_EQ(vfs_open(vfs, root_vp, "g.txt", 2), nid);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1178,14 +1178,14 @@ static void test_rename_cross_epoch(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rename_notfound(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
     CHECK_EQ(vfs_rename(vfs, root_vp, "nonexistent.txt", root_vp, "x.txt", 0),
              VFS_ERR_NOTFOUND);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1194,12 +1194,12 @@ static void test_rename_notfound(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_last_error(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
-    /* vfs_open_file on a missing file should return NOTFOUND */
-    int64_t res = vfs_open_file(vfs, root_vp, "nonexistent.txt", 0);
+    /* vfs_mount on a missing file should return NOTFOUND */
+    int64_t res = vfs_open(vfs, root_vp, "nonexistent.txt", 0);
     CHECK_EQ(res, (int64_t)VFS_ERR_NOTFOUND);
     CHECK_EQ(vfs_last_error(vfs), VFS_ERR_NOTFOUND);
 
@@ -1214,11 +1214,11 @@ static void test_last_error(void) {
     CHECK_EQ(le2, VFS_ERR_NOTFOUND);
 
     /* Another error should update last_error */
-    CHECK_EQ(vfs_open_file(vfs, root_vp, "nonexistent2.txt", 0),
+    CHECK_EQ(vfs_open(vfs, root_vp, "nonexistent2.txt", 0),
              (int64_t)VFS_ERR_NOTFOUND);
     CHECK_EQ(vfs_last_error(vfs), VFS_ERR_NOTFOUND);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1226,7 +1226,7 @@ static void test_last_error(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_lock_basic(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -1239,7 +1239,7 @@ static void test_lock_basic(void) {
     CHECK_EQ(vfs_lock(vfs, nid, 2), VFS_OK);
     CHECK_EQ(vfs_unlock(vfs, nid, 2), VFS_OK);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1263,7 +1263,7 @@ static void* lock_thread_fn(void* arg) {
 }
 
 static void test_lock_concurrent_epochs(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
@@ -1283,7 +1283,7 @@ static void test_lock_concurrent_epochs(void) {
     CHECK_EQ(a1.result, VFS_OK);  /* epoch 0 lock succeeded */
     CHECK_EQ(a2.result, VFS_OK);  /* epoch 2 lock succeeded (different epoch) */
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1320,7 +1320,7 @@ static void* per_epoch_thread(void* arg) {
 }
 
 static void test_lock_global_serializes(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
 
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -1347,7 +1347,7 @@ static void test_lock_global_serializes(void) {
     pthread_join(t2, NULL);
     CHECK(lock_per_epoch_acquired);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1355,7 +1355,7 @@ static void test_lock_global_serializes(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_dirchain_list_basic(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -1378,11 +1378,11 @@ static void test_dirchain_list_basic(void) {
     CHECK(found_b);
     CHECK(found_sub);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 static void test_dirchain_list_tombstone(void) {
-    vfs_t* vfs = vfs_open(test_path, 8192);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
@@ -1403,7 +1403,7 @@ static void test_dirchain_list_tombstone(void) {
     n = dirchain_list(ctx, root_vp, 0, entries, 16);
     CHECK_EQ(n, 3);
 
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 
 int main(void) {

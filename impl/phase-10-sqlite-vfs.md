@@ -171,7 +171,7 @@ Called when SQLite opens a table for writing (COW_TABLE_LIST op).
    - If isJournal: vfs_create(ixs, ROOT_NODE_ID, filename, -1)
    - Else (main DB): vfs_create(ixs, ROOT_NODE_ID, filename, -1)
      and create PageMap with defaultNodeId = new file's nodeId
-3. If file exists: vfs_open_file(ixs, ROOT_NODE_ID, filename, -1)
+3. If file exists: vfs_mount(ixs, ROOT_NODE_ID, filename, -1)
 4. Initialize IxFile fields:
    file->fileNodeId = result from step 2 or 3
    file->lockLevel = 0

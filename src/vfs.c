@@ -207,7 +207,7 @@ const char* vfs_error_string(vfs_error_t err) {
     }
 }
 
-vfs_t* vfs_open(const char* path, int64_t page_size) {
+vfs_t* vfs_mount(const char* path, int64_t page_size) {
     vfs_t* vfs = (vfs_t*)calloc(1, sizeof(vfs_t));
     if (!vfs) return NULL;
 
@@ -255,7 +255,7 @@ vfs_t* vfs_open(const char* path, int64_t page_size) {
     return vfs;
 }
 
-void vfs_close(vfs_t* vfs) {
+void vfs_unmount(vfs_t* vfs) {
     if (!vfs) return;
     if (vfs->ctx) {
         /* Flush superblock to persist any pending changes */

@@ -79,7 +79,7 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
         ctx->segment_size = 1024;  /* default */
     }
 
-    /* Allocate pool already exists in ctx->pool from vfs_open */
+    /* Allocate pool already exists in ctx->pool from vfs_mount (file opened via vfs_open) */
     int64_t root_vp = pool_alloc(&ctx->pool);
     if (root_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
 
@@ -1024,13 +1024,13 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
 }
 
 /* ---------------------------------------------------------------------------
- * vfs_open_file — resolve name to nodeId by walking parent's DirContent chain
+ * vfs_open — resolve name to nodeId by walking parent's DirContent chain
  *
  * Returns childNodeId on success, or VFS_ERR_NOTFOUND if not found.
  * Uses read-rule: matches if epoch == query_epoch, or epoch < query AND even.
  * --------------------------------------------------------------------------- */
 
-int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
+int64_t vfs_open(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
     TreeContext* ctx = vfs->ctx;
 

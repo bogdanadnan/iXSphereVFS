@@ -132,7 +132,7 @@ in Phase 6 without changing Phase 5 code.
 
 ### What
 Initialize the superblock on first use and create the root directory node.
-This is the starting point of the VFS tree. Called once by `vfs_open` when
+This is the starting point of the VFS tree. Called once by `vfs_mount` when
 the backing file is new.
 
 ### Step-by-Step
@@ -220,7 +220,7 @@ tombstone DirContent entry.
 ```
 
 ### Acceptance
-- [ ] Create "test.txt" under root at epoch 0 → `vfs_open_file` returns file's nodeId
+- [ ] Create "test.txt" under root at epoch 0 → `vfs_mount` returns file's nodeId
 - [ ] Create same name at same epoch → VFS_ERR_EXISTS
 - [ ] Delete "test.txt" at epoch 2 → listing at epoch 2 excludes it, listing at
   epoch 0 still includes it

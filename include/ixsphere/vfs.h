@@ -67,10 +67,10 @@ typedef struct {
 
 /* Open or create a VFS file.  path is the file path; page_size is typically
    8192.  Returns NULL on failure (check vfs_last_error for details). */
-vfs_t*  vfs_open(const char* path, int64_t page_size);
+vfs_t*  vfs_mount(const char* path, int64_t page_size);
 
 /* Close a VFS handle, flushing all pending writes to disk. */
-void    vfs_close(vfs_t* vfs);
+void    vfs_unmount(vfs_t* vfs);
 
 /* Flush all dirty pages to disk (fsync).  Returns VFS_OK on success. */
 int     vfs_flush(vfs_t* vfs);
@@ -95,7 +95,7 @@ int     vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
 
 /* Open a file by parent directory and name.  Returns the child's nodeId,
    or a negative error code (VFS_ERR_NOTFOUND) if not found. */
-int64_t vfs_open_file(vfs_t* vfs, int64_t parent, const char* name,
+int64_t vfs_open(vfs_t* vfs, int64_t parent, const char* name,
                       int64_t epoch);
 
 /* Read up to count bytes from file at offset.  Returns bytes actually read,

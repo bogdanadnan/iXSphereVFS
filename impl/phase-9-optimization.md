@@ -109,7 +109,7 @@ Options:
 ```c
 int main(int argc, char** argv) {
     parse_args();
-    vfs_t* vfs = vfs_open("bench.vfs");
+    vfs_t* vfs = vfs_mount("bench.vfs");
     // Setup: create tables, pre-populate data
     // Run benchmark
     start_timer();
@@ -118,7 +118,7 @@ int main(int argc, char** argv) {
     wait_all_threads();
     stop_timer();
     print_results();
-    vfs_close(vfs);
+    vfs_unmount(vfs);
 }
 ```
 
@@ -288,10 +288,10 @@ failures).
 
 ```
 for iteration = 1..10000:
-    vfs_open("fuzz.vfs")
+    vfs_mount("fuzz.vfs")
     // populate with known data
     create files, write data
-    vfs_close()
+    vfs_unmount()
 
     // Corrupt the backing file
     fd = open("fuzz.vfs", O_RDWR)
@@ -304,10 +304,10 @@ for iteration = 1..10000:
     close(fd)
 
     // Remount and verify
-    vfs_open("fuzz.vfs")
+    vfs_mount("fuzz.vfs")
     walk tree, read all files
     // Expect: some reads fail (CRC mismatch), but NO crashes, NO hangs
-    vfs_close()
+    vfs_unmount()
 ```
 
 ### Expected Behaviors Under Corruption
@@ -402,8 +402,8 @@ User-facing `README.md` and `docs/API.md`.
 6. CI badge
 
 ### docs/API.md Sections Required
-- Instance management: `vfs_open`, `vfs_close`, `vfs_flush`
-- File operations: `vfs_create`, `vfs_open_file`, `vfs_read`, `vfs_write`,
+- Instance management: `vfs_mount`, `vfs_unmount`, `vfs_flush`
+- File operations: `vfs_create`, `vfs_mount`, `vfs_read`, `vfs_write`,
   `vfs_delete`, `vfs_file_size`, `vfs_file_mtime`, `vfs_file_ctime`
 - Directory operations: `vfs_mkdir`, `vfs_rmdir`, `vfs_readdir`, `vfs_rename`
 - Locking: `vfs_lock`, `vfs_unlock` with locking rules

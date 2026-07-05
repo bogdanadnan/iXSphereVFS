@@ -66,7 +66,7 @@ Must contain:
 - The `vfs_error_t` enum with all 9 codes (Workload 1.6)
 - `const char* vfs_error_string(vfs_error_t err);`
 - Opaque typedef: `typedef struct vfs_t vfs_t;`
-- Stub declarations for `vfs_open` and `vfs_close` (both return `NULL`/void
+- Stub declarations for `vfs_mount` and `vfs_unmount` (both return `NULL`/void
   for now — actual implementation in Phase 5)
 
 ### vfs_internal.h Stub
