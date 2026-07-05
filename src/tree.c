@@ -353,11 +353,10 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
              * Entries track gc_generation to auto-invalidate after GC compaction. */
             #define TCACHE_SIZE 16
             static __thread struct {
-                int64_t  key;
-                int64_t  vptr_array[1024];
-                uint32_t seg_size;
-                bool     populated;
-                int64_t  gen;
+                int64_t      key;
+                SegmentArray arr;
+                bool         populated;
+                int64_t      gen;
             } tcache[TCACHE_SIZE];
             static __thread int tcache_next = 0;
 
@@ -366,16 +365,13 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
 
             /* Check tcache first */
             for (int ci = 0; ci < TCACHE_SIZE; ci++) {
-                if (tcache[ci].key == cache_key &&
-                    tcache[ci].seg_size == seg_size &&
-                    tcache[ci].populated) {
+                if (tcache[ci].key == cache_key && tcache[ci].populated) {
                     if (tcache[ci].gen != vfs_atomic_load_i64(&ctx->gc_generation)) {
                         tcache[ci].populated = false;
                     } else {
-                        int64_t pn_vp = tcache[ci].vptr_array[page_in_segment];
-                        if (pn_vp && pn_vp != VFS_VPTR_NULL) {
-                            return pool_resolve(&ctx->pool, pn_vp);
-                        }
+                        uint8_t* cached = segment_array_resolve(&ctx->pool, &tcache[ci].arr,
+                                                                 (uint32_t)page_in_segment);
+                        if (cached) return cached;
                         tcache[ci].populated = false;
                     }
                     break;
@@ -489,31 +485,20 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
             }
 
         done:
-            /* Populate tcache if the chain is dense enough */
+            /* Populate tcache via segment_array_build if chain is dense enough */
             if (total_pages_seen >= SPARSE_CACHE_THRESHOLD) {
                 int slot = tcache_next % TCACHE_SIZE;
-                int64_t walk = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR,
-                                         ctx->page_size);
-                /* Zero out tcache array entries */
-                for (uint32_t j = 0; j < seg_size; j++)
-                    tcache[slot].vptr_array[j] = VFS_VPTR_NULL;
-                while (walk != 0) {
-                    uint8_t* pn = pool_resolve(&ctx->pool, walk);
-                    if (!pn) break;
-                    uint32_t idx;
-                    int64_t next;
-                    int64_t ver;
-                    nodes_read_pagenode(pn, &ver, &next, &idx, ctx->page_size);
-                    (void)ver;
-                    if (idx < seg_size)
-                        tcache[slot].vptr_array[idx] = walk;
-                    walk = next;
+                if (tcache[slot].arr.built)
+                    segment_array_destroy(&tcache[slot].arr);
+                int rc = segment_array_build(&ctx->pool,
+                    vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size),
+                    seg_size, &tcache[slot].arr);
+                if (rc == VFS_OK) {
+                    tcache[slot].key = cache_key;
+                    tcache[slot].populated = true;
+                    tcache[slot].gen = vfs_atomic_load_i64(&ctx->gc_generation);
+                    tcache_next++;
                 }
-                tcache[slot].key = cache_key;
-                tcache[slot].seg_size = seg_size;
-                tcache[slot].populated = true;
-                tcache[slot].gen = vfs_atomic_load_i64(&ctx->gc_generation);
-                tcache_next++;
             }
             return pool_resolve(&ctx->pool, result_vp);
 
