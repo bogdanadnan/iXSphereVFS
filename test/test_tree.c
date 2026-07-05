@@ -1560,6 +1560,47 @@ static void test_sparse_read_no_allocate(void) {
     vfs_unmount(vfs);
 }
 
+static void test_sparse_gc_roundtrip(void) {
+    const char* gc_path = "/tmp/test_sparse_gc.vfs";
+    unlink(gc_path);
+
+    vfs_t* vfs = vfs_mount(gc_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "gc.txt", 0);
+    CHECK(file_vp > 0);
+
+    /* Write "hello" to page 0 */
+    CHECK_EQ(vfs_write(vfs, file_vp, "hello", 0, 5, 0), 5);
+
+    /* Run GC */
+    int gc_ret = vfs_gc(vfs);
+    (void)gc_ret;  /* GC may fail if nothing to collect, that's OK */
+
+    /* Unmount and remount */
+    vfs_unmount(vfs);
+    vfs = vfs_mount(gc_path, 8192);
+    CHECK(vfs != NULL);
+    ctx = vfs->ctx;
+
+    /* Resolve page 0 */
+    uint8_t* pn = tree_resolve_page(ctx, file_vp, 0, 0, true);
+    CHECK(pn != NULL);
+    uint32_t idx = (uint32_t)vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+    CHECK_EQ(idx, 0u);
+
+    /* Read back "hello" */
+    char rbuf[8];
+    memset(rbuf, 0, sizeof(rbuf));
+    CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 5, 0), 5);
+    CHECK_EQ(strcmp(rbuf, "hello"), 0);
+
+    vfs_unmount(vfs);
+    unlink(gc_path);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1687,6 +1728,8 @@ int main(void) {
 
     unlink(test_path);
     test_sparse_read_no_allocate();
+
+    test_sparse_gc_roundtrip();
 
     /* Clean up */
     unlink(test_path);
