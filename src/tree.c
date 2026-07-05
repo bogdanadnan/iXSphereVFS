@@ -346,8 +346,10 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
         if (i == segment_idx) {
             int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
 
-            /* Walk the sparse PageNode chain looking for our page */
+            /* Walk the sparse PageNode chain in ascending page_index order.
+             * Track prev_vp for sorted insertion. */
             int64_t pn_vp = fc_page_root;
+            int64_t prev_vp = 0;
             while (pn_vp != 0) {
                 uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
                 if (!pn_slot) break;
@@ -356,35 +358,92 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 int64_t pn_ver_root;
                 nodes_read_pagenode(pn_slot, &pn_ver_root, &pn_next, &pn_idx, ctx->page_size);
                 (void)pn_ver_root;
+
                 if ((int64_t)pn_idx == page_in_segment)
                     return pool_resolve(&ctx->pool, pn_vp);
+
+                if ((int64_t)pn_idx > page_in_segment) {
+                    /* Found a higher-index node — insert before it */
+                    if (!is_write) return NULL;
+
+                    int64_t new_pn_vp = pool_alloc(&ctx->pool);
+                    if (new_pn_vp == VFS_VPTR_NULL) return NULL;
+                    uint8_t* new_slot = pool_resolve(&ctx->pool, new_pn_vp);
+                    if (!new_slot) return NULL;
+                    nodes_write_pagenode(new_slot, 0, pn_vp,
+                                         (uint32_t)page_in_segment, ctx->page_size);
+                    vfs_mb_release();
+
+                    if (prev_vp == 0) {
+                        /* Insert at head */
+                        int64_t old_root = vfs_cas_i64(
+                            (int64_t*)(fc_slot + FILECONTENT_OFF_ROOTPTR),
+                            pn_vp, new_pn_vp);
+                        if (old_root != pn_vp) {
+                            fc_page_root = old_root;
+                            goto retry_walk;
+                        }
+                    } else {
+                        uint8_t* prev_slot = pool_resolve(&ctx->pool, prev_vp);
+                        if (!prev_slot) return NULL;
+                        int64_t old_next = vfs_cas_i64(
+                            (int64_t*)(prev_slot + PAGENODE_OFF_NEXTPTR),
+                            pn_vp, new_pn_vp);
+                        if (old_next != pn_vp) {
+                            fc_page_root = vfs_rd8_s(fc_slot,
+                                FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+                            goto retry_walk;
+                        }
+                    }
+                    return pool_resolve(&ctx->pool, new_pn_vp);
+                }
+
+                prev_vp = pn_vp;
                 pn_vp = pn_next;
             }
 
-            /* PageNode not found in chain */
-            if (!is_write) return NULL;  /* read: zero-fill */
+            /* Chain ended without finding the page */
+            if (!is_write) return NULL;
 
-            /* Write: allocate new PageNode and CAS-prepend to chain */
-            int64_t new_pn_vp = pool_alloc(&ctx->pool);
-            if (new_pn_vp == VFS_VPTR_NULL) return NULL;
-            uint8_t* new_pn_slot = pool_resolve(&ctx->pool, new_pn_vp);
-            if (!new_pn_slot) return NULL;
+            /* Append at tail */
+            {
+                int64_t new_pn_vp = pool_alloc(&ctx->pool);
+                if (new_pn_vp == VFS_VPTR_NULL) return NULL;
+                uint8_t* new_slot = pool_resolve(&ctx->pool, new_pn_vp);
+                if (!new_slot) return NULL;
+                nodes_write_pagenode(new_slot, 0, 0,
+                                     (uint32_t)page_in_segment, ctx->page_size);
+                vfs_mb_release();
 
-            /* Prepend: new_pn → nextPtr = old_root */
-            nodes_write_pagenode(new_pn_slot, 0, fc_page_root,
-                                 (uint32_t)page_in_segment, ctx->page_size);
-            vfs_mb_release();
+                if (prev_vp == 0) {
+                    /* Empty chain — CAS into rootPtr */
+                    int64_t old_root = vfs_cas_i64(
+                        (int64_t*)(fc_slot + FILECONTENT_OFF_ROOTPTR),
+                        0, new_pn_vp);
+                    if (old_root != 0) {
+                        fc_page_root = old_root;
+                        goto retry_walk;
+                    }
+                } else {
+                    uint8_t* tail_slot = pool_resolve(&ctx->pool, prev_vp);
+                    if (!tail_slot) return NULL;
+                    int64_t old_next = vfs_cas_i64(
+                        (int64_t*)(tail_slot + PAGENODE_OFF_NEXTPTR),
+                        0, new_pn_vp);
+                    if (old_next != 0) {
+                        fc_page_root = vfs_rd8_s(fc_slot,
+                            FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+                        goto retry_walk;
+                    }
+                }
+                return pool_resolve(&ctx->pool, new_pn_vp);
+            }
 
-            int64_t expected_root = fc_page_root;
-            int64_t desired_root = new_pn_vp;
-            int64_t old_root = vfs_cas_i64(
-                (int64_t*)(fc_slot + FILECONTENT_OFF_ROOTPTR),
-                expected_root, desired_root);
-            if (old_root != expected_root) {
-                /* CAS failed — another thread prepended.  Our orphaned
-                 * PageNode will be GC'd.  Re-walk the chain. */
-                fc_page_root = old_root;
+        retry_walk:
+            /* CAS failed — re-walk the chain from the (possibly updated) root */
+            {
                 pn_vp = fc_page_root;
+                prev_vp = 0;
                 while (pn_vp != 0) {
                     uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
                     if (!pn_slot) break;
@@ -395,14 +454,13 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                     (void)pn_ver_root;
                     if ((int64_t)pn_idx == page_in_segment)
                         return pool_resolve(&ctx->pool, pn_vp);
+                    prev_vp = pn_vp;
                     pn_vp = pn_next;
                 }
-                /* Still not found — another thread's insert must be a
-                 * different page.  Retry our own CAS-prepend. */
-                i--;  /* retry this segment */
+                /* Still not found — retry the whole segment resolution */
+                i--;
                 continue;
             }
-            return pool_resolve(&ctx->pool, new_pn_vp);
         }
 
         prev_fc_vp = fc_vp;
