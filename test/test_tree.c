@@ -461,20 +461,19 @@ static void test_resolve_page_growth(void) {
 
     /* Verify it's a PageNode with versionRootPtr=0 (never written) */
     CHECK_EQ(vfs_rd8(pn0, PAGENODE_OFF_VERSIONROOT), 0);
+    CHECK_EQ((uint32_t)vfs_rd4_s(pn0, PAGENODE_OFF_PAGEINDEX, ctx->page_size), 0u);
 
-    /* Cache should now be populated for this segment */
-
-    /* Resolve page 1 — should hit cached array */
+    /* Resolve page 1 — should allocate a second PageNode */
     uint8_t* pn1 = tree_resolve_page(ctx, file_vp, 1, 0, true);
     CHECK(pn1 != NULL);
     CHECK_EQ(vfs_rd8(pn1, PAGENODE_OFF_VERSIONROOT), 0);
+    CHECK_EQ((uint32_t)vfs_rd4_s(pn1, PAGENODE_OFF_PAGEINDEX, ctx->page_size), 1u);
 
     /* Resolve page at segment boundary — should create second segment */
     uint8_t* pn_first_new = tree_resolve_page(ctx, file_vp, seg_size, 0, true);
     CHECK(pn_first_new != NULL);
     CHECK_EQ(vfs_rd8(pn_first_new, PAGENODE_OFF_VERSIONROOT), 0);
-
-    /* Cache should now point to the second segment */
+    CHECK_EQ((uint32_t)vfs_rd4_s(pn_first_new, PAGENODE_OFF_PAGEINDEX, ctx->page_size), 0u);
 
     /* Resolve page 0 again — cache may have been invalidated by second segment.
        Just verify it still works. */
