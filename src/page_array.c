@@ -8,26 +8,23 @@ int segment_array_build(Pool* pool, int64_t fc_pageRootPtr,
     arr->vptr_array = (int64_t*)malloc((size_t)segment_size * sizeof(int64_t));
     if (!arr->vptr_array) return VFS_ERR_NOMEM;
 
-    int64_t vp = fc_pageRootPtr;
-    uint32_t i;
-    for (i = 0; i < segment_size; i++) {
-        if (vp == VFS_VPTR_NULL) {
-            /* Fewer pages than segment_size → fill rest with null */
-            for (; i < segment_size; i++)
-                arr->vptr_array[i] = VFS_VPTR_NULL;
-            break;
-        }
-        arr->vptr_array[i] = vp;
+    /* Fill with VFS_VPTR_NULL (0) — unallocated pages map to NULL */
+    memset(arr->vptr_array, 0, segment_size * sizeof(int64_t));
 
-        /* Walk to next PageNode */
+    /* Walk the sparse PageNode chain, placing each node at its page_index */
+    int64_t page_size = pool->sb->page_size;
+    int64_t vp = fc_pageRootPtr;
+    while (vp != 0) {
         uint8_t* slot = pool_resolve(pool, vp);
-        if (!slot) {
-            /* Page not in cache — can't walk further, fill rest as null */
-            for (i++; i < segment_size; i++)
-                arr->vptr_array[i] = VFS_VPTR_NULL;
-            break;
-        }
-        vp = vfs_rd8_s(slot, PAGENODE_OFF_NEXTPTR, pool->sb->page_size);
+        if (!slot) break;
+        uint32_t pn_idx;
+        int64_t pn_next;
+        int64_t pn_ver_root;
+        nodes_read_pagenode(slot, &pn_ver_root, &pn_next, &pn_idx, page_size);
+        (void)pn_ver_root;
+        if (pn_idx < segment_size)
+            arr->vptr_array[pn_idx] = vp;
+        vp = pn_next;
     }
 
     arr->built = true;
