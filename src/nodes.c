@@ -95,10 +95,11 @@ void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* 
  * --------------------------------------------------------------------------- */
 
 void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr,
-                           int64_t page_size) {
+                           uint32_t page_index, int64_t page_size) {
     vfs_wr8_s(slot, PAGENODE_OFF_VERSIONROOT, versionRootPtr, page_size);
     vfs_wr8_s(slot, PAGENODE_OFF_NEXTPTR, nextPtr, page_size);
-    memset(slot + 16, 0, 16);
+    vfs_wr4_s(slot, PAGENODE_OFF_PAGEINDEX, (int32_t)page_index, page_size);
+    memset(slot + 20, 0, 12);
 }
 
 void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr, int64_t* nextPtr,
