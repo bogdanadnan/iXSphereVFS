@@ -18,7 +18,8 @@
  * --------------------------------------------------------------------------- */
 
 typedef struct SegmentArray {
-    int64_t* vptr_array;     /* malloc'd array of VirtualPtrs, size = segment_size */
+    int64_t* vptr_array;     /* malloc'd array of VirtualPtrs, size = seg_size */
+    uint32_t seg_size;        /* number of entries in vptr_array */
     bool     built;           /* set to true after chain walk completes */
 } SegmentArray;
 

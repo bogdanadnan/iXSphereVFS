@@ -2,6 +2,7 @@
 #include "page_array.h"
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 
 int segment_array_build(Pool* pool, int64_t fc_pageRootPtr,
                         uint32_t segment_size, SegmentArray* arr) {
@@ -10,6 +11,7 @@ int segment_array_build(Pool* pool, int64_t fc_pageRootPtr,
 
     /* Fill with VFS_VPTR_NULL (0) — unallocated pages map to NULL */
     memset(arr->vptr_array, 0, segment_size * sizeof(int64_t));
+    arr->seg_size = segment_size;
 
     /* Walk the sparse PageNode chain, placing each node at its page_index */
     int64_t page_size = pool->sb->page_size;
@@ -34,6 +36,7 @@ int segment_array_build(Pool* pool, int64_t fc_pageRootPtr,
 uint8_t* segment_array_resolve(Pool* pool, SegmentArray* arr,
                                uint32_t page_index) {
     if (!arr->built) return NULL;
+    assert(page_index < arr->seg_size);
     int64_t vp = arr->vptr_array[page_index];
     if (vp == VFS_VPTR_NULL) return NULL;
     return pool_resolve(pool, vp);
