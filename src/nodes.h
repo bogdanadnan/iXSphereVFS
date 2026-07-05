@@ -104,20 +104,24 @@ void nodes_write_filecontent(uint8_t* slot, int64_t pageRootPtr, int64_t nextPtr
 void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* nextPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
- * PageNode (32 bytes, 16 used, 16 reserved)
+ * PageNode (32 bytes, 20 used, 12 reserved)
  *
  *   Offset  Size  Field
  *   ──────  ────  ─────
- *     0      8    versionRootPtr  (VirtualPtr — first VersionPage, 0 = unwritten)
- *     8      8    nextPtr         (VirtualPtr — next PageNode, 0 = end)
- *    16     16    reserved
+ *     0      8    versionRoot  (VirtualPtr — first VersionPage, 0 = unwritten)
+ *     8      8    nextPtr      (VirtualPtr — next PageNode, 0 = end)
+ *    16      4    pageIndex    (uint32 — logical page index within segment)
+ *    20     12    reserved
  * --------------------------------------------------------------------------- */
 
 #define PAGENODE_OFF_VERSIONROOT    0
 #define PAGENODE_OFF_NEXTPTR          8
+#define PAGENODE_OFF_PAGEINDEX       16
 
-void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr, int64_t page_size);
-void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr, int64_t* nextPtr, int64_t page_size);
+void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr,
+                          uint32_t page_index, int64_t page_size);
+void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr,
+                         int64_t* nextPtr, uint32_t* page_index, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
  * VersionPage (32 bytes, 20 used, 12 reserved)
