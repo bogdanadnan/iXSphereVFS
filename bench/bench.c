@@ -130,8 +130,6 @@ typedef struct {
     int       ok;
 } bench_thread_ctx;
 
-static int64_t resolve_child_vp(vfs_t* vfs, int64_t parent_vp, const char* name);
-
 static void* bench_write_worker(void* arg) {
     bench_thread_ctx* c = (bench_thread_ctx*)arg;
     int64_t root_vp = c->vfs->ctx->rootNodeOffset;
@@ -268,32 +266,6 @@ static void report_full(const char* name, int count, int threads, double elapsed
     printf("  data:  hits=%lld  total=%lld  ratio=%.1f%%\n",
            (long long)dh, (long long)dt, dratio * 100.0);
     printf("\n");
-}
-
-/* ---------------------------------------------------------------------------
- * Helper: resolve a file VirtualPtr under root by name.
- * vfs_create returns a nodeId, but vfs_write expects a VirtualPtr.
- * We walk the root's DirContent chain to find the matching entry's childPtr.
- * --------------------------------------------------------------------------- */
-
-static int64_t resolve_child_vp(vfs_t* vfs, int64_t parent_vp, const char* name) {
-    uint8_t* rs = pool_resolve(&vfs->ctx->pool, parent_vp);
-    if (!rs) return 0;
-    int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, vfs->ctx->page_size);
-    int64_t w = h;
-    while (w != 0) {
-        uint8_t* dc = pool_resolve(&vfs->ctx->pool, w);
-        if (!dc) break;
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, vfs->ctx->page_size);
-        (void)cc; (void)ce;
-        char en[256];
-        int nl = nodes_read_name(&vfs->ctx->pool, np, en, (int)sizeof(en));
-        if (nl > 0 && strcmp(en, name) == 0) return cp;
-        w = nx;
-    }
-    return 0;
 }
 
 /* ---------------------------------------------------------------------------
