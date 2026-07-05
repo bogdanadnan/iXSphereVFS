@@ -19,6 +19,8 @@
 #define SB_OFF_TREE_LOCK_STATE  32  /* int64_t — §9.6 bit layout */
 #define SB_OFF_NEXT_NODE_ID     40  /* uint32_t */
 #define SB_OFF_TOUCHED_FILES_PTR 48 /* int64_t — VirtualPtr */
+#define SB_OFF_FORMAT_VERSION   56 /* uint32_t — format version number */
+/* Bytes 60-63 are reserved for future 8-byte alignment. */
 #define SB_OFF_SEGMENT_SIZE     16  /* in StorageBackend header page (page 0) */
 
 #define SUPERBLOCK_PAGE 1
