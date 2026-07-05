@@ -360,7 +360,6 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 int64_t  gen;
             } tcache[TCACHE_SIZE];
             static __thread int tcache_next = 0;
-            (void)tcache_next;  /* used below for cache population */
 
             int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
             int64_t cache_key = (file_vp << 20) | (segment_idx & 0xFFFFF);
@@ -370,7 +369,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 if (tcache[ci].key == cache_key &&
                     tcache[ci].seg_size == seg_size &&
                     tcache[ci].populated) {
-                    if (tcache[ci].gen != ctx->gc_generation) {
+                    if (tcache[ci].gen != vfs_atomic_load_i64(&ctx->gc_generation)) {
                         tcache[ci].populated = false;
                     } else {
                         int64_t pn_vp = tcache[ci].vptr_array[page_in_segment];
@@ -388,8 +387,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
             int64_t pn_vp = fc_page_root;
             int64_t prev_vp = 0;
             int total_pages_seen = 0;
-            (void)total_pages_seen;  /* used below for cache threshold */
-            (void)total_pages_seen;
+            int64_t result_vp = 0;
 #ifndef NDEBUG
             int64_t prev_page_index = -1;
 #endif
@@ -408,8 +406,10 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 prev_page_index = (int64_t)pn_idx;
 #endif
 
-                if ((int64_t)pn_idx == page_in_segment)
-                    return pool_resolve(&ctx->pool, pn_vp);
+                if ((int64_t)pn_idx == page_in_segment) {
+                    result_vp = pn_vp;
+                    goto done;
+                }
 
                 if ((int64_t)pn_idx > page_in_segment) {
                     /* Found a higher-index node — insert before it */
@@ -424,7 +424,6 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                     vfs_mb_release();
 
                     if (prev_vp == 0) {
-                        /* Insert at head */
                         int64_t old_root = vfs_cas_i64(
                             (int64_t*)(fc_slot + FILECONTENT_OFF_ROOTPTR),
                             pn_vp, new_pn_vp);
@@ -444,7 +443,8 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                             goto retry_walk;
                         }
                     }
-                    return pool_resolve(&ctx->pool, new_pn_vp);
+                    result_vp = new_pn_vp;
+                    goto done;
                 }
 
                 prev_vp = pn_vp;
@@ -465,7 +465,6 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 vfs_mb_release();
 
                 if (prev_vp == 0) {
-                    /* Empty chain — CAS into rootPtr */
                     int64_t old_root = vfs_cas_i64(
                         (int64_t*)(fc_slot + FILECONTENT_OFF_ROOTPTR),
                         0, new_pn_vp);
@@ -485,8 +484,38 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                         goto retry_walk;
                     }
                 }
-                return pool_resolve(&ctx->pool, new_pn_vp);
+                result_vp = new_pn_vp;
+                goto done;
             }
+
+        done:
+            /* Populate tcache if the chain is dense enough */
+            if (total_pages_seen >= SPARSE_CACHE_THRESHOLD) {
+                int slot = tcache_next % TCACHE_SIZE;
+                int64_t walk = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR,
+                                         ctx->page_size);
+                /* Zero out tcache array entries */
+                for (uint32_t j = 0; j < seg_size; j++)
+                    tcache[slot].vptr_array[j] = VFS_VPTR_NULL;
+                while (walk != 0) {
+                    uint8_t* pn = pool_resolve(&ctx->pool, walk);
+                    if (!pn) break;
+                    uint32_t idx;
+                    int64_t next;
+                    int64_t ver;
+                    nodes_read_pagenode(pn, &ver, &next, &idx, ctx->page_size);
+                    (void)ver;
+                    if (idx < seg_size)
+                        tcache[slot].vptr_array[idx] = walk;
+                    walk = next;
+                }
+                tcache[slot].key = cache_key;
+                tcache[slot].seg_size = seg_size;
+                tcache[slot].populated = true;
+                tcache[slot].gen = vfs_atomic_load_i64(&ctx->gc_generation);
+                tcache_next++;
+            }
+            return pool_resolve(&ctx->pool, result_vp);
 
         retry_walk:
             /* CAS failed — re-walk the chain from the (possibly updated) root */
