@@ -1486,6 +1486,33 @@ static void test_sparse_chain_tail_append(void) {
     vfs_unmount(vfs);
 }
 
+#ifndef NDEBUG
+/* Debug-only test: depends on tree_resolve_page_cache_builds counter. */
+static void test_sparse_threshold_cache(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "threshold.txt", 0);
+    CHECK(file_vp > 0);
+
+    /* Resolve pages 0..63 — 64 unique PageNodes, at SPARSE_CACHE_THRESHOLD (64) */
+    for (int i = 0; i < 64; i++) {
+        uint8_t* pn = tree_resolve_page(ctx, file_vp, (int64_t)i, 0, true);
+        CHECK(pn != NULL);
+    }
+    CHECK_EQ(tree_resolve_page_cache_builds_get(), 0);
+
+    /* Resolve page 64 — 65th unique PageNode, exceeds threshold */
+    uint8_t* pn = tree_resolve_page(ctx, file_vp, 64, 0, true);
+    CHECK(pn != NULL);
+    CHECK_EQ(tree_resolve_page_cache_builds_get(), 1);
+
+    vfs_unmount(vfs);
+}
+#endif
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1605,6 +1632,11 @@ int main(void) {
 
     unlink(test_path);
     test_sparse_chain_tail_append();
+
+#ifndef NDEBUG
+    unlink(test_path);
+    test_sparse_threshold_cache();
+#endif
 
     /* Clean up */
     unlink(test_path);

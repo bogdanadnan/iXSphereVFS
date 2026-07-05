@@ -12,6 +12,14 @@
  * chain-walk to a rebuilt in-memory array for amortized O(1) lookups. */
 #define SPARSE_CACHE_THRESHOLD 64
 
+#ifndef NDEBUG
+#include <stdatomic.h>
+static atomic_int tree_resolve_page_cache_builds = 0;
+int tree_resolve_page_cache_builds_get(void) {
+    return atomic_load(&tree_resolve_page_cache_builds);
+}
+#endif
+
 /* ---------------------------------------------------------------------------
  * Superblock I/O helpers
  * --------------------------------------------------------------------------- */
@@ -498,6 +506,9 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                     tcache[slot].populated = true;
                     tcache[slot].gen = vfs_atomic_load_i64(&ctx->gc_generation);
                     tcache_next++;
+#ifndef NDEBUG
+                    atomic_fetch_add(&tree_resolve_page_cache_builds, 1);
+#endif
                 }
             }
             return pool_resolve(&ctx->pool, result_vp);
