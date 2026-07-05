@@ -1302,6 +1302,48 @@ static void test_dirchain_list_tombstone(void) {
     vfs_unmount(vfs);
 }
 
+static void test_migrate_v1_to_v2(void) {
+    const char* mig_path = "/tmp/test_migrate.vfs";
+    unlink(mig_path);
+
+    /* Step 1: create a v2 VFS, create a file with data */
+    vfs_t* vfs = vfs_mount(mig_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "data.txt", 0);
+    CHECK(file_vp > 0);
+    CHECK_EQ(vfs_write(vfs, file_vp, "MIGRATE_TEST", 0, 12, 0), 12);
+
+    /* Step 2: downgrade formatVersion to 1 in-memory and persist it */
+    ctx->formatVersion = 1;
+    tree_superblock_write(ctx);
+    vfs_unmount(vfs);
+
+    /* Step 3: reopen — migration should set formatVersion back to 2 */
+    vfs = vfs_mount(mig_path, 8192);
+    CHECK(vfs != NULL);
+    ctx = vfs->ctx;
+    CHECK_EQ(ctx->formatVersion, 2u);
+
+    /* Step 4: verify the file is still accessible and data is intact */
+    root_vp = ctx->rootNodeOffset;
+    vfs_dirent_t de;
+    int nd = vfs_readdir(vfs, root_vp, &de, 1, 0);
+    CHECK_EQ(nd, 1);
+    int64_t child_vp = de.vp;
+    CHECK(child_vp > 0);
+
+    char rbuf[32];
+    memset(rbuf, 0, sizeof(rbuf));
+    CHECK_EQ(vfs_read(vfs, child_vp, rbuf, 0, 12, 0), 12);
+    CHECK_EQ(strcmp(rbuf, "MIGRATE_TEST"), 0);
+
+    vfs_unmount(vfs);
+    unlink(mig_path);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1408,6 +1450,9 @@ int main(void) {
 
     unlink(test_path);
     test_lock_global_serializes();
+
+    /* --- migration test --- */
+    test_migrate_v1_to_v2();
 
     /* Clean up */
     unlink(test_path);

@@ -212,8 +212,9 @@ int tree_migrate_walk_dir(TreeContext* ctx, int64_t dir_vp) {
                               (int32_t)page_idx, ctx->page_size);
                     uint32_t dummy_idx;
                     int64_t pn_next;
-                    nodes_read_pagenode(pn_slot, NULL, &pn_next, &dummy_idx, ctx->page_size);
-                    (void)dummy_idx;
+                    int64_t pn_ver_root;
+                    nodes_read_pagenode(pn_slot, &pn_ver_root, &pn_next, &dummy_idx, ctx->page_size);
+                    (void)pn_ver_root; (void)dummy_idx;
                     page_idx++;
                     pn_walk = pn_next;
                 }
