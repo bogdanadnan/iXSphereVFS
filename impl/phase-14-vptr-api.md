@@ -80,9 +80,9 @@ The `vp` field is populated during `vfs_readdir` from the DirContent's
 
 ## Acceptance
 
-- [ ] `vfs_create` returns VirtualPtr, usable directly with `vfs_write`/`vfs_read`
-- [ ] `vfs_mkdir` returns VirtualPtr, usable directly with `vfs_rmdir`/`vfs_readdir`
-- [ ] `resolve_child_vp` removed from bench and tests
-- [ ] O(N) DirContent walk after create eliminated
-- [ ] Small file write benchmark: ops/sec improves by >10× at 5,000 files
-- [ ] All 8 tests pass
+- [x] `vfs_create` returns VirtualPtr, usable directly with `vfs_write`/`vfs_read`
+- [x] `vfs_mkdir` returns VirtualPtr, usable directly with `vfs_rmdir`/`vfs_readdir`
+- [x] `resolve_child_vp` removed from bench and tests
+- [x] O(N) DirContent walk after create eliminated
+- [x] Small file write benchmark: ops/sec improves by >10× at 5,000 files
+- [x] All 8 tests pass
