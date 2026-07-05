@@ -80,6 +80,7 @@ int tree_migrate_walk_file(TreeContext* ctx, int64_t file_vp);
  * file_vp  — VirtualPtr to the FileNode
  * logical_page — page index within the file (0-based)
  * epoch    — write epoch (used for segment growth decisions)
+ * is_write — true if caller intends to write (future: lazy allocation + CAS retry)
  */
 uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                            int64_t logical_page, int64_t epoch, bool is_write);

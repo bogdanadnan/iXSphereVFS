@@ -255,6 +255,7 @@ int tree_migrate_walk_file(TreeContext* ctx, int64_t file_vp) {
 uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                            int64_t logical_page, int64_t epoch, bool is_write) {
     (void)epoch;  /* not yet used — future: segment growth decisions */
+    (void)is_write;  /* not yet used — future: lazy allocation + CAS retry */
 
     uint32_t seg_size = ctx->segment_size;
     int64_t segment_idx = logical_page / seg_size;
