@@ -344,7 +344,7 @@ static void* bench_sparse_rand_worker(void* arg) {
     memset(data, 'X', sizeof(data));
     unsigned rseed = 42 + c->tid;
     for (int i = 0; i < c->count; i++) {
-        int64_t page = (int64_t)(rand_r(&rseed) % c->count);
+        int64_t page = (int64_t)(rand_r(&rseed) % c->vfs->ctx->segment_size);
         int written = vfs_write(c->vfs, fvp, data, page * page_sz, sizeof(data), 0);
         if (written == (int)sizeof(data)) c->ok++;
     }
@@ -376,7 +376,7 @@ static int bench_sparse_random_writes(vfs_t* vfs, int count, int threads,
         int ok = 0;
         for (int i = 0; i < count; i++) {
             double op_t0 = now_sec();
-            int64_t page = (int64_t)(rand_r(&rseed) % count);
+            int64_t page = (int64_t)(rand_r(&rseed) % vfs->ctx->segment_size);
             int written = vfs_write(vfs, file_vp, data, page * page_sz, sizeof(data), 0);
             if (written == (int)sizeof(data)) ok++;
             lat_record(now_sec() - op_t0);
