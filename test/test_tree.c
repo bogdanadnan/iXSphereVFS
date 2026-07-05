@@ -1513,6 +1513,53 @@ static void test_sparse_threshold_cache(void) {
 }
 #endif
 
+static void test_sparse_read_no_allocate(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "noread.txt", 0);
+    CHECK(file_vp > 0);
+
+    /* Read attempt on unwritten page — should return NULL, no allocation */
+    uint8_t* pn = tree_resolve_page(ctx, file_vp, 5, 0, false);
+    CHECK(pn == NULL);
+
+    /* Assert no FileContent was allocated */
+    uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
+    CHECK(file_slot != NULL);
+    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    CHECK_EQ(fc_vp, 0);
+
+    /* Write to page 5 — should allocate exactly 1 PageNode */
+    pn = tree_resolve_page(ctx, file_vp, 5, 0, true);
+    CHECK(pn != NULL);
+    uint32_t idx = (uint32_t)vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+    CHECK_EQ(idx, 5u);
+
+    /* Walk chain — exactly 1 PageNode */
+    fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    CHECK(fc_vp != 0);
+    uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
+    CHECK(fc_slot != NULL);
+    int64_t pn_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+    CHECK(pn_root != 0);
+
+    int pn_count = 0;
+    int64_t walk = pn_root;
+    while (walk != 0) {
+        pn_count++;
+        uint8_t* pw = pool_resolve(&ctx->pool, walk);
+        CHECK(pw != NULL);
+        int64_t next = vfs_rd8_s(pw, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+        walk = next;
+    }
+    CHECK_EQ(pn_count, 1);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1637,6 +1684,9 @@ int main(void) {
     unlink(test_path);
     test_sparse_threshold_cache();
 #endif
+
+    unlink(test_path);
+    test_sparse_read_no_allocate();
 
     /* Clean up */
     unlink(test_path);
