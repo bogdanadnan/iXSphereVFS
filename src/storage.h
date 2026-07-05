@@ -88,6 +88,7 @@ typedef struct {
     int64_t      dirty_count;
     int64_t      writeback_threshold;  /* trigger write-back when dirty_count >= this */
     int64_t      page_size;   /* cached page size for memcpy */
+    volatile int lru_lock;     /* protects lru_head/lru_tail and lru_prev/lru_next */
 } PageCache;
 
 /* ---------------------------------------------------------------------------

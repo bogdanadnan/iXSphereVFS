@@ -40,34 +40,36 @@ static inline void spin_unlock(int* lock) {
  * --------------------------------------------------------------------------- */
 
 static void lru_promote(PageCache* cache, CacheEntry* e) {
-    if (cache->lru_head == e) return;  /* already at head */
-
-    /* Remove from current position */
+    spin_lock(&cache->lru_lock);
+    if (cache->lru_head == e) { spin_unlock(&cache->lru_lock); return; }
     if (e->lru_prev) e->lru_prev->lru_next = e->lru_next;
     if (e->lru_next) e->lru_next->lru_prev = e->lru_prev;
     if (cache->lru_tail == e) cache->lru_tail = e->lru_prev;
-
-    /* Insert at head */
     e->lru_prev = NULL;
     e->lru_next = cache->lru_head;
     if (cache->lru_head) cache->lru_head->lru_prev = e;
     cache->lru_head = e;
     if (!cache->lru_tail) cache->lru_tail = e;
+    spin_unlock(&cache->lru_lock);
 }
 
 static void lru_insert_head(PageCache* cache, CacheEntry* e) {
+    spin_lock(&cache->lru_lock);
     e->lru_prev = NULL;
     e->lru_next = cache->lru_head;
     if (cache->lru_head) cache->lru_head->lru_prev = e;
     cache->lru_head = e;
     if (!cache->lru_tail) cache->lru_tail = e;
+    spin_unlock(&cache->lru_lock);
 }
 
 static void lru_remove(PageCache* cache, CacheEntry* e) {
+    spin_lock(&cache->lru_lock);
     if (e->lru_prev) e->lru_prev->lru_next = e->lru_next;
     if (e->lru_next) e->lru_next->lru_prev = e->lru_prev;
     if (cache->lru_head == e) cache->lru_head = e->lru_next;
     if (cache->lru_tail == e) cache->lru_tail = e->lru_prev;
+    spin_unlock(&cache->lru_lock);
 }
 
 /* ---------------------------------------------------------------------------
@@ -85,6 +87,7 @@ void cache_init(PageCache* cache, int64_t page_size) {
     cache->dirty_count  = 0;
     cache->writeback_threshold = cache->max_entries / 4;
     cache->page_size    = page_size;
+    cache->lru_lock     = 0;
 }
 
 void cache_destroy(PageCache* cache) {
