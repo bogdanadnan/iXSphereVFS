@@ -48,6 +48,15 @@ int tree_superblock_read(TreeContext* ctx);
 int tree_superblock_write(TreeContext* ctx);
 
 /* ---------------------------------------------------------------------------
+ * Format migration
+ * --------------------------------------------------------------------------- */
+
+/* Migrate a v1 file (PageNodes without pageIndex) to v2 (with pageIndex).
+ * Walks all FileContent→PageNode chains and writes the correct pageIndex
+ * into each PageNode.  Returns VFS_OK on success, or a negative error code. */
+int tree_migrate_v1_to_v2(TreeContext* ctx);
+
+/* ---------------------------------------------------------------------------
  * Page Resolution (§5, Shared Utility)
  * --------------------------------------------------------------------------- */
 

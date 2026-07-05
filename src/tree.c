@@ -107,6 +107,15 @@ int tree_init(TreeContext* ctx) {
     int err = tree_superblock_read(ctx);
     if (err != VFS_OK) return err;
 
+    /* Migrate v1 files to v2 (adds pageIndex to PageNodes) */
+    if (ctx->formatVersion < 2) {
+        err = tree_migrate_v1_to_v2(ctx);
+        if (err != VFS_OK) return err;
+        ctx->formatVersion = 2;
+        err = tree_superblock_write(ctx);
+        if (err != VFS_OK) return err;
+    }
+
     /* Verify root DirNode */
     if (ctx->rootNodeOffset == 0) return VFS_ERR_IO;
 
