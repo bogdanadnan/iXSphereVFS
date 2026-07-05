@@ -69,12 +69,6 @@ int mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) 
     int64_t offset = physical_offset(sb, logical_page);
     if (offset < 0) return -1;
 
-    /* Snapshot array pointers under lock */
-    while (__sync_lock_test_and_set(&sb->mirror_lock, 1)) {}
-    int32_t*  mp_arr = sb->mirror_pages;
-    uint32_t* gn_arr = sb->generations;
-    __sync_lock_release(&sb->mirror_lock);
-
     PageHeader ph;
     if (read_page_header(sb, offset, &ph) != 0) return -1;
 
@@ -188,16 +182,8 @@ int mirror_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payloa
     /* Sync generation from disk if in-memory is stale (after remount) */
     sync_generation_from_disk(sb, logical_page);
 
-    /* Snapshot array pointers under lock — another thread may realloc
-       via ensure_mirror_arrays, invalidating the pointer we read from. */
-    int acquire_lock = 0;
-    while (__sync_lock_test_and_set(&sb->mirror_lock, 1)) {}
-    int32_t*  mp_arr = sb->mirror_pages;
-    uint32_t* gn_arr = sb->generations;
-    __sync_lock_release(&sb->mirror_lock);
-
-    uint32_t gen = gn_arr[logical_page];
-    int32_t  mp  = mp_arr[logical_page];
+    uint32_t gen = sb->generations[logical_page];
+    int32_t  mp  = sb->mirror_pages[logical_page];
 
     uint32_t crc = vfs_crc32c(payload, (size_t)sb->page_size);
 
