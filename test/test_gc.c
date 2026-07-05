@@ -697,9 +697,9 @@ static void test_gc_dircontent_survival(void) {
     int64_t root_vp = ctx->rootNodeOffset;
 
     /* Create files at epoch 0 */
-    int f1 = vfs_create(vfs, root_vp, "alive.txt", 0);
+    int64_t f1 = vfs_create(vfs, root_vp, "alive.txt", 0);
     CHECK(f1 > 0);
-    int f2 = vfs_create(vfs, root_vp, "doomed.txt", 0);
+    int64_t f2 = vfs_create(vfs, root_vp, "doomed.txt", 0);
     CHECK(f2 > 0);
 
     /* Verify two entries exist at epoch 0 */
@@ -726,7 +726,7 @@ static void test_gc_dircontent_survival(void) {
     CHECK_EQ(snap, 1);
 
     /* Write at epoch 2 (live head) */
-    int f3 = vfs_create(vfs, root_vp, "after_snap.txt", 2);
+    int64_t f3 = vfs_create(vfs, root_vp, "after_snap.txt", 2);
     CHECK(f3 > 0);
 
     /* Delete "doomed.txt" at epoch 2 (creates tombstone) */

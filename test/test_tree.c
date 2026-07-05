@@ -826,7 +826,7 @@ static void test_mkdir_basic(void) {
     int64_t root_vp = ctx->rootNodeOffset;
 
     /* Create a file and check the VirtualPtr in the DirContent chain */
-    int ret = vfs_mkdir(vfs, root_vp, "a", 0);
+    int64_t ret = vfs_mkdir(vfs, root_vp, "a", 0);
     CHECK(ret > 0);
 
     /* Verify entry exists in root's DirContent chain */
