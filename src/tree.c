@@ -807,6 +807,7 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     int written = 0;
     for (int i = 0; i < best_count && written < max; i++) {
         if (!best_name_set[i]) continue;
+        entries[written].vp     = best_childPtr[i];
         entries[written].nodeId = best_child[i];
         entries[written].name[0] = '\0';
         entries[written].isDir = false;

@@ -56,6 +56,9 @@ typedef struct vfs_t vfs_t;
  * --------------------------------------------------------------------------- */
 
 typedef struct {
+    int64_t vp;       /* VirtualPtr of the child (FileNode or DirNode), populated
+                         by vfs_readdir from the DirContent's childPtr at no
+                         extra cost. */
     int64_t nodeId;
     char    name[256];
     bool    isDir;
