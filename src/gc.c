@@ -1030,9 +1030,9 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
 
     /* Bump the GC generation counter — signals to worker threads that
      * pool pages may have been remapped (stale VirtualPtrs invalidated).
-     * Atomic increment is sufficient: GC holds tree exclusive lock so no
+     * Atomic store is sufficient: GC holds tree exclusive lock so no
      * worker is mid-lookup against old pool pages. */
-    ctx->gc_generation++;
+    vfs_atomic_store_i64(&ctx->gc_generation, ctx->gc_generation + 1);
 
     return VFS_OK;
 }
