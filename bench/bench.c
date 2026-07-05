@@ -119,6 +119,95 @@ static double now_sec(void) {
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+/* ---------------------------------------------------------------------------
+ * Multi-threaded benchmark infrastructure
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    vfs_t*    vfs;
+    int       tid;
+    int       count;
+    int       ok;
+    const char* path;   /* VFS file path for per-thread open */
+    int64_t   page_sz;
+    int64_t   cache_max; /* cache size override */
+} bench_thread_ctx;
+
+static int64_t resolve_child_vp(vfs_t* vfs, int64_t parent_vp, const char* name);
+
+static void* bench_write_worker(void* arg) {
+    bench_thread_ctx* c = (bench_thread_ctx*)arg;
+    vfs_t* vfs = vfs_mount(c->path, c->page_sz);
+    if (!vfs) return NULL;
+    if (c->cache_max > 0) {
+        vfs->ctx->sb->cache.max_entries = (int)c->cache_max;
+        vfs->ctx->sb->cache.writeback_threshold = (int)(c->cache_max / 4);
+    }
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+    for (int i = 0; i < c->count; i++) {
+        char name[64];
+        snprintf(name, sizeof(name), "t%d_w%d.txt", c->tid, i);
+        int nid = vfs_create(vfs, root_vp, name, 0);
+        if (nid <= 0) continue;
+        int64_t file_vp = resolve_child_vp(vfs, root_vp, name);
+        if (file_vp == 0) continue;
+        char data[128];
+        memset(data, 'A' + c->tid, 128);
+        if (vfs_write(vfs, file_vp, data, 0, 128, 0) > 0) c->ok++;
+    }
+    vfs_unmount(vfs);
+    return NULL;
+}
+
+static void* bench_seqwrite_worker(void* arg) {
+    bench_thread_ctx* c = (bench_thread_ctx*)arg;
+    vfs_t* vfs = vfs_mount(c->path, c->page_sz);
+    if (!vfs) return NULL;
+    if (c->cache_max > 0) {
+        vfs->ctx->sb->cache.max_entries = (int)c->cache_max;
+        vfs->ctx->sb->cache.writeback_threshold = (int)(c->cache_max / 4);
+    }
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+    const int page_sz = (int)c->page_sz;
+    char fname[64];
+    snprintf(fname, sizeof(fname), "seqwrite_t%d.dat", c->tid);
+    if (vfs_create(vfs, root_vp, fname, 0) <= 0) { vfs_unmount(vfs); return NULL; }
+    int64_t fvp = resolve_child_vp(vfs, root_vp, fname);
+    if (fvp == 0) { vfs_unmount(vfs); return NULL; }
+    uint8_t* buf = calloc(1, (size_t)page_sz);
+    if (!buf) { vfs_unmount(vfs); return NULL; }
+    for (int i = 0; i < c->count; i++) {
+        if (vfs_write(vfs, fvp, buf, (int64_t)i * page_sz, page_sz, 0) == page_sz) c->ok++;
+    }
+    free(buf);
+    vfs_unmount(vfs);
+    return NULL;
+}
+
+static int bench_run_threads(const char* vfs_path, int64_t page_sz,
+                              int64_t cache_max, int thread_count,
+                              int ops_per_thread, void* (*worker)(void*)) {
+    pthread_t* th = malloc((size_t)thread_count * sizeof(pthread_t));
+    bench_thread_ctx* ctx = calloc((size_t)thread_count, sizeof(bench_thread_ctx));
+    for (int i = 0; i < thread_count; i++) {
+        ctx[i].path = vfs_path;
+        ctx[i].tid = i;
+        ctx[i].count = ops_per_thread;
+        ctx[i].ok = 0;
+        ctx[i].page_sz = page_sz;
+        ctx[i].cache_max = cache_max;
+        pthread_create(&th[i], NULL, worker, &ctx[i]);
+    }
+    int total = 0;
+    for (int i = 0; i < thread_count; i++) {
+        pthread_join(th[i], NULL);
+        total += ctx[i].ok;
+    }
+    free(ctx);
+    free(th);
+    return total;
+}
+
 static void report(const char* name, int count, int threads, double elapsed) {
     double ops_per_sec = (double)count / elapsed;
     printf("%-8s  count=%d  threads=%d  elapsed=%.3fs  ops/sec=%.0f\n",
@@ -257,24 +346,34 @@ static int bench_create(vfs_t* vfs, int count, int threads, const char* path) {
 
 static int bench_write(vfs_t* vfs, int count, int threads, const char* path) {
     (void)path;
-    int64_t root_vp = vfs->ctx->rootNodeOffset;
-    double t0 = now_sec();
-    int ok = 0;
-    for (int i = 0; i < count; i++) {
-        char name[64];
-        snprintf(name, sizeof(name), "w%d.txt", i);
-        int nid = vfs_create(vfs, root_vp, name, 0);
-        if (nid <= 0) continue;
-        int64_t file_vp = resolve_child_vp(vfs, root_vp, name);
-        if (file_vp == 0) continue;
-        char data[128];
-        memset(data, 'A' + (i % 26), sizeof(data));
-        int written = vfs_write(vfs, file_vp, data, 0, sizeof(data), 0);
-        if (written > 0) ok++;
+    if (threads <= 1) {
+        int64_t root_vp = vfs->ctx->rootNodeOffset;
+        double t0 = now_sec();
+        int ok = 0;
+        for (int i = 0; i < count; i++) {
+            char name[64];
+            snprintf(name, sizeof(name), "w%d.txt", i);
+            int nid = vfs_create(vfs, root_vp, name, 0);
+            if (nid <= 0) continue;
+            int64_t file_vp = resolve_child_vp(vfs, root_vp, name);
+            if (file_vp == 0) continue;
+            char data[128];
+            memset(data, 'A' + (i % 26), sizeof(data));
+            int written = vfs_write(vfs, file_vp, data, 0, sizeof(data), 0);
+            if (written > 0) ok++;
+        }
+        double t1 = now_sec();
+        report("write", ok, threads, t1 - t0);
+        return ok;
     }
+    double t0 = now_sec();
+    int ops = count / threads;
+    int64_t cache_max = (int64_t)vfs_cache_get_max_entries(vfs->ctx->sb);
+    int total = bench_run_threads(path, vfs->ctx->page_size, cache_max,
+                                   threads, ops, bench_write_worker);
     double t1 = now_sec();
-    report("write", ok, threads, t1 - t0);
-    return ok;
+    report("write", total, threads, t1 - t0);
+    return total;
 }
 
 /* ---------------------------------------------------------------------------
@@ -479,48 +578,44 @@ static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
 
 static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) {
     (void)path;
-    (void)threads;
-    int64_t root_vp = vfs->ctx->rootNodeOffset;
-    const int page_sz = vfs->ctx->page_size;
-
-    /* Create a single file and resolve its VirtualPtr */
-    int nid = vfs_create(vfs, root_vp, "seqwrite.dat", 0);
-    if (nid <= 0) return 0;
-    int64_t file_vp = resolve_child_vp(vfs, root_vp, "seqwrite.dat");
-    if (file_vp == 0) return 0;
-
-    uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
-    if (!buf) return 0;
-
-    /* Phase 1: Pre-allocate all pages (untimed).
-       Write at each offset to force page allocation, then read the data
-       back to warm the cache.  This separates allocation cost from the
-       timed write throughput measurement. */
-    memset(buf, 0, (size_t)page_sz);
-    for (int i = 0; i < count; i++) {
-        int64_t offset = (int64_t)i * (int64_t)page_sz;
-        vfs_write(vfs, file_vp, buf, offset, page_sz, 0);
+    if (threads <= 1) {
+        int64_t root_vp = vfs->ctx->rootNodeOffset;
+        const int page_sz = vfs->ctx->page_size;
+        int nid = vfs_create(vfs, root_vp, "seqwrite.dat", 0);
+        if (nid <= 0) return 0;
+        int64_t file_vp = resolve_child_vp(vfs, root_vp, "seqwrite.dat");
+        if (file_vp == 0) return 0;
+        uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
+        if (!buf) return 0;
+        memset(buf, 0, (size_t)page_sz);
+        for (int i = 0; i < count; i++)
+            vfs_write(vfs, file_vp, buf, (int64_t)i * page_sz, page_sz, 0);
+        memset(buf, 'W', (size_t)page_sz);
+        lat_init(count);
+        vfs_cache_reset();
+        double t0 = now_sec();
+        int ok = 0;
+        for (int i = 0; i < count; i++) {
+            double op_t0 = now_sec();
+            int written = vfs_write(vfs, file_vp, buf, (int64_t)i * page_sz, page_sz, 0);
+            if (written == page_sz) ok++;
+            lat_record(now_sec() - op_t0);
+        }
+        double t1 = now_sec();
+        free(buf);
+        report_full("seqwrite", ok, threads, t1 - t0);
+        lat_destroy();
+        return ok;
     }
-
-    /* Phase 2: Timed sequential writes (pages already exist, in-place). */
-    memset(buf, 'W', (size_t)page_sz);
-    lat_init(count);
-    vfs_cache_reset();
+    /* Multi-threaded: each thread writes to its own file */
     double t0 = now_sec();
-    int ok = 0;
-    for (int i = 0; i < count; i++) {
-        double op_t0 = now_sec();
-        int64_t offset = (int64_t)i * (int64_t)page_sz;
-        int written = vfs_write(vfs, file_vp, buf, offset, page_sz, 0);
-        if (written == page_sz) ok++;
-        lat_record(now_sec() - op_t0);
-    }
+    int ops = count / threads;
+    int64_t cache_max = (int64_t)vfs_cache_get_max_entries(vfs->ctx->sb);
+    int total = bench_run_threads(path, vfs->ctx->page_size, cache_max,
+                                   threads, ops, bench_seqwrite_worker);
     double t1 = now_sec();
-    free(buf);
-
-    report_full("seqwrite", ok, threads, t1 - t0);
-    lat_destroy();
-    return ok;
+    report("seqwrite", total, threads, t1 - t0);
+    return total;
 }
 
 /* ---------------------------------------------------------------------------
@@ -685,8 +780,6 @@ int main(int argc, char** argv) {
         strstr(opts.workload, ":read") == NULL)
         unlink(opts.output);
 
-    if (opts.threads > 1)
-        fprintf(stderr, "warning: --threads not yet implemented, running single-threaded\n");
 
     vfs_t* vfs = vfs_mount(opts.output, opts.page_size);
     if (!vfs) {
