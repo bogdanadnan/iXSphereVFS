@@ -320,36 +320,79 @@ static int bench_small_file_create(vfs_t* vfs, int count, int threads,
 }
 
 /* ---------------------------------------------------------------------------
- * Workload: sparse random writes — create file, random 128B writes to
- * pages in 0..segment_size-1, testing sparse chain performance
+ * Workload: sparse random writes — pre-create file with count pages,
+ * then random 128B writes to random pages in 0..count-1, measuring
+ * sparse chain performance with optional multi-threading
  * --------------------------------------------------------------------------- */
+
+static void* bench_sparse_rand_worker(void* arg) {
+    bench_thread_ctx* c = (bench_thread_ctx*)arg;
+    const int page_sz = c->vfs->ctx->page_size;
+    int64_t root_vp = c->vfs->ctx->rootNodeOffset;
+    char fname[64];
+    snprintf(fname, sizeof(fname), "sparse_t%d.dat", c->tid);
+    int64_t fvp = vfs_create(c->vfs, root_vp, fname, 0);
+    if (fvp <= 0) return NULL;
+    /* Pre-populate c->count pages (untimed) */
+    uint8_t* zbuf = calloc(1, (size_t)page_sz);
+    if (!zbuf) return NULL;
+    for (int i = 0; i < c->count; i++)
+        vfs_write(c->vfs, fvp, zbuf, (int64_t)i * page_sz, page_sz, 0);
+    free(zbuf);
+    /* Timed random writes */
+    char data[128];
+    memset(data, 'X', sizeof(data));
+    unsigned rseed = 42 + c->tid;
+    for (int i = 0; i < c->count; i++) {
+        int64_t page = (int64_t)(rand_r(&rseed) % c->count);
+        int written = vfs_write(c->vfs, fvp, data, page * page_sz, sizeof(data), 0);
+        if (written == (int)sizeof(data)) c->ok++;
+    }
+    return NULL;
+}
 
 static int bench_sparse_random_writes(vfs_t* vfs, int count, int threads,
                                       const char* path) {
     (void)path;
-    (void)threads;
-    int64_t root_vp = vfs->ctx->rootNodeOffset;
-    uint32_t seg_size = vfs->ctx->segment_size;
-    int64_t file_vp = vfs_create(vfs, root_vp, "sparse_rand.dat", 0);
-    if (file_vp <= 0) return 0;
+    if (threads <= 1) {
+        const int page_sz = vfs->ctx->page_size;
+        int64_t root_vp = vfs->ctx->rootNodeOffset;
+        int64_t file_vp = vfs_create(vfs, root_vp, "sparse_rand.dat", 0);
+        if (file_vp <= 0) return 0;
 
-    lat_init(count);
-    char data[128];
-    memset(data, 'X', sizeof(data));
-    unsigned rseed = 42;
-    double t0 = now_sec();
-    int ok = 0;
-    for (int i = 0; i < count; i++) {
-        double op_t0 = now_sec();
-        int64_t page = (int64_t)(rand_r(&rseed) % seg_size);
-        int written = vfs_write(vfs, file_vp, data, page * 128, sizeof(data), 0);
-        if (written == (int)sizeof(data)) ok++;
-        lat_record(now_sec() - op_t0);
+        /* Pre-populate count pages (untimed) */
+        uint8_t* zbuf = calloc(1, (size_t)page_sz);
+        if (!zbuf) return 0;
+        for (int i = 0; i < count; i++)
+            vfs_write(vfs, file_vp, zbuf, (int64_t)i * page_sz, page_sz, 0);
+        free(zbuf);
+        vfs_cache_reset();
+
+        lat_init(count);
+        char data[128];
+        memset(data, 'X', sizeof(data));
+        unsigned rseed = 42;
+        double t0 = now_sec();
+        int ok = 0;
+        for (int i = 0; i < count; i++) {
+            double op_t0 = now_sec();
+            int64_t page = (int64_t)(rand_r(&rseed) % count);
+            int written = vfs_write(vfs, file_vp, data, page * page_sz, sizeof(data), 0);
+            if (written == (int)sizeof(data)) ok++;
+            lat_record(now_sec() - op_t0);
+        }
+        double t1 = now_sec();
+        report_full("sparse_rand_write", ok, threads, t1 - t0);
+        lat_destroy();
+        return ok;
     }
+    /* Multi-threaded: each thread writes to its own file */
+    double t0 = now_sec();
+    int ops = count / threads;
+    int total = bench_run_threads(vfs, threads, ops, bench_sparse_rand_worker);
     double t1 = now_sec();
-    report_full("sparse_rand_write", ok, threads, t1 - t0);
-    lat_destroy();
-    return ok;
+    report("sparse_rand_write", total, threads, t1 - t0);
+    return total;
 }
 
 /* ---------------------------------------------------------------------------
