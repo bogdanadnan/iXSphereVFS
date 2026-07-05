@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <assert.h>
 
 /* ---------------------------------------------------------------------------
  * Superblock I/O helpers
@@ -350,6 +351,9 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
              * Track prev_vp for sorted insertion. */
             int64_t pn_vp = fc_page_root;
             int64_t prev_vp = 0;
+#ifndef NDEBUG
+            int64_t prev_page_index = 0;
+#endif
             while (pn_vp != 0) {
                 uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
                 if (!pn_slot) break;
@@ -358,6 +362,11 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 int64_t pn_ver_root;
                 nodes_read_pagenode(pn_slot, &pn_ver_root, &pn_next, &pn_idx, ctx->page_size);
                 (void)pn_ver_root;
+
+#ifndef NDEBUG
+                assert(prev_page_index <= (int64_t)pn_idx);
+                prev_page_index = (int64_t)pn_idx;
+#endif
 
                 if ((int64_t)pn_idx == page_in_segment)
                     return pool_resolve(&ctx->pool, pn_vp);
@@ -444,6 +453,9 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
             {
                 pn_vp = fc_page_root;
                 prev_vp = 0;
+#ifndef NDEBUG
+                prev_page_index = 0;
+#endif
                 while (pn_vp != 0) {
                     uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
                     if (!pn_slot) break;
@@ -452,6 +464,10 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                     int64_t pn_ver_root;
                     nodes_read_pagenode(pn_slot, &pn_ver_root, &pn_next, &pn_idx, ctx->page_size);
                     (void)pn_ver_root;
+#ifndef NDEBUG
+                    assert(prev_page_index <= (int64_t)pn_idx);
+                    prev_page_index = (int64_t)pn_idx;
+#endif
                     if ((int64_t)pn_idx == page_in_segment)
                         return pool_resolve(&ctx->pool, pn_vp);
                     prev_vp = pn_vp;
