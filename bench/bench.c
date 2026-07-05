@@ -138,7 +138,7 @@ static void* bench_write_worker(void* arg) {
     for (int i = 0; i < c->count; i++) {
         char name[64];
         snprintf(name, sizeof(name), "t%d_w%d.txt", c->tid, i);
-        int nid = vfs_create(c->vfs, root_vp, name, 0);
+        int64_t nid = vfs_create(c->vfs, root_vp, name, 0);
         if (nid <= 0) continue;
         int64_t file_vp = resolve_child_vp(c->vfs, root_vp, name);
         if (file_vp == 0) continue;
@@ -310,7 +310,7 @@ static int bench_create(vfs_t* vfs, int count, int threads, const char* path) {
         double op_t0 = now_sec();
         char name[64];
         snprintf(name, sizeof(name), "f%d.txt", i);
-        int ret = vfs_create(vfs, root_vp, name, 0);
+        int64_t ret = vfs_create(vfs, root_vp, name, 0);
         if (ret > 0) ok++;
         lat_record(now_sec() - op_t0);
     }
@@ -333,7 +333,7 @@ static int bench_write(vfs_t* vfs, int count, int threads, const char* path) {
         for (int i = 0; i < count; i++) {
             char name[64];
             snprintf(name, sizeof(name), "w%d.txt", i);
-            int nid = vfs_create(vfs, root_vp, name, 0);
+            int64_t nid = vfs_create(vfs, root_vp, name, 0);
             if (nid <= 0) continue;
             int64_t file_vp = resolve_child_vp(vfs, root_vp, name);
             if (file_vp == 0) continue;
@@ -369,7 +369,7 @@ static int bench_read(vfs_t* vfs, int count, int threads, const char* path) {
     for (int i = 0; i < count; i++) {
         char name[64];
         snprintf(name, sizeof(name), "r%d.txt", i);
-        int nid = vfs_create(vfs, root_vp, name, 0);
+        int64_t nid = vfs_create(vfs, root_vp, name, 0);
         if (nid > 0) file_vps[i] = resolve_child_vp(vfs, root_vp, name);
 
         /* Write 128 bytes to each file so reads exercise version chain traversal */
@@ -516,7 +516,7 @@ static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
         snprintf(dname, sizeof(dname), "d%d", i);
 
         /* mkdir */
-        if (vfs_mkdir(vfs, root_vp, dname, 0) != VFS_OK) continue;
+        if (vfs_mkdir(vfs, root_vp, dname, 0) <= 0) continue;
         int64_t dir_vp = resolve_child_vp(vfs, root_vp, dname);
         if (dir_vp <= 0) continue;
         ok++;
@@ -561,7 +561,7 @@ static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) 
     if (threads <= 1) {
         int64_t root_vp = vfs->ctx->rootNodeOffset;
         const int page_sz = vfs->ctx->page_size;
-        int nid = vfs_create(vfs, root_vp, "seqwrite.dat", 0);
+        int64_t nid = vfs_create(vfs, root_vp, "seqwrite.dat", 0);
         if (nid <= 0) return 0;
         int64_t file_vp = resolve_child_vp(vfs, root_vp, "seqwrite.dat");
         if (file_vp == 0) return 0;

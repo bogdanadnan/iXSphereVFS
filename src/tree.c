@@ -397,7 +397,8 @@ void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
 /* ---------------------------------------------------------------------------
  * vfs_create — create a file under a parent directory
  *
- * Returns new nodeId on success, or negative vfs_error_t on failure.
+ * Returns the child's VirtualPtr on success (always > 0), or a negative
+ * vfs_error_t on failure.
  * --------------------------------------------------------------------------- */
 
 int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {

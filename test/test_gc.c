@@ -363,7 +363,7 @@ static void test_gc_crash_before_swap(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int nodeId = vfs_create(vfs, root_vp, "crash_test.txt", 0);
+    int64_t nodeId = vfs_create(vfs, root_vp, "crash_test.txt", 0);
     CHECK(nodeId > 0);
 
     int64_t file_vp = 0;
@@ -463,7 +463,7 @@ static void test_gc_pool_compaction(void) {
     char fname[32];
     for (int i = 0; i < 20; i++) {
         snprintf(fname, sizeof(fname), "f%d.txt", i);
-        int nid = vfs_create(vfs, root_vp, fname, 0);
+        int64_t nid = vfs_create(vfs, root_vp, fname, 0);
         CHECK(nid > 0);
 
         /* Get the file VirtualPtr */
@@ -563,7 +563,7 @@ static void test_gc_vptr_remapping(void) {
     int64_t root_vp = ctx->rootNodeOffset;
 
     /* Create a file */
-    int nodeId = vfs_create(vfs, root_vp, "vptr_test.txt", 0);
+    int64_t nodeId = vfs_create(vfs, root_vp, "vptr_test.txt", 0);
     CHECK(nodeId > 0);
 
     int64_t file_vp = 0;
@@ -763,7 +763,7 @@ static void test_gc_nonstd_page_size(void) {
     CHECK_EQ(ctx->page_size, 4096);
 
     int64_t root_vp = ctx->rootNodeOffset;
-    int nodeId = vfs_create(vfs, root_vp, "smoke.txt", 0);
+    int64_t nodeId = vfs_create(vfs, root_vp, "smoke.txt", 0);
     CHECK(nodeId > 0);
 
     int64_t file_vp = 0;
@@ -817,7 +817,7 @@ static void test_gc_data_page_reclaim(void) {
     char bigbuf[16384];
     memset(bigbuf, 'X', sizeof(bigbuf));
 
-    int nid = vfs_create(vfs, root_vp, "bigfile.txt", 0);
+    int64_t nid = vfs_create(vfs, root_vp, "bigfile.txt", 0);
     CHECK(nid > 0);
 
     int64_t file_vp = 0;
@@ -881,7 +881,7 @@ static void test_gc_crash_after_swap(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int nodeId = vfs_create(vfs, root_vp, "after_swap.txt", 0);
+    int64_t nodeId = vfs_create(vfs, root_vp, "after_swap.txt", 0);
     CHECK(nodeId > 0);
 
     int64_t file_vp = 0;
@@ -979,7 +979,7 @@ static void test_gc_commit_then_gc(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int nodeId = vfs_create(vfs, root_vp, "commit_gc.txt", 0);
+    int64_t nodeId = vfs_create(vfs, root_vp, "commit_gc.txt", 0);
     CHECK(nodeId > 0);
 
     int64_t file_vp = 0;
@@ -1038,7 +1038,7 @@ static void test_gc_integration(void) {
     int64_t root_vp = ctx->rootNodeOffset;
 
     /* Create a file at epoch 0 */
-    int nodeId = vfs_create(vfs, root_vp, "gc_test.txt", 0);
+    int64_t nodeId = vfs_create(vfs, root_vp, "gc_test.txt", 0);
     CHECK(nodeId > 0);
 
     /* Get file VirtualPtr */
