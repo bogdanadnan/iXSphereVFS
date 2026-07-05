@@ -538,43 +538,50 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
 
 /* ---------------------------------------------------------------------------
  * Workload: seqread — sequential read of a file, measure MB/s
- * Pre-populates a file, flushes, evicts cache, then reads sequentially.
+ * Two phases:
+ *   seqread:write  — pre-populate file, flush, exit (run once)
+ *   seqread:read   — open existing file, read sequentially, measure
+ * Drop OS caches between phases for real disk throughput:
+ *   macOS: sudo purge
+ *   Linux: echo 3 | sudo tee /proc/sys/vm/drop_caches
  * --------------------------------------------------------------------------- */
 
-static int bench_seqread(vfs_t* vfs, int count, int threads, const char* path) {
+static int bench_seqread(vfs_t* vfs, int count, int threads, const char* path,
+                          const char* phase) {
     (void)threads;
     const int64_t page_sz = vfs->ctx->page_size;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
-
-    /* Pre-populate a file with count pages */
     int file_pages = count > 0 ? count : 65536;
-    int writes_ok = 0;
-    {
+
+    /* ── Write phase ── */
+    if (!phase || strcmp(phase, "write") == 0) {
+        printf("=== seqread:write (%d pages) ===\n", file_pages);
+        int writes_ok = 0;
         if (vfs_create(vfs, root_vp, "seqfile.dat", 0) <= 0) return 0;
         int64_t fvp = resolve_child_vp(vfs, root_vp, "seqfile.dat");
         if (fvp == 0) return 0;
         uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
         if (!zbuf) return 0;
+        double t0 = now_sec();
         for (int i = 0; i < file_pages; i++) {
             if (vfs_write(vfs, fvp, zbuf, (int64_t)i * page_sz, page_sz, 0) == page_sz)
                 writes_ok++;
         }
+        double elapsed = now_sec() - t0;
         free(zbuf);
-        if (writes_ok < file_pages / 2) return 0;
+        storage_flush(vfs->ctx->sb, -1);
+        double mb = (double)file_pages * page_sz / (1024.0 * 1024.0);
+        printf("  wrote %d/%d pages (%.1f MB) in %.3fs (%.1f MB/s)\n\n",
+               writes_ok, file_pages, mb, elapsed, mb / elapsed);
+        vfs_close(vfs);
+        return writes_ok;
     }
 
-    /* Close & reopen — cold cache */
-    int saved_max = (int)vfs_cache_get_max_entries(vfs->ctx->sb);
-    vfs_close(vfs);
-    vfs = vfs_open(path, page_sz);
-    if (!vfs) return 0;
-    vfs->ctx->sb->cache.max_entries = saved_max;
-    vfs->ctx->sb->cache.writeback_threshold = saved_max / 4;
+    /* ── Read phase ── */
     root_vp = vfs->ctx->rootNodeOffset;
     int64_t file_vp = resolve_child_vp(vfs, root_vp, "seqfile.dat");
     if (file_vp == 0) { vfs_close(vfs); return 0; }
 
-    /* Sequential read from byte 0 to end */
     int reads = file_pages;
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
     if (!buf) { vfs_close(vfs); return 0; }
@@ -590,7 +597,7 @@ static int bench_seqread(vfs_t* vfs, int count, int threads, const char* path) {
 
     int64_t total_bytes = (int64_t)reads * page_sz;
     double mb = (double)total_bytes / (1024.0 * 1024.0);
-    printf("\n=== seqread ===\n");
+    printf("\n=== seqread:read ===\n");
     printf("  pages=%d  size=%.1f MB  elapsed=%.3fs\n", reads, mb, elapsed);
     printf("  throughput: %.1f MB/s\n", mb / elapsed);
     printf("  ops/sec: %.0f\n", (double)reads / elapsed);
@@ -617,7 +624,10 @@ int main(int argc, char** argv) {
     if (ret <= 0) return (ret == 0) ? 0 : 1;
 
     /* Open VFS file */
-    unlink(opts.output);
+    /* For write-only phases, start clean.  For read phases, keep existing. */
+    if (strncmp(opts.workload, "seqread", 7) != 0 ||
+        strstr(opts.workload, ":read") == NULL)
+        unlink(opts.output);
 
     if (opts.threads > 1)
         fprintf(stderr, "warning: --threads not yet implemented, running single-threaded\n");
@@ -658,8 +668,10 @@ int main(int argc, char** argv) {
         ok = bench_seqwrite(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "randread") == 0) {
         ok = bench_randread(vfs, opts.count, opts.threads, opts.output);
-    } else if (strcmp(opts.workload, "seqread") == 0) {
-        ok = bench_seqread(vfs, opts.count, opts.threads, opts.output);
+    } else if (strncmp(opts.workload, "seqread", 7) == 0) {
+        const char* ph = strchr(opts.workload, ':');
+        ok = bench_seqread(vfs, opts.count, opts.threads, opts.output,
+                           ph ? ph + 1 : NULL);
     } else {
         fprintf(stderr, "Unknown workload: %s\n", opts.workload);
         usage();
@@ -674,7 +686,7 @@ int main(int argc, char** argv) {
     printf("  completed: %d / %d operations\n", ok, total);
 
     if (strcmp(opts.workload, "randread") != 0 &&
-        strcmp(opts.workload, "seqread") != 0)
+        strncmp(opts.workload, "seqread", 7) != 0)
         vfs_close(vfs);
     return 0;
 }
