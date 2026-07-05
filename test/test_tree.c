@@ -1344,6 +1344,50 @@ static void test_migrate_v1_to_v2(void) {
     unlink(mig_path);
 }
 
+static void test_sparse_small_file(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "sparse.txt", 0);
+    CHECK(file_vp > 0);
+
+    /* Write 128 bytes (1 page) — lazy: only page 0 gets a PageNode */
+    CHECK_EQ(vfs_write(vfs, file_vp, "sparse data", 0, 11, 0), 11);
+
+    /* Resolve page 0 — should return the existing PageNode */
+    uint8_t* pn_slot = tree_resolve_page(ctx, file_vp, 0, 0, false);
+    CHECK(pn_slot != NULL);
+
+    /* Assert page_index == 0 */
+    uint32_t pn_idx = (uint32_t)vfs_rd4_s(pn_slot, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+    CHECK_EQ(pn_idx, 0u);
+
+    /* Walk FileContent's pageRootPtr chain — assert exactly 1 PageNode */
+    uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
+    CHECK(file_slot != NULL);
+    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    CHECK(fc_vp != 0);
+    uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
+    CHECK(fc_slot != NULL);
+    int64_t pn_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+    CHECK(pn_root != 0);
+
+    int pn_count = 0;
+    int64_t walk = pn_root;
+    while (walk != 0) {
+        pn_count++;
+        uint8_t* pn = pool_resolve(&ctx->pool, walk);
+        CHECK(pn != NULL);
+        int64_t next = vfs_rd8_s(pn, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+        walk = next;
+    }
+    CHECK_EQ(pn_count, 1);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1453,6 +1497,10 @@ int main(void) {
 
     /* --- migration test --- */
     test_migrate_v1_to_v2();
+
+    /* --- sparse chain test --- */
+    unlink(test_path);
+    test_sparse_small_file();
 
     /* Clean up */
     unlink(test_path);
