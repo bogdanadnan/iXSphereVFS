@@ -832,23 +832,8 @@ static void test_rmdir_empty(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    CHECK(vfs_mkdir(vfs, root_vp, "sub", 0) > 0);
-
-    /* Resolve subdir VirtualPtr */
-    int64_t subdir_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
-        CHECK(h != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, h),
-                              &cc, &ce, &cp, &np, &nx, ctx->page_size);
-        (void)cc; (void)ce; (void)np; (void)nx;
-        subdir_vp = cp;
-    }
-    CHECK(subdir_vp != 0);
+    int64_t subdir_vp = vfs_mkdir(vfs, root_vp, "sub", 0);
+    CHECK(subdir_vp > 0);
 
     /* Create file inside subdir */
     CHECK(vfs_create(vfs, subdir_vp, "f.txt", 0) > 0);
@@ -1030,31 +1015,10 @@ static void test_rename_cross_dir(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    CHECK(vfs_mkdir(vfs, root_vp, "a", 0) > 0);
-    CHECK(vfs_mkdir(vfs, root_vp, "b", 0) > 0);
-
-    int64_t dir_a = 0, dir_b = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
-        int64_t w = h;
-        while (w != 0) {
-            uint8_t* dc = pool_resolve(&ctx->pool, w);
-            CHECK(dc != NULL);
-            uint32_t cc, ce;
-            int64_t cp, np, nx;
-            nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
-            (void)cc; (void)ce;
-            char en[64];
-            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
-            if (nl > 0 && strcmp(en, "a") == 0) dir_a = cp;
-            if (nl > 0 && strcmp(en, "b") == 0) dir_b = cp;
-            w = nx;
-        }
-    }
-    CHECK(dir_a != 0);
-    CHECK(dir_b != 0);
+    int64_t dir_a = vfs_mkdir(vfs, root_vp, "a", 0);
+    CHECK(dir_a > 0);
+    int64_t dir_b = vfs_mkdir(vfs, root_vp, "b", 0);
+    CHECK(dir_b > 0);
 
     int64_t fnid = vfs_create(vfs, dir_a, "f.txt", 0);
     CHECK(fnid > 0);
