@@ -407,10 +407,8 @@ static void test_file_size_epoch(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "sizetest.txt", 0);
-    CHECK(nodeId > 0);
-    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "sizetest.txt", 0);
+    CHECK(file_vp > 0);
 
     int64_t ctime_before = vfs_file_ctime(vfs, file_vp);
     CHECK(ctime_before > 0);
@@ -460,10 +458,8 @@ static void test_resolve_page_growth(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "big.txt", 0);
-    CHECK(nodeId > 0);
-    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "big.txt", 0);
+    CHECK(file_vp > 0);
 
     uint32_t seg_size = ctx->segment_size;
     CHECK(seg_size > 0);
@@ -507,10 +503,8 @@ static void test_write_basic(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "write.txt", 0);
-    CHECK(nodeId > 0);
-    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "write.txt", 0);
+    CHECK(file_vp > 0);
 
     /* Write 100 bytes at offset 0 */
     const char* data1 = "Hello, VFS write test!";
@@ -551,10 +545,8 @@ static void test_read_basic(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "readtest.txt", 0);
-    CHECK(nodeId > 0);
-    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "readtest.txt", 0);
+    CHECK(file_vp > 0);
 
     /* Write data */
     const char* wdata = "Hello, VFS read test!";
@@ -599,10 +591,8 @@ static void test_write_cross_page(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "cross.txt", 0);
-    CHECK(nodeId > 0);
-    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "cross.txt", 0);
+    CHECK(file_vp > 0);
 
     char data[200];
     for (int i = 0; i < 200; i++) data[i] = (char)('A' + (i % 26));
@@ -629,10 +619,8 @@ static void test_write_in_place(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "inplace.txt", 0);
-    CHECK(nodeId > 0);
-    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "inplace.txt", 0);
+    CHECK(file_vp > 0);
 
     /* First write: creates a VersionPage */
     int ret = vfs_write(vfs, file_vp, "AAAA", 0, 4, 0);
@@ -687,10 +675,8 @@ static void test_write_cow_epoch(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "cow.txt", 0);
-    CHECK(nodeId > 0);
-    int64_t file_vp = get_file_vp(&ctx->pool, ctx->rootNodeOffset);
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "cow.txt", 0);
+    CHECK(file_vp > 0);
 
     /* Write at epoch 0 */
     int ret = vfs_write(vfs, file_vp, "AAAA", 0, 4, 0);
@@ -737,10 +723,8 @@ static void test_write_multi_segment(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "multi.txt", 0);
-    CHECK(nodeId > 0);
-    int64_t file_vp = get_file_vp(&ctx->pool, ctx->rootNodeOffset);
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "multi.txt", 0);
+    CHECK(file_vp > 0);
 
     /* Write a marker at page 0 and page seg_size (creates 2 segments) */
     uint32_t seg_size = ctx->segment_size;
@@ -780,10 +764,8 @@ static void test_write_frozen_epoch(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "frozen.txt", 0);
-    CHECK(nodeId > 0);
-    int64_t file_vp = get_file_vp(&ctx->pool, root_vp);
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "frozen.txt", 0);
+    CHECK(file_vp > 0);
 
     /* Freeze epoch — write should fail */
     test_set_epoch_writable(0);
