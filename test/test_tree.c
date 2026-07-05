@@ -119,8 +119,14 @@ static void test_create_file(void) {
     CHECK(root_vp != 0);
 
     /* Create a file under root */
-    int64_t result = vfs_create(vfs, root_vp, "test.txt", 0);
-    CHECK(result > 0);  /* should return a positive nodeId */
+    int64_t file_vp = vfs_create(vfs, root_vp, "test.txt", 0);
+    CHECK(file_vp > 0);  /* should return a positive VirtualPtr */
+
+    /* Verify the FileNode's nodeId slot via the returned VirtualPtr */
+    uint8_t* fn_slot = pool_resolve(&ctx->pool, file_vp);
+    CHECK(fn_slot != NULL);
+    uint32_t fn_nodeId = (uint32_t)vfs_rd4(fn_slot, FILENODE_OFF_NODEID);
+    CHECK_EQ(fn_nodeId, 1u);  /* first created file gets nodeId=1 */
 
     /* Verify the file exists in root's DirContent chain */
     uint8_t* root_slot = pool_resolve(&ctx->pool, root_vp);
