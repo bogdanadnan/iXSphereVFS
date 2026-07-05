@@ -180,7 +180,7 @@ int tree_migrate_walk_dir(TreeContext* ctx, int64_t dir_vp) {
     if (!ctx || dir_vp <= 0) return VFS_ERR_IO;
 
     vfs_dirent_t entries[1024];  /* DENTRY_CACHE_MAX */
-    int n = dirchain_list(ctx, dir_vp, 0, entries, 1024);
+    int n = dirchain_list(ctx, dir_vp, ctx->currentEpoch, entries, 1024);
     if (n < 0) return n;
 
     for (int i = 0; i < n; i++) {
