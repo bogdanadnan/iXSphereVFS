@@ -1354,10 +1354,12 @@ static void test_sparse_small_file(void) {
     CHECK(file_vp > 0);
 
     /* Write 128 bytes (1 page) — lazy: only page 0 gets a PageNode */
-    CHECK_EQ(vfs_write(vfs, file_vp, "sparse data", 0, 11, 0), 11);
+    char wbuf[128];
+    memset(wbuf, 'x', sizeof(wbuf));
+    CHECK_EQ(vfs_write(vfs, file_vp, wbuf, 0, (int64_t)sizeof(wbuf), 0), (int)sizeof(wbuf));
 
     /* Resolve page 0 — should return the existing PageNode */
-    uint8_t* pn_slot = tree_resolve_page(ctx, file_vp, 0, 0, false);
+    uint8_t* pn_slot = tree_resolve_page(ctx, file_vp, 0, 0, true);
     CHECK(pn_slot != NULL);
 
     /* Assert page_index == 0 */
