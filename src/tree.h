@@ -4,6 +4,7 @@
 #include "ixsphere/vfs_internal.h"
 #include "nodes.h"
 #include "epoch.h"
+#include <stdbool.h>
 
 /* ---------------------------------------------------------------------------
  * Superblock payload offsets (SPEC §4.1)
