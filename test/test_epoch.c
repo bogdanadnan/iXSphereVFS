@@ -104,24 +104,8 @@ static void test_epoch_lifecycle(void) {
     CHECK(root_vp != 0);
 
     /* Create a file and write at epoch 0 */
-    int64_t nodeId = vfs_create(vfs, root_vp, "epoch_file.txt", 0);
-    CHECK(nodeId > 0);
-
-    /* Get file VirtualPtr */
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(head != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)np; (void)nx;
-        file_vp = cp;
-    }
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "epoch_file.txt", 0);
+    CHECK(file_vp > 0);
 
     /* Write at epoch 0 */
     CHECK_EQ(vfs_write(vfs, file_vp, "AAAA", 0, 4, 0), 4);
@@ -172,27 +156,11 @@ static void test_epoch_lifecycle(void) {
 static void test_snapshot_soft_delete(void) {
     vfs_t* vfs = epoch_setup();
     CHECK(vfs != NULL);
-    TreeContext* ctx = vfs->ctx;
     int64_t root_vp = get_root_vp(vfs);
     CHECK(root_vp != 0);
 
-    int64_t nodeId = vfs_create(vfs, root_vp, "sd.txt", 0);
-    CHECK(nodeId > 0);
-
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(head != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)np; (void)nx;
-        file_vp = cp;
-    }
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "sd.txt", 0);
+    CHECK(file_vp > 0);
 
     /* Write at epoch 0 */
     CHECK_EQ(vfs_write(vfs, file_vp, "XXXX", 0, 4, 0), 4);
@@ -296,58 +264,11 @@ static void test_commit_subdir_conflict(void) {
     int64_t root_vp = ctx->rootNodeOffset;
     test_set_epoch_writable(-1);  /* use real epoch implementation */
 
-    CHECK(vfs_mkdir(vfs, root_vp, "sub", 0) > 0);
+    int64_t sub_vp = vfs_mkdir(vfs, root_vp, "sub", 0);
+    CHECK(sub_vp > 0);
 
-    /* Resolve subdir VirtualPtr via pool (vfs_mount returns nodeId, not VP) */
-    int64_t sub_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
-        int64_t w = h;
-        while (w != 0) {
-            uint8_t* dc = pool_resolve(&ctx->pool, w);
-            CHECK(dc != NULL);
-            uint32_t cc, ce;
-            int64_t cp, np, nx;
-            nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
-            (void)cc; (void)ce;
-            char en[64];
-            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
-            if (nl > 0 && strcmp(en, "sub") == 0) {
-                sub_vp = cp; break;
-            }
-            w = nx;
-        }
-    }
-    CHECK(sub_vp != 0);
-
-    int64_t nid = vfs_create(vfs, sub_vp, "a.txt", 0);
-    CHECK(nid > 0);
-
-    /* Resolve file VirtualPtr from subdir's DirContent chain */
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, sub_vp);
-        CHECK(rs != NULL);
-        int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
-        int64_t w = h;
-        while (w != 0) {
-            uint8_t* dc = pool_resolve(&ctx->pool, w);
-            CHECK(dc != NULL);
-            uint32_t cc, ce;
-            int64_t cp, np, nx;
-            nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
-            (void)cc; (void)ce;
-            char en[64];
-            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
-            if (nl > 0 && strcmp(en, "a.txt") == 0) {
-                file_vp = cp; break;
-            }
-            w = nx;
-        }
-    }
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, sub_vp, "a.txt", 0);
+    CHECK(file_vp > 0);
 
     CHECK_EQ(vfs_write(vfs, file_vp, "AAAA", 0, 4, 0), 4);
 
@@ -383,29 +304,8 @@ static void test_mapper_integration(void) {
     int64_t root_vp = ctx->rootNodeOffset;
     test_set_epoch_writable(-1);
 
-    int64_t nid = vfs_create(vfs, root_vp, "mt.txt", 0);
-    CHECK(nid > 0);
-
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
-        int64_t w = h;
-        while (w != 0) {
-            uint8_t* dc = pool_resolve(&ctx->pool, w);
-            CHECK(dc != NULL);
-            uint32_t cc, ce;
-            int64_t cp, np, nx;
-            nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
-            (void)cc; (void)ce;
-            char en[64];
-            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
-            if (nl > 0 && strcmp(en, "mt.txt") == 0) { file_vp = cp; break; }
-            w = nx;
-        }
-    }
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "mt.txt", 0);
+    CHECK(file_vp > 0);
 
     CHECK_EQ(vfs_write(vfs, file_vp, "DATA", 0, 4, 0), 4);
     int64_t size0 = vfs_file_size(vfs, file_vp, 0);
