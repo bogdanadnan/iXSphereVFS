@@ -400,8 +400,6 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 /* Still not found — another thread's insert must be a
                  * different page.  Retry our own CAS-prepend. */
                 i--;  /* retry this segment */
-                prev_fc_vp = 0;  /* reset for re-walk */
-                fc_vp = tmp_headPtr;
                 continue;
             }
             return pool_resolve(&ctx->pool, new_pn_vp);
