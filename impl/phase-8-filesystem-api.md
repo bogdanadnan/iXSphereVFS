@@ -36,7 +36,7 @@ in the module that owns its implementation:
 | `vfs_lock`, `vfs_unlock` | `src/vfs.c` | 8 | **NEW — not yet implemented** |
 | `vfs_create`, `vfs_delete`, `vfs_mkdir`, `vfs_rmdir`, `vfs_rename` | `src/tree.c` | 5 | Already implemented |
 | `vfs_write`, `vfs_read` | `src/tree.c` | 5 | Already implemented |
-| `vfs_mount`, `vfs_file_size/mtime/ctime` | `src/tree.c` | 5 | Already implemented |
+| `vfs_open`, `vfs_file_size/mtime/ctime` | `src/tree.c` | 5 | Already implemented |
 | `vfs_readdir` | `src/tree.c` | 5 | Already implemented |
 | `vfs_snapshot`, `vfs_commit`, `vfs_delete_snapshot` | `src/epoch.c` | 6 | Already implemented |
 | `vfs_gc` | `src/gc.c` | 7 | Already implemented |
@@ -82,7 +82,7 @@ vfs_error_t vfs_last_error(vfs_t* vfs);
 int     vfs_create(vfs_t*, int64_t parent, const char* name, int64_t epoch);
 int     vfs_delete(vfs_t*, int64_t parent, const char* name, int64_t epoch);
 int     vfs_rename(vfs_t*, int64_t src_p, const char* src, int64_t dst_p, const char* dst, int64_t epoch);
-int64_t vfs_mount(vfs_t*, int64_t parent, const char* name, int64_t epoch);
+int64_t vfs_open(vfs_t*, int64_t parent, const char* name, int64_t epoch);
 int     vfs_read(vfs_t*, int64_t file, void* buf, int64_t offset, int64_t count, int64_t epoch);
 int     vfs_write(vfs_t*, int64_t file, const void* data, int64_t offset, int64_t count, int64_t epoch);
 int64_t vfs_file_size(vfs_t*, int64_t file, int64_t epoch);
@@ -145,7 +145,7 @@ int     vfs_gc(vfs_t*);
 
 20 functions, one clean header:
 - **Lifecycle**: vfs_mount, vfs_unmount, vfs_flush, vfs_last_error
-- **File**: vfs_create, vfs_delete, vfs_rename, vfs_mount, vfs_read, vfs_write, vfs_file_size/mtime/ctime
+- **File**: vfs_create, vfs_delete, vfs_rename, vfs_open, vfs_read, vfs_write, vfs_file_size/mtime/ctime
 - **Directory**: vfs_mkdir, vfs_rmdir, vfs_readdir
 - **Locking**: vfs_lock, vfs_unlock
 - **Snapshots**: vfs_snapshot, vfs_commit, vfs_delete_snapshot
@@ -222,7 +222,7 @@ then frees TreeContext, pool resources, mapper, and the handle itself.
 3. On success: return new nodeId. On failure: set last_error, return -1.
 ```
 
-### `int64_t vfs_mount(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`
+### `int64_t vfs_open(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch)`
 
 ```
 1. Resolve epoch.
@@ -476,7 +476,7 @@ Every API function that can fail must:
 | VFS_ERR_NOMEM | -8 | Out of memory |
 
 ### Acceptance
-- [ ] `vfs_mount` on missing file → returns -1, last_error = VFS_ERR_NOTFOUND
+- [ ] `vfs_open` on missing file → returns -1, last_error = VFS_ERR_NOTFOUND
 - [ ] `vfs_write` to frozen epoch → returns -1, last_error = VFS_ERR_IO
 - [ ] `vfs_last_error` after successful operation returns previous error (not cleared)
 - [ ] `vfs_error_string` returns non-NULL for every defined code

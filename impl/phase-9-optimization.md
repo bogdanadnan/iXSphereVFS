@@ -403,7 +403,7 @@ User-facing `README.md` and `docs/API.md`.
 
 ### docs/API.md Sections Required
 - Instance management: `vfs_mount`, `vfs_unmount`, `vfs_flush`
-- File operations: `vfs_create`, `vfs_mount`, `vfs_read`, `vfs_write`,
+- File operations: `vfs_create`, `vfs_open`, `vfs_read`, `vfs_write`,
   `vfs_delete`, `vfs_file_size`, `vfs_file_mtime`, `vfs_file_ctime`
 - Directory operations: `vfs_mkdir`, `vfs_rmdir`, `vfs_readdir`, `vfs_rename`
 - Locking: `vfs_lock`, `vfs_unlock` with locking rules

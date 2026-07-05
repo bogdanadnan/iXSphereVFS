@@ -220,7 +220,7 @@ tombstone DirContent entry.
 ```
 
 ### Acceptance
-- [ ] Create "test.txt" under root at epoch 0 → `vfs_mount` returns file's nodeId
+- [ ] Create "test.txt" under root at epoch 0 → `vfs_open` returns file's nodeId
 - [ ] Create same name at same epoch → VFS_ERR_EXISTS
 - [ ] Delete "test.txt" at epoch 2 → listing at epoch 2 excludes it, listing at
   epoch 0 still includes it

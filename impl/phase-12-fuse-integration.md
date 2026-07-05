@@ -57,7 +57,7 @@ int64_t resolve_full_path(vfs_t* vfs, const char* path, int64_t epoch) {
     char* tok = strtok(copy, "/");
     int64_t current = 0;
     while (tok) {
-        current = vfs_mount(vfs, parent, tok, epoch);
+        current = vfs_open(vfs, parent, tok, epoch);
         if (current < 0) break;
         parent = current;
         tok = strtok(NULL, "/");

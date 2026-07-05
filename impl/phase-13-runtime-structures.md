@@ -98,7 +98,7 @@ uses `pool_resolve` — same behavior as today, centralized in one place.
 **`dirchain_find_child(ctx, dirVp, name, epoch) → childVp, childNodeId`**
 Walk DirContent chain. Find child with matching `name` at `epoch` using
 read-rule dedup (highest `epoch ≤ query`, tombstone-aware). Returns
-child's VirtualPtr and nodeId. Used by: `vfs_mount`, `vfs_delete`,
+child's VirtualPtr and nodeId. Used by: `vfs_open`, `vfs_delete`,
 `vfs_rename` (source lookup), `resolve_child_vp` (benchmark).
 
 **`dirchain_list(ctx, dirVp, entries, max, epoch) → count`**
@@ -118,7 +118,7 @@ mtime. Used by: `vfs_file_size`, `vfs_file_mtime`.
 
 ### Stage C — Refactor Callers
 - Replace all inline chain walks in `vfs_read`, `vfs_file_size`, `vfs_file_mtime`,
-  `vfs_mount`, `vfs_readdir`, `vfs_delete`, `vfs_rename` with calls to
+  `vfs_open`, `vfs_readdir`, `vfs_delete`, `vfs_rename` with calls to
   the shared helpers above.
 - Replace `mapper_resolve(&ctx->mapper, epoch)` calls with `mapper_table_resolve`
 - Replace `mapper_traversal_apply` calls with `mapper_table_traversal_apply`
