@@ -42,34 +42,11 @@ so there is zero fragmentation.
 - `Free`: O(1) push (currently just sets entry to 0)
 - Backing file: stops growing between GC cycles
 
-## TODO-6 — NodeId/VirtualPtr API Mismatch [REQUIRED FIX]
+## TODO-6 — NodeId/VirtualPtr API Mismatch [RESOLVED]
 
-### Problem
-The public API documents file/directory handles as `nodeId` (uint32_t, sequential
-identifier). But every internal function (`vfs_write`, `vfs_read`, `vfs_file_size`,
-`vfs_file_mtime`, `pool_resolve`) passes this value directly to `pool_resolve`,
-which expects a **VirtualPtr** (`(page << 16) | slot`). These are different
-namespaces — nodeIds start at 0 and increment by 1, while VirtualPtrs encode
-pool page + slot indices.
-
-All current callers work around this by passing VirtualPtrs (obtained via
-`resolve_child_vp` or `get_file_vp`), not nodeIds. `vfs_create` returns the
-actual nodeId but callers discard it and use `resolve_child_vp` instead.
-The API is inconsistent — it says nodeId but operates on VirtualPtrs.
-
-### Required Fix
-Add a `NodeTable` — an in-memory `nodeId → VirtualPtr` hash table built at
-mount by walking the tree. All internal functions that currently receive a
-"file" parameter use the NodeTable to convert nodeId → VirtualPtr before
-calling `pool_resolve`. This bridges the gap without changing the public API
-signatures.
-
-### Files Affected
-- `src/node_table.c`, `src/node_table.h` — new files
-- `src/vfs.c` — build NodeTable on mount via tree walk
-- `src/tree.c` — `vfs_write`, `vfs_read`, `vfs_file_size`, `vfs_file_mtime`,
-  `vfs_file_ctime` — add `node_table_lookup` before `pool_resolve`
-- `test/test_tree.c` — update tests to pass nodeIds instead of VirtualPtrs
+Resolved by the Phase 14 VirtualPtr API change — `vfs_create` and `vfs_mkdir`
+now return the child's VirtualPtr directly, eliminating the need for a NodeTable.
+See `phase-14-vptr-api.md` for details.
 
 ## TODO-7 — Directory Index [Optional]
 
