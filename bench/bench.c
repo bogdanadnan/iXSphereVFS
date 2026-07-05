@@ -421,6 +421,11 @@ static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path,
  * Workload: dir — create directories and files inside
  * --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * Workload: dir — create/list/delete cycles on subdirectories.
+ * Each cycle: mkdir → create 5 files → readdir → delete 5 files → rmdir.
+ * --------------------------------------------------------------------------- */
+
 static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
     (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -431,18 +436,35 @@ static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
         char dname[64];
         snprintf(dname, sizeof(dname), "d%d", i);
 
-        int dr = vfs_mkdir(vfs, root_vp, dname, 0);
-        if (dr != VFS_OK) continue;
-
+        /* mkdir */
+        if (vfs_mkdir(vfs, root_vp, dname, 0) != VFS_OK) continue;
         int64_t dir_vp = resolve_child_vp(vfs, root_vp, dname);
         if (dir_vp <= 0) continue;
+        ok++;
 
+        /* create 5 files */
+        int created = 0;
         for (int j = 0; j < 5; j++) {
             char fname[64];
             snprintf(fname, sizeof(fname), "f%d.txt", j);
-            int nid = vfs_create(vfs, dir_vp, fname, 0);
-            if (nid > 0) ok++;
+            if (vfs_create(vfs, dir_vp, fname, 0) > 0) created++;
         }
+        ok += created;
+
+        /* readdir */
+        vfs_dirent_t ents[16];
+        int n = vfs_readdir(vfs, dir_vp, ents, 16, 0);
+        if (n == created) ok++;
+
+        /* delete files */
+        for (int j = 0; j < 5; j++) {
+            char fname[64];
+            snprintf(fname, sizeof(fname), "f%d.txt", j);
+            if (vfs_delete(vfs, dir_vp, fname, 0) == VFS_OK) ok++;
+        }
+
+        /* rmdir */
+        if (vfs_rmdir(vfs, root_vp, dname, 0) == VFS_OK) ok++;
     }
     double t1 = now_sec();
     report("dir", ok, threads, t1 - t0);
@@ -716,7 +738,7 @@ int main(int argc, char** argv) {
 
     int total = (strcmp(opts.workload, "scan") == 0) ? scan_count
               : (strcmp(opts.workload, "mixed") == 0) ? opts.count * 3
-              : (strcmp(opts.workload, "dir") == 0) ? opts.count * 5
+              : (strcmp(opts.workload, "dir") == 0) ? opts.count * 13
               : opts.count;
     printf("  completed: %d / %d operations\n", ok, total);
 
