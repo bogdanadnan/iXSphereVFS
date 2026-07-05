@@ -336,11 +336,11 @@ static int bench_read(vfs_t* vfs, int count, int threads, const char* path) {
     for (int i = 0; i < count; i++) {
         char name[64];
         snprintf(name, sizeof(name), "r%d.txt", i);
-        int64_t nid = vfs_create(vfs, root_vp, name, 0);
-        file_vps[i] = nid;
+        int64_t file_vp = vfs_create(vfs, root_vp, name, 0);
+        file_vps[i] = file_vp;
 
         /* Write 128 bytes to each file so reads exercise version chain traversal */
-        if (file_vps[i] != 0) {
+        if (file_vps[i] > 0) {
             char data[128];
             memset(data, 'A' + (i % 26), 128);
             vfs_write(vfs, file_vps[i], data, 0, 128, 0);
@@ -350,7 +350,7 @@ static int bench_read(vfs_t* vfs, int count, int threads, const char* path) {
     double t0 = now_sec();
     int ok = 0;
     for (int i = 0; i < count; i++) {
-        if (file_vps[i] == 0) continue;
+        if (file_vps[i] <= 0) continue;
         char buf[128];
         int r = vfs_read(vfs, file_vps[i], buf, 0, sizeof(buf), 0);
         if (r > 0) ok++;
@@ -388,8 +388,8 @@ static int bench_scan(vfs_t* vfs, int* count, int threads, const char* path) {
     if (n < 0) n = 0;
 
     for (int i = 0; i < n; i++) {
-        int64_t file_vp = resolve_child_vp(vfs, root_vp, entries[i].name);
-        if (file_vp == 0) continue;
+        int64_t file_vp = entries[i].vp;
+        if (file_vp <= 0) continue;
         char buf[128];
         int r = vfs_read(vfs, file_vp, buf, 0, sizeof(buf), 0);
         if (r > 0) ok++;
@@ -581,8 +581,9 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
 
     /* ── Pre-populate (untimed) ── */
     int writes_ok = 0;
+    int64_t fvp = 0;
     {
-        int64_t fvp = vfs_create(vfs, root_vp, "randfile.dat", 0);
+        fvp = vfs_create(vfs, root_vp, "randfile.dat", 0);
         if (fvp <= 0) return 0;
         uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
         if (!zbuf) return 0;
@@ -603,8 +604,7 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     vfs->ctx->sb->cache.max_entries = saved_max_entries;
     vfs->ctx->sb->cache.writeback_threshold = saved_max_entries / 4;
     root_vp = vfs->ctx->rootNodeOffset;
-    int64_t file_vp = resolve_child_vp(vfs, root_vp, "randfile.dat");
-    if (file_vp == 0) { vfs_unmount(vfs); return 0; }
+    if (fvp <= 0) { vfs_unmount(vfs); return 0; }
 
     /* ── Timed: truly random reads, each page picked independently ── */
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
@@ -616,7 +616,7 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     unsigned rseed = 42;
     for (int i = 0; i < reads_needed; i++) {
         int64_t offset = (int64_t)(rand_r(&rseed) % (unsigned)file_pages) * page_sz;
-        int r = vfs_read(vfs, file_vp, buf, offset, page_sz, 0);
+        int r = vfs_read(vfs, fvp, buf, offset, page_sz, 0);
         if (r == page_sz) ok++;
         lat_record(now_sec() - t0);
     }
@@ -671,8 +671,16 @@ static int bench_seqread(vfs_t* vfs, int count, int threads, const char* path,
 
     /* ── Read phase ── */
     root_vp = vfs->ctx->rootNodeOffset;
-    int64_t file_vp = resolve_child_vp(vfs, root_vp, "seqfile.dat");
-    if (file_vp == 0) { vfs_unmount(vfs); return 0; }
+    int64_t file_vp = 0;
+    {
+        vfs_dirent_t dirents[16];
+        int nd = vfs_readdir(vfs, root_vp, dirents, 16, 0);
+        for (int di = 0; di < nd && file_vp <= 0; di++) {
+            if (strcmp(dirents[di].name, "seqfile.dat") == 0)
+                file_vp = dirents[di].vp;
+        }
+    }
+    if (file_vp <= 0) { vfs_unmount(vfs); return 0; }
 
     int reads = file_pages;
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
