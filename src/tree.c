@@ -254,20 +254,39 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
         uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
         if (!fc_slot) return NULL;
 
-        if (i == segment_idx) {
-            /* Build a local page array — no shared cache, thread-safe.
-               Stack allocation of 1024 int64_t entries ≈ 8KB. */
-            int64_t vptr_array[1024];
+                if (i == segment_idx) {
+            /* Per-thread segment cache — lock-free, 16 entries, 128KB/thread. */
+            #define TCACHE_SIZE 16
+            static __thread struct {
+                int64_t  key;
+                int64_t  vptr_array[1024];
+                uint32_t seg_size;
+            } tcache[TCACHE_SIZE];
+            static __thread int tcache_next = 0;
+            int64_t cache_key = (file_vp << 20) | (segment_idx & 0xFFFFF);
+            for (int ci = 0; ci < TCACHE_SIZE; ci++) {
+                if (tcache[ci].key == cache_key &&
+                    tcache[ci].seg_size == seg_size) {
+                    int64_t pn_vp = tcache[ci].vptr_array[page_in_segment];
+                    if (pn_vp && pn_vp != VFS_VPTR_NULL)
+                        return pool_resolve(&ctx->pool, pn_vp);
+                    break;
+                }
+            }
             int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
             int64_t vp = fc_page_root;
+            int slot = tcache_next % TCACHE_SIZE;
             for (uint32_t j = 0; j < seg_size; j++) {
-                vptr_array[j] = vp;
+                tcache[slot].vptr_array[j] = vp;
                 if (vp != 0) {
                     uint8_t* pn = pool_resolve(&ctx->pool, vp);
                     vp = pn ? vfs_rd8_s(pn, PAGENODE_OFF_NEXTPTR, ctx->page_size) : 0;
                 }
             }
-            int64_t pn_vp = vptr_array[page_in_segment];
+            tcache[slot].key = cache_key;
+            tcache[slot].seg_size = seg_size;
+            tcache_next++;
+            int64_t pn_vp = tcache[slot].vptr_array[page_in_segment];
             if (pn_vp == 0 || pn_vp == VFS_VPTR_NULL) return NULL;
             return pool_resolve(&ctx->pool, pn_vp);
         }
