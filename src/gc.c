@@ -894,6 +894,7 @@ int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
     vfs_wr8_s(buf, SB_OFF_TREE_LOCK_STATE,   0, ctx->page_size);
     vfs_wr4_s(buf, SB_OFF_NEXT_NODE_ID,      (int32_t)ctx->nextNodeId, ctx->page_size);
     vfs_wr8_s(buf, SB_OFF_TOUCHED_FILES_PTR, 0, ctx->page_size);
+    vfs_wr4_s(buf, SB_OFF_FORMAT_VERSION, (int32_t)ctx->formatVersion, ctx->page_size);
 
     storage_write(ctx->sb, SUPERBLOCK_PAGE, buf, 3);
     storage_flush(ctx->sb, -1);
