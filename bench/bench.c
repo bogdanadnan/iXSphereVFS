@@ -423,13 +423,13 @@ static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path,
     for (int i = 0; i < nfiles && populated < nfiles; i++) {
         char name[64];
         snprintf(name, sizeof(name), "m%d.txt", i);
-        file_vps[i] = vfs_create(vfs, root_vp, name, 0);
-        if (file_vps[i] <= 0) continue;
+        file_vps[populated] = vfs_create(vfs, root_vp, name, 0);
+        if (file_vps[populated] <= 0) continue;
         /* Write 4 pages per file */
         uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
         if (!zbuf) break;
         for (int p = 0; p < 4; p++)
-            vfs_write(vfs, file_vps[i], zbuf, (int64_t)p * page_sz, page_sz, 0);
+            vfs_write(vfs, file_vps[populated], zbuf, (int64_t)p * page_sz, page_sz, 0);
         free(zbuf);
         populated++;
     }
@@ -444,7 +444,7 @@ static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path,
 
     for (int i = 0; i < count; i++) {
         int fi = rand_r(&rseed) % populated;
-        if (file_vps[fi] == 0) continue;
+        if (file_vps[fi] <= 0) continue;
         int is_read = (rand_r(&rseed) % 100) < read_ratio;
         int64_t off = (int64_t)(rand_r(&rseed) % 4) * page_sz;
         if (is_read) {
@@ -604,7 +604,6 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     vfs->ctx->sb->cache.max_entries = saved_max_entries;
     vfs->ctx->sb->cache.writeback_threshold = saved_max_entries / 4;
     root_vp = vfs->ctx->rootNodeOffset;
-    if (fvp <= 0) { vfs_unmount(vfs); return 0; }
 
     /* ── Timed: truly random reads, each page picked independently ── */
     uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
