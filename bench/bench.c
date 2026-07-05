@@ -315,7 +315,6 @@ static int bench_write(vfs_t* vfs, int count, int threads, const char* path) {
     }
     double t0 = now_sec();
     int ops = count / threads;
-    int64_t cache_max = (int64_t)vfs_cache_get_max_entries(vfs->ctx->sb);
     int total = bench_run_threads(vfs,
                                    threads, ops, bench_write_worker);
     double t1 = now_sec();
@@ -553,7 +552,6 @@ static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) 
     /* Multi-threaded: each thread writes to its own file */
     double t0 = now_sec();
     int ops = count / threads;
-    int64_t cache_max = (int64_t)vfs_cache_get_max_entries(vfs->ctx->sb);
     int total = bench_run_threads(vfs,
                                    threads, ops, bench_seqwrite_worker);
     double t1 = now_sec();
@@ -641,6 +639,7 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
 static int bench_seqread(vfs_t* vfs, int count, int threads, const char* path,
                           const char* phase) {
     (void)threads;
+    (void)path;
     const int64_t page_sz = vfs->ctx->page_size;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
     int file_pages = count > 0 ? count : 65536;

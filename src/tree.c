@@ -355,7 +355,6 @@ void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
     if (out_modifiedAt) *out_modifiedAt = 0;
     if (sizePtr == 0) return;
 
-    int64_t best_size = 0, best_modified = 0, best_epoch = -1;
     int64_t walk_vp = sizePtr;
 
     while (walk_vp != 0) {

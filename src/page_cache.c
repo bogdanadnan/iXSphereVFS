@@ -47,11 +47,6 @@ static void lru_insert_head(PageCache* cache, CacheEntry* e) {
     e->timestamp = __sync_add_and_fetch(&cache->lru_clock, 1);
 }
 
-static void lru_remove(PageCache* cache, CacheEntry* e) {
-    (void)cache;
-    e->timestamp = 0;  /* mark as removed */
-}
-
 /* ---------------------------------------------------------------------------
  * cache_init / cache_destroy
  * --------------------------------------------------------------------------- */
