@@ -54,7 +54,7 @@ static void usage(void) {
     fprintf(stderr,
         "Usage: vfs_bench --workload=<name> --count=N [options]\n"
         "Options:\n"
-        "  --workload=<name>   create, write, read, scan, mixed, dir, seqwrite, randread (default: create)\n"
+        "  --workload=<name>   create, write, read, scan, mixed, dir, seqwrite, randread, seqread (default: create)\n"
         "  --count=N           number of files/operations (default: 1000)\n"
         "  --threads=N         number of threads (default: 1)\n"
         "  --page-size=N       VFS page size in bytes (default: 8192)\n"
@@ -537,6 +537,77 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
 }
 
 /* ---------------------------------------------------------------------------
+ * Workload: seqread — sequential read of a file, measure MB/s
+ * Pre-populates a file, flushes, evicts cache, then reads sequentially.
+ * --------------------------------------------------------------------------- */
+
+static int bench_seqread(vfs_t* vfs, int count, int threads, const char* path) {
+    (void)threads;
+    const int64_t page_sz = vfs->ctx->page_size;
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    /* Pre-populate a file with count pages */
+    int file_pages = count > 0 ? count : 65536;
+    int writes_ok = 0;
+    {
+        if (vfs_create(vfs, root_vp, "seqfile.dat", 0) <= 0) return 0;
+        int64_t fvp = resolve_child_vp(vfs, root_vp, "seqfile.dat");
+        if (fvp == 0) return 0;
+        uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
+        if (!zbuf) return 0;
+        for (int i = 0; i < file_pages; i++) {
+            if (vfs_write(vfs, fvp, zbuf, (int64_t)i * page_sz, page_sz, 0) == page_sz)
+                writes_ok++;
+        }
+        free(zbuf);
+        if (writes_ok < file_pages / 2) return 0;
+    }
+
+    /* Close & reopen — cold cache */
+    int saved_max = (int)vfs_cache_get_max_entries(vfs->ctx->sb);
+    vfs_close(vfs);
+    vfs = vfs_open(path, page_sz);
+    if (!vfs) return 0;
+    vfs->ctx->sb->cache.max_entries = saved_max;
+    vfs->ctx->sb->cache.writeback_threshold = saved_max / 4;
+    root_vp = vfs->ctx->rootNodeOffset;
+    int64_t file_vp = resolve_child_vp(vfs, root_vp, "seqfile.dat");
+    if (file_vp == 0) { vfs_close(vfs); return 0; }
+
+    /* Sequential read from byte 0 to end */
+    int reads = file_pages;
+    uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
+    if (!buf) { vfs_close(vfs); return 0; }
+    vfs_cache_reset();
+    double t0 = now_sec();
+    int ok = 0;
+    for (int i = 0; i < reads; i++) {
+        int r = vfs_read(vfs, file_vp, buf, (int64_t)i * page_sz, page_sz, 0);
+        if (r == page_sz) ok++;
+    }
+    double elapsed = now_sec() - t0;
+    free(buf);
+
+    int64_t total_bytes = (int64_t)reads * page_sz;
+    double mb = (double)total_bytes / (1024.0 * 1024.0);
+    printf("\n=== seqread ===\n");
+    printf("  pages=%d  size=%.1f MB  elapsed=%.3fs\n", reads, mb, elapsed);
+    printf("  throughput: %.1f MB/s\n", mb / elapsed);
+    printf("  ops/sec: %.0f\n", (double)reads / elapsed);
+    int64_t ct = vfs_cache_total();
+    int64_t ch = vfs_cache_hits();
+    int64_t dt = vfs_data_total();
+    int64_t dh = vfs_data_hits();
+    printf("  cache: hits=%lld total=%lld ratio=%.1f%%\n",
+           (long long)ch, (long long)ct, (ct > 0 ? 100.0*ch/ct : 0));
+    printf("  data:  hits=%lld total=%lld ratio=%.1f%%\n",
+           (long long)dh, (long long)dt, (dt > 0 ? 100.0*dh/dt : 0));
+    printf("  completed: %d / %d operations\n\n", ok, reads);
+    vfs_close(vfs);
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
  * Main — dispatch to workload
  * --------------------------------------------------------------------------- */
 
@@ -587,6 +658,8 @@ int main(int argc, char** argv) {
         ok = bench_seqwrite(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "randread") == 0) {
         ok = bench_randread(vfs, opts.count, opts.threads, opts.output);
+    } else if (strcmp(opts.workload, "seqread") == 0) {
+        ok = bench_seqread(vfs, opts.count, opts.threads, opts.output);
     } else {
         fprintf(stderr, "Unknown workload: %s\n", opts.workload);
         usage();
@@ -600,7 +673,8 @@ int main(int argc, char** argv) {
               : opts.count;
     printf("  completed: %d / %d operations\n", ok, total);
 
-    if (strcmp(opts.workload, "randread") != 0)
+    if (strcmp(opts.workload, "randread") != 0 &&
+        strcmp(opts.workload, "seqread") != 0)
         vfs_close(vfs);
     return 0;
 }
