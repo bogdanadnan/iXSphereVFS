@@ -325,7 +325,10 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
         uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
         if (!fc_slot) break;
 
-        /* Skip segments beyond the highest surviving file size */
+        /* Skip segments beyond the highest surviving file size.
+         * NOTE: sparse segments are pruned identically to dense ones —
+         * this calculation depends only on seg_idx and segment_size,
+         * not on PageNode density. */
         if (highest_file_size > 0 &&
             (seg_idx * (int64_t)ctx->segment_size * ctx->sb->page_size) >= highest_file_size) {
             int64_t fc_next = vfs_rd8_s(fc_slot, FILECONTENT_OFF_NEXTPTR, ctx->page_size);
@@ -337,7 +340,9 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
         int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
         int64_t fc_next = vfs_rd8_s(fc_slot, FILECONTENT_OFF_NEXTPTR, ctx->page_size);
 
-        /* Walk PageNode chain within this FileContent segment */
+        /* Walk PageNode chain within this FileContent segment.
+         * nextPtr semantics are unchanged for sparse chains — the same
+         * code path works regardless of PageNode density. */
         int64_t pn_vp = fc_page_root;
         int segment_has_live = 0;
 
@@ -381,7 +386,9 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
         alloc->cur_slot++;
         gc_copy_entry(gc_map, fc_vp, new_fc_vp, fc_slot, new_fc_slot, ctx->page_size);
 
-        /* Walk PageNode chain to copy live version pages */
+        /* Walk PageNode chain to copy live version pages.
+         * Sparse chains are walked identically — nextPtr pointers
+         * are followed in insertion order, independent of density. */
         pn_vp = fc_page_root;
         while (pn_vp != 0) {
             uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
