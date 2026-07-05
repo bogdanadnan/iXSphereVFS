@@ -107,7 +107,7 @@ static int commit_scan_dir(TreeContext* ctx, int64_t dir_vp, uint32_t s_epoch) {
             if (num_pages < 1) num_pages = 1;
 
             for (int64_t lp = 0; lp < num_pages; lp++) {
-                uint8_t* pn_slot = tree_resolve_page(ctx, dc_childPtr, lp, 0);
+                uint8_t* pn_slot = tree_resolve_page(ctx, dc_childPtr, lp, 0, false);
                 if (!pn_slot) break;
 
                 int64_t vp = vfs_atomic_load_i64(

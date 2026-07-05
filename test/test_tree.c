@@ -456,7 +456,7 @@ static void test_resolve_page_growth(void) {
     CHECK(seg_size > 0);
 
     /* Resolve page 0 — should create first segment */
-    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0);
+    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0, false);
     CHECK(pn0 != NULL);
 
     /* Verify it's a PageNode with versionRootPtr=0 (never written) */
@@ -465,12 +465,12 @@ static void test_resolve_page_growth(void) {
     /* Cache should now be populated for this segment */
 
     /* Resolve page 1 — should hit cached array */
-    uint8_t* pn1 = tree_resolve_page(ctx, file_vp, 1, 0);
+    uint8_t* pn1 = tree_resolve_page(ctx, file_vp, 1, 0, false);
     CHECK(pn1 != NULL);
     CHECK_EQ(vfs_rd8(pn1, PAGENODE_OFF_VERSIONROOT), 0);
 
     /* Resolve page at segment boundary — should create second segment */
-    uint8_t* pn_first_new = tree_resolve_page(ctx, file_vp, seg_size, 0);
+    uint8_t* pn_first_new = tree_resolve_page(ctx, file_vp, seg_size, 0, false);
     CHECK(pn_first_new != NULL);
     CHECK_EQ(vfs_rd8(pn_first_new, PAGENODE_OFF_VERSIONROOT), 0);
 
@@ -478,7 +478,7 @@ static void test_resolve_page_growth(void) {
 
     /* Resolve page 0 again — cache may have been invalidated by second segment.
        Just verify it still works. */
-    pn0 = tree_resolve_page(ctx, file_vp, 0, 0);
+    pn0 = tree_resolve_page(ctx, file_vp, 0, 0, false);
     CHECK(pn0 != NULL);
 
     vfs_unmount(vfs);
@@ -618,7 +618,7 @@ static void test_write_in_place(void) {
     CHECK_EQ(ret, 4);
 
     /* Count VersionPages for page 0 after first write */
-    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0);
+    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0, false);
     CHECK(pn0 != NULL);
     int64_t vp = vfs_atomic_load_i64((const int64_t*)(pn0 + PAGENODE_OFF_VERSIONROOT));
     int count_before = 0;
@@ -636,7 +636,7 @@ static void test_write_in_place(void) {
     CHECK_EQ(ret, 4);
 
     /* Count VersionPages again — should still be 1 (in-place) */
-    pn0 = tree_resolve_page(ctx, file_vp, 0, 0);
+    pn0 = tree_resolve_page(ctx, file_vp, 0, 0, false);
     CHECK(pn0 != NULL);
     vp = vfs_atomic_load_i64((const int64_t*)(pn0 + PAGENODE_OFF_VERSIONROOT));
     int count_after = 0;
@@ -691,7 +691,7 @@ static void test_write_cow_epoch(void) {
     CHECK_EQ(strncmp(rbuf, "BBBB", 4), 0);
 
     /* VersionPage count should be 2 now (one per epoch) */
-    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0);
+    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0, false);
     CHECK(pn0 != NULL);
     int64_t vp = vfs_atomic_load_i64((const int64_t*)(pn0 + PAGENODE_OFF_VERSIONROOT));
     int count = 0;

@@ -82,7 +82,7 @@ int tree_migrate_walk_file(TreeContext* ctx, int64_t file_vp);
  * epoch    — write epoch (used for segment growth decisions)
  */
 uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
-                           int64_t logical_page, int64_t epoch);
+                           int64_t logical_page, int64_t epoch, bool is_write);
 
 /* ---------------------------------------------------------------------------
  * Context accessors (inline helpers)

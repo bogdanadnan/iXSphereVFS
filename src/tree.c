@@ -253,7 +253,7 @@ int tree_migrate_walk_file(TreeContext* ctx, int64_t file_vp) {
  * --------------------------------------------------------------------------- */
 
 uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
-                           int64_t logical_page, int64_t epoch) {
+                           int64_t logical_page, int64_t epoch, bool is_write) {
     (void)epoch;  /* not yet used — future: segment growth decisions */
 
     uint32_t seg_size = ctx->segment_size;
@@ -1301,7 +1301,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
 
     for (int64_t p = first_page; p <= last_page; p++) {
         /* Resolve or create PageNode for this page */
-        uint8_t* pn_slot = tree_resolve_page(ctx, file, p, epoch);
+        uint8_t* pn_slot = tree_resolve_page(ctx, file, p, epoch, true);
         if (!pn_slot) { vfs_unlock(vfs, file, epoch); return -1; }
 
         /* Compute intra-page offset and count */
@@ -1472,7 +1472,7 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
 
     for (int64_t p = first_page; p <= last_page; p++) {
         /* Resolve PageNode for this page */
-        uint8_t* pn_slot = tree_resolve_page(ctx, file, p, read_epoch);
+        uint8_t* pn_slot = tree_resolve_page(ctx, file, p, read_epoch, false);
         if (!pn_slot) {
             /* Page doesn't exist → zero-fill this portion */
             int64_t page_offset = (p == first_page) ? offset % page_size : 0;
