@@ -349,13 +349,46 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
         if (!fc_slot) return NULL;
 
         if (i == segment_idx) {
+            /* Per-thread segment cache — rebuilt when sparse chain exceeds threshold.
+             * Entries track gc_generation to auto-invalidate after GC compaction. */
+            #define TCACHE_SIZE 16
+            static __thread struct {
+                int64_t  key;
+                int64_t  vptr_array[1024];
+                uint32_t seg_size;
+                bool     populated;
+                int64_t  gen;
+            } tcache[TCACHE_SIZE];
+            static __thread int tcache_next = 0;
+            (void)tcache_next;  /* used below for cache population */
+
             int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+            int64_t cache_key = (file_vp << 20) | (segment_idx & 0xFFFFF);
+
+            /* Check tcache first */
+            for (int ci = 0; ci < TCACHE_SIZE; ci++) {
+                if (tcache[ci].key == cache_key &&
+                    tcache[ci].seg_size == seg_size &&
+                    tcache[ci].populated) {
+                    if (tcache[ci].gen != ctx->gc_generation) {
+                        tcache[ci].populated = false;
+                    } else {
+                        int64_t pn_vp = tcache[ci].vptr_array[page_in_segment];
+                        if (pn_vp && pn_vp != VFS_VPTR_NULL) {
+                            return pool_resolve(&ctx->pool, pn_vp);
+                        }
+                        tcache[ci].populated = false;
+                    }
+                    break;
+                }
+            }
 
             /* Walk the sparse PageNode chain in ascending page_index order.
              * Track prev_vp for sorted insertion. */
             int64_t pn_vp = fc_page_root;
             int64_t prev_vp = 0;
             int total_pages_seen = 0;
+            (void)total_pages_seen;  /* used below for cache threshold */
             (void)total_pages_seen;
 #ifndef NDEBUG
             int64_t prev_page_index = -1;
