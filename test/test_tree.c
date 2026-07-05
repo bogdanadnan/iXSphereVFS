@@ -1601,6 +1601,45 @@ static void test_sparse_gc_roundtrip(void) {
     unlink(gc_path);
 }
 
+static void test_sparse_cow_chain(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "cow.txt", 0);
+    CHECK(file_vp > 0);
+
+    /* Write "AAAA" at epoch 0 */
+    CHECK_EQ(vfs_write(vfs, file_vp, "AAAA", 0, 4, 0), 4);
+
+    /* Snapshot → epoch 1, currentEpoch becomes 2 */
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK_EQ(snap, 1);
+
+    /* Write "BBBB" at epoch 2 (COPY ON WRITE) */
+    CHECK_EQ(vfs_write(vfs, file_vp, "BBBB", 0, 4, 2), 4);
+
+    /* Epoch 0 returns "AAAA" */
+    char rbuf[8];
+    memset(rbuf, 0, sizeof(rbuf));
+    CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 0), 4);
+    CHECK_EQ(strcmp(rbuf, "AAAA"), 0);
+
+    /* Epoch 2 returns "BBBB" */
+    memset(rbuf, 0, sizeof(rbuf));
+    CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 2), 4);
+    CHECK_EQ(strcmp(rbuf, "BBBB"), 0);
+
+    /* Resolve page 0 — still has single PageNode with page_index==0 */
+    uint8_t* pn = tree_resolve_page(ctx, file_vp, 0, 0, false);
+    CHECK(pn != NULL);
+    uint32_t idx = (uint32_t)vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+    CHECK_EQ(idx, 0u);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1730,6 +1769,9 @@ int main(void) {
     test_sparse_read_no_allocate();
 
     test_sparse_gc_roundtrip();
+
+    unlink(test_path);
+    test_sparse_cow_chain();
 
     /* Clean up */
     unlink(test_path);
