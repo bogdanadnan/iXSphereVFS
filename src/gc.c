@@ -1011,6 +1011,12 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
     gc_map_destroy(&gc_map);
     if (lps) live_page_set_destroy(lps);
 
+    /* Bump the GC generation counter — signals to worker threads that
+     * pool pages may have been remapped (stale VirtualPtrs invalidated).
+     * Atomic increment is sufficient: GC holds tree exclusive lock so no
+     * worker is mid-lookup against old pool pages. */
+    ctx->gc_generation++;
+
     return VFS_OK;
 }
 
