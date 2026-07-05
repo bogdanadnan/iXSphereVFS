@@ -402,11 +402,17 @@ void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
  * --------------------------------------------------------------------------- */
 
 int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
-    if (!vfs || !vfs->ctx || !name || name[0] == '\0') return VFS_ERR_IO;
+    if (!vfs || !vfs->ctx || !name || name[0] == '\0') {
+        if (vfs && vfs->ctx) vfs->ctx->last_error = VFS_ERR_IO;
+        return VFS_ERR_IO;
+    }
     TreeContext* ctx = vfs->ctx;
 
     /* Validate epoch is writable (Phase 6: uses real epoch validation) */
-    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
+    if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) {
+        ctx->last_error = VFS_ERR_IO;
+        return VFS_ERR_IO;
+    }
 
     /* Read parent DirNode, verify type */
     uint8_t* parent_slot = pool_resolve(&ctx->pool, (int64_t)parent);
@@ -444,7 +450,10 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
     /* Atomically increment nextNodeId */
     uint32_t new_nodeId = (uint32_t)vfs_atomic_add_i32((int32_t*)&ctx->nextNodeId, 1);
     /* nextNodeId starts at 0, first add yields nodeId=1 */
-    if (vfs_lock(vfs, (int64_t)new_nodeId, epoch) != VFS_OK) return VFS_ERR_IO;
+    if (vfs_lock(vfs, (int64_t)new_nodeId, epoch) != VFS_OK) {
+        vfs->ctx->last_error = VFS_ERR_IO;
+        return VFS_ERR_IO;
+    }
 
     /* Allocate FileNode slot and write it */
     int64_t file_vp = pool_alloc(&ctx->pool);
