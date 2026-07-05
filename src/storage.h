@@ -65,8 +65,7 @@ typedef struct CacheEntry {
     uint8_t* payload;           /* malloc'd, size = page_size */
     int      priority;          /* flush priority 0–3 */
     int      dirty;             /* 1 if modified since last flush */
-    struct CacheEntry* lru_prev;
-    struct CacheEntry* lru_next;
+    uint64_t timestamp;         /* generation for eviction (lock-free) */
     struct CacheEntry* hash_next;
 } CacheEntry;
 
@@ -81,14 +80,12 @@ typedef struct {
     CacheEntry** buckets;
     int          bucket_count;
     int*         bucket_locks;  /* spin-locks per bucket (0=free, 1=held) */
-    CacheEntry*  lru_head;     /* most recently used */
-    CacheEntry*  lru_tail;     /* least recently used */
     int          entry_count;
     int          max_entries;
     int64_t      dirty_count;
-    int64_t      writeback_threshold;  /* trigger write-back when dirty_count >= this */
-    int64_t      page_size;   /* cached page size for memcpy */
-    volatile int lru_lock;     /* protects lru_head/lru_tail and lru_prev/lru_next */
+    int64_t      writeback_threshold;
+    int64_t      page_size;
+    volatile uint64_t lru_clock; /* monotonic generation counter for eviction */
 } PageCache;
 
 /* ---------------------------------------------------------------------------

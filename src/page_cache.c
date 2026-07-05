@@ -40,36 +40,16 @@ static inline void spin_unlock(int* lock) {
  * --------------------------------------------------------------------------- */
 
 static void lru_promote(PageCache* cache, CacheEntry* e) {
-    spin_lock(&cache->lru_lock);
-    if (cache->lru_head == e) { spin_unlock(&cache->lru_lock); return; }
-    if (e->lru_prev) e->lru_prev->lru_next = e->lru_next;
-    if (e->lru_next) e->lru_next->lru_prev = e->lru_prev;
-    if (cache->lru_tail == e) cache->lru_tail = e->lru_prev;
-    e->lru_prev = NULL;
-    e->lru_next = cache->lru_head;
-    if (cache->lru_head) cache->lru_head->lru_prev = e;
-    cache->lru_head = e;
-    if (!cache->lru_tail) cache->lru_tail = e;
-    spin_unlock(&cache->lru_lock);
+    e->timestamp = __sync_add_and_fetch(&cache->lru_clock, 1);
 }
 
 static void lru_insert_head(PageCache* cache, CacheEntry* e) {
-    spin_lock(&cache->lru_lock);
-    e->lru_prev = NULL;
-    e->lru_next = cache->lru_head;
-    if (cache->lru_head) cache->lru_head->lru_prev = e;
-    cache->lru_head = e;
-    if (!cache->lru_tail) cache->lru_tail = e;
-    spin_unlock(&cache->lru_lock);
+    e->timestamp = __sync_add_and_fetch(&cache->lru_clock, 1);
 }
 
 static void lru_remove(PageCache* cache, CacheEntry* e) {
-    spin_lock(&cache->lru_lock);
-    if (e->lru_prev) e->lru_prev->lru_next = e->lru_next;
-    if (e->lru_next) e->lru_next->lru_prev = e->lru_prev;
-    if (cache->lru_head == e) cache->lru_head = e->lru_next;
-    if (cache->lru_tail == e) cache->lru_tail = e->lru_prev;
-    spin_unlock(&cache->lru_lock);
+    (void)cache;
+    e->timestamp = 0;  /* mark as removed */
 }
 
 /* ---------------------------------------------------------------------------
@@ -80,31 +60,29 @@ void cache_init(PageCache* cache, int64_t page_size) {
     cache->bucket_count = CACHE_DEFAULT_BUCKETS;
     cache->buckets      = calloc((size_t)cache->bucket_count, sizeof(CacheEntry*));
     cache->bucket_locks = calloc((size_t)cache->bucket_count, sizeof(int));
-    cache->lru_head     = NULL;
-    cache->lru_tail     = NULL;
     cache->entry_count  = 0;
     cache->max_entries  = CACHE_DEFAULT_MAX;
     cache->dirty_count  = 0;
     cache->writeback_threshold = cache->max_entries / 4;
     cache->page_size    = page_size;
-    cache->lru_lock     = 0;
+    cache->lru_clock    = 1;
 }
 
 void cache_destroy(PageCache* cache) {
-    /* Free all entries */
-    CacheEntry* e = cache->lru_head;
-    while (e) {
-        CacheEntry* next = e->lru_next;
-        free(e->payload);
-        free(e);
-        e = next;
+    /* Free all entries by walking hash buckets */
+    for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
+        CacheEntry* e = cache->buckets[bkt];
+        while (e) {
+            CacheEntry* next = e->hash_next;
+            free(e->payload);
+            free(e);
+            e = next;
+        }
     }
     free(cache->buckets);
     free(cache->bucket_locks);
     cache->buckets      = NULL;
     cache->bucket_locks = NULL;
-    cache->lru_head     = NULL;
-    cache->lru_tail     = NULL;
     cache->entry_count  = 0;
 }
 
@@ -135,30 +113,44 @@ CacheEntry* cache_find(PageCache* cache, int64_t logical_page) {
  * --------------------------------------------------------------------------- */
 
 static void cache_evict(PageCache* cache) {
-    /* Walk from tail, evicting clean pages */
-    CacheEntry* e = cache->lru_tail;
-    while (e && cache->entry_count >= cache->max_entries) {
-        CacheEntry* prev = e->lru_prev;
+    /* Evict clean entries with lowest generation timestamp.
+       Lock-free on the hot path — only bucket locks during scanning.
+       timestamp=0 means the entry was removed (dangling). */
+    while (cache->entry_count > cache->max_entries) {
+        CacheEntry* victim = NULL;
+        uint64_t    lowest = UINT64_MAX;
+        int         victim_bkt = -1;
+        CacheEntry** victim_pp = NULL;
 
-        if (!e->dirty) {
-            /* Remove from hash chain */
-            int bkt = bucket_index(cache, e->logical_page);
+        for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
             spin_lock(&cache->bucket_locks[bkt]);
-
             CacheEntry** pp = &cache->buckets[bkt];
-            while (*pp && *pp != e) pp = &(*pp)->hash_next;
-            if (*pp == e) *pp = e->hash_next;
-
-            lru_remove(cache, e);
-            cache->entry_count--;
-
+            while (*pp) {
+                CacheEntry* e = *pp;
+                if (!e->dirty && e->timestamp > 0 && e->timestamp < lowest) {
+                    lowest = e->timestamp;
+                    victim = e;
+                    victim_bkt = bkt;
+                    victim_pp = pp;
+                }
+                pp = &e->hash_next;
+            }
             spin_unlock(&cache->bucket_locks[bkt]);
-
-            free(e->payload);
-            free(e);
+            if (victim && lowest == 1) break;  /* can't get lower than 1 */
         }
 
-        e = prev;
+        if (!victim) break;  /* no clean entries to evict */
+
+        /* Remove victim from its bucket */
+        spin_lock(&cache->bucket_locks[victim_bkt]);
+        if (*victim_pp == victim) {
+            *victim_pp = victim->hash_next;
+            cache->entry_count--;
+        }
+        spin_unlock(&cache->bucket_locks[victim_bkt]);
+
+        free(victim->payload);
+        free(victim);
     }
 }
 
@@ -210,8 +202,7 @@ void cache_insert(PageCache* cache, int64_t logical_page,
     e->logical_page = logical_page;
     e->priority     = priority;
     e->dirty        = dirty;
-    e->lru_prev     = NULL;
-    e->lru_next     = NULL;
+    e->timestamp    = 0;
 
     /* Insert into hash chain */
     e->hash_next = cache->buckets[bkt];
@@ -311,8 +302,6 @@ void cache_evict_all(StorageBackend* sb) {
         cache->buckets[bkt] = NULL;
         spin_unlock(&cache->bucket_locks[bkt]);
     }
-    cache->lru_head    = NULL;
-    cache->lru_tail    = NULL;
     cache->entry_count = 0;
 }
 
