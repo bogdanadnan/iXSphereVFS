@@ -463,30 +463,8 @@ static void test_gc_pool_compaction(void) {
     char fname[32];
     for (int i = 0; i < 20; i++) {
         snprintf(fname, sizeof(fname), "f%d.txt", i);
-        int64_t nid = vfs_create(vfs, root_vp, fname, 0);
-        CHECK(nid > 0);
-
-        /* Get the file VirtualPtr */
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        /* Walk to find our file (newest entries are at head) */
-        int64_t walk = head;
-        while (walk != 0) {
-            uint8_t* dc_s = pool_resolve(&ctx->pool, walk);
-            CHECK(dc_s != NULL);
-            uint32_t cc, ce;
-            int64_t cp, np, nx;
-            nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-            char en[64];
-            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
-            if (nl > 0 && strcmp(en, fname) == 0) {
-                file_vps[i] = cp;
-                break;
-            }
-            walk = nx;
-        }
-        CHECK(file_vps[i] != 0);
+        file_vps[i] = vfs_create(vfs, root_vp, fname, 0);
+        CHECK(file_vps[i] > 0);
 
         /* Write to the file to create pool entries */
         CHECK_EQ(vfs_write(vfs, file_vps[i], "DATA", 0, 4, 0), 4);
@@ -763,23 +741,8 @@ static void test_gc_nonstd_page_size(void) {
     CHECK_EQ(ctx->page_size, 4096);
 
     int64_t root_vp = ctx->rootNodeOffset;
-    int64_t nodeId = vfs_create(vfs, root_vp, "smoke.txt", 0);
-    CHECK(nodeId > 0);
-
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t head = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
-        CHECK(head != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
-                              &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)np; (void)nx;
-        file_vp = cp;
-    }
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "smoke.txt", 0);
+    CHECK(file_vp > 0);
 
     CHECK_EQ(vfs_write(vfs, file_vp, "4K_DATA", 0, 7, 0), 7);
 
@@ -817,29 +780,8 @@ static void test_gc_data_page_reclaim(void) {
     char bigbuf[16384];
     memset(bigbuf, 'X', sizeof(bigbuf));
 
-    int64_t nid = vfs_create(vfs, root_vp, "bigfile.txt", 0);
-    CHECK(nid > 0);
-
-    int64_t file_vp = 0;
-    {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t h = vfs_rd8_s(rs, DIRNODE_OFF_HEADPTR, ctx->page_size);
-        int64_t w = h;
-        while (w != 0) {
-            uint8_t* dc = pool_resolve(&ctx->pool, w);
-            CHECK(dc != NULL);
-            uint32_t cc, ce;
-            int64_t cp, np, nx;
-            nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
-            (void)cc; (void)ce;
-            char en[64];
-            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
-            if (nl > 0 && strcmp(en, "bigfile.txt") == 0) { file_vp = cp; break; }
-            w = nx;
-        }
-    }
-    CHECK(file_vp != 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "bigfile.txt", 0);
+    CHECK(file_vp > 0);
 
     int64_t written0 = vfs_write(vfs, file_vp, bigbuf, 0, sizeof(bigbuf), 0);
     CHECK_EQ(written0, (int)sizeof(bigbuf));
