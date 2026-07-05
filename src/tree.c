@@ -69,7 +69,7 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     ctx->epochMapperPtr   = 0;
     ctx->touchedFilesPtr  = 0;
     ctx->nextNodeId       = 0;  /* first vfs_atomic_add_i32 returns 1 */
-    ctx->formatVersion    = 1;  /* current format: PageNode has pageIndex */
+    ctx->formatVersion    = 2;  /* v2: PageNode has pageIndex, superblock has formatVersion */
     ctx->treeLockState    = 0;
 
     /* Write superblock with initial state */
