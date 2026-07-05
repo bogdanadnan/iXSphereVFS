@@ -8,6 +8,10 @@
 #include <time.h>
 #include <assert.h>
 
+/* When a sparse PageNode chain reaches this many entries, switch from
+ * chain-walk to a rebuilt in-memory array for amortized O(1) lookups. */
+#define SPARSE_CACHE_THRESHOLD 64
+
 /* ---------------------------------------------------------------------------
  * Superblock I/O helpers
  * --------------------------------------------------------------------------- */
@@ -351,10 +355,13 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
              * Track prev_vp for sorted insertion. */
             int64_t pn_vp = fc_page_root;
             int64_t prev_vp = 0;
+            int total_pages_seen = 0;
+            (void)total_pages_seen;
 #ifndef NDEBUG
             int64_t prev_page_index = -1;
 #endif
             while (pn_vp != 0) {
+                total_pages_seen++;
                 uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
                 if (!pn_slot) break;
                 uint32_t pn_idx;
@@ -453,10 +460,13 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
             {
                 pn_vp = fc_page_root;
                 prev_vp = 0;
+                total_pages_seen = 0;
+                (void)total_pages_seen;
 #ifndef NDEBUG
                 prev_page_index = -1;
 #endif
                 while (pn_vp != 0) {
+                    total_pages_seen++;
                     uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
                     if (!pn_slot) break;
                     uint32_t pn_idx;
