@@ -388,7 +388,17 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
         /* Walk PageNode chain to copy live version pages.
          * Sparse chains are walked identically — nextPtr pointers
-         * are followed in insertion order, independent of density. */
+         * are followed in insertion order, independent of density.
+         *
+         * Sparse-chain notes:
+         * (a) Chains may be sparse — gaps in page_index are expected and
+         *     handled correctly by the nextPtr walk.
+         * (b) GC work is proportional to the number of allocated PageNodes,
+         *     not segment_size.  Empty (unwritten) pages have no PageNode.
+         * (c) page_index at offset 16 (uint32_t, range 0..segment_size-1)
+         *     is NOT remapped by gc_copy_entry — its value range cannot
+         *     collide with valid VirtualPtrs (min VirtualPtr = page 2 << 16
+         *     = 131072). */
         pn_vp = fc_page_root;
         while (pn_vp != 0) {
             uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
