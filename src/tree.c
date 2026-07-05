@@ -495,6 +495,13 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
     return file_vp;
 }
 
+/* ---------------------------------------------------------------------------
+ * vfs_mkdir — create a subdirectory under a parent directory
+ *
+ * Returns the child's VirtualPtr on success (always > 0), or a negative
+ * vfs_error_t on failure.
+ * --------------------------------------------------------------------------- */
+
 int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (!vfs || !vfs->ctx || !name || name[0] == '\0') {
         if (vfs && vfs->ctx) vfs->ctx->last_error = VFS_ERR_IO;
