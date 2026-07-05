@@ -23,53 +23,70 @@ The chain becomes sparse — some entries are missing.
 
 ### Sparse Chain Walk
 
-When resolving a page in a segment, walk the existing chain first:
+When resolving a page in a segment, walk the existing chain to the target
+position. Missing PageNodes are allocated on-demand and linked into the chain.
+
 ```c
 int64_t vp = fc_page_root;
-for (j = 0; j <= page_in_segment; j++) {
-    if (vp == 0) {
-        // PageNode doesn't exist — allocate and link it
+int64_t prev_vp = 0;
+int pages_seen = 0;
+
+for (int64_t j = 0; j <= page_in_segment; j++) {
+    if (vp == 0 || vp == VFS_VPTR_NULL) {
+        // PageNode doesn't exist at this position — allocate it
+        vp = pool_alloc(&ctx->pool);
+        uint8_t* pn = pool_resolve(&ctx->pool, vp);
+        nodes_write_pagenode(pn, 0, 0, ctx->page_size);
+        // Link into chain at prev_vp.nextPtr (CAS)
+    } else {
+        pages_seen++;  // page existed before this access
     }
-    if (j == page_in_segment) return pool_resolve(vp);
-    vp = nextPtr(vp);  // might be 0 if missing
+
+    if (j == page_in_segment) return pool_resolve(&ctx->pool, vp);
+
+    // Advance to next PageNode
+    uint8_t* pn = pool_resolve(&ctx->pool, vp);
+    prev_vp = vp;
+    vp = (pn) ? nextPtr(pn) : 0;
 }
 ```
 
-Missing PageNodes are allocated on access with zero `versionRootPtr`,
-linking them into the chain at the correct position.
-
 ### Threshold-Based Array Caching
 
-Track how many PageNodes exist in the segment. When the count exceeds
-a threshold (e.g., 64), build the segment array and cache it in the
-thread-local table. Before the threshold, walk the chain on each access.
+No separate counter needed. During the chain walk, we already count pages
+encountered. If `pages_seen >= CACHE_THRESHOLD` (e.g., 64), build the array
+from the chain and cache it BEFORE returning:
 
 ```c
-// Track per-segment. Store alongside the thread-local cache.
-struct {
-    int64_t key;
-    int64_t vptr_array[1024];
-    uint32_t seg_size;
-    int     page_count;   // number of non-null PageNodes
-} tcache[TCACHE_SIZE];
+if (pages_seen >= CACHE_THRESHOLD && !already_cached) {
+    // Build full array: re-walk the chain, fill array entries.
+    // Missing positions get NULL — allocated on-demand later.
+    int64_t array[1024];
+    vp = fc_page_root;
+    for (j = 0; j < seg_size; j++) {
+        array[j] = vp;   // might be 0 or VFS_VPTR_NULL
+        if (vp) vp = nextPtr(pool_resolve(vp));
+    }
+    // Cache in thread-local table
+}
 ```
 
-When `page_count < CACHE_THRESHOLD`, don't cache this segment — just walk.
-When `page_count >= CACHE_THRESHOLD`, build the full array and cache it.
+The cached array has NULLs for unwritten pages. When a future access hits a
+NULL slot, the chain walk finds or allocates the PageNode and updates the
+cached array entry. This is a write to the thread-local cache — safe, lock-free.
+
+### What "Build the Array" Means
+
+Build from EXISTING pages. Don't allocate missing pages. Missing positions
+are NULL in the array. The array mirrors the chain as-is at the time of
+building. New pages are added to the array incrementally as they're created.
 
 ### Small-File Impact
 
-- First write (128 bytes to page 0): allocate 1 PageNode (~1µs) instead of
-  1024 (~580µs). Segment is sparse (1/1024).
-- Second write to same page: warm, no allocation. ~0µs.
-- GC: walks sparse chain, same correctness. Slightly slower (more iterations)
-  but small files don't trigger frequent GC.
-
-### Large-File Impact
-
-- As pages are written, PageNodes accumulate. After 64 pages (the threshold),
-  the array is built and cached. Subsequent reads within the segment are O(1)
-  just like today.
+- First write: create 1 PageNode, chain length = 1. `pages_seen = 1 < 64`.
+  No array built. ~1µs.
+- 64th write: chain length = 64, array built. ~5µs for the build.
+  Subsequent reads: O(1) from array.
 
 ## Implementation
 
