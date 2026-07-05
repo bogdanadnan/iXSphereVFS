@@ -261,8 +261,6 @@ void vfs_unmount(vfs_t* vfs) {
         /* Flush superblock to persist any pending changes */
         tree_superblock_write(vfs->ctx);
         /* Destroy page array cache if built */
-        if (vfs->ctx->seg_array_fc_vp != 0)
-            segment_array_destroy(&vfs->ctx->seg_array_cache);
         /* Free in-memory mapper table entries */
         mapper_table_destroy(&vfs->ctx->mapper_table);
         storage_close(vfs->ctx->sb);

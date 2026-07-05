@@ -255,25 +255,21 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
         if (!fc_slot) return NULL;
 
         if (i == segment_idx) {
-            /* Build in-memory page array if not cached for this segment */
-            if (ctx->seg_array_fc_vp != fc_vp) {
-                /* Destroy old cache if any */
-                if (ctx->seg_array_fc_vp != 0)
-                    segment_array_destroy(&ctx->seg_array_cache);
-
-                int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
-                int err = segment_array_build(&ctx->pool, fc_page_root,
-                                               seg_size, &ctx->seg_array_cache);
-                if (err != VFS_OK) {
-                    ctx->seg_array_fc_vp = 0;
-                    return NULL;
+            /* Build a local page array — no shared cache, thread-safe.
+               Stack allocation of 1024 int64_t entries ≈ 8KB. */
+            int64_t vptr_array[1024];
+            int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+            int64_t vp = fc_page_root;
+            for (uint32_t j = 0; j < seg_size; j++) {
+                vptr_array[j] = vp;
+                if (vp != 0) {
+                    uint8_t* pn = pool_resolve(&ctx->pool, vp);
+                    vp = pn ? vfs_rd8_s(pn, PAGENODE_OFF_NEXTPTR, ctx->page_size) : 0;
                 }
-                ctx->seg_array_fc_vp = fc_vp;
             }
-
-            /* Resolve the specific page via the array */
-            return segment_array_resolve(&ctx->pool, &ctx->seg_array_cache,
-                                         (uint32_t)page_in_segment);
+            int64_t pn_vp = vptr_array[page_in_segment];
+            if (pn_vp == 0 || pn_vp == VFS_VPTR_NULL) return NULL;
+            return pool_resolve(&ctx->pool, pn_vp);
         }
 
         prev_fc_vp = fc_vp;

@@ -34,8 +34,6 @@ typedef struct {
     int64_t  page_size;          /* VFS page size (from sb->page_size) */
 
     /* In-memory page array cache — one entry for the most recently accessed segment */
-    SegmentArray seg_array_cache;
-    int64_t      seg_array_fc_vp;  /* FileContent VirtualPtr that owns the cached array, 0 = invalid */
 
     /* Epoch mapper */
     Mapper mapper;
