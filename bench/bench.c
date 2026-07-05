@@ -136,10 +136,8 @@ static void* bench_write_worker(void* arg) {
     for (int i = 0; i < c->count; i++) {
         char name[64];
         snprintf(name, sizeof(name), "t%d_w%d.txt", c->tid, i);
-        int64_t nid = vfs_create(c->vfs, root_vp, name, 0);
-        if (nid <= 0) continue;
-        int64_t file_vp = resolve_child_vp(c->vfs, root_vp, name);
-        if (file_vp == 0) continue;
+        int64_t file_vp = vfs_create(c->vfs, root_vp, name, 0);
+        if (file_vp <= 0) continue;
         char data[128];
         memset(data, 'A' + c->tid, 128);
         if (vfs_write(c->vfs, file_vp, data, 0, 128, 0) > 0) c->ok++;
@@ -153,9 +151,8 @@ static void* bench_seqwrite_worker(void* arg) {
     const int page_sz = c->vfs->ctx->page_size;
     char fname[64];
     snprintf(fname, sizeof(fname), "seqwrite_t%d.dat", c->tid);
-    if (vfs_create(c->vfs, root_vp, fname, 0) <= 0) return NULL;
-    int64_t fvp = resolve_child_vp(c->vfs, root_vp, fname);
-    if (fvp == 0) return NULL;
+    int64_t fvp = vfs_create(c->vfs, root_vp, fname, 0);
+    if (fvp <= 0) return NULL;
     uint8_t* buf = calloc(1, (size_t)page_sz);
     if (!buf) return NULL;
     for (int i = 0; i < c->count; i++) {
@@ -293,7 +290,7 @@ static int bench_create(vfs_t* vfs, int count, int threads, const char* path) {
 }
 
 /* ---------------------------------------------------------------------------
- * Workload: write N files — uses resolve_child_vp for VirtualPtr
+ * Workload: write N files
  * --------------------------------------------------------------------------- */
 
 static int bench_write(vfs_t* vfs, int count, int threads, const char* path) {
@@ -305,10 +302,8 @@ static int bench_write(vfs_t* vfs, int count, int threads, const char* path) {
         for (int i = 0; i < count; i++) {
             char name[64];
             snprintf(name, sizeof(name), "w%d.txt", i);
-            int64_t nid = vfs_create(vfs, root_vp, name, 0);
-            if (nid <= 0) continue;
-            int64_t file_vp = resolve_child_vp(vfs, root_vp, name);
-            if (file_vp == 0) continue;
+            int64_t file_vp = vfs_create(vfs, root_vp, name, 0);
+            if (file_vp <= 0) continue;
             char data[128];
             memset(data, 'A' + (i % 26), sizeof(data));
             int written = vfs_write(vfs, file_vp, data, 0, sizeof(data), 0);
@@ -342,7 +337,7 @@ static int bench_read(vfs_t* vfs, int count, int threads, const char* path) {
         char name[64];
         snprintf(name, sizeof(name), "r%d.txt", i);
         int64_t nid = vfs_create(vfs, root_vp, name, 0);
-        if (nid > 0) file_vps[i] = resolve_child_vp(vfs, root_vp, name);
+        file_vps[i] = nid;
 
         /* Write 128 bytes to each file so reads exercise version chain traversal */
         if (file_vps[i] != 0) {
@@ -428,9 +423,8 @@ static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path,
     for (int i = 0; i < nfiles && populated < nfiles; i++) {
         char name[64];
         snprintf(name, sizeof(name), "m%d.txt", i);
-        if (vfs_create(vfs, root_vp, name, 0) <= 0) continue;
-        file_vps[i] = resolve_child_vp(vfs, root_vp, name);
-        if (file_vps[i] == 0) continue;
+        file_vps[i] = vfs_create(vfs, root_vp, name, 0);
+        if (file_vps[i] <= 0) continue;
         /* Write 4 pages per file */
         uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
         if (!zbuf) break;
@@ -488,8 +482,7 @@ static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
         snprintf(dname, sizeof(dname), "d%d", i);
 
         /* mkdir */
-        if (vfs_mkdir(vfs, root_vp, dname, 0) <= 0) continue;
-        int64_t dir_vp = resolve_child_vp(vfs, root_vp, dname);
+        int64_t dir_vp = vfs_mkdir(vfs, root_vp, dname, 0);
         if (dir_vp <= 0) continue;
         ok++;
 
@@ -533,10 +526,8 @@ static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) 
     if (threads <= 1) {
         int64_t root_vp = vfs->ctx->rootNodeOffset;
         const int page_sz = vfs->ctx->page_size;
-        int64_t nid = vfs_create(vfs, root_vp, "seqwrite.dat", 0);
-        if (nid <= 0) return 0;
-        int64_t file_vp = resolve_child_vp(vfs, root_vp, "seqwrite.dat");
-        if (file_vp == 0) return 0;
+        int64_t file_vp = vfs_create(vfs, root_vp, "seqwrite.dat", 0);
+        if (file_vp <= 0) return 0;
         uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
         if (!buf) return 0;
         memset(buf, 0, (size_t)page_sz);
@@ -591,9 +582,8 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     /* ── Pre-populate (untimed) ── */
     int writes_ok = 0;
     {
-        if (vfs_create(vfs, root_vp, "randfile.dat", 0) <= 0) return 0;
-        int64_t fvp = resolve_child_vp(vfs, root_vp, "randfile.dat");
-        if (fvp == 0) return 0;
+        int64_t fvp = vfs_create(vfs, root_vp, "randfile.dat", 0);
+        if (fvp <= 0) return 0;
         uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
         if (!zbuf) return 0;
         for (int i = 0; i < file_pages; i++) {
@@ -660,9 +650,8 @@ static int bench_seqread(vfs_t* vfs, int count, int threads, const char* path,
     if (!phase || strcmp(phase, "write") == 0) {
         printf("=== seqread:write (%d pages) ===\n", file_pages);
         int writes_ok = 0;
-        if (vfs_create(vfs, root_vp, "seqfile.dat", 0) <= 0) return 0;
-        int64_t fvp = resolve_child_vp(vfs, root_vp, "seqfile.dat");
-        if (fvp == 0) return 0;
+        int64_t fvp = vfs_create(vfs, root_vp, "seqfile.dat", 0);
+        if (fvp <= 0) return 0;
         uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
         if (!zbuf) return 0;
         double t0 = now_sec();
