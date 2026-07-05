@@ -56,7 +56,7 @@ static void usage(void) {
     fprintf(stderr,
         "Usage: vfs_bench --workload=<name> --count=N [options]\n"
         "Options:\n"
-        "  --workload=<name>   create, small_create, write, read, scan, mixed, dir, seqwrite, randread, seqread (default: create)\n"
+        "  --workload=<name>   create, small_create, write, read, scan, mixed, dir, seqwrite, randread, seqread, sparse_rand_write (default: create)\n"
         "  --count=N           number of files/operations (default: 1000)\n"
         "  --threads=N         number of threads (default: 1)\n"
         "  --page-size=N       VFS page size in bytes (default: 8192)\n"
@@ -315,6 +315,39 @@ static int bench_small_file_create(vfs_t* vfs, int count, int threads,
     }
     double t1 = now_sec();
     report_full("small_create", ok, threads, t1 - t0);
+    lat_destroy();
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
+ * Workload: sparse random writes — create file, random 128B writes to
+ * pages in 0..segment_size-1, testing sparse chain performance
+ * --------------------------------------------------------------------------- */
+
+static int bench_sparse_random_writes(vfs_t* vfs, int count, int threads,
+                                      const char* path) {
+    (void)path;
+    (void)threads;
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+    uint32_t seg_size = vfs->ctx->segment_size;
+    int64_t file_vp = vfs_create(vfs, root_vp, "sparse_rand.dat", 0);
+    if (file_vp <= 0) return 0;
+
+    lat_init(count);
+    char data[128];
+    memset(data, 'X', sizeof(data));
+    unsigned rseed = 42;
+    double t0 = now_sec();
+    int ok = 0;
+    for (int i = 0; i < count; i++) {
+        double op_t0 = now_sec();
+        int64_t page = (int64_t)(rand_r(&rseed) % seg_size);
+        int written = vfs_write(vfs, file_vp, data, page * 128, sizeof(data), 0);
+        if (written == (int)sizeof(data)) ok++;
+        lat_record(now_sec() - op_t0);
+    }
+    double t1 = now_sec();
+    report_full("sparse_rand_write", ok, threads, t1 - t0);
     lat_destroy();
     return ok;
 }
@@ -782,6 +815,8 @@ int main(int argc, char** argv) {
         ok = bench_create(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "small_create") == 0) {
         ok = bench_small_file_create(vfs, opts.count, opts.threads, opts.output);
+    } else if (strcmp(opts.workload, "sparse_rand_write") == 0) {
+        ok = bench_sparse_random_writes(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "write") == 0) {
         ok = bench_write(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "read") == 0) {
