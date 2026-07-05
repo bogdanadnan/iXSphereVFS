@@ -1,5 +1,21 @@
 # TODO — Future Optimizations
 
+## Phase 15 — Sparse PageNode chains & v2 format [COMPLETED]
+
+PageNode chains are now sparse — only written pages have allocated PageNodes.
+Each PageNode carries a `page_index` field (offset 16, uint32).  The format
+version in the superblock (`SB_OFF_FORMAT_VERSION`) distinguishes v1 (dense,
+no page_index) from v2 (sparse, with page_index).  v1 files are auto-migrated
+to v2 on first mount via `tree_migrate_v1_to_v2`.
+
+GC cost for sparse segments is proportional to allocated count rather than
+`segment_size`, reducing overhead for files where only a fraction of pages are
+written.  The GC walks `nextPtr` chains and copies `page_index` at offset 16
+without remapping (the value range 0..seg_size-1 does not collide with valid
+VirtualPtrs, min VirtualPtr = 131072).
+
+---
+
 Items deferred from current implementation. Not blocking any phase.
 
 ---
