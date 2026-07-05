@@ -105,12 +105,6 @@ typedef struct {
 
     /* Header page buffer — kept in memory, flushed on Flush(-1) */
     uint8_t*         header_buf;    /* page_size bytes, the header page payload */
-
-    /* Per-page tracking for lazy mirror */
-    int32_t*         mirror_pages;   /* mirror_page per logical page, -1 = none */
-    uint32_t*        generations;    /* generation per logical page */
-    int              mirror_cap;     /* allocated capacity */
-    volatile int     mirror_lock;    /* protects realloc in ensure_mirror_arrays */
 } StorageBackend;
 
 /* ---------------------------------------------------------------------------
@@ -146,7 +140,6 @@ int  raw_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload,
 /* Internal helpers (storage.c) */
 int64_t phys_record_size(StorageBackend* sb);
 int     inline_entry_count(int64_t page_size);
-int     ensure_mirror_arrays(StorageBackend* sb, int min_cap);
 
 /* ---------------------------------------------------------------------------
  * Internal: indirection  (indirection.c)

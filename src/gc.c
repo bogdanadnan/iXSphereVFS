@@ -3,6 +3,7 @@
 #include "tree.h"
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ---------------------------------------------------------------------------
  * Tree Lock (§9.6)
@@ -107,22 +108,26 @@ void deferred_free_enqueue(DeferredFreeQueue* queue, int64_t logical_page,
 #endif
     }
 
-    /* Enqueue mirror sibling if it exists */
-    if (append_ok && sb && (uint64_t)logical_page < (uint64_t)sb->mirror_cap) {
-        int32_t mirror = sb->mirror_pages[logical_page];
-        if (mirror >= 0) {
-            int64_t mirror_page = (int64_t)mirror;
-            if (queue->count >= queue->capacity) {
-                int new_cap = queue->capacity * 2 + 16;
-                int64_t* new_pages = (int64_t*)realloc(queue->pages,
-                                        (size_t)new_cap * sizeof(int64_t));
-                if (new_pages) {
-                    queue->pages = new_pages;
-                    queue->capacity = new_cap;
+    /* Enqueue mirror sibling if it exists — read from on-disk PageHeader */
+    if (append_ok && sb) {
+        int64_t offset = indir_lookup(sb, logical_page);
+        if (offset > 0) {
+            PageHeader ph;
+            ssize_t n = pread(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
+            if (n == PAGE_HEADER_SIZE && ph.mirror_page >= 0) {
+                int64_t mirror_page = (int64_t)ph.mirror_page;
+                if (queue->count >= queue->capacity) {
+                    int new_cap = queue->capacity * 2 + 16;
+                    int64_t* new_pages = (int64_t*)realloc(queue->pages,
+                                            (size_t)new_cap * sizeof(int64_t));
+                    if (new_pages) {
+                        queue->pages = new_pages;
+                        queue->capacity = new_cap;
+                        queue->pages[queue->count++] = mirror_page;
+                    }
+                } else {
                     queue->pages[queue->count++] = mirror_page;
                 }
-            } else {
-                queue->pages[queue->count++] = mirror_page;
             }
         }
     }

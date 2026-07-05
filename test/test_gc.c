@@ -283,10 +283,24 @@ static void test_df_mirror_sibling(void) {
     StorageBackend* sb = df_setup();
     CHECK(sb != NULL);
 
-    /* Allocate mirror arrays and configure mirror relationship */
-    ensure_mirror_arrays(sb, 10);
-    sb->mirror_pages[5] = 7;    /* page 7 is mirror of page 5 */
-    sb->mirror_pages[7] = 5;    /* bidirectional */
+    /* Write page 5 with a mirror_page pointing to page 7.
+       Write page 7 too so the indirection lookup succeeds. */
+    {
+        uint8_t buf[8192] = {0};
+        PageHeader ph = {0, vfs_crc32c(buf, 8192), 1, 7};
+        int64_t off5 = sb->page_size + PAGE_HEADER_SIZE + 5 * (sb->page_size + PAGE_HEADER_SIZE);
+        pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, off5);
+        pwrite(sb->fd, buf, 8192, off5 + PAGE_HEADER_SIZE);
+        indir_set(sb, 5, off5);
+    }
+    {
+        uint8_t buf[8192] = {0};
+        PageHeader ph = {0, vfs_crc32c(buf, 8192), 1, 5};
+        int64_t off7 = sb->page_size + PAGE_HEADER_SIZE + 7 * (sb->page_size + PAGE_HEADER_SIZE);
+        pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, off7);
+        pwrite(sb->fd, buf, 8192, off7 + PAGE_HEADER_SIZE);
+        indir_set(sb, 7, off7);
+    }
 
     /* Enqueue page 5 — should also enqueue mirror page 7 */
     deferred_free_enqueue(&q, 5, sb);
@@ -294,15 +308,29 @@ static void test_df_mirror_sibling(void) {
     CHECK(deferred_free_is_queued(&q, 5));
     CHECK(deferred_free_is_queued(&q, 7));
 
-    /* No-mirror page: mirror_pages[6] was set to 0 by calloc.
-       Set to -1 explicitly to test the no-mirror boundary. */
-    sb->mirror_pages[6] = -1;
+    /* No-mirror page: page 6 was never written, header has mirror_page=0.
+       Set to -1 via indirection so lookup succeeds, then test. */
+    {
+        uint8_t buf[8192] = {0};
+        PageHeader ph = {0, vfs_crc32c(buf, 8192), 1, -1};
+        int64_t off6 = sb->page_size + PAGE_HEADER_SIZE + 6 * (sb->page_size + PAGE_HEADER_SIZE);
+        pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, off6);
+        pwrite(sb->fd, buf, 8192, off6 + PAGE_HEADER_SIZE);
+        indir_set(sb, 6, off6);
+    }
     deferred_free_enqueue(&q, 6, sb);
     CHECK_EQ(q.count, 3);  /* only page 6, no mirror added */
     CHECK(deferred_free_is_queued(&q, 6));
 
     /* Negative case: mirror == -1 means no mirror */
-    sb->mirror_pages[8] = -1;
+    {
+        uint8_t buf[8192] = {0};
+        PageHeader ph = {0, vfs_crc32c(buf, 8192), 1, -1};
+        int64_t off8 = sb->page_size + PAGE_HEADER_SIZE + 8 * (sb->page_size + PAGE_HEADER_SIZE);
+        pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, off8);
+        pwrite(sb->fd, buf, 8192, off8 + PAGE_HEADER_SIZE);
+        indir_set(sb, 8, off8);
+    }
     deferred_free_enqueue(&q, 8, sb);
     CHECK_EQ(q.count, 4);  /* only page 8, no mirror */
 

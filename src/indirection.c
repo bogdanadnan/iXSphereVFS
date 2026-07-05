@@ -152,7 +152,6 @@ int indir_ensure_capacity(StorageBackend* sb, int needed) {
         int64_t new_logical = sb->total_pages;
 
         /* Ensure mirror arrays */
-        ensure_mirror_arrays(sb, (int)(new_logical + 1));
 
         /* Set the indirection entry for this new overflow page */
         if (new_logical < it->inline_count) {

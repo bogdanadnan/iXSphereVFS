@@ -203,9 +203,6 @@ static int bootstrap_new(StorageBackend* sb) {
     sb->segment_size     = 1024;
     sb->physical_tail    = 2 * (ps + PAGE_HEADER_SIZE);
     sb->indirection_head = 0;
-    ensure_mirror_arrays(sb, 2);
-    sb->generations[0]   = 1;
-    sb->mirror_pages[0]  = -1;
 
     return 0;
 }
@@ -252,9 +249,6 @@ static int mount_existing(StorageBackend* sb) {
     sb->header_buf       = hdr;
 
     /* Sync in-memory lazy mirror tracking from on-disk PageHeader */
-    ensure_mirror_arrays(sb, 1);
-    sb->generations[0]  = ph.generation;
-    sb->mirror_pages[0] = ph.mirror_page;
 
     return 0;
 }
@@ -263,44 +257,6 @@ static int mount_existing(StorageBackend* sb) {
  * Allocate mirror/generation tracking arrays
  * --------------------------------------------------------------------------- */
 
-int ensure_mirror_arrays(StorageBackend* sb, int min_cap) {
-    /* Fast path: already big enough */
-    if (sb->mirror_cap >= min_cap) return 0;
-
-    /* Slow path: acquire lock for realloc */
-    while (__sync_lock_test_and_set(&sb->mirror_lock, 1)) { /* spin */ }
-
-    /* Double-check after acquiring lock (another thread may have grown) */
-    if (sb->mirror_cap >= min_cap) {
-        __sync_lock_release(&sb->mirror_lock);
-        return 0;
-    }
-
-    int new_cap = sb->mirror_cap ? sb->mirror_cap * 2 : 256;
-    while (new_cap < min_cap) new_cap *= 2;
-
-    int32_t*  mp = realloc(sb->mirror_pages, (size_t)new_cap * sizeof(int32_t));
-    uint32_t* gn = realloc(sb->generations,  (size_t)new_cap * sizeof(uint32_t));
-    if (!mp || !gn) {
-        __sync_lock_release(&sb->mirror_lock);
-        return -1;
-    }
-
-    /* Initialize new entries */
-    for (int i = sb->mirror_cap; i < new_cap; i++) {
-        mp[i] = -1;   /* no mirror */
-        gn[i] = 0;     /* generation 0 = never written */
-    }
-
-    sb->mirror_pages = mp;
-    sb->generations  = gn;
-    /* Memory barrier: ensure arrays are visible before updating cap */
-    __sync_synchronize();
-    sb->mirror_cap   = new_cap;
-
-    __sync_lock_release(&sb->mirror_lock);
-    return 0;
-}
 
 /* ---------------------------------------------------------------------------
  * storage_open / storage_close  (W2.6)
@@ -312,9 +268,6 @@ StorageBackend* storage_open(const char* path, int64_t page_size) {
 
     sb->page_size  = page_size > 0 ? page_size : 8192;
     sb->fd         = -1;
-    sb->mirror_pages = NULL;
-    sb->generations  = NULL;
-    sb->mirror_cap   = 0;
 
     /* Try to open existing file */
     sb->fd = open(path, O_RDWR);
@@ -345,7 +298,6 @@ StorageBackend* storage_open(const char* path, int64_t page_size) {
     indir_init(sb);
 
     /* Initialize mirror tracking arrays */
-    ensure_mirror_arrays(sb, (int)sb->total_pages);
 
     /* Initialize page cache */
     cache_init(&sb->cache, sb->page_size);
@@ -370,8 +322,6 @@ void storage_close(StorageBackend* sb) {
     free(sb->indir.overflow_logical);
 
     /* Free mirror arrays */
-    free(sb->mirror_pages);
-    free(sb->generations);
 
     /* Free header buffer */
     free(sb->header_buf);
@@ -469,7 +419,6 @@ int64_t storage_allocate(StorageBackend* sb, int count) {
                 break;
             }
 
-            ensure_mirror_arrays(sb, (int)(logical + 1));
         }
 
         if (ok) {
@@ -493,7 +442,6 @@ int storage_acquire(StorageBackend* sb, int64_t logical_page) {
     if (logical_page < 0) return 0;
 
     /* Ensure mirror arrays are big enough */
-    ensure_mirror_arrays(sb, (int)(logical_page + 1));
 
     /* Ensure indirection has room for this page */
     int64_t total_entries = (int64_t)sb->indir.inline_count +
@@ -534,23 +482,7 @@ int storage_acquire(StorageBackend* sb, int64_t logical_page) {
 
 void storage_free(StorageBackend* sb, int64_t logical_page) {
     if (logical_page < 2) return;  /* don't free header or superblock */
-
-    int64_t offset = indir_lookup(sb, logical_page);
-    if (offset == 0) return;  /* already free */
-
-    /* Free the mirror sibling if it exists */
-    if (logical_page < sb->mirror_cap) {
-        int32_t mp = sb->mirror_pages[logical_page];
-        if (mp >= 0) {
-            indir_set(sb, mp, 0);
-            sb->mirror_pages[logical_page] = -1;
-        }
-    }
-
-    /* Free this page */
     indir_set(sb, logical_page, 0);
-    sb->generations[logical_page] = 0;
-    sb->mirror_pages[logical_page] = -1;
 }
 
 /* ---------------------------------------------------------------------------
