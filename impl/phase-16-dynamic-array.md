@@ -1,316 +1,159 @@
 # Phase 16: Variable Lock-Free Array (VarArray)
 
 ## Goal
-A generic, variable-size, lock-free array. Fixed chunk size (`chunk_size`,
-configurable at init). Growth is lazy: each level of indirection is allocated
-only when the previous level is exhausted. No upper bound except RAM.
+A generic, variable-size, lock-free array. Typed via macros using the
+layout-compatible struct pattern from C template idioms. Resizes via
+pointer-table indirection — no realloc, no copy-on-grow. Always O(1)
+lookup after the initial root cast. Supports any value type.
 
-For ≤ `chunk_size` entries: one pointer dereference — same as a native array.
-For > `chunk_size`: two dereferences. Each 256× overshoot adds one more level.
+## Pattern
 
-Used as the foundation for the directory index (Phase 17) and any future
-structure needing a growable, concurrent-safe array.
+From the article: define a base struct with `void*` fields, a typed struct
+with `T*` fields (same binary layout), and macros that accept the typed
+struct while calling functions that operate on the base.
+
+```c
+// base struct (layout-compatible with any typed version)
+typedef struct {
+    void* root;
+    int   chunk_size;
+    volatile int count;
+} VarArrayBase;
+
+// typed struct — same layout, typed buffer
+#define VarArray(T) struct { T* root; int chunk_size; volatile int count; }*
+```
+
+`VarArray(int)` produces an anonymous struct with `int* root`. It has the
+same memory layout as `VarArrayBase` (both start with a pointer + two ints).
+A `VarArray(int)` can be passed to any function expecting `VarArrayBase*`
+— no cast needed, just a warning-suppressible implicit conversion.
 
 ## Data Structure
 
-### Base Types (generic core)
-
-```c
-typedef struct {
-    void* entries;   // void* — core never knows the type
-} VarArrayChunk;
-
-typedef struct {
-    void*   slots;   // void** — pointers to chunks or levels
-    int     height;
-} VarArrayLevel;
-
-typedef struct {
-    void*         root;       // VarArrayChunk* or VarArrayLevel*
-    int           chunk_size;
-    volatile int  count;
-} VarArrayBase;
-```
-
-### Typed Chunk (macro-generated, same layout)
-
-Following the article's pattern: `VarArrayChunk_T` has `T* entries` at offset 0.
-`VarArrayChunk` has `void* entries` at offset 0. Same binary layout — the
-compiler generates correct pointer arithmetic for `chunk->entries[idx]`
-because it knows `sizeof(T)`.
-
-```c
-#define VARRAY_DEFINE_CHUNK(T, suffix) \
-    typedef struct { T* entries; } VarArrayChunk_##suffix
-```
-
-Usage — no casts, no memcpy:
-```c
-typedef struct { uint64_t key; int64_t vp; } DirEntry;
-VARRAY_DEFINE_CHUNK(DirEntry, dir)
-
-void dir_insert(VarArrayBase* a, int idx, DirEntry e) {
-    // root is void*, but VarArrayChunk_dir has DirEntry* at offset 0
-    // — same layout, direct access
-    VarArrayChunk_dir* c = (VarArrayChunk_dir*)a->root;
-    c->entries[idx] = e;  // compiler knows sizeof(DirEntry)
-}
-```
-
-The cast `(VarArrayChunk_dir*)a->root` is required because `root` is `void*`.
-But inside the macro-generated code, all further access is typed — no more
-casts, no memcpy, no pointer arithmetic by hand.
-
-### Level Nodes (same pattern)
-
-```c
-#define VARRAY_DEFINE_LEVEL(T, suffix) \
-    typedef struct { VarArrayChunk_##suffix** slots; int height; } VarArrayLevel_##suffix
-```
-
-Slots are `VarArrayChunk_dir**` — typed pointers to typed chunks. The layout
-matches `void**` in `VarArrayLevel`. Direct access to `slots[slot]->entries[idx]`
-without casts after the initial root cast.
-
 ### Chunk
 
-A fixed-size array of entries. `root` points directly to one of these when
-`count ≤ chunk_size`.
-
 ```c
-typedef struct {
-    VarArrayEntry* entries;  // malloc'd: chunk_size * sizeof(VarArrayEntry)
-    int            capacity; // chunk_size (always the configured value)
-} VarArrayChunk;
+// base
+typedef struct { void* entries; } VarArrayChunk;
+
+// typed (macro-generated)
+#define VarArrayChunk_T(T) struct { T* entries; }
 ```
 
 ### Level Node
 
-A pointer table of `chunk_size` slots. Height N: slots point to height N-1
-nodes (for N > 1) or to chunks (for N = 1).
+```c
+// base
+typedef struct { void* slots; int height; } VarArrayLevel;
+
+// typed
+#define VarArrayLevel_T(T) struct { VarArrayChunk_T(T)** slots; int height; }
+```
+
+## API
+
+All functions take `VarArrayBase*`. Macros wrap them for typed access.
 
 ```c
-typedef struct VarArrayLevel {
-    void*          slots;    // malloc'd: chunk_size * sizeof(void*)
-    int            height;   // 1 = slots point to chunks, N = slots point to height N-1
-    int            chunk_size;
-} VarArrayLevel;
+// --- Core (var_array.h) ---
+
+VarArrayBase* var_array_new_base(int chunk_size);
+void          var_array_delete_base(VarArrayBase* a);
+int           var_array_grow_base(VarArrayBase* a);  // returns index of new slot
+void*         var_array_resolve_base(VarArrayBase* a, int idx); // returns pointer to slot
+
+// --- Typed macros (same header) ---
+
+#define VarArray(T) struct { T* root; int chunk_size; volatile int count; }*
+
+#define var_array_new(T) \
+    ((VarArray(T))var_array_new_base(sizeof(T)))
+
+#define var_array_delete(a) var_array_delete_base((VarArrayBase*)(a))
+
+#define var_array_insert(a, entry) ({                      \
+    int _idx = var_array_grow_base((VarArrayBase*)(a));     \
+    typeof((a)->root) _r = (a)->root;                       \
+    if (_idx < (a)->chunk_size)                             \
+        _r->entries[_idx] = entry;                          \
+    else                                                    \
+        _r = var_array_resolve_base((VarArrayBase*)(a), _idx); \
+        _r->entries[_idx % (a)->chunk_size] = entry;        \
+    _idx;                                                   \
+})
+
+#define var_array_lookup(a, idx) ({                         \
+    typeof((a)->root) _r = (idx < (a)->chunk_size)          \
+        ? (a)->root                                         \
+        : var_array_resolve_base((VarArrayBase*)(a), idx);  \
+    _r ? &_r->entries[(idx) % (a)->chunk_size] : NULL;      \
+})
 ```
 
-### VarArray
+## Usage
 
 ```c
-typedef struct {
-    void*         root;       // VarArrayChunk* or VarArrayLevel*
-    int           chunk_size; // configurable, default 256
-    volatile int  count;      // atomic: total entries inserted
-} VarArray;
+typedef struct { uint64_t key; int64_t vp; } DirEntry;
+
+VarArray(DirEntry) list = var_array_new(DirEntry);
+
+DirEntry e = { .key = hash("foo"), .vp = 0x12345 };
+int idx = var_array_insert(list, e);
+
+DirEntry* found = var_array_lookup(list, idx);
+printf("key=%llu vp=%lld\n", found->key, found->vp);
+
+var_array_delete(list);
 ```
 
-## Growth Algorithm
+No casts anywhere. `list` is `VarArray(DirEntry)` — a typed handle. The
+macros access `list->root`, `list->chunk_size` directly through the
+layout-compatible struct. The compiler knows `sizeof(DirEntry)` because
+the root pointer is `DirEntry*` in the typed struct.
 
-```
-INSERT(array, entry):
-    idx = atomic_fetch_add(&array->count, 1)
-    cap = chunk_size
+## Growth
 
-    if idx < cap:
-        // Level 0: root IS the chunk
-        if array->root == NULL:
-            chunk = calloc_chunk()
-            CAS(&array->root, NULL, chunk)
-        chunk = (VarArrayChunk*)array->root
-        chunk->entries[idx] = entry
-        return
+When `count` reaches `chunk_size`, `var_array_grow_base` promotes `root`:
 
-    // Need level 1.  If root is still a chunk, promote it.
-    if current root is a chunk:
-        old_chunk = (VarArrayChunk*)array->root
-        new_level = calloc_level(height=1)
-        new_level->slots[0] = old_chunk        // slot 0 gets the old data
-        // Allocate the chunk for the new slot
-        target_slot = idx / chunk_size
-        new_chunk = calloc_chunk()
-        new_level->slots[target_slot] = new_chunk
-        // Atomic swap: old root → new level
-        if CAS(&array->root, old_chunk, new_level) succeeds:
-            chunk = new_chunk
-            chunk->entries[idx % chunk_size] = entry
-            return
-        else:
-            // CAS failed — another thread promoted.  Retry from top.
-            idx = count - 1  // re-fetch?  No: idx is already assigned.
-            goto retry
+1. Allocates a `VarArrayLevel` (height=1)
+2. Sets `slots[0] = old_root` (existing chunk)
+3. Allocates a new chunk for slot 1
+4. CAS swaps `root` from old chunk to new level
 
-    // Root is already a level.  Walk down.
-    node = (VarArrayLevel*)array->root
-
-    // Find or create the path
-    remaining = idx
-    while node->height > 1:
-        stride = chunk_size^node->height
-        slot = remaining / stride
-        remaining = remaining % stride
-        if node->slots[slot] == NULL:
-            new_child = calloc_level(height = node->height - 1)
-            CAS(&node->slots[slot], NULL, new_child)
-        node = node->slots[slot]
-
-    // height == 1: slots point to chunks
-    slot = remaining / chunk_size
-    entry_idx = remaining % chunk_size
-    if node->slots[slot] == NULL:
-        new_chunk = calloc_chunk()
-        CAS(&node->slots[slot], NULL, new_chunk)
-    chunk = (VarArrayChunk*)node->slots[slot]
-    chunk->entries[entry_idx] = entry
-
-  retry:
-    // Re-read root (may have been promoted by another thread) and try again
-```
-
-### Root Promotion
-
-When `idx ≥ chunk_size` and root is still a chunk, promote:
-
-1. Allocate a new level node (height=1, chunk_size slots)
-2. Set `new_level->slots[0] = old_chunk` (existing entries preserved)
-3. Allocate the chunk needed for the new slot
-4. Set `new_level->slots[target_slot] = new_chunk`
-5. CAS `array->root` from `old_chunk` to `new_level`
-
-If CAS fails, another thread already promoted. Release our allocations
-(leak — GC'd later or accepted leak). Re-read `array->root` and retry the
-walk from the new root.
-
-A thread observing the CAS mid-flight sees:
-- Before CAS: `root = old_chunk` — valid, all entries accessible
-- After CAS: `root = new_level` — all old entries at slot 0, new entry accessible
-
-No thread sees a half-built state. The new level is fully initialized before
-the CAS publishes it.
-
-### Higher-Level Growth
-
-Same pattern: when a level is full (all `chunk_size` slots occupied), the
-parent (or root) allocates a sibling. When the root level itself is full,
-a new root with `height = old_root->height + 1` is allocated, old root
-becomes slot 0, CAS-root.
-
-## Lookup
-
-```
-LOOKUP(array, index):
-    if index >= array->count: return NULL
-
-    root = array->root   // atomic snapshot
-    if root is a chunk:
-        return &((VarArrayChunk*)root)->entries[index]
-
-    node = (VarArrayLevel*)root
-    remaining = index
-    while node->height > 1:
-        stride = chunk_size^node->height
-        slot = remaining / stride
-        remaining = remaining % stride
-        if node->slots[slot] == NULL: return NULL
-        node = node->slots[slot]
-
-    // height == 1
-    slot = remaining / chunk_size
-    entry_idx = remaining % chunk_size
-    chunk = node->slots[slot]
-    if chunk == NULL: return NULL
-    return &chunk->entries[entry_idx]
-```
-
-## Remove
-
-Set `entry->value = VFS_VPTR_NULL`. Entry stays in place — count never
-decremented. The slot remains occupied for indexing.
+Same pattern for higher levels — root CAS when a level's slots are exhausted.
 
 ## Concurrency
 
-- **`atomic_fetch_add(&count, 1)`**: unique index per writer. No two writers
-  write to the same slot.
-- **CAS on root**: publishes promotion atomically. Losers retry.
-- **CAS on slot pointers**: allocates chunks/levels lazily. Losers retry or
-  accept the winner's allocation.
-- **Lock-free readers**: walk the pointer chain. Null slots mean "not yet
-  allocated" → entry doesn't exist. No locks, no retry loops.
+- `var_array_grow_base` uses `atomic_fetch_add(&count, 1)` for index assignment
+- CAS on root for promotion — loser retries
+- CAS on slot pointers for lazy chunk/level allocation
+- Readers: lock-free. Walk the tree. NULL slot = not yet allocated.
 
 ## Non-Negotiable Constraints
 
 - **No locks.** CAS only.
-- **No realloc.** Chunks and levels are fixed-size, never resized.
-- **No copy-on-grow.** Old entries stay in place during promotion.
-- **Lazy allocation.** Each level/chunk allocated only when needed.
-- **No upper bound.** Grows until RAM exhausted.
-- **Configurable `chunk_size`.** Passed at init. Used for ALL math.
-- **Single indirection for ≤ chunk_size entries.** `root` directly points to a chunk.
+- **No realloc.** Chunks and levels are fixed-size.
+- **No copy-on-grow.** Old data in place.
+- **Lazy allocation.** Levels and chunks only when needed.
+- **No upper bound.**
+- **Macro layer provides full type safety.** No casts in user code.
+- **Layout compatibility.** All typed structs are binary-identical to base.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `src/var_array.c` | VarArray implementation |
-| `src/var_array.h` | Public API |
+| `src/var_array.c` | Core: new, delete, grow, resolve |
+| `src/var_array.h` | Base structs + typed macros |
 | `test/test_var_array.c` | Tests |
-
-## API
-
-The user-facing API is entirely macro-generated. No `void*`, no casts in user code.
-
-```c
-// --- var_array.h ---
-
-#include "var_array_core.h"   // VarArrayBase, chunk/level allocation
-
-#define VARRAY_DEFINE(T, suffix)                                         \
-    VARRAY_DEFINE_CHUNK(T, suffix)                                       \
-    static inline int suffix##_insert(VarArrayBase* a, T entry) {        \
-        int idx = var_array_grow(a);                                     \
-        VarArrayChunk_##suffix* c = suffix##_resolve_chunk(a, idx);      \
-        c->entries[idx % a->chunk_size] = entry;                         \
-        return idx;                                                      \
-    }                                                                    \
-    static inline T* suffix##_lookup(VarArrayBase* a, int idx) {         \
-        VarArrayChunk_##suffix* c = suffix##_resolve_chunk(a, idx);      \
-        return &c->entries[idx % a->chunk_size];                         \
-    }                                                                    \
-    static inline VarArrayChunk_##suffix*                                 \
-    suffix##_resolve_chunk(VarArrayBase* a, int idx) {                   \
-        if (idx < a->chunk_size)                                         \
-            return (VarArrayChunk_##suffix*)a->root;                     \
-        /* walk level nodes — single cast at each level, then typed */   \
-        ...
-    }
-```
-
-### Usage Example
-
-```c
-typedef struct { uint64_t key; int64_t vp; } DirEntry;
-VARRAY_DEFINE(DirEntry, dir)
-
-VarArrayBase va;
-var_array_init(&va, 256);
-
-DirEntry e = { .key = hash("foo"), .vp = 0x12345 };
-int idx = dir_insert(&va, e);                     // one call
-
-DirEntry* found = dir_lookup(&va, idx);           // one call
-printf("key=%llu vp=%lld\n", found->key, found->vp);
-```
 
 ## Acceptance
 
-- [ ] Insert 10 entries (chunk_size=256): root is chunk, O(1) lookup
-- [ ] Insert 256 entries: chunk full, root still chunk
-- [ ] Insert 257 entries: root promoted to level(height=1), old chunk at slot 0
+- [ ] Insert 10 entries: single chunk, O(1) lookup
+- [ ] Insert 257 entries: root promoted to level 1, all retrievable
 - [ ] Insert 10,000 entries: all retrievable by index
-- [ ] Concurrent insert from 4 threads: all entries present, no duplicates
-- [ ] Lookup on out-of-range returns NULL, no crash
-- [ ] Remove sets value to VFS_VPTR_NULL
-- [ ] Custom chunk_size=64 works correctly
+- [ ] Concurrent insert from 4 threads: all present, no duplicates
+- [ ] Lookup out-of-range returns NULL
+- [ ] Custom chunk_size via `var_array_new_base(64)` works
 - [ ] All tests pass
