@@ -2,16 +2,9 @@
 
 ## Goal
 A variable-size, lock-free array for storing directory index entries. Fixed
-chunk size (256 entries default, configurable), grows via pointer tables in
-power-of-two levels. Supports concurrent reads without locks. Insertions use
-CAS to add new chunks and levels.
-
-## Motivation
-
-VFS directory operations walk DirContent chains (O(N)). A hash table or
-sorted array would require variable-size storage. A dynamic array is the
-prerequisite — used by both the directory index (Phase 17) and future
-structures.
+chunk size (256 entries default, configurable), grows via pointer tables.
+Lazy allocation: each level is allocated only when the previous level is
+exhausted. No upper bound except available RAM.
 
 ## Data Structure
 
@@ -33,79 +26,137 @@ typedef struct {
 } DirArrayChunk;              // 4100 bytes
 ```
 
+### Level Node
+
+A level N node is a pointer table of 256 slots. At level 0, slots point to
+`DirArrayChunk`. At level N (N > 0), slots point to level N-1 nodes.
+
+```c
+typedef struct DirArrayLevel {
+    void*          slots[256];  // DirArrayChunk* or DirArrayLevel*
+    int            height;      // 0 = chunk level, N = N levels of indirection
+    volatile int   allocated;   // number of slots filled (for GC/reclaim)
+} DirArrayLevel;
+```
+
 ### Dynamic Array
 
 ```c
 typedef struct {
-    DirArrayChunk*   direct;        // level 0: first chunk (count <= 256)
-    DirArrayChunk**  level1;        // level 1: pointer table, 256 slots (count <= 65536)
-    DirArrayChunk*** level2;        // level 2: pointer-to-pointer table, 256 slots
-    int              chunk_size;    // configurable, default 256
-    volatile int     count;         // atomic: total entries across all chunks
+    DirArrayLevel* root;        // points to a Level node (starting at height 0)
+    int            chunk_size;  // configurable, default 256
+    volatile int   count;       // atomic: total entries
 } DirArray;
 ```
 
 ### Growth Algorithm
 
+On insert, `idx = atomic_fetch_add(&count, 1)`. The path to the target chunk
+is determined by `idx`. Start at `root`:
+
 ```
-INSERT(array, entry):
-   idx = atomic_fetch_add(&array->count, 1)
-   level0_cap = chunk_size                     // 256
-   level1_cap = level0_cap * chunk_size        // 65,536
-   level2_cap = level1_cap * chunk_size        // 16,777,216
+    remaining = idx
+    node = root
 
-   if idx < level0_cap:
-       if array->direct == NULL:
-           CAS(&array->direct, NULL, calloc(1, sizeof(DirArrayChunk)))
-       chunk = array->direct
-       chunk->entries[idx] = entry
-       return
+    // Walk down from the current root height
+    while node->height > 0:
+        stride = chunk_size^node->height
+        slot = remaining / stride
+        remaining = remaining % stride
+        if node->slots[slot] == NULL:
+            new_node = calloc(1, sizeof(DirArrayLevel))
+            new_node->height = node->height - 1
+            CAS(&node->slots[slot], NULL, new_node)
+        node = node->slots[slot]
 
-   if idx < level1_cap:
-       if array->level1 == NULL:
-           CAS(&array->level1, NULL, calloc(256, sizeof(DirArrayChunk*)))
-       table_idx = idx / chunk_size - 1          // 0..255
-       chunk_idx = idx % chunk_size              // 0..255
-       if array->level1[table_idx] == NULL:
-           chunk = calloc(1, sizeof(DirArrayChunk))
-           CAS(&array->level1[table_idx], NULL, chunk)
-       chunk = array->level1[table_idx]
-       chunk->entries[chunk_idx] = entry
-       return
+    // At height 0: slot points to a chunk
+    chunk_slot = remaining / chunk_size   // but remaining < chunk_size...
+```
 
-   // level 2 (and beyond, same pattern)
+Wait — at height 0, the slots point to chunks. `remaining < chunk_size` because
+the stride at height 1 was exactly `chunk_size`. The `remaining` value is the
+index within the chunk.
+
+Actually let me simplify. The number of entries per height-H node is `chunk_size^(H+1)`:
+
+- Height 0: `chunk_size^1 = 256` entries (one chunk)
+- Height 1: `chunk_size^2 = 65,536` entries (256 chunks)
+- Height 2: `chunk_size^3 = 16,777,216` entries
+- ...
+
+To find entry `idx`:
+
+```
+node = root
+remaining = idx
+
+while node->height > 0:
+    stride = chunk_size^(node->height)   // entries per sub-tree
+    slot = remaining / stride
+    remaining = remaining % stride
+    if node->slots[slot] == NULL:
+        allocate new level with height = node->height - 1
+        CAS into node->slots[slot]
+    node = node->slots[slot]
+
+// node->height == 0: node->slots are chunk pointers
+chunk_slot = remaining / chunk_size  // always 0 if chunk_size == 256
+                                       // (remaining < chunk_size^1 = 256)
+entry_idx = remaining % chunk_size
+chunk = node->slots[chunk_slot]
+if chunk == NULL:
+    chunk = calloc(1, sizeof(DirArrayChunk))
+    CAS(&node->slots[chunk_slot], NULL, chunk)
+chunk->entries[entry_idx] = entry
+```
+
+When root is exhausted (all 256 slots of the root node's sub-trees are full),
+allocate a NEW root with `height = old_root->height + 1`, CAS into `array->root`:
+
+```
+if idx >= chunk_size^(root->height + 1):
+    new_root = calloc(1, sizeof(DirArrayLevel))
+    new_root->height = root->height + 1
+    new_root->slots[0] = root          // old root is slot 0 of new root
+    CAS(&array->root, root, new_root)
 ```
 
 ### Lookup
 
-```
-LOOKUP(array, index):
-   if index < level0_cap:
-       return &array->direct->entries[index]
-   if index < level1_cap:
-       table_idx = index / chunk_size - 1
-       chunk_idx = index % chunk_size
-       return &array->level1[table_idx]->entries[chunk_idx]
-   if index < level2_cap:
-       idx = index - level1_cap
-       t2_idx = idx / (chunk_size * chunk_size)  // 0..255
-       inner_idx = idx % (chunk_size * chunk_size)
-       t1_idx = inner_idx / chunk_size           // 0..255
-       ch_idx = inner_idx % chunk_size           // 0..255
-       return &array->level2[t2_idx][t1_idx]->entries[ch_idx]
-```
+Same walk as insert, without allocation. If any slot is NULL, entry doesn't
+exist — return NULL.
 
-Maximum 3 pointer dereferences for 16.7M entries.
+### Remove
+
+Set `chunk->entries[entry_idx].value = VFS_VPTR_NULL`. The slot remains
+occupied — key is preserved for lookup. The entry count is never decremented.
 
 ## Concurrency
 
-- **Readers**: lock-free. Load `array->count` atomically, compute chunk, read entry.
-  If chunk is NULL (not yet allocated), reader sees a partial write — retry or
-  return "not found."
-- **Writers**: CAS on `array->direct`, `array->level1`, `array->level1[N]`.
-  Losers retry. Chunks are pre-allocated and CAS-installed atomically.
-  Entries within a chunk are written with a release barrier before count
-  increment.
+- **Readers**: lock-free. Walk the tree following CAS-installed pointers.
+  If a pointer is NULL (not yet allocated), entry doesn't exist.
+- **Writers**: CAS on slot pointers. Losers retry from the slot allocation step.
+  The `atomic_fetch_add(&count, 1)` assigns a unique index to each writer.
+  No two writers write to the same slot.
+- **Root growth**: CAS on `array->root`. Loser re-reads root and retries.
+
+## Growth Examples
+
+```
+Insert #1: root->height=0, chunk allocated, entry[0] = entry → 1 level
+Insert #256: root->height=0, chunk slots[0] has 256 entries → still 1 level
+Insert #257: root exhausted (capacity 256).
+  → allocate new root (height=1), old root = new_root->slots[0]
+  → stride = 256^1 = 256, slot = 257/256 = 1, remaining = 1
+  → allocate level-0 node at slots[1], allocate chunk, entry[1] = entry
+  → 2 levels: root(height=1) → level[0][0](old data) + level[0][1](new chunk)
+
+Insert #65536: root's 256 level-0 nodes all full.
+  → allocate new root (height=2), old root = new_root->slots[0]
+  → 3 levels
+```
+
+Maximum pointer dereferences for N entries: `ceil(log_256(N))`.
 
 ## Files
 
@@ -129,14 +180,19 @@ int   dir_array_count(DirArray* arr);
 ## Non-Negotiable Constraints
 
 - **No locks.** CAS only.
-- **No realloc of existing chunks.** Chunks are fixed-size, never resized.
-- **No copy-on-grow.** Old entries stay in place. Only new chunks are allocated.
+- **No realloc of existing chunks or levels.** Once allocated, never resized.
+- **No copy-on-grow.** Old entries stay in place during root growth.
+- **Lazy allocation.** Level N is allocated only when level N-1 is full.
+- **No upper bound.** Grows until RAM is exhausted.
 - **Configurable chunk_size.** Default 256, minimum 16, maximum 4096.
 
 ## Acceptance
 
-- [ ] Insert 10,000 entries, verify all retrievable by index
-- [ ] Concurrent insert from 4 threads, all entries present, no duplicates
-- [ ] Lookup on unallocated chunk returns NULL (no crash)
-- [ ] Remove sets value to VFS_VPTR_NULL without shifting
+- [ ] Insert 10 entries: single chunk, root->height=0
+- [ ] Insert 256 entries: single chunk at capacity, root->height=0
+- [ ] Insert 257 entries: root grows to height=1, new chunk at slot 1
+- [ ] Insert 10,000 entries: verify all retrievable by index
+- [ ] Concurrent insert from 4 threads: all entries present, no duplicates
+- [ ] Lookup on unallocated slot returns NULL (no crash)
+- [ ] Remove sets value to VFS_VPTR_NULL without crashing
 - [ ] All tests pass
