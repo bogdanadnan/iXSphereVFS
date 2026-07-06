@@ -1696,14 +1696,14 @@ static void test_dirchain_find_child_hash_fast_reject(void) {
         CHECK(fvp > 0);
     }
 
-    /* Look up file_050.txt */
-    int rejects_before = tree_dirchain_hash_rejects_get();
+    /* Reset reject counter and look up file_050.txt */
+    dirchain_test_reset_hash_rejects();
     int64_t childPtr;
     uint32_t nodeId;
     int ret = dirchain_find_child(ctx, root_vp, "file_050.txt", 0, &childPtr, &nodeId, NULL);
     CHECK_EQ(ret, VFS_OK);
 
-    int rejects = tree_dirchain_hash_rejects_get() - rejects_before;
+    int rejects = dirchain_test_get_hash_rejects();
     /* ≥90 of 99 non-matching entries should be rejected by hash alone */
     CHECK(rejects >= 90);
 

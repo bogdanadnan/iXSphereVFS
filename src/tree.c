@@ -25,6 +25,12 @@ static int s_hash_rejects = 0;
 int tree_dirchain_hash_rejects_get(void) {
     return s_hash_rejects;
 }
+void dirchain_test_reset_hash_rejects(void) {
+    s_hash_rejects = 0;
+}
+int dirchain_test_get_hash_rejects(void) {
+    return s_hash_rejects;
+}
 #endif
 
 /* ---------------------------------------------------------------------------
