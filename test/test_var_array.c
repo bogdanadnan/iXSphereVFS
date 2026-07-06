@@ -487,6 +487,37 @@ static void test_var_array_custom_chunk_size(void) {
     var_array_delete_base(a);
 }
 
+static void test_var_array_update_in_place(void) {
+    VarArray(int) arr = var_array_new(int);
+    CHECK(arr != NULL);
+
+    /* Append 300 entries — forces promotion (256 < 300) */
+    for (int i = 0; i < 300; i++) {
+        int idx = var_array_append(arr, i);
+        CHECK_EQ(idx, i);
+    }
+
+    /* Update first and last entries */
+    var_array_update(arr, 0, 999);
+    var_array_update(arr, 299, 888);
+
+    /* Verify via lookup */
+    int* e0 = var_array_lookup(arr, 0);
+    CHECK(e0 != NULL);
+    CHECK_EQ(*e0, 999);
+
+    int* e299 = var_array_lookup(arr, 299);
+    CHECK(e299 != NULL);
+    CHECK_EQ(*e299, 888);
+
+    /* Middle entry unchanged */
+    int* e150 = var_array_lookup(arr, 150);
+    CHECK(e150 != NULL);
+    CHECK_EQ(*e150, 150);
+
+    var_array_delete(arr);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -506,6 +537,7 @@ int main(void) {
     test_var_array_concurrent_append_and_lookup();
     test_var_array_lookup_out_of_range();
     test_var_array_custom_chunk_size();
+    test_var_array_update_in_place();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
