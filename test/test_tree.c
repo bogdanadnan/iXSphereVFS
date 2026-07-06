@@ -1679,6 +1679,36 @@ static void test_sparse_concurrent_insert(void) {
     vfs_unmount(vfs);
 }
 
+#ifndef NDEBUG
+static void test_dirchain_find_child_hash_fast_reject(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    /* Create 100 files */
+    for (int i = 1; i <= 100; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "file_%03d.txt", i);
+        int64_t fvp = vfs_create(vfs, root_vp, name, 0);
+        CHECK(fvp > 0);
+    }
+
+    /* Look up file_050.txt */
+    int rejects_before = tree_dirchain_hash_rejects_get();
+    int64_t childPtr;
+    uint32_t nodeId;
+    int ret = dirchain_find_child(ctx, root_vp, "file_050.txt", 0, &childPtr, &nodeId, NULL);
+    CHECK_EQ(ret, VFS_OK);
+
+    int rejects = tree_dirchain_hash_rejects_get() - rejects_before;
+    /* Most non-matching entries should be rejected by hash alone */
+    CHECK(rejects >= 1);
+
+    vfs_unmount(vfs);
+}
+#endif
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1811,6 +1841,11 @@ int main(void) {
 
     unlink(test_path);
     test_sparse_concurrent_insert();
+
+#ifndef NDEBUG
+    unlink(test_path);
+    test_dirchain_find_child_hash_fast_reject();
+#endif
 
     /* Clean up */
     unlink(test_path);
