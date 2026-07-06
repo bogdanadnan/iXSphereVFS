@@ -8,7 +8,7 @@
  *   read     — open N files, read data
  *   scan     — sequential full-file read from byte 0 to end, measure bandwidth
  *   mixed    — configurable read/write ratio on random offsets over pre-populated files
- *   dir      — create N directories, create files inside
+ *   dir      — create/list/delete cycles on N subdirectories, measure directory-operation throughput
  *   seqwrite — sequential page-sized writes to a single file
  *   randread — random page reads from a pre-populated file
  */
@@ -593,21 +593,24 @@ static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path,
 }
 
 /* ---------------------------------------------------------------------------
- * Workload: dir — create directories and files inside
- * --------------------------------------------------------------------------- */
-
-/* ---------------------------------------------------------------------------
- * Workload: dir — create/list/delete cycles on subdirectories.
+ * Workload: dir — create/list/delete cycles on N subdirectories.
  * Each cycle: mkdir → create 5 files → readdir → delete 5 files → rmdir.
+ * Reports per-operation latency, cache/data hit statistics, and overall
+ * directory-operation throughput.
  * --------------------------------------------------------------------------- */
 
 static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
     (void)path;
+    (void)threads;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    lat_init(count * 13);
+    vfs_cache_reset();
     double t0 = now_sec();
     int ok = 0;
 
     for (int i = 0; i < count; i++) {
+        double op_t0 = now_sec();
         char dname[64];
         snprintf(dname, sizeof(dname), "d%d", i);
 
@@ -615,6 +618,7 @@ static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
         int64_t dir_vp = vfs_mkdir(vfs, root_vp, dname, 0);
         if (dir_vp <= 0) continue;
         ok++;
+        lat_record(now_sec() - op_t0);
 
         /* create 5 files */
         int created = 0;
@@ -641,7 +645,8 @@ static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
         if (vfs_rmdir(vfs, root_vp, dname, 0) == VFS_OK) ok++;
     }
     double t1 = now_sec();
-    report("dir", ok, threads, t1 - t0);
+    report_full("dir", ok, 1, t1 - t0);
+    lat_destroy();
     return ok;
 }
 
