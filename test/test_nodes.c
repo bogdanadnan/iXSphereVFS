@@ -835,6 +835,31 @@ static void test_name_read_full_roundtrip_long(void) {
     name_teardown(pool);
 }
 
+static void test_name_slots_needed_formula(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    /* Helper: write name, verify slot count via nodes_write_name return */
+    #define CHECK_SLOTS(name_str, expected_slots) do { \
+        const char* nm = (name_str); \
+        CHECK_EQ(strlen(nm), strlen(nm)); /* silence unused */ \
+        int64_t vp; \
+        int n = nodes_write_name(pool, nm, &vp); \
+        CHECK_EQ(n, (expected_slots)); \
+    } while(0)
+
+    CHECK_SLOTS("x", 1);                          /* 1 byte */
+    CHECK_SLOTS("12345678", 1);                   /* 8 bytes */
+    CHECK_SLOTS("1234567890123456", 1);           /* 16 bytes (exactly fills first slot) */
+    CHECK_SLOTS("1234567890123456x", 2);          /* 17 bytes */
+    CHECK_SLOTS("0123456789abcdef0123456789abcdef01234567", 2);  /* 40 bytes */
+    CHECK_SLOTS("0123456789abcdef0123456789abcdef0123456789a", 3); /* 41 bytes */
+    CHECK_SLOTS("abcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnop", 3); /* 64 bytes */
+
+    #undef CHECK_SLOTS
+    name_teardown(pool);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -873,6 +898,7 @@ int main(void) {
     test_name_read_hash();
     test_name_read_full_roundtrip_short();
     test_name_read_full_roundtrip_long();
+    test_name_slots_needed_formula();
 
     test_zero_slot_safety();
 
