@@ -171,23 +171,17 @@ void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
                          int64_t* modifiedAt, int64_t* fileSize, int64_t* nextPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
- * NameEntry (32 bytes per slot, chains for names > 16 bytes)
+ * NameEntry (32 bytes per slot, consisting of 24 bytes of data region
+ * followed by an 8-byte nextPtr at offset 24)
+ *
+ * Layout:
+ *   Offset  Size  Field
+ *   ──────  ────  ─────
+ *     0      8    nameHash  (uint64_t — hash of the full name)
+ *     8     16    nameData  (UTF-8 bytes, zero-padded if < 16)
  *
  * The first slot holds 8 bytes of hash + 16 bytes of name.  Chain slots
  * (for names > 16 bytes) hold 24 bytes of name data with no hash prefix.
- *
- * Planned layout:
- *   Offset  Size  Field
- *   ──────  ────  ─────
- *     0      8    nameHash  (uint64_t — FNV-1a 64-bit hash of the full name)
- *     8     16    nameData  (UTF-8 bytes, zero-padded if < 16)
- *    24      8    nextPtr   (VirtualPtr — next NameEntry slot, 0 = end)
- *
- * Current layout (will be migrated in a future task):
- *   Offset  Size  Field
- *   ──────  ────  ─────
- *     0     24    data     (UTF-8 bytes, zero-padded if < 24)
- *    24      8    nextPtr  (VirtualPtr — next NameEntry slot, 0 = end)
  * --------------------------------------------------------------------------- */
 
 #define NAMEENTRY_OFF_HASH     0   /* uint64_t — FNV-1a hash of full name */
