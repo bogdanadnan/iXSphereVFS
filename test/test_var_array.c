@@ -518,6 +518,20 @@ static void test_var_array_update_in_place(void) {
     var_array_delete(arr);
 }
 
+static void test_var_array_delete_no_leak(void) {
+    /* Append 1000 entries, then delete.  Run under valgrind to confirm
+     * no leaks — the struct and all internal allocations are freed. */
+    VarArray(int) arr = var_array_new(int);
+    CHECK(arr != NULL);
+
+    for (int i = 0; i < 1000; i++) {
+        int idx = var_array_append(arr, i);
+        CHECK_EQ(idx, i);
+    }
+    CHECK_EQ(arr->count, 1000);
+    var_array_delete(arr);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -538,6 +552,7 @@ int main(void) {
     test_var_array_lookup_out_of_range();
     test_var_array_custom_chunk_size();
     test_var_array_update_in_place();
+    test_var_array_delete_no_leak();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
