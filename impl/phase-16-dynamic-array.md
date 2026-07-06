@@ -13,73 +13,64 @@ structure needing a growable, concurrent-safe array.
 
 ## Data Structure
 
-### Type-Agnostic Core
-
-VarArray operates on opaque chunks. The core knows about allocation, growth,
-and indexing. It never reads or writes entry contents.
-
-```c
-typedef struct VarArray {
-    void*         root;       // VarArrayChunk* or VarArrayLevel*
-    int           chunk_size; // configurable, default 256
-    int           entry_size; // sizeof(entry type), set at init
-    volatile int  count;      // atomic: total entries
-} VarArray;
-```
-
-### Chunk (internal to core)
+### Base Types (generic core)
 
 ```c
 typedef struct {
-    void* entries;  // malloc'd: chunk_size * entry_size bytes
+    void* entries;   // void* — core never knows the type
 } VarArrayChunk;
+
+typedef struct {
+    void*   slots;   // void** — pointers to chunks or levels
+    int     height;
+} VarArrayLevel;
+
+typedef struct {
+    void*         root;       // VarArrayChunk* or VarArrayLevel*
+    int           chunk_size;
+    volatile int  count;
+} VarArrayBase;
 ```
 
-The core does `chunk->entries[idx * entry_size]` via pointer arithmetic.
-Never knows or cares about the entry type.
+### Typed Chunk (macro-generated, same layout)
 
-### Type-Safe Header (the macro layer)
-
-Following the article's pattern: define a BASE struct for the chunk, then
-a macro that creates a typed alias with the SAME LAYOUT.
+Following the article's pattern: `VarArrayChunk_T` has `T* entries` at offset 0.
+`VarArrayChunk` has `void* entries` at offset 0. Same binary layout — the
+compiler generates correct pointer arithmetic for `chunk->entries[idx]`
+because it knows `sizeof(T)`.
 
 ```c
-// var_array.h — base definitions
-
 #define VARRAY_DEFINE_CHUNK(T, suffix) \
-    typedef struct { T* entries; } VarArrayChunk_##suffix;
-
-#define VARRAY_CHUNK(T, suffix) VarArrayChunk_##suffix
+    typedef struct { T* entries; } VarArrayChunk_##suffix
 ```
 
-Usage:
+Usage — no casts, no memcpy:
 ```c
-// dir_index.c
 typedef struct { uint64_t key; int64_t vp; } DirEntry;
-
 VARRAY_DEFINE_CHUNK(DirEntry, dir)
-// Expands to: typedef struct { DirEntry* entries; } VarArrayChunk_dir;
 
-// Now VarArrayChunk_dir is LAYOUT-COMPATIBLE with VarArrayChunk (both have void*/T* at offset 0)
+void dir_insert(VarArrayBase* a, int idx, DirEntry e) {
+    // root is void*, but VarArrayChunk_dir has DirEntry* at offset 0
+    // — same layout, direct access
+    VarArrayChunk_dir* c = (VarArrayChunk_dir*)a->root;
+    c->entries[idx] = e;  // compiler knows sizeof(DirEntry)
+}
 ```
 
-The function `var_array_insert(VarArray*, void* entry)` memcpy's `entry_size` bytes
-into the chunk's entries buffer at the right offset. Lookup returns `void*` to the
-byte offset — the macro wraps it into a typed pointer.
+The cast `(VarArrayChunk_dir*)a->root` is required because `root` is `void*`.
+But inside the macro-generated code, all further access is typed — no more
+casts, no memcpy, no pointer arithmetic by hand.
 
-### Type-Safe Insert/Lookup Macros
+### Level Nodes (same pattern)
 
 ```c
-#define var_array_insert_typed(arr, entry_ptr) \
-    var_array_insert((arr), (const void*)(entry_ptr))
-
-#define var_array_lookup_typed(arr, index, T) \
-    ((T*)var_array_lookup((arr), (index)))
+#define VARRAY_DEFINE_LEVEL(T, suffix) \
+    typedef struct { VarArrayChunk_##suffix** slots; int height; } VarArrayLevel_##suffix
 ```
 
-All the type information is in the SIZE (`entry_size` in `VarArray`). The
-macros are just casts for safety — the core already handles any entry type
-via `memcpy` and pointer arithmetic.
+Slots are `VarArrayChunk_dir**` — typed pointers to typed chunks. The layout
+matches `void**` in `VarArrayLevel`. Direct access to `slots[slot]->entries[idx]`
+without casts after the initial root cast.
 
 ### Chunk
 
@@ -269,36 +260,33 @@ decremented. The slot remains occupied for indexing.
 ## API
 
 ```c
-// Core (type-agnostic, operates on raw bytes)
-void  var_array_init(VarArray* arr, int chunk_size, int entry_size);
-void  var_array_destroy(VarArray* arr);
-int   var_array_insert(VarArray* arr, const void* entry);  // returns index
-void* var_array_lookup(VarArray* arr, int index);          // returns pointer to entry bytes
-void  var_array_remove(VarArray* arr, int index);          // zeroes the entry
-int   var_array_count(VarArray* arr);
+// Core (operates on VarArrayBase*, chunk/level allocation + growth)
+void  var_array_init(VarArrayBase* a, int chunk_size);
+void  var_array_destroy(VarArrayBase* a);
+int   var_array_grow(VarArrayBase* a, int count);  // ensures capacity, returns old count
+void* var_array_get_root(VarArrayBase* a);          // returns root (chunk or level)
+int   var_array_chunk_capacity(VarArrayBase* a);    // returns chunk_size
 ```
 
-### Usage Example
+### Usage Example (full pattern)
 
 ```c
-// Define entry type
+// 1. Define entry type and generate typed structs
 typedef struct { uint64_t key; int64_t vp; } DirEntry;
-
-// Define layout-compatible chunk type
 VARRAY_DEFINE_CHUNK(DirEntry, dir)
 
-void example(void) {
-    VarArray va;
-    var_array_init(&va, 256, sizeof(DirEntry));
+// 2. Use the typed chunk directly — no casts after init
+VarArrayBase va;
+var_array_init(&va, 256);
+DirEntry e = { .key = hash("foo"), .vp = 0x12345 };
 
-    DirEntry e = { .key = hash("foo"), .vp = 0x12345 };
-    int idx = var_array_insert(&va, &e);
+int idx = var_array_grow(&va, 1);   // reserves slot idx
+VarArrayChunk_dir* c = (VarArrayChunk_dir*)var_array_get_root(&va);
+c->entries[idx] = e;                // compiler knows sizeof(DirEntry)
 
-    DirEntry* found = (DirEntry*)var_array_lookup(&va, idx);
-    printf("key=%llu vp=%lld\n", found->key, found->vp);
-
-    var_array_destroy(&va);
-}
+// 3. Growth to level 1 is handled by var_array_grow internally
+//    After promotion, root is a VarArrayLevel — the macro layer
+//    provides typed access to slots and chunks.
 ```
 
 ## Acceptance
