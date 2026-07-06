@@ -224,6 +224,11 @@ void nodes_read_mapperentry(const uint8_t* slot, uint32_t* fromEpoch,
 
 /* ---------------------------------------------------------------------------
  * NameEntry (Workload 4.8)
+ *
+ * Layout: bytes 0-7 are ALWAYS a hash (first slot only), bytes 8-23 are
+ * name data.  Readers start at offset 8; chain slots have no hash prefix
+ * and are read from offset 0.  The 8-byte overhead per slot is the cost
+ * of consistency (no short-name special case).
  * --------------------------------------------------------------------------- */
 
 void nodes_write_name_entry(uint8_t* slot, const uint8_t* data_24, int64_t nextPtr,
