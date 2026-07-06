@@ -52,10 +52,6 @@ int tree_superblock_write(TreeContext* ctx);
  * Format migration
  * --------------------------------------------------------------------------- */
 
-/* Recursively walk a directory tree, writing pageIndex into all PageNodes.
- * Called by tree_migrate_v1_to_v2 starting from the root directory. */
-int tree_migrate_walk_dir(TreeContext* ctx, int64_t dir_vp);
-
 /* Walk a single file's FileContent→PageNode chain, writing sequential
  * pageIndex values (0, 1, 2, ...) into each PageNode at offset 16. */
 int tree_migrate_walk_file(TreeContext* ctx, int64_t file_vp);

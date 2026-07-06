@@ -171,33 +171,6 @@ int tree_init(TreeContext* ctx) {
 }
 
 /* ---------------------------------------------------------------------------
- * Migration: walk a directory, recursively migrate child files' PageNodes
- * to v2 (write pageIndex into each PageNode at offset 16).
- * --------------------------------------------------------------------------- */
-
-int tree_migrate_walk_dir(TreeContext* ctx, int64_t dir_vp) {
-    if (!ctx || dir_vp <= 0) return VFS_ERR_IO;
-
-    vfs_dirent_t entries[1024];  /* DENTRY_CACHE_MAX */
-    int n = dirchain_list(ctx, dir_vp, ctx->currentEpoch, entries, 1024);
-    if (n < 0) return n;
-
-    for (int i = 0; i < n; i++) {
-        if (entries[i].vp <= 0) continue;
-
-        if (entries[i].isDir) {
-            /* Recurse into subdirectory */
-            int err = tree_migrate_walk_dir(ctx, entries[i].vp);
-            if (err != VFS_OK) return err;
-        } else {
-            int err = tree_migrate_walk_file(ctx, entries[i].vp);
-            if (err != VFS_OK) return err;
-        }
-    }
-    return VFS_OK;
-}
-
-/* ---------------------------------------------------------------------------
  * Migration: walk a single file's FileContent→PageNode chain, writing
  * sequential pageIndex values (0, 1, 2, ...) into each PageNode at offset 16.
  * --------------------------------------------------------------------------- */
