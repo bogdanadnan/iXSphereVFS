@@ -9,36 +9,33 @@ comparison without building caches.
 ## NameEntry Layout Change
 
 ```
-Before:
+Before (32 bytes):
  Offset  Size  Field
     0     24    data     (UTF-8 bytes, zero-padded)
+   24      8    nextPtr
 
-After:
-    0      8    name_hash / data[0..7]  (uint64 hash; also UTF-8 start for short names)
-    8     16    data[8..23]             (remaining UTF-8 bytes)
-   24      8    nextPtr                 (unchanged)
+After (32 bytes):
+    0      8    name_hash  (uint64 — always a hash)
+    8     16    name_data  (UTF-8 bytes, zero-padded if < 16)
+   24      8    nextPtr    (unchanged)
 ```
 
-For names ≤ 8 bytes: the hash IS the UTF-8 name — zero extra storage.
-For names > 8 bytes: the hash is `splitmix64(name, len)`.
+Bytes 0-7 are ALWAYS a hash — no ambiguity, no special case for short names.
+Name starts at byte 8 regardless of length. Names > 16 bytes chain as before.
+The 8-byte overhead per NameEntry is the cost of consistency.
 
 ## Hash Function
 
 ```c
 uint64_t name_hash(const char* name, int len) {
-    if (len <= 8) {
-        uint64_t h = 0;
-        memcpy(&h, name, (size_t)len);
-        return h;
-    }
     return splitmix64((const uint8_t*)name, (size_t)len);
 }
 ```
 
 ## Writing
 
-`nodes_write_name` computes the hash and stores it in the first 8 bytes.
-Remaining UTF-8 bytes follow at offset 8. Zero-pad if short.
+`nodes_write_name` computes the hash, stores it at offset 0, then stores
+name bytes starting at offset 8.
 
 ```c
 int nodes_write_name(Pool* pool, const char* name, int64_t* out_vp) {
@@ -46,8 +43,9 @@ int nodes_write_name(Pool* pool, const char* name, int64_t* out_vp) {
     uint64_t h = name_hash(name, len);
 
     uint8_t data_24[24] = {0};
-    memcpy(data_24, &h, 8);
-    if (len > 8) memcpy(data_24 + 8, name + 8, len <= 24 ? (size_t)(len - 8) : 16);
+    memcpy(data_24, &h, 8);                                // bytes 0-7: hash
+    int to_copy = len < 16 ? len : 16;
+    memcpy(data_24 + 8, name, (size_t)to_copy);            // bytes 8-23: name
 
     // allocate slots, write data_24, chain if > 24 bytes
     ...
