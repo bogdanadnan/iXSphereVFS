@@ -13,6 +13,12 @@ static int tests_run = 0, tests_passed = 0;
 
 #define CHECK_EQ(a, b) CHECK((a) == (b))
 
+/* Portable spin-wait barrier for concurrent tests (pattern from test_pool.c) */
+static volatile int s_mt_ready = 0;
+static void mt_wait_at_barrier(void) { while (!s_mt_ready) { /* spin */ } }
+static void mt_release_barrier(void) { s_mt_ready = 1; }
+static void mt_reset_barrier(void) { s_mt_ready = 0; }
+
 /* ---------------------------------------------------------------------------
  * Basic lifecycle tests
  * --------------------------------------------------------------------------- */
