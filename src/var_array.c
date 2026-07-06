@@ -154,3 +154,42 @@ int var_array_grow_base(VarArrayBase* a) {
     }
     return idx;
 }
+
+/* ---------------------------------------------------------------------------
+ * resolve_base — resolve slot `idx` to a pointer within a chunk.
+ * Walks from root down using height_of for type dispatch.  Returns NULL
+ * if idx is beyond the claimed range or any intermediate slot is empty.
+ * --------------------------------------------------------------------------- */
+
+void* var_array_resolve_base(VarArrayBase* a, int idx) {
+    if (!a || idx < 0) return NULL;
+    int cs = a->chunk_size;
+    int es = a->entry_size;
+
+    /* Check bounds: idx must be < total claimed count */
+    if (idx >= a->count) return NULL;
+
+    void* node = vfs_atomic_load_ptr((const void* const*)&a->root);
+    if (!node) return NULL;
+
+    int h = height_of(node);
+
+    /* If root is a chunk (height 0), return entry directly */
+    if (h == 0) {
+        VarArrayChunk* chunk = (VarArrayChunk*)node;
+        return (char*)chunk->entries + (size_t)(idx % cs) * es;
+    }
+
+    /* Walk from root level down to leaf chunk */
+    int64_t div = 1;
+    for (int i = 0; i < h; i++) div *= cs;
+    for (int level = h; level > 0; level--, div /= cs) {
+        VarArrayLevel* lv = (VarArrayLevel*)node;
+        int slot = (int)(((int64_t)idx / div) % cs);
+        node = *slot_of(lv, slot);
+        if (!node) return NULL;
+    }
+    /* node is now the leaf chunk */
+    VarArrayChunk* chunk = (VarArrayChunk*)node;
+    return (char*)chunk->entries + (size_t)(idx % cs) * es;
+}
