@@ -46,3 +46,19 @@ static void* alloc_level_typed(int chunk_size, int height) {
     level->reserved = 0;
     return level;
 }
+
+/* Recursively free a chunk or level node and all its descendants.
+ * Chunks (height==0) are freed directly — the entries buffer is part of
+ * the same allocation.  Levels (height>0) recursively free each non-NULL
+ * child slot before freeing the level itself. */
+static void free_recursive(void* node, int height, int chunk_size) {
+    if (!node) return;
+    if (height > 0) {
+        VarArrayLevel* level = (VarArrayLevel*)node;
+        for (int i = 0; i < chunk_size; i++) {
+            void* child = slot_of(level, i) ? *slot_of(level, i) : NULL;
+            if (child) free_recursive(child, height - 1, chunk_size);
+        }
+    }
+    free(node);
+}
