@@ -696,6 +696,19 @@ static void test_name_hash_compute_basic(void) {
     CHECK(h_bar != h1);
 }
 
+static void test_name_hash_compute_long(void) {
+    const char* name = "a-very-long-filename.txt";
+    int len = (int)strlen(name);
+    CHECK_EQ(len, 24);
+    uint64_t h = name_hash_compute(name, len);
+    CHECK(h != 0);
+
+    /* One byte different */
+    uint64_t h2 = name_hash_compute("a-very-long-filename.ttx", len);
+    CHECK(h2 != 0);
+    CHECK(h2 != h);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -730,6 +743,7 @@ int main(void) {
     test_nameentry_empty();
 
     test_name_hash_compute_basic();
+    test_name_hash_compute_long();
 
     test_zero_slot_safety();
 
