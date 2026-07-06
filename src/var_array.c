@@ -169,7 +169,6 @@ int var_array_grow_base(VarArrayBase* a) {
 void* var_array_resolve_base(VarArrayBase* a, int idx) {
     if (!a || idx < 0) return NULL;
     int cs = a->chunk_size;
-    int es = a->entry_size;
 
     /* Check bounds: idx must be < total claimed count */
     if (idx >= a->count) return NULL;
@@ -178,12 +177,6 @@ void* var_array_resolve_base(VarArrayBase* a, int idx) {
     if (!node) return NULL;
 
     int h = height_of(node);
-
-    /* If root is a chunk (height 0), return entry directly */
-    if (h == 0) {
-        VarArrayChunk* chunk = (VarArrayChunk*)node;
-        return (char*)chunk->entries + (size_t)(idx % cs) * es;
-    }
 
     /* Walk from root level down to leaf chunk */
     int64_t div = 1;
@@ -194,9 +187,8 @@ void* var_array_resolve_base(VarArrayBase* a, int idx) {
         node = *slot_of(lv, slot);
         if (!node) return NULL;
     }
-    /* node is now the leaf chunk */
-    VarArrayChunk* chunk = (VarArrayChunk*)node;
-    return (char*)chunk->entries + (size_t)(idx % cs) * es;
+    /* node is now the leaf chunk — return pointer to chunk struct */
+    return node;
 }
 
 /* ---------------------------------------------------------------------------

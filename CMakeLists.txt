@@ -69,7 +69,7 @@ add_test(NAME test_gc COMMAND test_gc)
 add_executable(test_var_array test/test_var_array.c)
 target_link_libraries(test_var_array ixsphere_vfs pthread)
 add_test(NAME test_var_array COMMAND test_var_array)
-set_source_files_properties(test/test_var_array.c PROPERTIES COMPILE_FLAGS "-Wno-pedantic -fno-strict-aliasing")
+set_source_files_properties(test/test_var_array.c PROPERTIES COMPILE_FLAGS "-Wno-pedantic -Wno-incompatible-pointer-types -fno-strict-aliasing")
 
 add_executable(vfs_bench bench/bench.c)
 target_link_libraries(vfs_bench ixsphere_vfs pthread)

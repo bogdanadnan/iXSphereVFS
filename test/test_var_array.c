@@ -57,16 +57,16 @@ static void test_append_basic(void) {
     for (int i = 0; i < 3; i++) {
         int idx = var_array_grow_base(a);
         CHECK_EQ(idx, i);
-        void* slot = var_array_resolve_base(a, idx);
-        CHECK(slot != NULL);
-        *(int*)slot = i * 10;
+        VarArrayChunk* chunk = (VarArrayChunk*)var_array_resolve_base(a, idx);
+        CHECK(chunk != NULL);
+        ((int*)chunk->entries)[idx % a->chunk_size] = i * 10;
     }
 
     /* Verify via resolve */
     for (int i = 0; i < 3; i++) {
-        int* slot = (int*)var_array_resolve_base(a, i);
-        CHECK(slot != NULL);
-        CHECK_EQ(*slot, i * 10);
+        VarArrayChunk* chunk = (VarArrayChunk*)var_array_resolve_base(a, i);
+        CHECK(chunk != NULL);
+        CHECK_EQ(((int*)chunk->entries)[i % a->chunk_size], i * 10);
     }
 
     var_array_delete_base(a);
@@ -81,23 +81,23 @@ static void test_append_cross_chunk(void) {
     for (int i = 0; i < 4; i++) {
         int idx = var_array_grow_base(a);
         CHECK_EQ(idx, i);
-        int* slot = (int*)var_array_resolve_base(a, idx);
-        CHECK(slot != NULL);
-        *slot = i * 100;
+        VarArrayChunk* chunk = (VarArrayChunk*)var_array_resolve_base(a, idx);
+        CHECK(chunk != NULL);
+        ((int*)chunk->entries)[idx % a->chunk_size] = i * 100;
     }
 
     /* First entry of second chunk (index 4) */
     int idx = var_array_grow_base(a);
     CHECK_EQ(idx, 4);
-    int* slot = (int*)var_array_resolve_base(a, idx);
-    CHECK(slot != NULL);
-    *slot = 400;
+    VarArrayChunk* chunk = (VarArrayChunk*)var_array_resolve_base(a, idx);
+    CHECK(chunk != NULL);
+    ((int*)chunk->entries)[idx % a->chunk_size] = 400;
 
     /* Verify all 5 entries */
     for (int i = 0; i < 5; i++) {
-        int* s = (int*)var_array_resolve_base(a, i);
-        CHECK(s != NULL);
-        CHECK_EQ(*s, i * 100);
+        VarArrayChunk* ch = (VarArrayChunk*)var_array_resolve_base(a, i);
+        CHECK(ch != NULL);
+        CHECK_EQ(((int*)ch->entries)[i % a->chunk_size], i * 100);
     }
 
     var_array_delete_base(a);
@@ -107,15 +107,11 @@ static void test_resolve_out_of_range(void) {
     VarArrayBase* a = var_array_new_base(sizeof(int), 16);
     CHECK(a != NULL);
 
-    /* Nothing claimed yet — resolve should return NULL */
     CHECK(var_array_resolve_base(a, 0) == NULL);
     CHECK(var_array_resolve_base(a, -1) == NULL);
 
-    /* Claim slot 0 */
     int idx = var_array_grow_base(a);
     CHECK_EQ(idx, 0);
-
-    /* Slot 0 works, slot 1 still NULL */
     CHECK(var_array_resolve_base(a, 0) != NULL);
     CHECK(var_array_resolve_base(a, 1) == NULL);
 
@@ -130,15 +126,14 @@ static void test_large_append(void) {
     for (int i = 0; i < N; i++) {
         int idx = var_array_grow_base(a);
         CHECK_EQ(idx, i);
-        int* slot = (int*)var_array_resolve_base(a, idx);
-        CHECK(slot != NULL);
-        *slot = i;
+        VarArrayChunk* chunk = (VarArrayChunk*)var_array_resolve_base(a, idx);
+        CHECK(chunk != NULL);
+        ((int*)chunk->entries)[idx % a->chunk_size] = i;
     }
-    /* Verify */
     for (int i = 0; i < N; i++) {
-        int* s = (int*)var_array_resolve_base(a, i);
-        CHECK(s != NULL);
-        CHECK_EQ(*s, i);
+        VarArrayChunk* ch = (VarArrayChunk*)var_array_resolve_base(a, i);
+        CHECK(ch != NULL);
+        CHECK_EQ(((int*)ch->entries)[i % a->chunk_size], i);
     }
 
     var_array_delete_base(a);
@@ -154,30 +149,35 @@ typedef struct {
 } DirEntry;
 
 static void test_var_array_basic(void) {
-    VarArrayBase* list = var_array_new_base(sizeof(DirEntry), VFS_VAR_ARRAY_DEFAULT_CHUNK_SIZE);
+    VarArray(DirEntry) list = var_array_new(DirEntry);
     CHECK(list != NULL);
     CHECK_EQ(list->count, 0);
 
-    /* Append 10 entries */
+    /* Append 10 entries via typed macro */
     for (int i = 0; i < 10; i++) {
         DirEntry e = {(uint64_t)(i * 100), (int64_t)(i * 200)};
-        int idx = var_array_grow_base(list);
+        int idx = var_array_append(list, e);
         CHECK_EQ(idx, i);
-        void* slot = var_array_resolve_base(list, idx);
-        CHECK(slot != NULL);
-        *(DirEntry*)slot = e;
     }
     CHECK_EQ(list->count, 10);
 
-    /* Lookup each entry */
+    /* Lookup each entry via typed macro */
     for (int i = 0; i < 10; i++) {
-        DirEntry* e = (DirEntry*)var_array_resolve_base(list, i);
+        DirEntry* e = var_array_lookup(list, i);
         CHECK(e != NULL);
         CHECK_EQ(e->key, (uint64_t)(i * 100));
         CHECK_EQ(e->vp, (int64_t)(i * 200));
     }
 
-    var_array_delete_base(list);
+    /* Update entry 5 */
+    DirEntry new_e = {999, 888};
+    var_array_update(list, 5, new_e);
+    DirEntry* e5 = var_array_lookup(list, 5);
+    CHECK(e5 != NULL);
+    CHECK_EQ(e5->key, (uint64_t)999);
+    CHECK_EQ(e5->vp, (int64_t)888);
+
+    var_array_delete(list);
 }
 
 int main(void) {
