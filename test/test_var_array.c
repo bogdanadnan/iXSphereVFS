@@ -276,6 +276,33 @@ static void test_var_array_multi_level_growth(void) {
     var_array_delete_base(a);
 }
 
+static void test_var_array_bulk_10000(void) {
+    VarArray(int) arr = var_array_new(int);
+    CHECK(arr != NULL);
+
+    int N = 10000;
+    for (int i = 0; i < N; i++) {
+        int idx = var_array_append(arr, i * 7);
+        CHECK_EQ(idx, i);
+    }
+    CHECK_EQ(arr->count, N);
+
+    /* Spot-check first, middle, last */
+    int* first = var_array_lookup(arr, 0);
+    CHECK(first != NULL);
+    CHECK_EQ(*first, 0);
+
+    int* mid = var_array_lookup(arr, N / 2);
+    CHECK(mid != NULL);
+    CHECK_EQ(*mid, (N / 2) * 7);
+
+    int* last = var_array_lookup(arr, N - 1);
+    CHECK(last != NULL);
+    CHECK_EQ(*last, (N - 1) * 7);
+
+    var_array_delete(arr);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -290,6 +317,7 @@ int main(void) {
     test_var_array_chunk_capacity();
     test_var_array_root_promotion_to_level_1();
     test_var_array_multi_level_growth();
+    test_var_array_bulk_10000();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
