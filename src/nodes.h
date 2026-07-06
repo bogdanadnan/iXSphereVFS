@@ -190,8 +190,10 @@ void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
  *    24      8    nextPtr  (VirtualPtr — next NameEntry slot, 0 = end)
  * --------------------------------------------------------------------------- */
 
-#define NAMEENTRY_OFF_NEXTPTR 24
-#define NAMEENTRY_DATA_SIZE   24   /* bytes of name data per slot */
+#define NAMEENTRY_OFF_HASH     0   /* uint64_t — FNV-1a hash of full name */
+#define NAMEENTRY_OFF_NAME_DATA 8  /* 16 bytes of name data in first slot */
+#define NAMEENTRY_OFF_NEXTPTR  24
+#define NAMEENTRY_DATA_SIZE    24   /* bytes of name data per slot */
 
 /* Internal helper: write a single NameEntry slot (used by nodes_write_name). */
 void nodes_write_name_entry(uint8_t* slot, const uint8_t* data_24, int64_t nextPtr, int64_t page_size);
