@@ -48,10 +48,6 @@ int tree_superblock_read(TreeContext* ctx);
 /* Write ctx fields into a page_size-byte buffer and flush to disk. */
 int tree_superblock_write(TreeContext* ctx);
 
-/* ---------------------------------------------------------------------------
- * Format migration
- * --------------------------------------------------------------------------- */
-
 #ifndef NDEBUG
 /* Debug counter: number of tcache rebuilds from sparse chain. */
 int tree_resolve_page_cache_builds_get(void);
