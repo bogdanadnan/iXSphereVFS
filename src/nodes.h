@@ -200,7 +200,11 @@ void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
  * (16) bytes of name due to the 8-byte hash prefix. */
 #define NAMEENTRY_DATA_SIZE    24   /* bytes of name data per slot */
 
-/* Internal helper: write a single NameEntry slot (used by nodes_write_name). */
+/* Internal helper: write a single NameEntry slot (used by nodes_write_name).
+ * The 24-byte data_24 buffer is memcpy'd to slot[0..23] verbatim.
+ * Callers must assemble the correct layout:
+ *   first slot  = [8 bytes hash][16 bytes name]
+ *   chain slots = [24 bytes name] */
 void nodes_write_name_entry(uint8_t* slot, const uint8_t* data_24, int64_t nextPtr, int64_t page_size);
 
 /* Write a name chain.  Returns number of slots written (1 or more).
