@@ -35,9 +35,6 @@ int tree_superblock_read(TreeContext* ctx) {
     ctx->nextNodeId       = (uint32_t)vfs_rd4_s(payload, SB_OFF_NEXT_NODE_ID, ctx->page_size);
     ctx->touchedFilesPtr  = vfs_rd8_s(payload, SB_OFF_TOUCHED_FILES_PTR, ctx->page_size);
 
-    ctx->formatVersion = (uint32_t)vfs_rd4_s(payload, SB_OFF_FORMAT_VERSION, ctx->page_size);
-    if (ctx->formatVersion == 0) ctx->formatVersion = 1;  /* pre-existing v1 file */
-
     /* poolListHead — wire into pool allocator */
     int64_t pool_list_head = vfs_rd8_s(payload, SB_OFF_POOL_LIST_HEAD, ctx->page_size);
     if (ctx->pool.list_head) *ctx->pool.list_head = pool_list_head;
@@ -58,7 +55,6 @@ int tree_superblock_write(TreeContext* ctx) {
     vfs_wr8_s(buf, SB_OFF_TREE_LOCK_STATE,   ctx->treeLockState, ctx->page_size);
     vfs_wr4_s(buf, SB_OFF_NEXT_NODE_ID,      (int32_t)ctx->nextNodeId, ctx->page_size);
     vfs_wr8_s(buf, SB_OFF_TOUCHED_FILES_PTR, ctx->touchedFilesPtr, ctx->page_size);
-    vfs_wr4_s(buf, SB_OFF_FORMAT_VERSION,    (int32_t)ctx->formatVersion, ctx->page_size);
 
     storage_write(ctx->sb, SUPERBLOCK_PAGE, buf, 3);
     storage_flush(ctx->sb, -1);
@@ -82,7 +78,6 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     ctx->epochMapperPtr   = 0;
     ctx->touchedFilesPtr  = 0;
     ctx->nextNodeId       = 0;  /* first vfs_atomic_add_i32 returns 1 */
-    ctx->formatVersion    = 2;  /* v2: PageNode has pageIndex, superblock has formatVersion */
     ctx->treeLockState    = 0;
 
     /* Write superblock with initial state */
