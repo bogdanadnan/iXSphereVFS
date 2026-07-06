@@ -92,3 +92,23 @@ Fix the crash, then validate with `--threads=4,8,16`.
 ### Files Affected
 - VFS internals — crash site to be identified by debugger
 - `bench/bench.c` — switch workers from per-handle mounts to shared `vfs_t*`
+
+## TODO-10 — Commit Name Collision Detection [REQUIRED FIX]
+
+### Problem
+`vfs_commit` does not detect name collisions in directories when a snapshot
+is committed. If fileA is renamed to "TEST" at epoch 2 (live head) and
+fileB is renamed to "TEST" at epoch 1 (snapshot), committing epoch 1
+produces two files named "TEST" at epoch 2 — violating directory uniqueness.
+
+`commit_scan_dir` checks file content conflicts but not name collisions.
+
+### Required Fix
+In `commit_scan_dir`, track seen names per directory at the commit epoch.
+For each visible DirContent entry, check if the name (via `nodes_read_name_hash`)
+was already seen. If a collision is detected, return `VFS_ERR_EXISTS` and
+abort the commit.
+
+### Files Affected
+- `src/epoch.c` — `commit_scan_dir`: add hash-set or sorted name tracking
+- `test/test_epoch.c` — add test: rename two files to same name, commit, verify rejected
