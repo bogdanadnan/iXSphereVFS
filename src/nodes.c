@@ -23,6 +23,10 @@ static uint64_t splitmix64_hash(const uint8_t* data, size_t len) {
     return h ^ (h >> 31);
 }
 
+uint64_t name_hash_compute(const char* name, int len) {
+    return splitmix64_hash((const uint8_t*)name, (size_t)len);
+}
+
 /* ---------------------------------------------------------------------------
  * DirNode (Workload 4.1)
  * --------------------------------------------------------------------------- */
