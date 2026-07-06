@@ -109,4 +109,7 @@ void* var_array_resolve_base(VarArrayBase* a, int idx);
 #define var_array_new(T) \
     ((VarArray(T))var_array_new_base(sizeof(T), VFS_VAR_ARRAY_DEFAULT_CHUNK_SIZE))
 
+/* Typed convenience wrapper: free a VarArray.  Casts to VarArrayBase*. */
+#define var_array_delete(a) var_array_delete_base((VarArrayBase*)(a))
+
 #endif /* VFS_VAR_ARRAY_H */
