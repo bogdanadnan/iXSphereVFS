@@ -789,6 +789,52 @@ static void test_name_read_full_roundtrip_short(void) {
     name_teardown(pool);
 }
 
+static void test_name_read_full_roundtrip_long(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    /* 25 bytes: 16 in first slot + 9 in second slot = 2 slots */
+    {
+        const char* name25 = "abcdefghijklmnopabcdefghi";  /* 25 chars */
+        CHECK_EQ(strlen(name25), 25);
+        int64_t vp;
+        int n = nodes_write_name(pool, name25, &vp);
+        CHECK_EQ(n, 2);
+        char buf[64];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 25);
+        CHECK_EQ(strcmp(buf, name25), 0);
+    }
+
+    /* 40 bytes: 16 in first slot + 24 in second = 2 slots, exactly fills */
+    {
+        const char* name40 = "0123456789abcdef0123456789abcdef01234567";
+        CHECK_EQ(strlen(name40), 40);
+        int64_t vp;
+        int n = nodes_write_name(pool, name40, &vp);
+        CHECK_EQ(n, 2);
+        char buf[64];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 40);
+        CHECK_EQ(strcmp(buf, name40), 0);
+    }
+
+    /* 50 bytes: 16 + 24 + 10 = 3 slots */
+    {
+        const char* name50 = "0123456789abcdef0123456789abcdef0123456789abcdefgh";
+        CHECK_EQ(strlen(name50), 50);
+        int64_t vp;
+        int n = nodes_write_name(pool, name50, &vp);
+        CHECK_EQ(n, 3);
+        char buf[64];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 50);
+        CHECK_EQ(strcmp(buf, name50), 0);
+    }
+
+    name_teardown(pool);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -826,6 +872,7 @@ int main(void) {
     test_name_hash_compute_long();
     test_name_read_hash();
     test_name_read_full_roundtrip_short();
+    test_name_read_full_roundtrip_long();
 
     test_zero_slot_safety();
 
