@@ -193,3 +193,17 @@ void* var_array_resolve_base(VarArrayBase* a, int idx) {
     VarArrayChunk* chunk = (VarArrayChunk*)node;
     return (char*)chunk->entries + (size_t)(idx % cs) * es;
 }
+
+/* ---------------------------------------------------------------------------
+ * delete_base — free the entire VarArray tree and the base struct.
+ * Idempotent (safe on NULL).  Uses free_recursive to walk and free
+ * all chunks and levels.
+ * --------------------------------------------------------------------------- */
+
+void var_array_delete_base(VarArrayBase* a) {
+    if (!a) return;
+    if (a->root) {
+        free_recursive(a->root, height_of(a->root), a->chunk_size);
+    }
+    free(a);
+}
