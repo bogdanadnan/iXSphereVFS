@@ -64,4 +64,24 @@ typedef struct {
     volatile int   count;
 } VarArrayBase;
 
+/* ---------------------------------------------------------------------------
+ * Base (untyped) API — operates on void* slots, caller handles element size.
+ * --------------------------------------------------------------------------- */
+
+/* Allocate a new variable-length array.  entry_size is the byte size of
+ * each element.  Returns NULL on allocation failure. */
+VarArrayBase* var_array_new_base(int entry_size, int chunk_size);
+
+/* Free all memory associated with the array.  Idempotent (safe on NULL). */
+void var_array_delete_base(VarArrayBase* a);
+
+/* Claim the next slot index.  Returns the claimed index (0, 1, 2, ...)
+ * on success, or a negative value on error. */
+int var_array_grow_base(VarArrayBase* a);
+
+/* Resolve slot `idx` to a pointer within a chunk.  Returns a pointer to
+ * the slot's entry data, or NULL if idx is beyond the claimed range.
+ * The returned pointer is valid until the next grow. */
+void* var_array_resolve_base(VarArrayBase* a, int idx);
+
 #endif /* VFS_VAR_ARRAY_H */
