@@ -259,34 +259,48 @@ decremented. The slot remains occupied for indexing.
 
 ## API
 
+The user-facing API is entirely macro-generated. No `void*`, no casts in user code.
+
 ```c
-// Core (operates on VarArrayBase*, chunk/level allocation + growth)
-void  var_array_init(VarArrayBase* a, int chunk_size);
-void  var_array_destroy(VarArrayBase* a);
-int   var_array_grow(VarArrayBase* a, int count);  // ensures capacity, returns old count
-void* var_array_get_root(VarArrayBase* a);          // returns root (chunk or level)
-int   var_array_chunk_capacity(VarArrayBase* a);    // returns chunk_size
+// --- var_array.h ---
+
+#include "var_array_core.h"   // VarArrayBase, chunk/level allocation
+
+#define VARRAY_DEFINE(T, suffix)                                         \
+    VARRAY_DEFINE_CHUNK(T, suffix)                                       \
+    static inline int suffix##_insert(VarArrayBase* a, T entry) {        \
+        int idx = var_array_grow(a);                                     \
+        VarArrayChunk_##suffix* c = suffix##_resolve_chunk(a, idx);      \
+        c->entries[idx % a->chunk_size] = entry;                         \
+        return idx;                                                      \
+    }                                                                    \
+    static inline T* suffix##_lookup(VarArrayBase* a, int idx) {         \
+        VarArrayChunk_##suffix* c = suffix##_resolve_chunk(a, idx);      \
+        return &c->entries[idx % a->chunk_size];                         \
+    }                                                                    \
+    static inline VarArrayChunk_##suffix*                                 \
+    suffix##_resolve_chunk(VarArrayBase* a, int idx) {                   \
+        if (idx < a->chunk_size)                                         \
+            return (VarArrayChunk_##suffix*)a->root;                     \
+        /* walk level nodes — single cast at each level, then typed */   \
+        ...
+    }
 ```
 
-### Usage Example (full pattern)
+### Usage Example
 
 ```c
-// 1. Define entry type and generate typed structs
 typedef struct { uint64_t key; int64_t vp; } DirEntry;
-VARRAY_DEFINE_CHUNK(DirEntry, dir)
+VARRAY_DEFINE(DirEntry, dir)
 
-// 2. Use the typed chunk directly — no casts after init
 VarArrayBase va;
 var_array_init(&va, 256);
+
 DirEntry e = { .key = hash("foo"), .vp = 0x12345 };
+int idx = dir_insert(&va, e);                     // one call
 
-int idx = var_array_grow(&va, 1);   // reserves slot idx
-VarArrayChunk_dir* c = (VarArrayChunk_dir*)var_array_get_root(&va);
-c->entries[idx] = e;                // compiler knows sizeof(DirEntry)
-
-// 3. Growth to level 1 is handled by var_array_grow internally
-//    After promotion, root is a VarArrayLevel — the macro layer
-//    provides typed access to slots and chunks.
+DirEntry* found = dir_lookup(&va, idx);           // one call
+printf("key=%llu vp=%lld\n", found->key, found->vp);
 ```
 
 ## Acceptance
