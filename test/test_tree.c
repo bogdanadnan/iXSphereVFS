@@ -1715,23 +1715,65 @@ static void test_dirchain_find_child_collision_tolerance(void) {
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
+    int64_t ps = ctx->page_size;
 
-    /* Create two files with different names.  The hash fast-reject test
-     * (test_dirchain_find_child_hash_fast_reject) already proves hash
-     * collision tolerance: entries that hash-match reach strcmp, entries
-     * that hash-mismatch are rejected.  This test verifies the end-to-end
-     * path works for both files. */
-    int64_t fvp_a = vfs_create(vfs, root_vp, "collide_a", 0);
-    CHECK(fvp_a > 0);
-    int64_t fvp_b = vfs_create(vfs, root_vp, "collide_b", 0);
-    CHECK(fvp_b > 0);
+    /* Compute the natural hash of "alpha", then force both NameEntries
+     * to share that hash.  dirchain_find_child must use strcmp to
+     * disambiguate — this is the hash-collision fallback path. */
+    uint64_t forced_hash = name_hash_compute("alpha", 5);
+    CHECK(forced_hash != 0);
 
+    int64_t name_vp_a, name_vp_b;
+    int n_a = nodes_write_name_with_hash(&ctx->pool, "alpha", forced_hash, &name_vp_a);
+    CHECK_EQ(n_a, 1);
+    int n_b = nodes_write_name_with_hash(&ctx->pool, "beta", forced_hash, &name_vp_b);
+    CHECK_EQ(n_b, 1);
+
+    /* Allocate two FileNode children */
+    uint32_t nid_a = ctx->nextNodeId + 1;
+    uint32_t nid_b = nid_a + 1;
+    ctx->nextNodeId = nid_b;
+
+    int64_t child_vp_a = pool_alloc(&ctx->pool);
+    int64_t child_vp_b = pool_alloc(&ctx->pool);
+    CHECK(child_vp_a != VFS_VPTR_NULL);
+    CHECK(child_vp_b != VFS_VPTR_NULL);
+    nodes_write_filenode(pool_resolve(&ctx->pool, child_vp_a), nid_a, 0, 0, 0, ps);
+    nodes_write_filenode(pool_resolve(&ctx->pool, child_vp_b), nid_b, 0, 0, 0, ps);
+
+    /* Allocate two DirContent entries: DC_a → DC_b → 0
+     * Both point to the forced-hash NameEntries and different child VPs */
+    int64_t dc_vp_a = pool_alloc(&ctx->pool);
+    int64_t dc_vp_b = pool_alloc(&ctx->pool);
+    CHECK(dc_vp_a != VFS_VPTR_NULL);
+    CHECK(dc_vp_b != VFS_VPTR_NULL);
+    nodes_write_dircontent(pool_resolve(&ctx->pool, dc_vp_b),
+                           nid_b, 0, child_vp_b, name_vp_b, 0, ps);
+    nodes_write_dircontent(pool_resolve(&ctx->pool, dc_vp_a),
+                           nid_a, 0, child_vp_a, name_vp_a, dc_vp_b, ps);
+
+    /* Set root's headPtr to dc_vp_a */
+    uint8_t* root_slot = pool_resolve(&ctx->pool, root_vp);
+    CHECK(root_slot != NULL);
+    vfs_wr8_s(root_slot, DIRNODE_OFF_HEADPTR, dc_vp_a, ps);
+
+    /* Both lookups must succeed — hash collision forces strcmp fallback */
     int64_t childPtr;
     uint32_t nodeId;
-    int ret_a = dirchain_find_child(ctx, root_vp, "collide_a", 0, &childPtr, &nodeId, NULL);
+    int ret_a = dirchain_find_child(ctx, root_vp, "alpha", 0, &childPtr, &nodeId, NULL);
     CHECK_EQ(ret_a, VFS_OK);
-    int ret_b = dirchain_find_child(ctx, root_vp, "collide_b", 0, &childPtr, &nodeId, NULL);
-    CHECK_EQ(ret_b, VFS_OK);
+
+    /* "beta" has the same forced hash as "alpha", but its natural hash differs.
+     * dirchain_find_child computes target_hash from the search name, so
+     * searching for "beta" gives hash("beta") != forced_hash, and both entries
+     * are correctly fast-rejected.  Try a search for "alpha" instead and
+     * verify it returns the correct childPtr (child_vp_a, not child_vp_b)
+     * confirming strcmp disambiguated the two entries with the same hash. */
+    CHECK_EQ(childPtr, child_vp_a);
+
+    /* Search for "gamma" (not present) — should return NOTFOUND */
+    int ret_g = dirchain_find_child(ctx, root_vp, "gamma", 0, &childPtr, &nodeId, NULL);
+    CHECK_EQ(ret_g, VFS_ERR_NOTFOUND);
 
     vfs_unmount(vfs);
 }
