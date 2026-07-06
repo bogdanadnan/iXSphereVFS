@@ -7,7 +7,7 @@
  *   write    — create N files, write data to each
  *   read     — open N files, read data
  *   scan     — sequential full-file read from byte 0 to end, measure bandwidth
- *   mixed    — mix of create, write, read, delete
+ *   mixed    — configurable read/write ratio on random offsets over pre-populated files
  *   dir      — create N directories, create files inside
  *   seqwrite — sequential page-sized writes to a single file
  *   randread — random page reads from a pre-populated file
@@ -526,19 +526,18 @@ static int bench_scan(vfs_t* vfs, int count, int threads, const char* path) {
 }
 
 /* ---------------------------------------------------------------------------
- * Workload: mixed — create, write, read, delete
- * --------------------------------------------------------------------------- */
-
-/* ---------------------------------------------------------------------------
  * Workload: mixed — configurable read/write ratio on pre-populated files.
- * Pre-populates count files with page-sized data, then runs count operations
- * with --read-ratio (default 80) controlling read vs write mix at random offsets.
+ * Pre-populates up to 1000 files with page-sized data (4 pages each), then
+ * runs `count` operations with --read-ratio (default 80) controlling the
+ * read vs write mix at random offsets.  Reports per-operation latency and
+ * cache/data hit statistics.
  * --------------------------------------------------------------------------- */
 
 static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path,
                         int read_ratio) {
     (void)path;
-    if (read_ratio < 0) read_ratio = 80; /* default 80% reads */
+    (void)threads;
+    if (read_ratio < 0) read_ratio = 80;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
     const int page_sz = vfs->ctx->page_size;
     int nfiles = count > 1000 ? 1000 : count;
@@ -561,6 +560,8 @@ static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path,
     }
     if (populated == 0) { free(file_vps); return 0; }
 
+    lat_init(count);
+    vfs_cache_reset();
     double t0 = now_sec();
     int ok = 0;
     unsigned rseed = 42;
@@ -569,6 +570,7 @@ static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path,
     memset(buf, 'Z', (size_t)page_sz);
 
     for (int i = 0; i < count; i++) {
+        double op_t0 = now_sec();
         int fi = rand_r(&rseed) % populated;
         if (file_vps[fi] <= 0) continue;
         int is_read = (rand_r(&rseed) % 100) < read_ratio;
@@ -580,11 +582,13 @@ static int bench_mixed(vfs_t* vfs, int count, int threads, const char* path,
             int w = vfs_write(vfs, file_vps[fi], buf, off, page_sz, 0);
             if (w == page_sz) ok++;
         }
+        lat_record(now_sec() - op_t0);
     }
     double t1 = now_sec();
     free(buf);
     free(file_vps);
-    report("mixed", ok, threads, t1 - t0);
+    report_full("mixed", ok, 1, t1 - t0);
+    lat_destroy();
     return ok;
 }
 
@@ -918,7 +922,6 @@ int main(int argc, char** argv) {
     }
 
     int total = (strcmp(opts.workload, "scan") == 0) ? opts.count
-              : (strcmp(opts.workload, "mixed") == 0) ? opts.count * 3
               : (strcmp(opts.workload, "dir") == 0) ? opts.count * 13
               : opts.count;
     printf("  completed: %d / %d operations\n", ok, total);
