@@ -94,11 +94,13 @@ void nodes_read_dircontent(const uint8_t* slot, uint32_t* childNodeId,
  *   ──────  ────  ─────
  *     0      8    pageRootPtr  (VirtualPtr — first PageNode in segment)
  *     8      8    nextPtr      (VirtualPtr — next FileContent, 0 = end)
- *    16     16    reserved
+ *    16      4    pageCount    (uint32 — number of PageNodes in this segment)
+ *    20     12    reserved
  * --------------------------------------------------------------------------- */
 
 #define FILECONTENT_OFF_ROOTPTR     0
 #define FILECONTENT_OFF_NEXTPTR       8
+#define FILECONTENT_OFF_PAGECOUNT    16
 
 void nodes_write_filecontent(uint8_t* slot, int64_t pageRootPtr, int64_t nextPtr, int64_t page_size);
 void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* nextPtr, int64_t page_size);

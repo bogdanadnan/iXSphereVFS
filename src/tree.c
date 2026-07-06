@@ -255,6 +255,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 fc_vp = new_fc_vp;
             }
             if (i == segment_idx && is_write) {
+                vfs_atomic_add_i32((int32_t*)(fc_slot + FILECONTENT_OFF_PAGECOUNT), 1);
                 return pool_resolve(&ctx->pool, page_root_vp);
             }
             /* Empty intermediate segment — advance to next */
@@ -279,9 +280,11 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
             static __thread int tcache_next = 0;
 
             int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+            uint32_t fc_page_count = (uint32_t)vfs_rd4_s(fc_slot, FILECONTENT_OFF_PAGECOUNT, ctx->page_size);
             int64_t cache_key = (file_vp << 20) | (segment_idx & 0xFFFFF);
 
             /* Check tcache first */
+            int cache_slot = -1;
             for (int ci = 0; ci < TCACHE_SIZE; ci++) {
                 if (tcache[ci].key == cache_key && tcache[ci].populated) {
                     if (tcache[ci].gen != vfs_atomic_load_i64(&ctx->gc_generation)) {
@@ -290,7 +293,10 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                         uint8_t* cached = segment_array_resolve(&ctx->pool, &tcache[ci].arr,
                                                                  (uint32_t)page_in_segment);
                         if (cached) return cached;
-                        tcache[ci].populated = false;
+                        /* Array has NULL for this page — don't invalidate the
+                           whole array.  Fall through to chain walk to find or
+                           create the PageNode, then patch the array entry. */
+                        cache_slot = ci;
                     }
                     break;
                 }
@@ -358,6 +364,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                         }
                     }
                     result_vp = new_pn_vp;
+                    vfs_atomic_add_i32((int32_t*)(fc_slot + FILECONTENT_OFF_PAGECOUNT), 1);
                     goto done;
                 }
 
@@ -399,12 +406,22 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                     }
                 }
                 result_vp = new_pn_vp;
+                vfs_atomic_add_i32((int32_t*)(fc_slot + FILECONTENT_OFF_PAGECOUNT), 1);
                 goto done;
             }
 
         done:
-            /* Populate tcache via segment_array_build if chain is dense enough */
-            if (total_pages_seen >= SPARSE_CACHE_THRESHOLD) {
+            /* Patch the cached array if we found/created a PageNode for
+               a slot that was NULL in the cache */
+            if (cache_slot >= 0 && result_vp != 0 &&
+                tcache[cache_slot].populated) {
+                tcache[cache_slot].arr.vptr_array[page_in_segment] = result_vp;
+            }
+
+            /* Populate tcache via segment_array_build if segment has enough pages */
+            fc_page_count = (uint32_t)vfs_atomic_load_i32(
+                (const int32_t*)(fc_slot + FILECONTENT_OFF_PAGECOUNT));
+            if ((int)fc_page_count >= SPARSE_CACHE_THRESHOLD) {
                 int slot = tcache_next % TCACHE_SIZE;
                 if (tcache[slot].arr.built)
                     segment_array_destroy(&tcache[slot].arr);
