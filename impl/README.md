@@ -18,5 +18,8 @@ All code optimized for throughput — hot paths avoid allocations, use inline fu
 | 8 | Filesystem API | vfs_mount/vfs_unmount/vfs_open/vfs_read/vfs_write/mkdir/readdir/lock/snapshot/commit/gc |
 | 9 | SQLite VFS | CowVfs integration layer |
 | 10 | Optimization | Profiling, cache tuning, lock contention, allocation hot paths |
+| 14 | VirtualPtr API | vfs_create/vfs_mkdir return VirtualPtr directly, remove resolve_child_vp |
+| 15 | Sparse PageNodes | Lazy PageNode allocation, sorted-insert CAS chain, gc_generation cache |
+| 16 | Variable Lock-Free Array | VarArray<T> generic lock-free array with lazy growth (foundation for future caches) |
 
 Each phase has its own spec in `impl/phase-N-name.md` with detailed workloads.
