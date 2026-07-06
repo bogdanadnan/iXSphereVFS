@@ -1,6 +1,10 @@
 #ifndef VFS_VAR_ARRAY_H
 #define VFS_VAR_ARRAY_H
 
+/* GNU extensions required: uses statement expressions ({ ... }) and
+ * typeof().  Only include in translation units compiled with
+ * -Wno-pedantic -fno-strict-aliasing. */
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
