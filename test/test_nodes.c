@@ -842,7 +842,6 @@ static void test_name_slots_needed_formula(void) {
     /* Helper: write name, verify slot count via nodes_write_name return */
     #define CHECK_SLOTS(name_str, expected_slots) do { \
         const char* nm = (name_str); \
-        CHECK_EQ(strlen(nm), strlen(nm)); /* silence unused */ \
         int64_t vp; \
         int n = nodes_write_name(pool, nm, &vp); \
         CHECK_EQ(n, (expected_slots)); \
@@ -853,7 +852,7 @@ static void test_name_slots_needed_formula(void) {
     CHECK_SLOTS("1234567890123456", 1);           /* 16 bytes (exactly fills first slot) */
     CHECK_SLOTS("1234567890123456x", 2);          /* 17 bytes */
     CHECK_SLOTS("0123456789abcdef0123456789abcdef01234567", 2);  /* 40 bytes */
-    CHECK_SLOTS("0123456789abcdef0123456789abcdef0123456789a", 3); /* 41 bytes */
+    CHECK_SLOTS("0123456789abcdef0123456789abcdef012345678", 3); /* 41 bytes */
     CHECK_SLOTS("abcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnop", 3); /* 64 bytes */
 
     #undef CHECK_SLOTS
