@@ -192,6 +192,9 @@ void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
 
 #define NAMEENTRY_OFF_HASH     0   /* uint64_t — FNV-1a hash of full name */
 #define NAMEENTRY_OFF_NAME_DATA 8  /* 16 bytes of name data in first slot */
+/* The first slot has 8 bytes of hash overhead, leaving 16 bytes for name
+ * data.  Chain slots use the full NAMEENTRY_DATA_SIZE (24 bytes). */
+#define NAMEENTRY_FIRST_SLOT_NAME_MAX 16
 #define NAMEENTRY_OFF_NEXTPTR  24
 #define NAMEENTRY_DATA_SIZE    24   /* bytes of name data per slot */
 
