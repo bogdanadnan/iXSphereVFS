@@ -1,10 +1,15 @@
-# Phase 16: Dynamic Lock-Free Array (DirIndex Foundation)
+# Phase 16: Variable Lock-Free Array (VarArray)
 
 ## Goal
-A variable-size, lock-free array for storing directory index entries. Fixed
-chunk size (256 entries default, configurable), grows via pointer tables.
-Lazy allocation: each level is allocated only when the previous level is
-exhausted. No upper bound except available RAM.
+A generic, variable-size, lock-free array. Fixed chunk size (`chunk_size`,
+configurable at init). Growth is lazy: each level of indirection is allocated
+only when the previous level is exhausted. No upper bound except RAM.
+
+For ≤ `chunk_size` entries: one pointer dereference — same as a native array.
+For > `chunk_size`: two dereferences. Each 256× overshoot adds one more level.
+
+Used as the foundation for the directory index (Phase 17) and any future
+structure needing a growable, concurrent-safe array.
 
 ## Data Structure
 
@@ -14,185 +19,213 @@ exhausted. No upper bound except available RAM.
 typedef struct {
     uint64_t key;      // hash or unique identifier
     int64_t  value;    // VirtualPtr or other payload
-} DirArrayEntry;       // 16 bytes, 256 entries = 4096 bytes per chunk
+} VarArrayEntry;       // 16 bytes, chunk_size entries per chunk
 ```
 
 ### Chunk
 
+A fixed-size array of entries. `root` points directly to one of these when
+`count ≤ chunk_size`.
+
 ```c
 typedef struct {
-    DirArrayEntry entries[256];
-    int           count;      // number of valid entries (0..256)
-} DirArrayChunk;              // 4100 bytes
+    VarArrayEntry* entries;  // malloc'd: chunk_size * sizeof(VarArrayEntry)
+    int            capacity; // chunk_size (always the configured value)
+} VarArrayChunk;
 ```
 
 ### Level Node
 
-A level N node is a pointer table of 256 slots. At level 0, slots point to
-`DirArrayChunk`. At level N (N > 0), slots point to level N-1 nodes.
+A pointer table of `chunk_size` slots. Height N: slots point to height N-1
+nodes (for N > 1) or to chunks (for N = 1).
 
 ```c
-typedef struct DirArrayLevel {
-    void*          slots[256];  // DirArrayChunk* or DirArrayLevel*
-    int            height;      // 0 = chunk level, N = N levels of indirection
-    volatile int   allocated;   // number of slots filled (for GC/reclaim)
-} DirArrayLevel;
+typedef struct VarArrayLevel {
+    void*          slots;    // malloc'd: chunk_size * sizeof(void*)
+    int            height;   // 1 = slots point to chunks, N = slots point to height N-1
+    int            chunk_size;
+} VarArrayLevel;
 ```
 
-### Dynamic Array
+### VarArray
 
 ```c
 typedef struct {
-    DirArrayLevel* root;        // points to a Level node (starting at height 0)
-    int            chunk_size;  // configurable, default 256
-    volatile int   count;       // atomic: total entries
-} DirArray;
+    void*         root;       // VarArrayChunk* or VarArrayLevel*
+    int           chunk_size; // configurable, default 256
+    volatile int  count;      // atomic: total entries inserted
+} VarArray;
 ```
 
-### Growth Algorithm
-
-On insert, `idx = atomic_fetch_add(&count, 1)`. The path to the target chunk
-is determined by `idx`. Start at `root`:
+## Growth Algorithm
 
 ```
+INSERT(array, entry):
+    idx = atomic_fetch_add(&array->count, 1)
+    cap = chunk_size
+
+    if idx < cap:
+        // Level 0: root IS the chunk
+        if array->root == NULL:
+            chunk = calloc_chunk()
+            CAS(&array->root, NULL, chunk)
+        chunk = (VarArrayChunk*)array->root
+        chunk->entries[idx] = entry
+        return
+
+    // Need level 1.  If root is still a chunk, promote it.
+    if current root is a chunk:
+        old_chunk = (VarArrayChunk*)array->root
+        new_level = calloc_level(height=1)
+        new_level->slots[0] = old_chunk        // slot 0 gets the old data
+        // Allocate the chunk for the new slot
+        target_slot = idx / chunk_size
+        new_chunk = calloc_chunk()
+        new_level->slots[target_slot] = new_chunk
+        // Atomic swap: old root → new level
+        if CAS(&array->root, old_chunk, new_level) succeeds:
+            chunk = new_chunk
+            chunk->entries[idx % chunk_size] = entry
+            return
+        else:
+            // CAS failed — another thread promoted.  Retry from top.
+            idx = count - 1  // re-fetch?  No: idx is already assigned.
+            goto retry
+
+    // Root is already a level.  Walk down.
+    node = (VarArrayLevel*)array->root
+
+    // Find or create the path
     remaining = idx
-    node = root
-
-    // Walk down from the current root height
-    while node->height > 0:
+    while node->height > 1:
         stride = chunk_size^node->height
         slot = remaining / stride
         remaining = remaining % stride
         if node->slots[slot] == NULL:
-            new_node = calloc(1, sizeof(DirArrayLevel))
-            new_node->height = node->height - 1
-            CAS(&node->slots[slot], NULL, new_node)
+            new_child = calloc_level(height = node->height - 1)
+            CAS(&node->slots[slot], NULL, new_child)
         node = node->slots[slot]
 
-    // At height 0: slot points to a chunk
-    chunk_slot = remaining / chunk_size   // but remaining < chunk_size...
-```
-
-Wait — at height 0, the slots point to chunks. `remaining < chunk_size` because
-the stride at height 1 was exactly `chunk_size`. The `remaining` value is the
-index within the chunk.
-
-Actually let me simplify. The number of entries per height-H node is `chunk_size^(H+1)`:
-
-- Height 0: `chunk_size^1 = 256` entries (one chunk)
-- Height 1: `chunk_size^2 = 65,536` entries (256 chunks)
-- Height 2: `chunk_size^3 = 16,777,216` entries
-- ...
-
-To find entry `idx`:
-
-```
-node = root
-remaining = idx
-
-while node->height > 0:
-    stride = chunk_size^(node->height)   // entries per sub-tree
-    slot = remaining / stride
-    remaining = remaining % stride
+    // height == 1: slots point to chunks
+    slot = remaining / chunk_size
+    entry_idx = remaining % chunk_size
     if node->slots[slot] == NULL:
-        allocate new level with height = node->height - 1
-        CAS into node->slots[slot]
-    node = node->slots[slot]
+        new_chunk = calloc_chunk()
+        CAS(&node->slots[slot], NULL, new_chunk)
+    chunk = (VarArrayChunk*)node->slots[slot]
+    chunk->entries[entry_idx] = entry
 
-// node->height == 0: node->slots are chunk pointers
-chunk_slot = remaining / chunk_size  // always 0 if chunk_size == 256
-                                       // (remaining < chunk_size^1 = 256)
-entry_idx = remaining % chunk_size
-chunk = node->slots[chunk_slot]
-if chunk == NULL:
-    chunk = calloc(1, sizeof(DirArrayChunk))
-    CAS(&node->slots[chunk_slot], NULL, chunk)
-chunk->entries[entry_idx] = entry
+  retry:
+    // Re-read root (may have been promoted by another thread) and try again
 ```
 
-When root is exhausted (all 256 slots of the root node's sub-trees are full),
-allocate a NEW root with `height = old_root->height + 1`, CAS into `array->root`:
+### Root Promotion
+
+When `idx ≥ chunk_size` and root is still a chunk, promote:
+
+1. Allocate a new level node (height=1, chunk_size slots)
+2. Set `new_level->slots[0] = old_chunk` (existing entries preserved)
+3. Allocate the chunk needed for the new slot
+4. Set `new_level->slots[target_slot] = new_chunk`
+5. CAS `array->root` from `old_chunk` to `new_level`
+
+If CAS fails, another thread already promoted. Release our allocations
+(leak — GC'd later or accepted leak). Re-read `array->root` and retry the
+walk from the new root.
+
+A thread observing the CAS mid-flight sees:
+- Before CAS: `root = old_chunk` — valid, all entries accessible
+- After CAS: `root = new_level` — all old entries at slot 0, new entry accessible
+
+No thread sees a half-built state. The new level is fully initialized before
+the CAS publishes it.
+
+### Higher-Level Growth
+
+Same pattern: when a level is full (all `chunk_size` slots occupied), the
+parent (or root) allocates a sibling. When the root level itself is full,
+a new root with `height = old_root->height + 1` is allocated, old root
+becomes slot 0, CAS-root.
+
+## Lookup
 
 ```
-if idx >= chunk_size^(root->height + 1):
-    new_root = calloc(1, sizeof(DirArrayLevel))
-    new_root->height = root->height + 1
-    new_root->slots[0] = root          // old root is slot 0 of new root
-    CAS(&array->root, root, new_root)
+LOOKUP(array, index):
+    if index >= array->count: return NULL
+
+    root = array->root   // atomic snapshot
+    if root is a chunk:
+        return &((VarArrayChunk*)root)->entries[index]
+
+    node = (VarArrayLevel*)root
+    remaining = index
+    while node->height > 1:
+        stride = chunk_size^node->height
+        slot = remaining / stride
+        remaining = remaining % stride
+        if node->slots[slot] == NULL: return NULL
+        node = node->slots[slot]
+
+    // height == 1
+    slot = remaining / chunk_size
+    entry_idx = remaining % chunk_size
+    chunk = node->slots[slot]
+    if chunk == NULL: return NULL
+    return &chunk->entries[entry_idx]
 ```
 
-### Lookup
+## Remove
 
-Same walk as insert, without allocation. If any slot is NULL, entry doesn't
-exist — return NULL.
-
-### Remove
-
-Set `chunk->entries[entry_idx].value = VFS_VPTR_NULL`. The slot remains
-occupied — key is preserved for lookup. The entry count is never decremented.
+Set `entry->value = VFS_VPTR_NULL`. Entry stays in place — count never
+decremented. The slot remains occupied for indexing.
 
 ## Concurrency
 
-- **Readers**: lock-free. Walk the tree following CAS-installed pointers.
-  If a pointer is NULL (not yet allocated), entry doesn't exist.
-- **Writers**: CAS on slot pointers. Losers retry from the slot allocation step.
-  The `atomic_fetch_add(&count, 1)` assigns a unique index to each writer.
-  No two writers write to the same slot.
-- **Root growth**: CAS on `array->root`. Loser re-reads root and retries.
+- **`atomic_fetch_add(&count, 1)`**: unique index per writer. No two writers
+  write to the same slot.
+- **CAS on root**: publishes promotion atomically. Losers retry.
+- **CAS on slot pointers**: allocates chunks/levels lazily. Losers retry or
+  accept the winner's allocation.
+- **Lock-free readers**: walk the pointer chain. Null slots mean "not yet
+  allocated" → entry doesn't exist. No locks, no retry loops.
 
-## Growth Examples
+## Non-Negotiable Constraints
 
-```
-Insert #1: root->height=0, chunk allocated, entry[0] = entry → 1 level
-Insert #256: root->height=0, chunk slots[0] has 256 entries → still 1 level
-Insert #257: root exhausted (capacity 256).
-  → allocate new root (height=1), old root = new_root->slots[0]
-  → stride = 256^1 = 256, slot = 257/256 = 1, remaining = 1
-  → allocate level-0 node at slots[1], allocate chunk, entry[1] = entry
-  → 2 levels: root(height=1) → level[0][0](old data) + level[0][1](new chunk)
-
-Insert #65536: root's 256 level-0 nodes all full.
-  → allocate new root (height=2), old root = new_root->slots[0]
-  → 3 levels
-```
-
-Maximum pointer dereferences for N entries: `ceil(log_256(N))`.
+- **No locks.** CAS only.
+- **No realloc.** Chunks and levels are fixed-size, never resized.
+- **No copy-on-grow.** Old entries stay in place during promotion.
+- **Lazy allocation.** Each level/chunk allocated only when needed.
+- **No upper bound.** Grows until RAM exhausted.
+- **Configurable `chunk_size`.** Passed at init. Used for ALL math.
+- **Single indirection for ≤ chunk_size entries.** `root` directly points to a chunk.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `src/dir_array.c` | DirArray implementation |
-| `src/dir_array.h` | Public API |
-| `test/test_dir_array.c` | Tests |
+| `src/var_array.c` | VarArray implementation |
+| `src/var_array.h` | Public API |
+| `test/test_var_array.c` | Tests |
 
 ## API
 
 ```c
-void  dir_array_init(DirArray* arr, int chunk_size);
-void  dir_array_destroy(DirArray* arr);
-int   dir_array_insert(DirArray* arr, DirArrayEntry entry);
-DirArrayEntry* dir_array_lookup(DirArray* arr, int index);
-void  dir_array_remove(DirArray* arr, int index);
-int   dir_array_count(DirArray* arr);
+void  var_array_init(VarArray* arr, int chunk_size);
+void  var_array_destroy(VarArray* arr);
+int   var_array_insert(VarArray* arr, VarArrayEntry entry);
+VarArrayEntry* var_array_lookup(VarArray* arr, int index);
+void  var_array_remove(VarArray* arr, int index);
+int   var_array_count(VarArray* arr);
 ```
-
-## Non-Negotiable Constraints
-
-- **No locks.** CAS only.
-- **No realloc of existing chunks or levels.** Once allocated, never resized.
-- **No copy-on-grow.** Old entries stay in place during root growth.
-- **Lazy allocation.** Level N is allocated only when level N-1 is full.
-- **No upper bound.** Grows until RAM is exhausted.
-- **Configurable chunk_size.** Default 256, minimum 16, maximum 4096.
 
 ## Acceptance
 
-- [ ] Insert 10 entries: single chunk, root->height=0
-- [ ] Insert 256 entries: single chunk at capacity, root->height=0
-- [ ] Insert 257 entries: root grows to height=1, new chunk at slot 1
-- [ ] Insert 10,000 entries: verify all retrievable by index
+- [ ] Insert 10 entries (chunk_size=256): root is chunk, O(1) lookup
+- [ ] Insert 256 entries: chunk full, root still chunk
+- [ ] Insert 257 entries: root promoted to level(height=1), old chunk at slot 0
+- [ ] Insert 10,000 entries: all retrievable by index
 - [ ] Concurrent insert from 4 threads: all entries present, no duplicates
-- [ ] Lookup on unallocated slot returns NULL (no crash)
-- [ ] Remove sets value to VFS_VPTR_NULL without crashing
+- [ ] Lookup on out-of-range returns NULL, no crash
+- [ ] Remove sets value to VFS_VPTR_NULL
+- [ ] Custom chunk_size=64 works correctly
 - [ ] All tests pass
