@@ -62,3 +62,23 @@ static void free_recursive(void* node, int height, int chunk_size) {
     }
     free(node);
 }
+
+/* ---------------------------------------------------------------------------
+ * Public API
+ * --------------------------------------------------------------------------- */
+
+VarArrayBase* var_array_new_base(int entry_size, int chunk_size) {
+    if (entry_size <= 0) return NULL;
+    if (chunk_size < VFS_VAR_ARRAY_MIN_CHUNK_SIZE)
+        chunk_size = VFS_VAR_ARRAY_MIN_CHUNK_SIZE;
+    if (chunk_size > VFS_VAR_ARRAY_MAX_CHUNK_SIZE)
+        chunk_size = VFS_VAR_ARRAY_MAX_CHUNK_SIZE;
+
+    VarArrayBase* a = (VarArrayBase*)calloc(1, sizeof(VarArrayBase));
+    if (!a) return NULL;
+    a->root = alloc_chunk_typed(chunk_size, (size_t)entry_size);
+    if (!a->root) { free(a); return NULL; }
+    a->chunk_size = chunk_size;
+    a->count      = 0;
+    return a;
+}
