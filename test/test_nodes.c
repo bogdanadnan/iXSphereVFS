@@ -680,6 +680,22 @@ static void test_zero_slot_safety(void) {
     CHECK_EQ(vfs_rd8(slot, MAPPER_OFF_NEXTPTR), 0);
 }
 
+static void test_name_hash_compute_basic(void) {
+    uint64_t h1 = name_hash_compute("foo", 3);
+    CHECK(h1 != 0);
+
+    uint64_t h2 = name_hash_compute("", 0);
+    /* Empty input returns a deterministic (non-zero) hash */
+    CHECK(h2 != 0);
+
+    /* Determinism */
+    CHECK_EQ(name_hash_compute("foo", 3), h1);
+
+    /* Sensitivity: different input → different hash */
+    uint64_t h_bar = name_hash_compute("bar", 3);
+    CHECK(h_bar != h1);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -712,6 +728,8 @@ int main(void) {
     test_nameentry_embedded_null();
     test_nameentry_maxlen_boundary();
     test_nameentry_empty();
+
+    test_name_hash_compute_basic();
 
     test_zero_slot_safety();
 
