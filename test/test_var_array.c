@@ -451,6 +451,42 @@ static void test_var_array_lookup_out_of_range(void) {
     var_array_delete(arr);
 }
 
+static void test_var_array_custom_chunk_size(void) {
+    /* chunk_size=64: level-1→4096 entries, 4097 forces level-2 root */
+    VarArrayBase* a = var_array_new_base(sizeof(int), 64);
+    CHECK(a != NULL);
+    CHECK_EQ(a->chunk_size, 64);
+
+    int N = 4097;  /* 64² + 1 */
+    for (int i = 0; i < N; i++) {
+        int idx = var_array_grow_base(a);
+        CHECK_EQ(idx, i);
+        VarArrayChunk* chunk = (VarArrayChunk*)var_array_resolve_base(a, idx);
+        CHECK(chunk != NULL);
+        ((int*)chunk->entries)[idx % a->chunk_size] = i;
+    }
+    CHECK_EQ(a->count, N);
+
+    /* Verify root height == 2 */
+    int h = var_array_root_height_for_test(a);
+    CHECK_EQ(h, 2);
+
+    /* Spot-check first, last, boundary */
+    VarArrayChunk* ch0 = (VarArrayChunk*)var_array_resolve_base(a, 0);
+    CHECK(ch0 != NULL);
+    CHECK_EQ(((int*)ch0->entries)[0], 0);
+
+    VarArrayChunk* ch4095 = (VarArrayChunk*)var_array_resolve_base(a, 4095);
+    CHECK(ch4095 != NULL);
+    CHECK_EQ(((int*)ch4095->entries)[4095 % 64], 4095);
+
+    VarArrayChunk* ch4096 = (VarArrayChunk*)var_array_resolve_base(a, 4096);
+    CHECK(ch4096 != NULL);
+    CHECK_EQ(((int*)ch4096->entries)[4096 % 64], 4096);
+
+    var_array_delete_base(a);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -469,6 +505,7 @@ int main(void) {
     test_var_array_concurrent_append();
     test_var_array_concurrent_append_and_lookup();
     test_var_array_lookup_out_of_range();
+    test_var_array_custom_chunk_size();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
