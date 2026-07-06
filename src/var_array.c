@@ -33,3 +33,16 @@ static void* alloc_chunk_typed(int chunk_size, size_t entry_size) {
     chunk->entries = (char*)chunk + sizeof(VarArrayChunk);
     return chunk;
 }
+
+/* Allocate a level node with inline pointer table.
+ * Layout: [VarArrayLevel header][chunk_size * sizeof(void*)].
+ * The slot table follows immediately after the struct. */
+static void* alloc_level_typed(int chunk_size, int height) {
+    VarArrayLevel* level = (VarArrayLevel*)calloc(1,
+        sizeof(VarArrayLevel) + (size_t)chunk_size * sizeof(void*));
+    if (!level) return NULL;
+    level->height   = height;
+    level->slots    = (char*)level + sizeof(VarArrayLevel);
+    level->reserved = 0;
+    return level;
+}
