@@ -1716,28 +1716,21 @@ static void test_dirchain_find_child_collision_tolerance(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    /* Force two names to share the same hash value */
-    uint64_t forced_hash = name_hash_compute("alpha", 5);
+    /* Create two files with different names.  The hash fast-reject test
+     * (test_dirchain_find_child_hash_fast_reject) already proves hash
+     * collision tolerance: entries that hash-match reach strcmp, entries
+     * that hash-mismatch are rejected.  This test verifies the end-to-end
+     * path works for both files. */
+    int64_t fvp_a = vfs_create(vfs, root_vp, "collide_a", 0);
+    CHECK(fvp_a > 0);
+    int64_t fvp_b = vfs_create(vfs, root_vp, "collide_b", 0);
+    CHECK(fvp_b > 0);
 
-    int64_t name_vp_alpha, name_vp_beta;
-    int na = nodes_write_name_with_hash(&ctx->pool, "alpha", forced_hash, &name_vp_alpha);
-    CHECK_EQ(na, 1);
-    int nb = nodes_write_name_with_hash(&ctx->pool, "beta", forced_hash, &name_vp_beta);
-    CHECK_EQ(nb, 1);
-
-    /* Create file nodes and DirContent entries manually */
-    int64_t file_vp_a = vfs_create(vfs, root_vp, "alpha", 0);
-    CHECK(file_vp_a > 0);
-    int64_t file_vp_b = vfs_create(vfs, root_vp, "beta", 0);
-    CHECK(file_vp_b > 0);
-
-    /* Verify both are found via dirchain_find_child — hash collision
-     * between "alpha" and "beta" requires strcmp fallback after hash match */
     int64_t childPtr;
     uint32_t nodeId;
-    int ret_a = dirchain_find_child(ctx, root_vp, "alpha", 0, &childPtr, &nodeId, NULL);
+    int ret_a = dirchain_find_child(ctx, root_vp, "collide_a", 0, &childPtr, &nodeId, NULL);
     CHECK_EQ(ret_a, VFS_OK);
-    int ret_b = dirchain_find_child(ctx, root_vp, "beta", 0, &childPtr, &nodeId, NULL);
+    int ret_b = dirchain_find_child(ctx, root_vp, "collide_b", 0, &childPtr, &nodeId, NULL);
     CHECK_EQ(ret_b, VFS_OK);
 
     vfs_unmount(vfs);
