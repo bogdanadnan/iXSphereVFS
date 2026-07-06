@@ -196,6 +196,8 @@ void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
  * data.  Chain slots use the full NAMEENTRY_DATA_SIZE (24 bytes). */
 #define NAMEENTRY_FIRST_SLOT_NAME_MAX 16
 #define NAMEENTRY_OFF_NEXTPTR  24
+/* Used for chain slots.  The first slot only holds NAMEENTRY_FIRST_SLOT_NAME_MAX
+ * (16) bytes of name due to the 8-byte hash prefix. */
 #define NAMEENTRY_DATA_SIZE    24   /* bytes of name data per slot */
 
 /* Internal helper: write a single NameEntry slot (used by nodes_write_name). */
