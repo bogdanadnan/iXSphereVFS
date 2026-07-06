@@ -134,33 +134,33 @@ if (stored_hash != query_hash) continue;          // fast reject
 // Only on match: walk full name chain and strcmp
 ```
 
-### Incremental Updates (No Invalidation)
+### Cache Scope — vfs_readdir Only
 
-On create: `var_array_append(cache, entry)` — add new entry.
-On delete: `var_array_update` to set `tombstone = true`.
-On rename: find old entry by name_hash, update `name_hash` and/or `child_vp`.
+The cache accelerates `vfs_readdir` — the most expensive directory operation
+(O(N²) with dedup). On first `vfs_readdir` for a directory, build the VarArray
+from the chain (one O(N) walk). Subsequent `vfs_readdir` calls iterate the
+array directly — O(N) contiguous scan vs O(N²) chain dedup.
 
-Entries are never removed — the VarArray grows monotonically like the chain.
-Deletes mark tombstones. GC undoes the growth by invalidating the whole cache.
+**`vfs_open_file` and `vfs_create` collision check still use the chain walk**
+but with the NameEntry hash optimization for fast reject. This avoids the
+tombstone staleness problem.
 
-## Multi-Thread Safety
+### Why Not Cache File Lookups
 
-Each thread has its OWN cache. Thread B may have a stale cache after thread A
-mutates the directory. This is self-healing:
+A thread's cached file entry may be stale — another thread created a tombstone
+for that file at a higher epoch. Detecting this requires walking the chain
+(every cache hit would need chain verification). The cache adds no value.
 
-1. Thread B's cache has an entry for a file thread A just deleted.
-2. Thread B's lookup finds the entry (hash match, tombstone=false).
-3. Thread B verifies the full name against the chain — discovers the
-   tombstone (DirContent with namePtr=0 at higher epoch).
-4. Thread B updates its cache: sets `tombstone = true`.
+`vfs_readdir` builds a complete snapshot of the directory at query time.
+Subsequent reads reuse the snapshot. Mutations invalidate it.
 
-Same for creates: thread B doesn't find the file in its cache → falls through
-to chain walk → finds it → appends to its cache. Next lookup is O(1).
+## Cache Lifecycle
 
-**No locks, no invalidation, no broadcasts.** The DirContent chain is the
-synchronization point. The cache is a lazy snapshot that self-corrects on
-chain verification. Threads working on DIFFERENT directories have zero
-contention (separate caches, separate chains).
+- **Build**: on first `vfs_readdir(dir, epoch)` after entry_count ≥ 64.
+  Walk the chain, populate VarArray. Cache keyed by `(dir_vp, epoch)`.
+- **Serve**: `vfs_readdir` copies from array — no chain walk.
+- **Invalidate**: on any mutation (create/delete/rename) in this directory.
+  Sets `built = false`. Next `vfs_readdir` rebuilds.
 
 ## When to Build
 
