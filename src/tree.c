@@ -3,7 +3,7 @@
 #include "page_array.h"
 #include "touched.h"
 #include "gc.h"
-#include <stdlib.h>
+#include "nodes.h"#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <assert.h>
