@@ -102,6 +102,6 @@ void* var_array_resolve_base(VarArrayBase* a, int idx);
 /* Typed accessor for level nodes — layout-compatible with VarArrayLevel*
  * because height is the first field and slots is the second + reserved.
  * For documentation/typing only — actual level walks use base types. */
-#define VarArrayLevel_T(T) struct { volatile int height; VarArrayChunk_T(T)** slots; int reserved; }
+#define VarArrayLevel_T(T) struct { volatile int height; int reserved; VarArrayChunk_T(T)** slots; }
 
 #endif /* VFS_VAR_ARRAY_H */
