@@ -434,6 +434,23 @@ static void test_var_array_concurrent_append_and_lookup(void) {
     var_array_delete_base(arr);
 }
 
+static void test_var_array_lookup_out_of_range(void) {
+    VarArray(int) arr = var_array_new(int);
+    CHECK(arr != NULL);
+
+    /* Append 10 entries */
+    for (int i = 0; i < 10; i++) {
+        int idx = var_array_append(arr, i);
+        CHECK_EQ(idx, i);
+    }
+
+    /* Out-of-range lookups return NULL */
+    CHECK(var_array_lookup(arr, 500) == NULL);
+    CHECK(var_array_lookup(arr, -1) == NULL);
+
+    var_array_delete(arr);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -451,6 +468,7 @@ int main(void) {
     test_var_array_bulk_10000();
     test_var_array_concurrent_append();
     test_var_array_concurrent_append_and_lookup();
+    test_var_array_lookup_out_of_range();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
