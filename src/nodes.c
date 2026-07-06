@@ -304,3 +304,12 @@ int nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_le
     out_buf[total] = '\0';
     return total;
 }
+
+uint64_t nodes_read_name_hash(Pool* pool, int64_t namePtr) {
+    if (namePtr == 0) return 0;
+    uint8_t* slot = pool_resolve(pool, namePtr);
+    if (!slot) return 0;
+    uint64_t h;
+    memcpy(&h, slot, 8);
+    return h;
+}
