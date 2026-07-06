@@ -15,11 +15,36 @@ structure needing a growable, concurrent-safe array.
 
 ### Entry
 
+VarArray stores `uint64_t` values natively. For type safety, use macros to
+wrap with specific types.
+
 ```c
 typedef struct {
     uint64_t key;      // hash or unique identifier
-    int64_t  value;    // VirtualPtr or other payload
-} VarArrayEntry;       // 16 bytes, chunk_size entries per chunk
+    int64_t  value;    // VirtualPtr, file handle, or any 8-byte data
+} VarArrayEntry;       // 16 bytes
+```
+
+### Type-Safe Wrapper Macros
+
+```c
+// Define a type-safe wrapper for a specific value type
+#define VARRAY_WRAP_INT64(name) \
+    static inline int name##_insert(VarArray* a, uint64_t key, int64_t value) { \
+        VarArrayEntry e = { .key = key, .value = value }; \
+        return var_array_insert(a, &e); \
+    } \
+    static inline int64_t name##_lookup(VarArray* a, int index) { \
+        VarArrayEntry* e = var_array_lookup(a, index); \
+        return e ? e->value : 0; \
+    }
+
+// Or: define at top of file before #include "var_array.h"
+// #define VARRAY_VALUE_TYPE int64_t
+// #define VARRAY_NAME dir_index
+// #include "var_array_impl.h"
+// Generates: dir_index_insert(VarArray*, uint64_t, int64_t)
+//           dir_index_lookup(VarArray*, int) → int64_t
 ```
 
 ### Chunk
@@ -212,7 +237,7 @@ decremented. The slot remains occupied for indexing.
 ```c
 void  var_array_init(VarArray* arr, int chunk_size);
 void  var_array_destroy(VarArray* arr);
-int   var_array_insert(VarArray* arr, VarArrayEntry entry);
+int   var_array_insert(VarArray* arr, VarArrayEntry* entry);
 VarArrayEntry* var_array_lookup(VarArray* arr, int index);
 void  var_array_remove(VarArray* arr, int index);
 int   var_array_count(VarArray* arr);
