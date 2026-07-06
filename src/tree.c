@@ -607,6 +607,7 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
 
     /* Walk parent's DirContent chain, checking for name collision */
     int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
+    uint64_t target_hash = name_hash_compute(name, (int)strlen(name));
     int64_t walk_vp = headPtr;
     while (walk_vp != 0) {
         uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
@@ -617,6 +618,9 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
                               &ce_namePtr, &ce_next, ctx->page_size);
         (void)ce_child; (void)ce_childPtr;
         if (ce_epoch == (uint32_t)epoch && ce_namePtr != 0) {
+            /* Hash fast-reject: skip strcmp if hashes don't match */
+            uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
+            if (entry_hash != target_hash) { walk_vp = ce_next; continue; }
             /* Read the name and compare */
             char entry_name[256];
             int name_len = nodes_read_name(&ctx->pool, ce_namePtr,
@@ -706,6 +710,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     /* Walk DirContent chain, check for name collision */
     int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
+    uint64_t target_hash = name_hash_compute(name, (int)strlen(name));
     int64_t walk_vp = headPtr;
     while (walk_vp != 0) {
         uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
@@ -715,6 +720,8 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         nodes_read_dircontent(dc_slot, &cc, &ce, &cp, &np, &nx, ctx->page_size);
         (void)cc; (void)cp;
         if (ce == (uint32_t)epoch && np != 0) {
+            uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
+            if (entry_hash != target_hash) { walk_vp = nx; continue; }
             char entry_name[256];
             int nl = nodes_read_name(&ctx->pool, np, entry_name,
                                      (int)sizeof(entry_name));
@@ -837,6 +844,7 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     int64_t found_vp = 0;
     uint32_t found_childId = 0;
     int64_t found_childPtr = 0;
+    uint64_t target_hash = name_hash_compute(name, (int)strlen(name));
 
     int64_t walk_vp = headPtr;
     while (walk_vp != 0 && found_vp == 0) {
@@ -846,6 +854,8 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         int64_t cp, np, nx;
         nodes_read_dircontent(dc_slot, &cc, &ce, &cp, &np, &nx, ctx->page_size);
         if (np != 0 && ce <= (uint32_t)epoch) {
+            uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
+            if (entry_hash != target_hash) { walk_vp = nx; continue; }
             char en[256];
             int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
             if (nl > 0 && strcmp(en, name) == 0) {
