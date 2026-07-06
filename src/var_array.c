@@ -109,7 +109,12 @@ int var_array_grow_base(VarArrayBase* a) {
         cap *= cs;
     }
 
-    /* CAS loop: promote root until its height >= needed_height */
+    /* CAS loop: promote root until its height >= needed_height.
+     * Multiple threads can reach this point simultaneously.  The CAS on
+     * a->root serializes them: one thread wins, promotes root to the new
+     * height, and continues.  Losers re-read root, free their allocated
+     * level, and retry.  The height field at offset 0 lets readers
+     * distinguish chunk from level without racing on count. */
     void* old_root = vfs_atomic_load_ptr((const void* const*)&a->root);
     while (height_of(old_root) < needed_height) {
         int new_height = height_of(old_root) + 1;
