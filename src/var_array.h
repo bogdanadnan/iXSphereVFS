@@ -1,6 +1,10 @@
 #ifndef VFS_VAR_ARRAY_H
 #define VFS_VAR_ARRAY_H
 
+/* GNU extensions required: uses statement expressions ({ ... }) and
+ * typeof().  Only include in translation units compiled with
+ * -Wno-pedantic -fno-strict-aliasing. */
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -62,6 +66,7 @@ typedef struct {
     void*          root;
     int            chunk_size;
     volatile int   count;
+    int            entry_size;  /* byte size of each element */
 } VarArrayBase;
 
 /* ---------------------------------------------------------------------------
@@ -84,6 +89,10 @@ int var_array_grow_base(VarArrayBase* a);
  * The returned pointer is valid until the next grow. */
 void* var_array_resolve_base(VarArrayBase* a, int idx);
 
+#ifdef VFS_VAR_ARRAY_TESTING
+int var_array_root_height_for_test(VarArrayBase* a);
+#endif
+
 /* ---------------------------------------------------------------------------
  * Typed convenience macro — layout-compatible with VarArrayBase* because
  * the first three members (root pointer, chunk_size, count) have identical
@@ -100,8 +109,49 @@ void* var_array_resolve_base(VarArrayBase* a, int idx);
 #define VarArrayChunk_T(T) struct { volatile int height; T* entries; }
 
 /* Typed accessor for level nodes — layout-compatible with VarArrayLevel*
- * because height is the first field and slots is the second + reserved.
+ * because fields mirror its exact order: height, reserved, slots.
  * For documentation/typing only — actual level walks use base types. */
 #define VarArrayLevel_T(T) struct { volatile int height; int reserved; VarArrayChunk_T(T)** slots; }
+
+/* Typed convenience wrapper: allocate a new VarArray with default chunk size.
+ * Casts the VarArrayBase* return to the typed VarArray(T)* pointer.
+ * NOTE: -Wno-incompatible-pointer-types required (each VarArray(T)
+ * expansion creates a distinct anonymous struct). */
+#define var_array_new(T) \
+    ((VarArray(T))var_array_new_base(sizeof(T), VFS_VAR_ARRAY_DEFAULT_CHUNK_SIZE))
+
+/* Typed convenience wrapper: free a VarArray.  Casts to VarArrayBase*. */
+#define var_array_delete(a) var_array_delete_base((VarArrayBase*)(a))
+
+/* Append an entry to a typed VarArray.  Claims a slot via grow_base,
+ * resolves it via resolve_base, and writes the entry into the chunk.
+ *
+ * NOTE: the fast path (direct chunk write via root cast) has been
+ * intentionally removed — it races with root promotion: another thread
+ * can promote root from a chunk to a level between grow_base returning
+ * and this macro reading root.  The resolve_base call handles this
+ * safely by re-walking the tree from the current root. */
+#define var_array_append(a, entry) ({ \
+    int _idx = var_array_grow_base((VarArrayBase*)(a)); \
+    void* _rp = var_array_resolve_base((VarArrayBase*)(a), _idx); \
+    if (_rp) ((VarArrayChunk_T(typeof(entry))*)_rp)->entries[_idx % (a)->chunk_size] = (entry); \
+    _idx; \
+})
+
+/* Update an existing entry at index `idx`.  Silently drops the update
+ * (no error signal) if idx is out of range or resolve returns NULL —
+ * this matches var_array_lookup's NULL-return behavior. */
+#define var_array_update(a, idx, entry) ({ \
+    int _idx = (idx); \
+    void* _rp = var_array_resolve_base((VarArrayBase*)(a), _idx); \
+    if (_rp) ((VarArrayChunk_T(typeof(entry))*)_rp)->entries[_idx % (a)->chunk_size] = (entry); \
+})
+
+/* Look up an entry by index.  Returns a pointer to the element, or NULL
+ * if idx is out of range or the slot was never written. */
+#define var_array_lookup(a, idx) ({ \
+    void* _rp = var_array_resolve_base((VarArrayBase*)(a), (idx)); \
+    _rp ? &((VarArrayChunk_T(typeof(*(a)->root))*)_rp)->entries[(idx) % (a)->chunk_size] : NULL; \
+})
 
 #endif /* VFS_VAR_ARRAY_H */

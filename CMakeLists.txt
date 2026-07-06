@@ -22,7 +22,10 @@ add_library(ixsphere_vfs STATIC
     src/touched.c
     src/gc.c
     src/gc_map.c
+    src/var_array.c
 )
+
+set_source_files_properties(src/var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -fno-strict-aliasing")
 
 target_include_directories(ixsphere_vfs PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -62,6 +65,11 @@ add_test(NAME test_epoch COMMAND test_epoch)
 add_executable(test_gc test/test_gc.c)
 target_link_libraries(test_gc ixsphere_vfs pthread)
 add_test(NAME test_gc COMMAND test_gc)
+
+add_executable(test_var_array test/test_var_array.c)
+target_link_libraries(test_var_array ixsphere_vfs pthread)
+add_test(NAME test_var_array COMMAND test_var_array)
+set_source_files_properties(test/test_var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -Wno-incompatible-pointer-types -fno-strict-aliasing")
 
 add_executable(vfs_bench bench/bench.c)
 target_link_libraries(vfs_bench ixsphere_vfs pthread)
