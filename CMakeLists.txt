@@ -22,7 +22,10 @@ add_library(ixsphere_vfs STATIC
     src/touched.c
     src/gc.c
     src/gc_map.c
+    src/var_array.c
 )
+
+set_source_files_properties(src/var_array.c PROPERTIES COMPILE_FLAGS "-Wno-pedantic -fno-strict-aliasing")
 
 target_include_directories(ixsphere_vfs PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
