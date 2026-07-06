@@ -1709,6 +1709,31 @@ static void test_dirchain_find_child_hash_fast_reject(void) {
 }
 #endif
 
+#ifdef VFS_VAR_ARRAY_TESTING
+static void test_dirchain_find_child_collision_tolerance(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    /* Create two files — dirchain_find_child must find both */
+    int64_t fvp_a = vfs_create(vfs, root_vp, "alpha", 0);
+    CHECK(fvp_a > 0);
+    int64_t fvp_b = vfs_create(vfs, root_vp, "beta", 0);
+    CHECK(fvp_b > 0);
+
+    /* Look up both — verifies hash collision fallback to strcmp works */
+    int64_t childPtr;
+    uint32_t nodeId;
+    int ret_a = dirchain_find_child(ctx, root_vp, "alpha", 0, &childPtr, &nodeId, NULL);
+    CHECK_EQ(ret_a, VFS_OK);
+    int ret_b = dirchain_find_child(ctx, root_vp, "beta", 0, &childPtr, &nodeId, NULL);
+    CHECK_EQ(ret_b, VFS_OK);
+
+    vfs_unmount(vfs);
+}
+#endif
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1845,6 +1870,10 @@ int main(void) {
 #ifndef NDEBUG
     unlink(test_path);
     test_dirchain_find_child_hash_fast_reject();
+#endif
+#ifdef VFS_VAR_ARRAY_TESTING
+    unlink(test_path);
+    test_dirchain_find_child_collision_tolerance();
 #endif
 
     /* Clean up */

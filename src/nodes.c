@@ -346,3 +346,46 @@ uint64_t nodes_read_name_hash(Pool* pool, int64_t namePtr) {
     memcpy(&h, slot, 8);
     return h;
 }
+
+#ifdef VFS_VAR_ARRAY_TESTING
+/* Test-only: write a name with a pre-determined hash value (for collision tests).
+ * Otherwise identical to nodes_write_name. */
+int nodes_write_name_with_hash(Pool* pool, const char* utf8_name, uint64_t hash,
+                                int64_t* first_slot_vp) {
+    if (!utf8_name || utf8_name[0] == '\0') {
+        *first_slot_vp = VFS_VPTR_NULL;
+        return 0;
+    }
+    size_t total_len = strlen(utf8_name);
+    int slots_needed;
+    if (total_len <= (size_t)NAMEENTRY_FIRST_SLOT_NAME_MAX)
+        slots_needed = 1;
+    else
+        slots_needed = 1 + (int)((total_len - NAMEENTRY_FIRST_SLOT_NAME_MAX
+                                  + NAMEENTRY_DATA_SIZE - 1) / NAMEENTRY_DATA_SIZE);
+    int64_t next_vp = 0;
+    for (int i = slots_needed - 1; i >= 0; i--) {
+        int64_t vp = pool_alloc(pool);
+        if (vp == VFS_VPTR_NULL) { *first_slot_vp = VFS_VPTR_NULL; return 0; }
+        uint8_t* slot_data = pool_resolve(pool, vp);
+        if (!slot_data) { *first_slot_vp = VFS_VPTR_NULL; return 0; }
+        uint8_t buf[NAMEENTRY_DATA_SIZE] = {0};
+        if (i == 0) {
+            memcpy(buf, &hash, sizeof(hash));
+            size_t first_chunk = total_len;
+            if (first_chunk > NAMEENTRY_FIRST_SLOT_NAME_MAX)
+                first_chunk = NAMEENTRY_FIRST_SLOT_NAME_MAX;
+            memcpy(buf + 8, utf8_name, first_chunk);
+        } else {
+            size_t offset = NAMEENTRY_FIRST_SLOT_NAME_MAX + (size_t)(i - 1) * NAMEENTRY_DATA_SIZE;
+            size_t chunk = total_len - offset;
+            if (chunk > NAMEENTRY_DATA_SIZE) chunk = NAMEENTRY_DATA_SIZE;
+            memcpy(buf, utf8_name + offset, chunk);
+        }
+        nodes_write_name_entry(slot_data, buf, next_vp, pool->sb->page_size);
+        if (i == 0) *first_slot_vp = vp;
+        next_vp = vp;
+    }
+    return slots_needed;
+}
+#endif
