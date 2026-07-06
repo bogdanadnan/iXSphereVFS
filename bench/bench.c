@@ -6,7 +6,7 @@
  *   create   — create N files under root
  *   write    — create N files, write data to each
  *   read     — open N files, read data
- *   scan     — readdir on root, open all files, read data
+ *   scan     — sequential full-file read from byte 0 to end, measure bandwidth
  *   mixed    — mix of create, write, read, delete
  *   dir      — create N directories, create files inside
  *   seqwrite — sequential page-sized writes to a single file
@@ -33,7 +33,7 @@
  * --------------------------------------------------------------------------- */
 
 typedef struct {
-    const char* workload;   /* "create", "write", "read", "scan", "mixed", "dir" */
+    const char* workload;   /* workload name */
     int         count;      /* number of files/operations */
     int         threads;    /* number of concurrent threads */
     int         page_size;  /* VFS page size (default 8192) */
@@ -467,40 +467,61 @@ static int bench_read(vfs_t* vfs, int count, int threads, const char* path) {
 }
 
 /* ---------------------------------------------------------------------------
- * Workload: scan — create, readdir, read all.
- * NOTE: limited to 1024 entries (DENTRY_CACHE_MAX) by VFS readdir.
+ * Workload: scan — sequential full-file read from byte 0 to end.
+ * Pre-populates a single file with `count` pages, then reads it back
+ * sequentially in page-sized chunks, measuring bandwidth (MB/s).
  * --------------------------------------------------------------------------- */
 
-static int bench_scan(vfs_t* vfs, int* count, int threads, const char* path) {
+static int bench_scan(vfs_t* vfs, int count, int threads, const char* path) {
+    (void)threads;
     (void)path;
     int64_t root_vp = vfs->ctx->rootNodeOffset;
-    int max_entries = 1024;
-    if (*count > max_entries) {
-        fprintf(stderr, "warning: scan workload capped at %d entries (VFS readdir limit)\n", max_entries);
-        *count = max_entries;
+    const int page_sz = vfs->ctx->page_size;
+
+    /* ── Pre-populate a single file with count pages (untimed) ── */
+    int64_t fvp = vfs_create(vfs, root_vp, "scanfile.dat", 0);
+    if (fvp <= 0) return 0;
+
+    uint8_t* zbuf = (uint8_t*)calloc(1, (size_t)page_sz);
+    if (!zbuf) return 0;
+    for (int i = 0; i < count; i++) {
+        if (vfs_write(vfs, fvp, zbuf, (int64_t)i * page_sz, page_sz, 0) != page_sz) {
+            free(zbuf);
+            return 0;
+        }
     }
-    int capped = *count;
-    for (int i = 0; i < capped; i++) {
-        char name[64];
-        snprintf(name, sizeof(name), "s%d.txt", i);
-        vfs_create(vfs, root_vp, name, 0);
-    }
+    free(zbuf);
+
+    /* ── Timed: sequential read from byte 0 to end in page-sized chunks ── */
+    uint8_t* buf = (uint8_t*)malloc((size_t)page_sz);
+    if (!buf) return 0;
+
+    vfs_cache_reset();
     double t0 = now_sec();
     int ok = 0;
-
-    vfs_dirent_t entries[1024];  /* matches DENTRY_CACHE_MAX */
-    int n = vfs_readdir(vfs, root_vp, entries, 1024, 0);
-    if (n < 0) n = 0;
-
-    for (int i = 0; i < n; i++) {
-        int64_t file_vp = entries[i].vp;
-        if (file_vp <= 0) continue;
-        char buf[128];
-        int r = vfs_read(vfs, file_vp, buf, 0, sizeof(buf), 0);
-        if (r > 0) ok++;
+    for (int i = 0; i < count; i++) {
+        int r = vfs_read(vfs, fvp, buf, (int64_t)i * page_sz, page_sz, 0);
+        if (r == page_sz) ok++;
     }
-    double t1 = now_sec();
-    report("scan", ok, threads, t1 - t0);
+    double elapsed = now_sec() - t0;
+    free(buf);
+
+    /* ── Report results with bandwidth ── */
+    int64_t total_bytes = (int64_t)count * page_sz;
+    double mb = (double)total_bytes / (1024.0 * 1024.0);
+    printf("\n=== scan ===\n");
+    printf("  pages=%d  size=%.1f MB  elapsed=%.3fs\n", count, mb, elapsed);
+    printf("  throughput: %.1f MB/s\n", mb / elapsed);
+    printf("  ops/sec: %.0f\n", (double)count / elapsed);
+    int64_t ct = vfs_cache_total();
+    int64_t ch = vfs_cache_hits();
+    int64_t dt = vfs_data_total();
+    int64_t dh = vfs_data_hits();
+    printf("  cache: hits=%lld total=%lld ratio=%.1f%%\n",
+           (long long)ch, (long long)ct, (ct > 0 ? 100.0 * ch / ct : 0));
+    printf("  data:  hits=%lld total=%lld ratio=%.1f%%\n",
+           (long long)dh, (long long)dt, (dt > 0 ? 100.0 * dh / dt : 0));
+    printf("\n");
     return ok;
 }
 
@@ -864,7 +885,6 @@ int main(int argc, char** argv) {
     }
 
     int ok = 0;
-    int scan_count = opts.count;
     if (strcmp(opts.workload, "create") == 0) {
         ok = bench_create(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "small_create") == 0) {
@@ -876,7 +896,7 @@ int main(int argc, char** argv) {
     } else if (strcmp(opts.workload, "read") == 0) {
         ok = bench_read(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "scan") == 0) {
-        ok = bench_scan(vfs, &scan_count, opts.threads, opts.output);
+        ok = bench_scan(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "mixed") == 0) {
         ok = bench_mixed(vfs, opts.count, opts.threads, opts.output,
                          opts.read_ratio);
@@ -897,7 +917,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    int total = (strcmp(opts.workload, "scan") == 0) ? scan_count
+    int total = (strcmp(opts.workload, "scan") == 0) ? opts.count
               : (strcmp(opts.workload, "mixed") == 0) ? opts.count * 3
               : (strcmp(opts.workload, "dir") == 0) ? opts.count * 13
               : opts.count;
