@@ -737,6 +737,54 @@ static void test_name_read_hash(void) {
     name_teardown(pool);
 }
 
+static void test_name_read_full_roundtrip_short(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    /* Empty name */
+    {
+        int64_t vp;
+        int n = nodes_write_name(pool, "", &vp);
+        CHECK_EQ(n, 0);
+        CHECK_EQ(vp, VFS_VPTR_NULL);
+    }
+
+    /* 1 byte */
+    {
+        int64_t vp;
+        int n = nodes_write_name(pool, "x", &vp);
+        CHECK_EQ(n, 1);
+        char buf[8];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 1);
+        CHECK_EQ(strcmp(buf, "x"), 0);
+    }
+
+    /* 8 bytes */
+    {
+        int64_t vp;
+        int n = nodes_write_name(pool, "12345678", &vp);
+        CHECK_EQ(n, 1);
+        char buf[16];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 8);
+        CHECK_EQ(strcmp(buf, "12345678"), 0);
+    }
+
+    /* 15 bytes (just under first-slot limit) */
+    {
+        int64_t vp;
+        int n = nodes_write_name(pool, "123456789012345", &vp);
+        CHECK_EQ(n, 1);
+        char buf[32];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 15);
+        CHECK_EQ(strcmp(buf, "123456789012345"), 0);
+    }
+
+    name_teardown(pool);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -773,6 +821,7 @@ int main(void) {
     test_name_hash_compute_basic();
     test_name_hash_compute_long();
     test_name_read_hash();
+    test_name_read_full_roundtrip_short();
 
     test_zero_slot_safety();
 
