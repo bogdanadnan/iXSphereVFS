@@ -180,6 +180,34 @@ static void test_var_array_basic(void) {
     var_array_delete(list);
 }
 
+static void test_var_array_chunk_capacity(void) {
+    VarArray(int) arr = var_array_new(int);
+    CHECK(arr != NULL);
+
+    /* Append exactly chunk_size (256) entries — should not trigger promotion */
+    for (int i = 0; i < 256; i++) {
+        int val = i + 1;
+        int idx = var_array_append(arr, val);
+        CHECK_EQ(idx, i);
+    }
+    CHECK_EQ(arr->count, 256);
+
+    /* All entries retrievable */
+    VarArrayChunk* chunk = (VarArrayChunk*)var_array_resolve_base((VarArrayBase*)arr, 0);
+    CHECK(chunk != NULL);
+
+    for (int i = 0; i < 256; i++) {
+        int* e = var_array_lookup(arr, i);
+        CHECK(e != NULL);
+        CHECK_EQ(*e, i + 1);
+        /* All lookups should return entries in the same chunk */
+        VarArrayChunk* c = (VarArrayChunk*)var_array_resolve_base((VarArrayBase*)arr, i);
+        CHECK(c == chunk);
+    }
+
+    var_array_delete(arr);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -191,6 +219,7 @@ int main(void) {
     test_resolve_out_of_range();
     test_large_append();
     test_var_array_basic();
+    test_var_array_chunk_capacity();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
