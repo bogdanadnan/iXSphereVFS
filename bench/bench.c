@@ -39,7 +39,8 @@ typedef struct {
     int         page_size;  /* VFS page size (default 8192) */
     int         cache_mb;   /* 0 = use default */
     int         read_ratio; /* for mixed workload, default 80 */
-    const char* output;     /* output file path */
+    const char* output;     /* VFS file path */
+    const char* csv_path;   /* CSV output path (NULL = no CSV) */
 } bench_opts;
 
 static bench_opts defaults = {
@@ -50,6 +51,7 @@ static bench_opts defaults = {
     .cache_mb  = 0,
     .read_ratio = 80,
     .output    = "/tmp/vfs_bench.vfs",
+    .csv_path  = NULL,
 };
 
 static void usage(void) {
@@ -63,6 +65,7 @@ static void usage(void) {
         "  --cache-mb=N        page cache size in MB (default: 0 = auto)\n"
         "  --read-ratio=N      mixed workload: %% reads (default: 80)\n"
         "  --output=<path>     VFS file path (default: /tmp/vfs_bench.vfs)\n"
+        "  --csv=<path>        CSV output file path (optional)\n"
     );
 }
 
@@ -98,6 +101,7 @@ static int parse_args(int argc, char** argv, bench_opts* opts) {
         if (parse_int(argv[i], "--cache-mb=", &opts->cache_mb)) continue;
         if (parse_int(argv[i], "--read-ratio=", &opts->read_ratio)) continue;
         if (parse_str(argv[i], "--output=", &opts->output)) continue;
+        if (parse_str(argv[i], "--csv=", &opts->csv_path)) continue;
         fprintf(stderr, "Unknown option: %s\n", argv[i]);
         usage();
         return -1;
@@ -324,6 +328,42 @@ static void report_full(const char* name, int count, int threads, double elapsed
     printf("  data:  hits=%lld  total=%lld  ratio=%.1f%%\n",
            (long long)dh, (long long)dt, dratio * 100.0);
     printf("\n");
+}
+
+/* ---------------------------------------------------------------------------
+ * CSV output — write a result row to an append-only CSV file.
+ * Writes a header line on first open (empty file).
+ * --------------------------------------------------------------------------- */
+
+static void write_csv(const char* csv_path, const char* workload,
+                       int count, int threads, int page_size, int cache_mb,
+                       int read_ratio, int elapsed_us, double ops_per_sec,
+                       double cache_hit_pct, double data_hit_pct,
+                       int completed, int total) {
+    if (!csv_path) return;
+    int needs_header = 0;
+    FILE* f = fopen(csv_path, "r");
+    if (!f) {
+        needs_header = 1;
+    } else {
+        if (ftell(f) == 0) needs_header = 1;
+        fclose(f);
+    }
+    f = fopen(csv_path, "a");
+    if (!f) {
+        fprintf(stderr, "warning: cannot open CSV file: %s\n", csv_path);
+        return;
+    }
+    if (needs_header) {
+        fprintf(f, "workload,count,threads,page_size,cache_mb,read_ratio,"
+                   "elapsed_us,ops_per_sec,cache_hit_pct,data_hit_pct,"
+                   "completed,total\n");
+    }
+    fprintf(f, "%s,%d,%d,%d,%d,%d,%d,%.1f,%.1f,%.1f,%d,%d\n",
+            workload, count, threads, page_size, cache_mb, read_ratio,
+            elapsed_us, ops_per_sec, cache_hit_pct, data_hit_pct,
+            completed, total);
+    fclose(f);
 }
 
 /* ---------------------------------------------------------------------------
@@ -958,6 +998,7 @@ int main(int argc, char** argv) {
     }
 
     int ok = 0;
+    double t0 = now_sec();
     if (strcmp(opts.workload, "create") == 0) {
         ok = bench_create(vfs, opts.count, opts.threads, opts.output);
     } else if (strcmp(opts.workload, "small_create") == 0) {
@@ -990,10 +1031,26 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    double elapsed = now_sec() - t0;
+
     int total = (strcmp(opts.workload, "scan") == 0) ? opts.count
               : (strcmp(opts.workload, "dir") == 0) ? opts.count * 13
               : opts.count;
     printf("  completed: %d / %d operations\n", ok, total);
+
+    if (opts.csv_path) {
+        int64_t ct = vfs_cache_total();
+        int64_t ch = vfs_cache_hits();
+        int64_t dt = vfs_data_total();
+        int64_t dh = vfs_data_hits();
+        double ops_per_sec = (elapsed > 0) ? (double)ok / elapsed : 0.0;
+        double cache_hit_pct = (ct > 0) ? 100.0 * (double)ch / (double)ct : 0.0;
+        double data_hit_pct = (dt > 0) ? 100.0 * (double)dh / (double)dt : 0.0;
+        write_csv(opts.csv_path, opts.workload, opts.count, opts.threads,
+                  opts.page_size, opts.cache_mb, opts.read_ratio,
+                  (int)(elapsed * 1e6), ops_per_sec,
+                  cache_hit_pct, data_hit_pct, ok, total);
+    }
 
     if (strcmp(opts.workload, "randread") != 0 &&
         strncmp(opts.workload, "seqread", 7) != 0)
