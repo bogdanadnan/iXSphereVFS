@@ -66,6 +66,7 @@ See `phase-14-vptr-api.md` for details.
 
 Same as TODO-1 but marked as optional — may not be implemented.
 Phase 16 delivered the underlying VarArray data structure; DirIndex integration is still pending.
+Phase 17 added hash fast-reject to name lookups; full DirIndex remains future work.
 
 ## TODO-8 — Lazy Tree Caching [Optional]
 
