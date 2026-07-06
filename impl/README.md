@@ -24,5 +24,6 @@ All code optimized for throughput — hot paths avoid allocations, use inline fu
 | 14 | VirtualPtr API | vfs_create/vfs_mkdir return VirtualPtr directly, remove resolve_child_vp |
 | 15 | Sparse PageNodes | Lazy PageNode allocation, sorted-insert CAS chain, gc_generation cache |
 | 16 | Variable Lock-Free Array | VarArray<T> generic lock-free array with lazy growth (foundation for future caches) |
+| 17 | NameEntry Hash Fast-Reject | 64-bit name hash in NameEntry offset 0; fast-reject non-matches in dirchain_find_child |
 
 Each phase has its own spec in `impl/phase-N-name.md` with detailed workloads.

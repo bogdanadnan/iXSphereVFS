@@ -215,6 +215,12 @@ int  nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_l
  * for simplicity. */
 uint64_t nodes_read_name_hash(Pool* pool, int64_t namePtr);
 
+#ifdef VFS_NAME_HASH_TESTING
+/* Test-only: write a name with a pre-determined hash. */
+int nodes_write_name_with_hash(Pool* pool, const char* utf8_name, uint64_t hash,
+                                int64_t* first_slot_vp);
+#endif
+
 /* Compute the FNV-1a 64-bit hash of a name.  This is the same hash that
  * nodes_write_name stores in the first NameEntry slot at offset 0. */
 uint64_t name_hash_compute(const char* name, int len);

@@ -20,6 +20,16 @@ int tree_resolve_page_cache_builds_get(void) {
 }
 #endif
 
+#ifdef VFS_NAME_HASH_TESTING
+static int s_hash_rejects = 0;
+void dirchain_test_reset_hash_rejects(void) {
+    s_hash_rejects = 0;
+}
+int dirchain_test_get_hash_rejects(void) {
+    return s_hash_rejects;
+}
+#endif
+
 /* ---------------------------------------------------------------------------
  * Superblock I/O helpers
  * --------------------------------------------------------------------------- */
@@ -620,7 +630,11 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
         if (ce_epoch == (uint32_t)epoch && ce_namePtr != 0) {
             /* Hash fast-reject: skip strcmp if hashes don't match */
             uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
-            if (entry_hash != target_hash) { walk_vp = ce_next; continue; }
+            if (entry_hash != target_hash) {
+#ifdef VFS_NAME_HASH_TESTING
+            s_hash_rejects++;
+#endif
+            walk_vp = ce_next; continue; }
             /* Read the name and compare */
             char entry_name[256];
             int name_len = nodes_read_name(&ctx->pool, ce_namePtr,
@@ -721,7 +735,11 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         (void)cc; (void)cp;
         if (ce == (uint32_t)epoch && np != 0) {
             uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
-            if (entry_hash != target_hash) { walk_vp = nx; continue; }
+            if (entry_hash != target_hash) {
+#ifdef VFS_NAME_HASH_TESTING
+            s_hash_rejects++;
+#endif
+            walk_vp = nx; continue; }
             char entry_name[256];
             int nl = nodes_read_name(&ctx->pool, np, entry_name,
                                      (int)sizeof(entry_name));
@@ -855,7 +873,11 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         nodes_read_dircontent(dc_slot, &cc, &ce, &cp, &np, &nx, ctx->page_size);
         if (np != 0 && ce <= (uint32_t)epoch) {
             uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
-            if (entry_hash != target_hash) { walk_vp = nx; continue; }
+            if (entry_hash != target_hash) {
+#ifdef VFS_NAME_HASH_TESTING
+            s_hash_rejects++;
+#endif
+            walk_vp = nx; continue; }
             char en[256];
             int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
             if (nl > 0 && strcmp(en, name) == 0) {
@@ -1234,7 +1256,11 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
             if (ce_namePtr != 0) {
                 /* Hash fast-reject: skip strcmp if hashes don't match */
                 uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
-                if (entry_hash != target_hash) { walk_vp = ce_next; continue; }
+                if (entry_hash != target_hash) {
+#ifdef VFS_NAME_HASH_TESTING
+                s_hash_rejects++;
+#endif
+                walk_vp = ce_next; continue; }
                 char entry_name[256];
                 int nl = nodes_read_name(&ctx->pool, ce_namePtr,
                                           entry_name, (int)sizeof(entry_name));

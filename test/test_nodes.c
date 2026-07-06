@@ -680,6 +680,185 @@ static void test_zero_slot_safety(void) {
     CHECK_EQ(vfs_rd8(slot, MAPPER_OFF_NEXTPTR), 0);
 }
 
+static void test_name_hash_compute_basic(void) {
+    uint64_t h1 = name_hash_compute("foo", 3);
+    CHECK(h1 != 0);
+
+    uint64_t h2 = name_hash_compute("", 0);
+    /* Empty input returns a deterministic (non-zero) hash */
+    CHECK(h2 != 0);
+
+    /* Determinism */
+    CHECK_EQ(name_hash_compute("foo", 3), h1);
+
+    /* Sensitivity: different input → different hash */
+    uint64_t h_bar = name_hash_compute("bar", 3);
+    CHECK(h_bar != h1);
+}
+
+static void test_name_hash_compute_long(void) {
+    const char* name = "a-very-long-filename.txt";
+    int len = (int)strlen(name);
+    CHECK_EQ(len, 24);
+    uint64_t h = name_hash_compute(name, len);
+    CHECK(h != 0);
+
+    /* One byte different */
+    uint64_t h2 = name_hash_compute("a-very-long-filename.ttx", len);
+    CHECK(h2 != 0);
+    CHECK(h2 != h);
+}
+
+static void test_name_read_hash(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    /* Short name: write "foo", read hash, verify it matches compute */
+    int64_t first_vp;
+    int n = nodes_write_name(pool, "foo", &first_vp);
+    CHECK_EQ(n, 1);
+    CHECK(first_vp != VFS_VPTR_NULL);
+
+    uint64_t h_read = nodes_read_name_hash(pool, first_vp);
+    CHECK_EQ(h_read, name_hash_compute("foo", 3));
+
+    /* Long name: 24 bytes, write + read hash */
+    const char* long_name = "a-very-long-filename.txt";
+    int long_len = (int)strlen(long_name);
+    CHECK_EQ(long_len, 24);
+    int64_t first_vp2;
+    int n2 = nodes_write_name(pool, long_name, &first_vp2);
+    CHECK_EQ(n2, 2);  /* 16 + 8 → 2 slots */
+    CHECK(first_vp2 != VFS_VPTR_NULL);
+
+    uint64_t h_long = nodes_read_name_hash(pool, first_vp2);
+    CHECK_EQ(h_long, name_hash_compute(long_name, long_len));
+
+    name_teardown(pool);
+}
+
+static void test_name_read_full_roundtrip_short(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    /* Empty name */
+    {
+        int64_t vp;
+        int n = nodes_write_name(pool, "", &vp);
+        CHECK_EQ(n, 0);
+        CHECK_EQ(vp, VFS_VPTR_NULL);
+        char buf[8];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 0);
+        CHECK_EQ(buf[0], '\0');
+    }
+
+    /* 1 byte */
+    {
+        int64_t vp;
+        int n = nodes_write_name(pool, "x", &vp);
+        CHECK_EQ(n, 1);
+        char buf[8];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 1);
+        CHECK_EQ(strcmp(buf, "x"), 0);
+    }
+
+    /* 8 bytes */
+    {
+        int64_t vp;
+        int n = nodes_write_name(pool, "12345678", &vp);
+        CHECK_EQ(n, 1);
+        char buf[16];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 8);
+        CHECK_EQ(strcmp(buf, "12345678"), 0);
+    }
+
+    /* 15 bytes (just under first-slot limit) */
+    {
+        int64_t vp;
+        int n = nodes_write_name(pool, "123456789012345", &vp);
+        CHECK_EQ(n, 1);
+        char buf[32];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 15);
+        CHECK_EQ(strcmp(buf, "123456789012345"), 0);
+    }
+
+    name_teardown(pool);
+}
+
+static void test_name_read_full_roundtrip_long(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    /* 25 bytes: 16 in first slot + 9 in second slot = 2 slots */
+    {
+        const char* name25 = "abcdefghijklmnopabcdefghi";  /* 25 chars */
+        CHECK_EQ(strlen(name25), 25);
+        int64_t vp;
+        int n = nodes_write_name(pool, name25, &vp);
+        CHECK_EQ(n, 2);
+        char buf[64];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 25);
+        CHECK_EQ(strcmp(buf, name25), 0);
+    }
+
+    /* 40 bytes: 16 in first slot + 24 in second = 2 slots, exactly fills */
+    {
+        const char* name40 = "0123456789abcdef0123456789abcdef01234567";
+        CHECK_EQ(strlen(name40), 40);
+        int64_t vp;
+        int n = nodes_write_name(pool, name40, &vp);
+        CHECK_EQ(n, 2);
+        char buf[64];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 40);
+        CHECK_EQ(strcmp(buf, name40), 0);
+    }
+
+    /* 50 bytes: 16 + 24 + 10 = 3 slots */
+    {
+        const char* name50 = "0123456789abcdef0123456789abcdef0123456789abcdefgh";
+        CHECK_EQ(strlen(name50), 50);
+        int64_t vp;
+        int n = nodes_write_name(pool, name50, &vp);
+        CHECK_EQ(n, 3);
+        char buf[64];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 50);
+        CHECK_EQ(strcmp(buf, name50), 0);
+    }
+
+    name_teardown(pool);
+}
+
+static void test_name_slots_needed_formula(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    /* Helper: write name, verify slot count via nodes_write_name return */
+    #define CHECK_SLOTS(name_str, expected_slots) do { \
+        const char* nm = (name_str); \
+        int64_t vp; \
+        int n = nodes_write_name(pool, nm, &vp); \
+        CHECK_EQ(n, (expected_slots)); \
+    } while(0)
+
+    CHECK_SLOTS("x", 1);                          /* 1 byte */
+    CHECK_SLOTS("12345678", 1);                   /* 8 bytes */
+    CHECK_SLOTS("1234567890123456", 1);           /* 16 bytes (exactly fills first slot) */
+    CHECK_SLOTS("1234567890123456x", 2);          /* 17 bytes */
+    CHECK_SLOTS("0123456789abcdef0123456789abcdef01234567", 2);  /* 40 bytes */
+    CHECK_SLOTS("0123456789abcdef0123456789abcdef012345678", 3); /* 41 bytes */
+    CHECK_SLOTS("abcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijklmnop", 3); /* 64 bytes */
+
+    #undef CHECK_SLOTS
+    name_teardown(pool);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -712,6 +891,13 @@ int main(void) {
     test_nameentry_embedded_null();
     test_nameentry_maxlen_boundary();
     test_nameentry_empty();
+
+    test_name_hash_compute_basic();
+    test_name_hash_compute_long();
+    test_name_read_hash();
+    test_name_read_full_roundtrip_short();
+    test_name_read_full_roundtrip_long();
+    test_name_slots_needed_formula();
 
     test_zero_slot_safety();
 
