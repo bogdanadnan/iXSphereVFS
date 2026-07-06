@@ -14,6 +14,21 @@
 #define VFS_VAR_ARRAY_MAX_CHUNK_SIZE     4096
 
 /* ---------------------------------------------------------------------------
+ * VarArrayChunk — leaf node holding the actual entries.
+ *
+ * height  — always 0; distinguishes a chunk (height == 0) from a level
+ *           node (height > 0).  Must be the first field so that casting
+ *           a void* to VarArrayChunk* and reading height works for both.
+ * entries — pointer to the malloc'd entry array.
+ *
+ * Layout: 4 bytes height, 4 bytes padding, 8 bytes entries = 16 bytes.
+ * --------------------------------------------------------------------------- */
+typedef struct {
+    volatile int height;
+    void*         entries;
+} VarArrayChunk;
+
+/* ---------------------------------------------------------------------------
  * VarArrayBase — compact, fixed-size header for a variable-length array.
  *
  * root       — void* to the topmost chunk (height == 0) or level node
