@@ -346,6 +346,7 @@ static void write_csv(const char* csv_path, const char* workload,
     if (!f) {
         needs_header = 1;
     } else {
+        fseek(f, 0, SEEK_END);
         if (ftell(f) == 0) needs_header = 1;
         fclose(f);
     }
