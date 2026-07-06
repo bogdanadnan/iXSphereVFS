@@ -74,6 +74,7 @@ signatures.
 ## TODO-7 — Directory Index [Optional]
 
 Same as TODO-1 but marked as optional — may not be implemented.
+Phase 16 delivered the underlying VarArray data structure; DirIndex integration is still pending.
 
 ## TODO-8 — Lazy Tree Caching [Optional]
 
