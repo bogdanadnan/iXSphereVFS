@@ -96,8 +96,10 @@ int var_array_grow_base(VarArrayBase* a) {
     int cs = a->chunk_size;
     int es = a->entry_size;
 
-    /* Atomically claim the next index */
-    int idx = vfs_atomic_add_i32((int32_t*)&a->count, 1);
+    /* Atomically claim the next index.  vfs_atomic_add_i32 returns the
+     * value AFTER adding, so subtract 1 for 0-based indexing (first slot
+     * is idx=0, not idx=1). */
+    int idx = vfs_atomic_add_i32((int32_t*)&a->count, 1) - 1;
 
     /* Compute required height: how many levels needed to address idx slots */
     int needed_height = 0;
@@ -108,7 +110,7 @@ int var_array_grow_base(VarArrayBase* a) {
     }
 
     /* CAS loop: promote root until its height >= needed_height */
-    void* old_root = a->root;
+    void* old_root = vfs_atomic_load_ptr((const void* const*)&a->root);
     while (height_of(old_root) < needed_height) {
         int new_height = height_of(old_root) + 1;
         void* new_level = alloc_level_typed(cs, new_height);
@@ -125,7 +127,7 @@ int var_array_grow_base(VarArrayBase* a) {
     }
 
     /* Walk from root down to the leaf chunk for this index */
-    void* node = a->root;
+    void* node = vfs_atomic_load_ptr((const void* const*)&a->root);
     int h = height_of(node);
     /* Pre-compute divisor for each level: cs^level */
     int64_t div = 1;
