@@ -84,4 +84,15 @@ int var_array_grow_base(VarArrayBase* a);
  * The returned pointer is valid until the next grow. */
 void* var_array_resolve_base(VarArrayBase* a, int idx);
 
+/* ---------------------------------------------------------------------------
+ * Typed convenience macro — layout-compatible with VarArrayBase* because
+ * the first three members (root pointer, chunk_size, count) have identical
+ * layout regardless of T.  Usage:
+ *
+ *   VarArray(int)*  arr = (VarArray(int)*)var_array_new_base(sizeof(int), 256);
+ *   int idx = var_array_grow_base((VarArrayBase*)arr);
+ *   int* slot = var_array_resolve_base((VarArrayBase*)arr, idx);
+ * --------------------------------------------------------------------------- */
+#define VarArray(T) struct { T* root; int chunk_size; volatile int count; }*
+
 #endif /* VFS_VAR_ARRAY_H */
