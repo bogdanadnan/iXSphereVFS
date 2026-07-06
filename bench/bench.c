@@ -666,10 +666,18 @@ static int bench_seqwrite(vfs_t* vfs, int count, int threads, const char* path) 
 }
 
 /* ---------------------------------------------------------------------------
- * Workload: randread — random page reads from a pre-populated file.
- * Pre-populates `file_pages` pages via seqwrite, then randomly reads `count`
- * pages measuring per-read latency and cache hit rate.  Reads at least 2×
- * the cache capacity (estimated from count) to force compulsory misses.
+ * Workload: randread — random page reads from a single pre-populated file.
+ *
+ * The file is sized at exactly 2× the cache capacity so the cache can only
+ * hold half the file, producing a measurable mix of cache hits and misses.
+ *
+ * Cold-cache behavior: the file is fully written, then closed and reopened,
+ * clearing all in-memory cached pages (the VFS is not persisted between
+ * mount/unmount, so all pages are cold on the second open).
+ *
+ * Each read picks a truly random page from [0, file_pages), independent of
+ * previous reads.  Data-cache hit tracking reports how many page reads
+ * were served from the data cache versus from storage.
  * --------------------------------------------------------------------------- */
 
 static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) {
@@ -678,10 +686,12 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     const int page_sz = vfs->ctx->page_size;
     int64_t cache_cap = vfs_cache_get_max_entries(vfs->ctx->sb);
 
-    /* File is 2× cache capacity.  Reads exceed file size to mix hits/misses. */
-    int reads_needed = count > 0 ? count : (int)(2 * cache_cap);
-    int file_pages = reads_needed;
-    if (file_pages > 65536) file_pages = 65536;
+    /* File is 2× cache capacity so the cache holds at most half the data */
+    int file_pages = (int)(2 * cache_cap);
+    if (file_pages < 1024) file_pages = 1024;  /* minimum reasonable size */
+
+    /* Number of read operations — independent of file size */
+    int reads_needed = count > 0 ? count : file_pages;
 
     /* ── Pre-populate (untimed) ── */
     int writes_ok = 0;
@@ -718,10 +728,11 @@ static int bench_randread(vfs_t* vfs, int count, int threads, const char* path) 
     int ok = 0;
     unsigned rseed = 42;
     for (int i = 0; i < reads_needed; i++) {
+        double op_t0 = now_sec();
         int64_t offset = (int64_t)(rand_r(&rseed) % (unsigned)file_pages) * page_sz;
         int r = vfs_read(vfs, fvp, buf, offset, page_sz, 0);
         if (r == page_sz) ok++;
-        lat_record(now_sec() - t0);
+        lat_record(now_sec() - op_t0);
     }
     double elapsed = now_sec() - t0;
     free(buf);
