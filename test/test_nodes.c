@@ -747,6 +747,10 @@ static void test_name_read_full_roundtrip_short(void) {
         int n = nodes_write_name(pool, "", &vp);
         CHECK_EQ(n, 0);
         CHECK_EQ(vp, VFS_VPTR_NULL);
+        char buf[8];
+        int len = nodes_read_name(pool, vp, buf, sizeof(buf));
+        CHECK_EQ(len, 0);
+        CHECK_EQ(buf[0], '\0');
     }
 
     /* 1 byte */
