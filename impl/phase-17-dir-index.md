@@ -134,16 +134,33 @@ if (stored_hash != query_hash) continue;          // fast reject
 // Only on match: walk full name chain and strcmp
 ```
 
-### Invalidation
+### Incremental Updates (No Invalidation)
 
-On create, delete, rename:
-- If the directory has a built cache (entry_count ≥ 64): invalidate it
-  (`built = false`). The next access rebuilds.
-- If the directory is below 64 entries: no cache to invalidate.
-  The chain walk handles the update naturally.
+On create: `var_array_append(cache, entry)` — add new entry.
+On delete: `var_array_update` to set `tombstone = true`.
+On rename: find old entry by name_hash, update `name_hash` and/or `child_vp`.
 
-On GC: `gc_generation` mismatch invalidates all caches for directories
-whose pool pages were rebuilt.
+Entries are never removed — the VarArray grows monotonically like the chain.
+Deletes mark tombstones. GC undoes the growth by invalidating the whole cache.
+
+## Multi-Thread Safety
+
+Each thread has its OWN cache. Thread B may have a stale cache after thread A
+mutates the directory. This is self-healing:
+
+1. Thread B's cache has an entry for a file thread A just deleted.
+2. Thread B's lookup finds the entry (hash match, tombstone=false).
+3. Thread B verifies the full name against the chain — discovers the
+   tombstone (DirContent with namePtr=0 at higher epoch).
+4. Thread B updates its cache: sets `tombstone = true`.
+
+Same for creates: thread B doesn't find the file in its cache → falls through
+to chain walk → finds it → appends to its cache. Next lookup is O(1).
+
+**No locks, no invalidation, no broadcasts.** The DirContent chain is the
+synchronization point. The cache is a lazy snapshot that self-corrects on
+chain verification. Threads working on DIFFERENT directories have zero
+contention (separate caches, separate chains).
 
 ## When to Build
 
