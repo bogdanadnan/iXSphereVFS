@@ -66,5 +66,9 @@ add_executable(test_gc test/test_gc.c)
 target_link_libraries(test_gc ixsphere_vfs pthread)
 add_test(NAME test_gc COMMAND test_gc)
 
+add_executable(test_var_array test/test_var_array.c)
+target_link_libraries(test_var_array ixsphere_vfs pthread)
+add_test(NAME test_var_array COMMAND test_var_array)
+
 add_executable(vfs_bench bench/bench.c)
 target_link_libraries(vfs_bench ixsphere_vfs pthread)
