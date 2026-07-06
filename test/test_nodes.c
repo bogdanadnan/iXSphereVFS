@@ -709,6 +709,34 @@ static void test_name_hash_compute_long(void) {
     CHECK(h2 != h);
 }
 
+static void test_name_read_hash(void) {
+    Pool* pool = name_setup();
+    CHECK(pool != NULL);
+
+    /* Short name: write "foo", read hash, verify it matches compute */
+    int64_t first_vp;
+    int n = nodes_write_name(pool, "foo", &first_vp);
+    CHECK_EQ(n, 1);
+    CHECK(first_vp != VFS_VPTR_NULL);
+
+    uint64_t h_read = nodes_read_name_hash(pool, first_vp);
+    CHECK_EQ(h_read, name_hash_compute("foo", 3));
+
+    /* Long name: 24 bytes, write + read hash */
+    const char* long_name = "a-very-long-filename.txt";
+    int long_len = (int)strlen(long_name);
+    CHECK_EQ(long_len, 24);
+    int64_t first_vp2;
+    int n2 = nodes_write_name(pool, long_name, &first_vp2);
+    CHECK_EQ(n2, 2);  /* 16 + 8 → 2 slots */
+    CHECK(first_vp2 != VFS_VPTR_NULL);
+
+    uint64_t h_long = nodes_read_name_hash(pool, first_vp2);
+    CHECK_EQ(h_long, name_hash_compute(long_name, long_len));
+
+    name_teardown(pool);
+}
+
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
@@ -744,6 +772,7 @@ int main(void) {
 
     test_name_hash_compute_basic();
     test_name_hash_compute_long();
+    test_name_read_hash();
 
     test_zero_slot_safety();
 
