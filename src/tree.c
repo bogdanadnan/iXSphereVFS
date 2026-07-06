@@ -22,9 +22,6 @@ int tree_resolve_page_cache_builds_get(void) {
 
 #ifdef VFS_NAME_HASH_TESTING
 static int s_hash_rejects = 0;
-int tree_dirchain_hash_rejects_get(void) {
-    return s_hash_rejects;
-}
 void dirchain_test_reset_hash_rejects(void) {
     s_hash_rejects = 0;
 }

@@ -53,7 +53,6 @@ int tree_resolve_page_cache_builds_get(void);
 
 #ifdef VFS_NAME_HASH_TESTING
 /* Debug counter: number of hash-based name rejections in DirContent walks. */
-int tree_dirchain_hash_rejects_get(void);
 void dirchain_test_reset_hash_rejects(void);
 int dirchain_test_get_hash_rejects(void);
 #endif
