@@ -89,6 +89,10 @@ int var_array_grow_base(VarArrayBase* a);
  * The returned pointer is valid until the next grow. */
 void* var_array_resolve_base(VarArrayBase* a, int idx);
 
+#ifdef VFS_VAR_ARRAY_TESTING
+int var_array_root_height_for_test(VarArrayBase* a);
+#endif
+
 /* ---------------------------------------------------------------------------
  * Typed convenience macro — layout-compatible with VarArrayBase* because
  * the first three members (root pointer, chunk_size, count) have identical

@@ -247,6 +247,35 @@ static void test_var_array_root_promotion_to_level_1(void) {
     var_array_delete(arr);
 }
 
+static void test_var_array_multi_level_growth(void) {
+    /* chunk_size=16: level-1→256 entries, level-2→4096 entries */
+    VarArrayBase* a = var_array_new_base(sizeof(int), 16);
+    CHECK(a != NULL);
+
+    /* Append 257 entries — forces level-2 root (16²=256 < 257 ≤ 16³=4096) */
+    for (int i = 0; i < 257; i++) {
+        int idx = var_array_grow_base(a);
+        CHECK_EQ(idx, i);
+        VarArrayChunk* chunk = (VarArrayChunk*)var_array_resolve_base(a, idx);
+        CHECK(chunk != NULL);
+        ((int*)chunk->entries)[idx % a->chunk_size] = i * 10;
+    }
+    CHECK_EQ(a->count, 257);
+
+    /* Verify root height == 2 */
+    int h = var_array_root_height_for_test(a);
+    CHECK_EQ(h, 2);
+
+    /* All 257 retrievable */
+    for (int i = 0; i < 257; i++) {
+        VarArrayChunk* ch = (VarArrayChunk*)var_array_resolve_base(a, i);
+        CHECK(ch != NULL);
+        CHECK_EQ(((int*)ch->entries)[i % a->chunk_size], i * 10);
+    }
+
+    var_array_delete_base(a);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -260,6 +289,7 @@ int main(void) {
     test_var_array_basic();
     test_var_array_chunk_capacity();
     test_var_array_root_promotion_to_level_1();
+    test_var_array_multi_level_growth();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

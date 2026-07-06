@@ -63,6 +63,14 @@ static void free_recursive(void* node, int height, int chunk_size) {
     free(node);
 }
 
+#ifdef VFS_VAR_ARRAY_TESTING
+/* Test-only: return the height of the root node. */
+int var_array_root_height_for_test(VarArrayBase* a) {
+    if (!a || !a->root) return -1;
+    return height_of(a->root);
+}
+#endif
+
 /* ---------------------------------------------------------------------------
  * Public API
  * --------------------------------------------------------------------------- */
