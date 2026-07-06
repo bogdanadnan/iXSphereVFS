@@ -74,5 +74,9 @@ add_test(NAME test_var_array COMMAND test_var_array)
 set_source_files_properties(test/test_tree.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING")
 set_source_files_properties(test/test_var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -Wno-incompatible-pointer-types -fno-strict-aliasing")
 
+add_executable(test_crash test/test_crash.c)
+target_link_libraries(test_crash ixsphere_vfs pthread)
+add_test(NAME test_crash COMMAND test_crash)
+
 add_executable(vfs_bench bench/bench.c)
 target_link_libraries(vfs_bench ixsphere_vfs pthread)
