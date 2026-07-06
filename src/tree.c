@@ -120,15 +120,6 @@ int tree_init(TreeContext* ctx) {
     int err = tree_superblock_read(ctx);
     if (err != VFS_OK) return err;
 
-    /* Migrate v1 files to v2 (adds pageIndex to PageNodes) */
-    if (ctx->formatVersion < 2) {
-        err = tree_migrate_v1_to_v2(ctx);
-        if (err != VFS_OK) return err;
-        ctx->formatVersion = 2;
-        err = tree_superblock_write(ctx);
-        if (err != VFS_OK) return err;
-    }
-
     /* Verify root DirNode */
     if (ctx->rootNodeOffset == 0) return VFS_ERR_IO;
 
@@ -183,17 +174,6 @@ int tree_init(TreeContext* ctx) {
  * Migration: walk a directory, recursively migrate child files' PageNodes
  * to v2 (write pageIndex into each PageNode at offset 16).
  * --------------------------------------------------------------------------- */
-
-int tree_migrate_v1_to_v2(TreeContext* ctx) {
-    /* NOTE: this migration walks every FileContent→PageNode chain in the
-     * entire filesystem tree.  No progress indication is provided — for very
-     * large trees the first open after upgrade may be noticeably slow.  The
-     * operation is idempotent (rewriting the same pageIndex values) so a
-     * partial run followed by a crash is safe — the next mount will re-run
-     * the full migration. */
-    if (!ctx) return VFS_ERR_IO;
-    return tree_migrate_walk_dir(ctx, ctx->rootNodeOffset);
-}
 
 int tree_migrate_walk_dir(TreeContext* ctx, int64_t dir_vp) {
     if (!ctx || dir_vp <= 0) return VFS_ERR_IO;

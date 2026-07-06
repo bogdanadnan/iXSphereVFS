@@ -52,11 +52,6 @@ int tree_superblock_write(TreeContext* ctx);
  * Format migration
  * --------------------------------------------------------------------------- */
 
-/* Migrate a v1 file (PageNodes without pageIndex) to v2 (with pageIndex).
- * Walks all FileContent→PageNode chains and writes the correct pageIndex
- * into each PageNode.  Returns VFS_OK on success, or a negative error code. */
-int tree_migrate_v1_to_v2(TreeContext* ctx);
-
 /* Recursively walk a directory tree, writing pageIndex into all PageNodes.
  * Called by tree_migrate_v1_to_v2 starting from the root directory. */
 int tree_migrate_walk_dir(TreeContext* ctx, int64_t dir_vp);
