@@ -347,7 +347,7 @@ uint64_t nodes_read_name_hash(Pool* pool, int64_t namePtr) {
     return h;
 }
 
-#ifndef NDEBUG
+#ifdef VFS_NAME_HASH_TESTING
 /* Test-only: write a name with a pre-determined hash value (for collision tests).
  * Otherwise identical to nodes_write_name. */
 int nodes_write_name_with_hash(Pool* pool, const char* utf8_name, uint64_t hash,

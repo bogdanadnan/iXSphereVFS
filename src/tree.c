@@ -15,12 +15,15 @@
 #ifndef NDEBUG
 #include <stdatomic.h>
 static atomic_int tree_resolve_page_cache_builds = 0;
-static atomic_int s_hash_rejects = 0;
 int tree_resolve_page_cache_builds_get(void) {
     return atomic_load(&tree_resolve_page_cache_builds);
 }
+#endif
+
+#ifdef VFS_NAME_HASH_TESTING
+static int s_hash_rejects = 0;
 int tree_dirchain_hash_rejects_get(void) {
-    return atomic_load(&s_hash_rejects);
+    return s_hash_rejects;
 }
 #endif
 
@@ -625,8 +628,8 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
             /* Hash fast-reject: skip strcmp if hashes don't match */
             uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
             if (entry_hash != target_hash) {
-#ifndef NDEBUG
-            atomic_fetch_add(&s_hash_rejects, 1);
+#ifdef VFS_NAME_HASH_TESTING
+            s_hash_rejects++;
 #endif
             walk_vp = ce_next; continue; }
             /* Read the name and compare */
@@ -730,8 +733,8 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         if (ce == (uint32_t)epoch && np != 0) {
             uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
             if (entry_hash != target_hash) {
-#ifndef NDEBUG
-            atomic_fetch_add(&s_hash_rejects, 1);
+#ifdef VFS_NAME_HASH_TESTING
+            s_hash_rejects++;
 #endif
             walk_vp = nx; continue; }
             char entry_name[256];
@@ -868,8 +871,8 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         if (np != 0 && ce <= (uint32_t)epoch) {
             uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
             if (entry_hash != target_hash) {
-#ifndef NDEBUG
-            atomic_fetch_add(&s_hash_rejects, 1);
+#ifdef VFS_NAME_HASH_TESTING
+            s_hash_rejects++;
 #endif
             walk_vp = nx; continue; }
             char en[256];
@@ -1251,8 +1254,8 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                 /* Hash fast-reject: skip strcmp if hashes don't match */
                 uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
                 if (entry_hash != target_hash) {
-#ifndef NDEBUG
-                atomic_fetch_add(&s_hash_rejects, 1);
+#ifdef VFS_NAME_HASH_TESTING
+                s_hash_rejects++;
 #endif
                 walk_vp = ce_next; continue; }
                 char entry_name[256];

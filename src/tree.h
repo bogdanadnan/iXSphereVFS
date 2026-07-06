@@ -49,6 +49,9 @@ int tree_superblock_write(TreeContext* ctx);
 #ifndef NDEBUG
 /* Debug counter: number of tcache rebuilds from sparse chain. */
 int tree_resolve_page_cache_builds_get(void);
+#endif
+
+#ifdef VFS_NAME_HASH_TESTING
 /* Debug counter: number of hash-based name rejections in DirContent walks. */
 int tree_dirchain_hash_rejects_get(void);
 #endif

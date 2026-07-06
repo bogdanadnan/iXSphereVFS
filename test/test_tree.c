@@ -1679,7 +1679,7 @@ static void test_sparse_concurrent_insert(void) {
     vfs_unmount(vfs);
 }
 
-#ifndef NDEBUG
+#ifdef VFS_NAME_HASH_TESTING
 static void test_dirchain_find_child_hash_fast_reject(void) {
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
@@ -1709,7 +1709,7 @@ static void test_dirchain_find_child_hash_fast_reject(void) {
 }
 #endif
 
-#ifndef NDEBUG
+#ifdef VFS_NAME_HASH_TESTING
 static void test_dirchain_find_child_collision_tolerance(void) {
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
@@ -1912,7 +1912,7 @@ int main(void) {
     unlink(test_path);
     test_sparse_concurrent_insert();
 
-#ifndef NDEBUG
+#ifdef VFS_NAME_HASH_TESTING
     unlink(test_path);
     test_dirchain_find_child_hash_fast_reject();
     unlink(test_path);

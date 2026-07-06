@@ -26,6 +26,8 @@ add_library(ixsphere_vfs STATIC
 )
 
 set_source_files_properties(src/var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -fno-strict-aliasing")
+set_source_files_properties(src/tree.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING")
+set_source_files_properties(src/nodes.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING")
 
 target_include_directories(ixsphere_vfs PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -69,6 +71,7 @@ add_test(NAME test_gc COMMAND test_gc)
 add_executable(test_var_array test/test_var_array.c)
 target_link_libraries(test_var_array ixsphere_vfs pthread)
 add_test(NAME test_var_array COMMAND test_var_array)
+set_source_files_properties(test/test_tree.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING")
 set_source_files_properties(test/test_var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -Wno-incompatible-pointer-types -fno-strict-aliasing")
 
 add_executable(vfs_bench bench/bench.c)
