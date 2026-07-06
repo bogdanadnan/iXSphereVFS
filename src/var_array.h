@@ -95,4 +95,8 @@ void* var_array_resolve_base(VarArrayBase* a, int idx);
  * --------------------------------------------------------------------------- */
 #define VarArray(T) struct { T* root; int chunk_size; volatile int count; }*
 
+/* Typed accessor for chunk entries — layout-compatible with VarArrayChunk*
+ * because height is the first field and entries is the second. */
+#define VarArrayChunk_T(T) struct { volatile int height; T* entries; }
+
 #endif /* VFS_VAR_ARRAY_H */
