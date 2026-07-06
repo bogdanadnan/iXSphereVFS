@@ -1181,6 +1181,11 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
     if (!ctx || !name || name[0] == '\0') return VFS_ERR_IO;
     if (!out_childPtr || !out_nodeId) return VFS_ERR_IO;
 
+    /* Pre-compute hash for fast-reject: skip expensive strcmp when hashes
+     * don't match.  The hash is stored in the first NameEntry slot at
+     * offset 0 and read via nodes_read_name_hash. */
+    uint64_t target_hash = name_hash_compute(name, (int)strlen(name));
+
     uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
     if (!dir_slot) return VFS_ERR_NOTFOUND;
     if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
@@ -1217,6 +1222,9 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
         if (eff_epoch > best_eff_epoch || (int64_t)ce_child != best_child ||
             (ce_namePtr != 0 && best_name_match == 0 && eff_epoch > best_eff_epoch)) {
             if (ce_namePtr != 0) {
+                /* Hash fast-reject: skip strcmp if hashes don't match */
+                uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
+                if (entry_hash != target_hash) { walk_vp = ce_next; continue; }
                 char entry_name[256];
                 int nl = nodes_read_name(&ctx->pool, ce_namePtr,
                                           entry_name, (int)sizeof(entry_name));
