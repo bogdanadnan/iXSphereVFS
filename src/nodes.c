@@ -239,36 +239,52 @@ int nodes_write_name(Pool* pool, const char* utf8_name, int64_t* first_slot_vp) 
     }
 
     size_t total_len = strlen(utf8_name);
-    int slots_needed = (int)((total_len + NAMEENTRY_DATA_SIZE - 1) / NAMEENTRY_DATA_SIZE);
+    /* First slot: up to NAMEENTRY_FIRST_SLOT_NAME_MAX (16) bytes of name.
+     * Chain slots: up to NAMEENTRY_DATA_SIZE (24) bytes each. */
+    int slots_needed;
+    if (total_len <= (size_t)NAMEENTRY_FIRST_SLOT_NAME_MAX) {
+        slots_needed = 1;
+    } else {
+        slots_needed = 1 + (int)((total_len - NAMEENTRY_FIRST_SLOT_NAME_MAX
+                                  + NAMEENTRY_DATA_SIZE - 1) / NAMEENTRY_DATA_SIZE);
+    }
+
+    uint64_t hash = name_hash_compute(utf8_name, (int)total_len);
     int64_t next_vp = 0;
 
     /* Allocate slots in reverse order (last slot first) */
     for (int i = slots_needed - 1; i >= 0; i--) {
         int64_t vp = pool_alloc(pool);
         if (vp == VFS_VPTR_NULL) {
-            /* Allocation failure — partial chain may exist */
             *first_slot_vp = VFS_VPTR_NULL;
             return 0;
         }
-
         uint8_t* slot_data = pool_resolve(pool, vp);
         if (!slot_data) {
             *first_slot_vp = VFS_VPTR_NULL;
             return 0;
         }
 
-        size_t offset = (size_t)i * NAMEENTRY_DATA_SIZE;
-        size_t chunk = total_len - offset;
-        if (chunk > NAMEENTRY_DATA_SIZE)
-            chunk = NAMEENTRY_DATA_SIZE;
-
         uint8_t buf[NAMEENTRY_DATA_SIZE] = {0};
-        memcpy(buf, utf8_name + offset, chunk);
+        if (i == 0) {
+            /* First slot: [8-byte hash][up to 16 bytes of name] */
+            memcpy(buf, &hash, sizeof(hash));
+            size_t first_chunk = total_len;
+            if (first_chunk > NAMEENTRY_FIRST_SLOT_NAME_MAX)
+                first_chunk = NAMEENTRY_FIRST_SLOT_NAME_MAX;
+            memcpy(buf + 8, utf8_name, first_chunk);
+        } else {
+            /* Chain slot: [up to 24 bytes of name], starting after first slot's portion */
+            size_t offset = NAMEENTRY_FIRST_SLOT_NAME_MAX + (size_t)(i - 1) * NAMEENTRY_DATA_SIZE;
+            size_t chunk = total_len - offset;
+            if (chunk > NAMEENTRY_DATA_SIZE)
+                chunk = NAMEENTRY_DATA_SIZE;
+            memcpy(buf, utf8_name + offset, chunk);
+        }
         nodes_write_name_entry(slot_data, buf, next_vp, pool->sb->page_size);
 
         if (i == 0)
             *first_slot_vp = vp;
-
         next_vp = vp;
     }
 
@@ -283,14 +299,25 @@ int nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_le
 
     int total = 0;
     int64_t vp = first_slot_vp;
+    int slot_idx = 0;
 
     while (vp != VFS_VPTR_NULL && total < max_len - 1) {
         uint8_t* slot_data = pool_resolve(pool, vp);
         if (!slot_data) break;
 
-        /* Copy up to NAMEENTRY_DATA_SIZE bytes, stopping at first null */
-        for (int i = 0; i < NAMEENTRY_DATA_SIZE && total < max_len - 1; i++) {
-            uint8_t byte = slot_data[i];
+        size_t data_off, data_len;
+        if (slot_idx == 0) {
+            /* First slot: skip 8-byte hash, read up to NAMEENTRY_FIRST_SLOT_NAME_MAX */
+            data_off = 8;
+            data_len = NAMEENTRY_FIRST_SLOT_NAME_MAX;
+        } else {
+            /* Chain slot: full NAMEENTRY_DATA_SIZE bytes of name */
+            data_off = 0;
+            data_len = NAMEENTRY_DATA_SIZE;
+        }
+
+        for (size_t i = 0; i < data_len && total < max_len - 1; i++) {
+            uint8_t byte = slot_data[data_off + i];
             if (byte == 0) {
                 out_buf[total] = '\0';
                 return total;
@@ -299,6 +326,7 @@ int nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_le
         }
 
         vp = vfs_rd8_s(slot_data, NAMEENTRY_OFF_NEXTPTR, pool->sb->page_size);
+        slot_idx++;
     }
 
     out_buf[total] = '\0';

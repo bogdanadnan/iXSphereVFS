@@ -511,7 +511,7 @@ static void test_nameentry_24byte(void) {
 
     int64_t first_vp;
     int n = nodes_write_name(pool, "abcdefghijklmnopqrstuvwx", &first_vp);
-    CHECK_EQ(n, 1);
+    CHECK_EQ(n, 2);  /* 16 bytes in first slot + 8 in chain slot */
 
     char buf[64];
     int len = nodes_read_name(pool, first_vp, buf, sizeof(buf));
@@ -524,13 +524,13 @@ static void test_nameentry_48byte(void) {
     Pool* pool = name_setup();
     CHECK(pool != NULL);
 
-    /* Exactly 48 bytes = 2 full slots */
+    /* Exactly 48 bytes = 3 slots: 16 in first + 24 + 8 in chain slots */
     const char* name48 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV";
     CHECK_EQ(strlen(name48), 48);
 
     int64_t first_vp;
     int n = nodes_write_name(pool, name48, &first_vp);
-    CHECK_EQ(n, 2);
+    CHECK_EQ(n, 3);
     CHECK(first_vp != VFS_VPTR_NULL);
 
     char buf[128];
