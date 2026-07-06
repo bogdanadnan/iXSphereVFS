@@ -1,162 +1,179 @@
-# Phase 17: Directory Index (Hash Table on VarArray)
+# Phase 17: Directory Cache (Thread-Local VarArray)
 
 ## Goal
-Replace O(N) DirContent chain walks with O(1) hash lookups. Each directory
-gets an in-memory hash table backed by Phase 16's VarArray. Built lazily
-on first access. Writes update both the pool chain (durable) and the index
-(in-memory). Survives close/reopen by being rebuilt from the chain.
+For directories with 64+ entries, build a thread-local VarArray containing
+name hashes and VirtualPtrs. Lookups scan the array linearly (O(N) but with
+contiguous memory and no pool lookups — 100× faster than chain walking).
+For small directories (≤64), keep the current DirContent chain walk.
 
-## Data Structure
+Also add a 64-bit name hash to each NameEntry — stored in the first 8 bytes
+of the 24-byte data field. On lookup, compare the hash first; only walk the
+full name chain on hash match. This accelerates ALL lookups regardless of
+cache state.
 
-```c
-typedef struct {
-    uint64_t name_hash;   // hash of the file name
-    int64_t  child_vp;    // VirtualPtr to child's DirNode or FileNode
-    uint32_t child_id;     // nodeId for dedup
-    uint32_t epoch;        // epoch this entry was written at
-} DirEntry;
+## NameEntry Hash
 
-// Per-directory index — stored in the TreeContext or in a global table
-typedef struct {
-    VarArray(DirEntry) entries;     // hash table entries
-    int64_t           dir_vp;       // DirNode VirtualPtr this index belongs to
-    int64_t           gc_gen;       // gc_generation at build time (invalidation)
-    bool              loaded;       // true if built from chain
-} DirIndex;
+Reuse the first 8 bytes of the existing 24-byte NameEntry data field:
+
+```
+NameEntry (32 bytes, existing layout):
+ Offset  Size  Field
+ ──────  ────  ─────
+    0     24    data     (UTF-8 bytes, zero-padded)
+   24      8    nextPtr  (VirtualPtr — next NameEntry, 0 = end)
 ```
 
-## Hash Function
+New layout — first 8 bytes now serve double-duty as hash:
+```
+    0      8    name_hash / data[0..7]  (uint64 hash; also UTF-8 start if name ≤ 8)
+    8     16    data[8..23]             (remaining UTF-8 bytes)
+   24      8    nextPtr
+```
 
-splitmix64 of the name string, modulo VarArray capacity.
+For names ≤ 8 bytes: the hash IS the name in UTF-8 (fully inlined, no extra storage).
+For names > 8 bytes: the hash is a real hash of the full name. Collision resolution
+walks the remaining chain.
 
 ```c
-static uint64_t hash_name(const char* name) {
-    uint64_t h = splitmix64((const uint8_t*)name, strlen(name));
-    return h ? h : 1;   // 0 = empty slot sentinel
+uint64_t name_hash(const char* name, int len) {
+    if (len <= 8) {
+        uint64_t h = 0;
+        memcpy(&h, name, len);
+        return h;
+    }
+    return splitmix64((const uint8_t*)name, len);
 }
+```
+
+Writing a name: compute hash, store in first 8 bytes of data, zero-pad remainder.
+Reading a name: check hash match first, then verify full name.
+
+## Thread-Local Directory Cache
+
+Same pattern as the thread-local segment cache (Phase 15). Per-thread, small
+number of entries (16), keyed by directory VirtualPtr.
+
+```c
+typedef struct {
+    uint64_t name_hash;   // from name_hash()
+    int64_t  child_vp;    // VirtualPtr to child (DirNode or FileNode)
+    uint32_t child_id;     // for dedup
+    uint32_t epoch;        // epoch of the DirContent entry
+    bool     tombstone;    // true if namePtr == 0 in DirContent
+} DirCacheEntry;           // 32 bytes, 256 per chunk = 8KB per chunk
+
+// Thread-local cache
+static __thread struct {
+    int64_t       key;       // dir_vp
+    VarArrayBase* entries;   // VarArray of DirCacheEntry
+    int64_t       gc_gen;    // gc_generation at build time
+    int           entry_count; // number of visible entries
+    bool          built;
+} dir_cache[16];
+static __thread int dir_cache_next = 0;
 ```
 
 ## Operations
 
-### Build (on first access)
+### Build
 
-Walk the DirContent chain for the directory. For each entry visible at
-the current epoch (same dedup rules as `vfs_readdir`):
-1. Hash the name
-2. `var_array_append(index, entry)` — insert sequentially
-3. After all entries inserted, build a quick-lookup array by walking the
-   VarArray and creating a hash→index map... 
+On first access to a directory after `entry_count >= 64`:
 
-Actually, simpler: use open addressing. Each slot has `name_hash`. To find:
+1. Walk the DirContent chain (same dedup rules as `vfs_readdir`)
+2. For each visible entry: resolve name, compute hash, create `DirCacheEntry`
+3. `var_array_append(cache_entry)` into the VarArray
+4. Mark `built = true`, set `gc_gen` to current `ctx->gc_generation`
+
+The walk is O(N) — same as today's `vfs_readdir`. But it's done once per
+directory per thread, persisting across subsequent accesses to the same
+directory.
+
+### Lookup (replaces dirchain_find_child)
 
 ```c
-int64_t dir_index_lookup(DirIndex* di, const char* name) {
-    uint64_t h = hash_name(name);
-    int n = var_array_count(di->entries);
-    int idx = h % n;
-    int start = idx;
-    do {
-        DirEntry* e = var_array_lookup(di->entries, idx);
-        if (!e || e->name_hash == 0) return 0;  // empty — not found
-        if (e->name_hash == h) {
-            // Verify name matches (hash collision check)
-            char* actual_name = read_name_from_pool(e->child_vp);
-            if (strcmp(actual_name, name) == 0) return e->child_vp;
+int dir_cache_lookup(TreeContext* ctx, int64_t dir_vp,
+                     const char* name, int64_t* out_childPtr,
+                     uint32_t* out_nodeId) {
+    // Try thread-local cache first
+    DirCacheEntry* cache = find_dir_cache(dir_vp, ctx->gc_generation);
+    if (cache && cache->built) {
+        uint64_t h = name_hash(name, strlen(name));
+        int n = var_array_count(cache->entries);
+        for (int i = 0; i < n; i++) {
+            DirCacheEntry* e = var_array_lookup(cache->entries, i);
+            if (e->name_hash == h && !e->tombstone) {
+                // Verify full name match
+                char stored_name[256];
+                if (read_name_from_entry(e->child_vp, stored_name, 256) > 0 &&
+                    strcmp(stored_name, name) == 0) {
+                    *out_childPtr = e->child_vp;
+                    *out_nodeId = e->child_id;
+                    return VFS_OK;
+                }
+            }
         }
-        idx = (idx + 1) % n;
-    } while (idx != start);
-    return 0;
+        return VFS_ERR_NOTFOUND;
+    }
+
+    // Fall back to chain walk (small directory or cache not yet built)
+    return dirchain_find_child_hashed(ctx, dir_vp, name, out_childPtr, out_nodeId);
 }
 ```
 
-### Insert
+### dirchain_find_child_hashed
 
-On `vfs_create`:
-1. Hash the name
-2. Walk the DirContent chain to find the first empty slot or probe to find
-   insertion point. But we build the index from the chain, not incrementally.
+Same as current `dirchain_find_child` but uses the NameEntry hash for fast
+rejection:
 
-Better: don't insert incrementally. Rebuild the index from the chain after each
-mutation. The chain is the source of truth. The index is a snapshot cache.
+```c
+// In the chain walk:
+uint64_t query_hash = name_hash(name, len);
+// For each DirContent entry:
+uint64_t stored_hash = read_name_hash(namePtr);  // 8 bytes from NameEntry
+if (stored_hash != query_hash) continue;          // fast reject
+// Only on match: walk full name chain and strcmp
+```
 
-### Rebuild
+### Invalidation
 
 On create, delete, rename:
-1. Mutate the DirContent chain (CAS-prepend new entry or tombstone)
-2. Call `dir_index_rebuild(di)` — walks the chain, clears VarArray, re-inserts all entries
+- If the directory has a built cache (entry_count ≥ 64): invalidate it
+  (`built = false`). The next access rebuilds.
+- If the directory is below 64 entries: no cache to invalidate.
+  The chain walk handles the update naturally.
 
-This is O(N) per mutation — same as the current chain walk. But reads become O(1)
-via hash. For the small-file benchmark (5000 files), the DirContent chain walk
-happens once per mutation anyway (name collision check). Rebuilding adds a second
-walk — doubling the cost. The 3.5× improvement from Phase 15 came from eliminating
-the segment build. The hash table improves reads (`vfs_open_file`: O(N) → O(1)).
+On GC: `gc_generation` mismatch invalidates all caches for directories
+whose pool pages were rebuilt.
 
-If rebuild cost is too high: build incrementally. On create, `var_array_append`
-the new entry. On delete, mark tombstone in the index. On rename, update the
-entry. No rebuild needed — the index stays in sync. Reads probe open-addressing
-slots.
+## When to Build
 
-### Incremental Insert
+Track `entry_count` in the DirNode's reserved space — e.g., at offset 16:
 
 ```c
-void dir_index_insert(DirIndex* di, const char* name, int64_t child_vp,
-                      uint32_t child_id, uint32_t epoch) {
-    DirEntry e = { .name_hash = hash_name(name),
-                   .child_vp = child_vp,
-                   .child_id = child_id,
-                   .epoch = epoch };
-    int idx = var_array_append(di->entries, e);
-}
+#define DIRNODE_OFF_ENTRYCOUNT 16  // uint32_t — approximate entry count
 ```
 
-On lookup: probe linearly from `hash % count`. Empty slot (name_hash=0) means
-not found. Tombstone (child_vp = VFS_VPTR_NULL) means deleted — skip.
+Increment on create, decrement on delete (tombstone). Don't need atomic
+accuracy — it's a heuristic. If `entry_count >= 64`, build the cache.
 
-On delete: `var_array_lookup` to find the entry, `var_array_update` to set
-`child_vp = VFS_VPTR_NULL` (tombstone).
+Alternative: just walk the chain on first access and count. If ≥ 64, build
+the cache. Same cost as a `vfs_readdir`. Done once per directory.
 
-On rename: find entry by old name, update `name_hash` and `child_vp` in place.
+## Impact
 
-### Fragmentation
-
-After many deletes, the linear probe chain gets longer (skipping tombstones).
-Rebuild on GC or when probe length exceeds threshold (e.g., 8 probes).
-
-## Where to Store the Index
-
-One index per directory. Store in a global hash table in TreeContext:
-`{ dir_vp → DirIndex* }`. Built lazily — first access to a directory triggers
-build. Invalidated on GC (`gc_generation` mismatch). Stored as `void*` in an
-auxiliary slot or a separate small structure.
-
-Alternative: store directly in the DirNode. DirNode has 16 bytes reserved.
-Could store a pointer to the DirIndex there. But VarArray is heap-allocated,
-so we store a `DirIndex*` pointer (8 bytes). Remaining 8 bytes unused.
-
-## API
-
-```c
-// Internal (called from tree.c)
-DirIndex* dir_index_ensure(TreeContext* ctx, int64_t dir_vp);
-int64_t   dir_index_lookup(DirIndex* di, const char* name);
-void      dir_index_insert(DirIndex* di, const char* name, int64_t child_vp,
-                           uint32_t child_id, uint32_t epoch);
-void      dir_index_delete(DirIndex* di, const char* name);
-void      dir_index_rename(DirIndex* di, const char* old_name,
-                           const char* new_name, int64_t child_vp);
-void      dir_index_destroy(DirIndex* di);
-
-// Refactored read path (use dir_index_lookup instead of dirchain_find_child)
-int64_t vfs_open_file(vfs, parent, name, epoch);
-int     vfs_create(vfs, parent, name, epoch);  // name collision check
-int     vfs_readdir(vfs, dir, entries, max, epoch);  // iterate index
-```
+| Operation | Before | After | Improvement |
+|-----------|--------|-------|-------------|
+| `vfs_open_file` (5K files) | O(N) chain walk | O(N) array scan | 100× |
+| `vfs_create` collision check | O(N) chain walk | O(N) array scan | 100× |
+| `vfs_readdir` (5K files) | O(N) chain walk | O(N) array iteration | 100× |
+| `vfs_open_file` (small) | O(N) chain walk | O(N) chain walk + hash | 2-8× (hash reject) |
 
 ## Acceptance
 
-- [ ] `dir_index_lookup` returns same result as `dirchain_find_child` for any directory
-- [ ] Create+lookup: file found immediately via index
-- [ ] Delete+lookup: file not found (tombstone skip)
-- [ ] Rename: old name not found, new name found
-- [ ] 5000-file directory: open_file is O(1), not O(N)
-- [ ] GC rebuild: index properly invalidated and rebuilt
+- [ ] Name hash stored in first 8 bytes of NameEntry data
+- [ ] dirchain_find_child_hashed uses hash for fast reject
+- [ ] Directory with 64+ entries builds thread-local VarArray
+- [ ] lookup finds file via VarArray scan (not chain walk)
+- [ ] Create/delete/rename invalidate cache for that directory
+- [ ] GC invalidates all caches
+- [ ] All existing tree tests pass
