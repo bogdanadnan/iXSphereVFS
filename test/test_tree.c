@@ -1702,8 +1702,8 @@ static void test_dirchain_find_child_hash_fast_reject(void) {
     CHECK_EQ(ret, VFS_OK);
 
     int rejects = tree_dirchain_hash_rejects_get() - rejects_before;
-    /* Most non-matching entries should be rejected by hash alone */
-    CHECK(rejects >= 1);
+    /* ≥90 of 99 non-matching entries should be rejected by hash alone */
+    CHECK(rejects >= 90);
 
     vfs_unmount(vfs);
 }
