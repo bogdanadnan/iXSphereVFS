@@ -1454,17 +1454,19 @@ static void test_sparse_threshold_cache(void) {
     int64_t file_vp = vfs_create(vfs, root_vp, "threshold.txt", 0);
     CHECK(file_vp > 0);
 
+    int baseline = tree_resolve_page_cache_builds_get();
+
     /* Resolve pages 0..63 — 64 unique PageNodes, at SPARSE_CACHE_THRESHOLD (64) */
     for (int i = 0; i < 64; i++) {
         uint8_t* pn = tree_resolve_page(ctx, file_vp, (int64_t)i, 0, true);
         CHECK(pn != NULL);
     }
-    CHECK_EQ(tree_resolve_page_cache_builds_get(), 0);
+    CHECK_EQ(tree_resolve_page_cache_builds_get() - baseline, 0);
 
     /* Resolve page 64 — 65th unique PageNode, exceeds threshold */
     uint8_t* pn = tree_resolve_page(ctx, file_vp, 64, 0, true);
     CHECK(pn != NULL);
-    CHECK_EQ(tree_resolve_page_cache_builds_get(), 1);
+    CHECK_EQ(tree_resolve_page_cache_builds_get() - baseline, 1);
 
     vfs_unmount(vfs);
 }
