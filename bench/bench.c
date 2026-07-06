@@ -9,7 +9,7 @@
  *   scan     — sequential full-file read from byte 0 to end, measure bandwidth
  *   mixed    — configurable read/write ratio on random offsets over pre-populated files
  *   dir      — create/list/delete cycles on N subdirectories, measure directory-operation throughput
- *   seqwrite — sequential page-sized writes to a single file
+ *   seqwrite — sequential page writes to a single large file
  *   randread — random page reads from a pre-populated file
  */
 
