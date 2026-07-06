@@ -303,6 +303,67 @@ static void test_var_array_bulk_10000(void) {
     var_array_delete(arr);
 }
 
+/* Concurrent append: 4 threads, 250 entries each, shared VarArray */
+typedef struct {
+    VarArrayBase* arr;
+    int           tid;
+    int           count;
+} va_thread_arg;
+
+static void* va_append_thread(void* arg) {
+    va_thread_arg* a = (va_thread_arg*)arg;
+    mt_wait_at_barrier();
+    for (int i = 0; i < a->count; i++) {
+        int val = a->tid * 1000 + i;
+        int idx = var_array_grow_base(a->arr);
+        if (idx < 0) return (void*)0;
+        VarArrayChunk* chunk = (VarArrayChunk*)var_array_resolve_base(a->arr, idx);
+        if (!chunk) return (void*)0;
+        ((int*)chunk->entries)[idx % a->arr->chunk_size] = val;
+    }
+    return (void*)1;
+}
+
+static void test_var_array_concurrent_append(void) {
+    VarArrayBase* arr = var_array_new_base(sizeof(int), 256);
+    CHECK(arr != NULL);
+
+    mt_reset_barrier();
+    va_thread_arg args[4];
+    pthread_t threads[4];
+    for (int t = 0; t < 4; t++) {
+        args[t].arr   = arr;
+        args[t].tid   = t;
+        args[t].count = 250;
+        CHECK_EQ(pthread_create(&threads[t], NULL, va_append_thread, &args[t]), 0);
+    }
+    mt_release_barrier();
+
+    void* results[4];
+    for (int t = 0; t < 4; t++) {
+        pthread_join(threads[t], &results[t]);
+        CHECK(results[t] != NULL);
+    }
+    CHECK_EQ(arr->count, 1000);
+
+    /* Verify all 1000 values present.  Build a bitmask of seen tid*1000+i. */
+    int seen[4000] = {0};  /* max val = 3*1000+249 = 3249 */
+    for (int i = 0; i < 1000; i++) {
+        VarArrayChunk* chunk = (VarArrayChunk*)var_array_resolve_base(arr, i);
+        CHECK(chunk != NULL);
+        int val = ((int*)chunk->entries)[i % arr->chunk_size];
+        CHECK(val >= 0 && val < 4000);
+        seen[val] = 1;
+    }
+    for (int t = 0; t < 4; t++) {
+        for (int i = 0; i < 250; i++) {
+            CHECK(seen[t * 1000 + i]);
+        }
+    }
+
+    var_array_delete_base(arr);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -318,6 +379,7 @@ int main(void) {
     test_var_array_root_promotion_to_level_1();
     test_var_array_multi_level_growth();
     test_var_array_bulk_10000();
+    test_var_array_concurrent_append();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
