@@ -61,7 +61,7 @@ All functions take `VarArrayBase*`. Macros wrap them for typed access.
 VarArrayBase* var_array_new_base(int chunk_size);
 void          var_array_delete_base(VarArrayBase* a);
 int           var_array_grow_base(VarArrayBase* a);  // returns index of new slot
-void*         var_array_resolve_base(VarArrayBase* a, int idx); // returns pointer to slot
+void*         var_array_resolve_base(VarArrayBase* a, int idx); // returns chunk for slot
 
 // --- Typed macros (same header) ---
 
@@ -72,22 +72,30 @@ void*         var_array_resolve_base(VarArrayBase* a, int idx); // returns point
 
 #define var_array_delete(a) var_array_delete_base((VarArrayBase*)(a))
 
-#define var_array_insert(a, entry) ({                      \
-    int _idx = var_array_grow_base((VarArrayBase*)(a));     \
-    typeof((a)->root) _r = (a)->root;                       \
-    if (_idx < (a)->chunk_size)                             \
-        _r->entries[_idx] = entry;                          \
-    else                                                    \
+// Append: adds entry at end, returns index
+#define var_array_append(a, entry) ({                        \
+    int _idx = var_array_grow_base((VarArrayBase*)(a));       \
+    typeof((a)->root) _r;                                     \
+    if (_idx < (a)->chunk_size)                               \
+        _r = (a)->root;                                       \
+    else                                                      \
         _r = var_array_resolve_base((VarArrayBase*)(a), _idx); \
-        _r->entries[_idx % (a)->chunk_size] = entry;        \
-    _idx;                                                   \
+    _r->entries[_idx % (a)->chunk_size] = entry;              \
+    _idx;                                                     \
 })
 
-#define var_array_lookup(a, idx) ({                         \
-    typeof((a)->root) _r = (idx < (a)->chunk_size)          \
-        ? (a)->root                                         \
-        : var_array_resolve_base((VarArrayBase*)(a), idx);  \
-    _r ? &_r->entries[(idx) % (a)->chunk_size] : NULL;      \
+// Update: replaces entry at existing index
+#define var_array_update(a, idx, entry) ({                   \
+    typeof((a)->root) _r = ((idx) < (a)->chunk_size)         \
+        ? (a)->root : var_array_resolve_base((VarArrayBase*)(a), idx); \
+    if (_r) _r->entries[(idx) % (a)->chunk_size] = entry;    \
+})
+
+// Lookup: returns typed pointer to entry, or NULL
+#define var_array_lookup(a, idx) ({                           \
+    typeof((a)->root) _r = ((idx) < (a)->chunk_size)         \
+        ? (a)->root : var_array_resolve_base((VarArrayBase*)(a), idx); \
+    _r ? &_r->entries[(idx) % (a)->chunk_size] : NULL;       \
 })
 ```
 
@@ -99,10 +107,14 @@ typedef struct { uint64_t key; int64_t vp; } DirEntry;
 VarArray(DirEntry) list = var_array_new(DirEntry);
 
 DirEntry e = { .key = hash("foo"), .vp = 0x12345 };
-int idx = var_array_insert(list, e);
+int idx = var_array_append(list, e);
 
 DirEntry* found = var_array_lookup(list, idx);
 printf("key=%llu vp=%lld\n", found->key, found->vp);
+
+// Update in place
+e.vp = 0x99999;
+var_array_update(list, idx, e);
 
 var_array_delete(list);
 ```
