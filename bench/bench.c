@@ -123,15 +123,51 @@ static double now_sec(void) {
  * Multi-threaded benchmark infrastructure
  * --------------------------------------------------------------------------- */
 
+/* Portable barrier using mutex + condvar (macOS lacks pthread_barrier_t) */
+typedef struct {
+    int              count;
+    int              waiting;
+    pthread_mutex_t  mutex;
+    pthread_cond_t   cond;
+} bench_barrier_t;
+
+static void bench_barrier_init(bench_barrier_t* b, int count) {
+    b->count = count;
+    b->waiting = 0;
+    pthread_mutex_init(&b->mutex, NULL);
+    pthread_cond_init(&b->cond, NULL);
+}
+
+static void bench_barrier_wait(bench_barrier_t* b) {
+    pthread_mutex_lock(&b->mutex);
+    b->waiting++;
+    if (b->waiting >= b->count) {
+        b->waiting = 0;
+        pthread_cond_broadcast(&b->cond);
+    } else {
+        pthread_cond_wait(&b->cond, &b->mutex);
+    }
+    pthread_mutex_unlock(&b->mutex);
+}
+
+static void bench_barrier_destroy(bench_barrier_t* b) {
+    pthread_mutex_destroy(&b->mutex);
+    pthread_cond_destroy(&b->cond);
+}
+
 typedef struct {
     vfs_t*    vfs;
     int       tid;
     int       count;
     int       ok;
+    double    elapsed;              /* per-thread elapsed time (set by worker) */
+    bench_barrier_t* barrier;       /* startup barrier, NULL when not used */
 } bench_thread_ctx;
 
 static void* bench_write_worker(void* arg) {
     bench_thread_ctx* c = (bench_thread_ctx*)arg;
+    if (c->barrier) bench_barrier_wait(c->barrier);
+    double t0 = now_sec();
     int64_t root_vp = c->vfs->ctx->rootNodeOffset;
     for (int i = 0; i < c->count; i++) {
         char name[64];
@@ -142,11 +178,14 @@ static void* bench_write_worker(void* arg) {
         memset(data, 'A' + c->tid, 128);
         if (vfs_write(c->vfs, file_vp, data, 0, 128, 0) > 0) c->ok++;
     }
+    c->elapsed = now_sec() - t0;
     return NULL;
 }
 
 static void* bench_seqwrite_worker(void* arg) {
     bench_thread_ctx* c = (bench_thread_ctx*)arg;
+    if (c->barrier) bench_barrier_wait(c->barrier);
+    double t0 = now_sec();
     int64_t root_vp = c->vfs->ctx->rootNodeOffset;
     const int page_sz = c->vfs->ctx->page_size;
     char fname[64];
@@ -159,6 +198,7 @@ static void* bench_seqwrite_worker(void* arg) {
         if (vfs_write(c->vfs, fvp, buf, (int64_t)i * page_sz, page_sz, 0) == page_sz) c->ok++;
     }
     free(buf);
+    c->elapsed = now_sec() - t0;
     return NULL;
 }
 
@@ -166,18 +206,39 @@ static int bench_run_threads(vfs_t* vfs, int thread_count, int ops_per_thread,
                               void* (*worker)(void*)) {
     pthread_t* th = malloc((size_t)thread_count * sizeof(pthread_t));
     bench_thread_ctx* ctx = calloc((size_t)thread_count, sizeof(bench_thread_ctx));
+
+    bench_barrier_t barrier;
+    bench_barrier_init(&barrier, thread_count);
+
     for (int i = 0; i < thread_count; i++) {
         ctx[i].vfs = vfs;
         ctx[i].tid = i;
         ctx[i].count = ops_per_thread;
         ctx[i].ok = 0;
+        ctx[i].elapsed = 0.0;
+        ctx[i].barrier = &barrier;
         pthread_create(&th[i], NULL, worker, &ctx[i]);
     }
+
+    double total_elapsed = 0.0;
+    double min_elapsed = 1e9;
+    double max_elapsed = 0.0;
     int total = 0;
     for (int i = 0; i < thread_count; i++) {
         pthread_join(th[i], NULL);
         total += ctx[i].ok;
+        total_elapsed += ctx[i].elapsed;
+        if (ctx[i].elapsed < min_elapsed) min_elapsed = ctx[i].elapsed;
+        if (ctx[i].elapsed > max_elapsed) max_elapsed = ctx[i].elapsed;
     }
+
+    bench_barrier_destroy(&barrier);
+
+    printf("  threads=%d  ops=%d  avg_time=%.4fs  min=%.4fs  max=%.4fs\n",
+           thread_count, total,
+           total_elapsed / (double)thread_count,
+           min_elapsed, max_elapsed);
+
     free(ctx);
     free(th);
     return total;
@@ -327,6 +388,8 @@ static int bench_small_file_create(vfs_t* vfs, int count, int threads,
 
 static void* bench_sparse_rand_worker(void* arg) {
     bench_thread_ctx* c = (bench_thread_ctx*)arg;
+    if (c->barrier) bench_barrier_wait(c->barrier);
+    double t0 = now_sec();
     const int page_sz = c->vfs->ctx->page_size;
     int64_t root_vp = c->vfs->ctx->rootNodeOffset;
     char fname[64];
@@ -348,6 +411,7 @@ static void* bench_sparse_rand_worker(void* arg) {
         int written = vfs_write(c->vfs, fvp, data, page * page_sz, sizeof(data), 0);
         if (written == (int)sizeof(data)) c->ok++;
     }
+    c->elapsed = now_sec() - t0;
     return NULL;
 }
 
