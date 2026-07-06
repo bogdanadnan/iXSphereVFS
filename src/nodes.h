@@ -217,6 +217,11 @@ int  nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_l
  * for simplicity. */
 uint64_t nodes_read_name_hash(Pool* pool, int64_t namePtr);
 
+/* Compute the FNV-1a 64-bit hash of a name.  This is the same hash that
+ * nodes_write_name stores in the first NameEntry slot at offset 0.
+ * Returns 0 for empty or NULL names (len == 0). */
+uint64_t name_hash_compute(const char* name, int len);
+
 /* ---------------------------------------------------------------------------
  * TouchedFile (32 bytes, 16 used, 16 reserved)
  *
