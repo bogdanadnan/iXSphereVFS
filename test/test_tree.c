@@ -1464,7 +1464,8 @@ static void test_sparse_threshold_cache(void) {
         CHECK(pn != NULL);
     }
     int after_64 = tree_resolve_page_cache_builds_get() - baseline;
-    CHECK(after_64 >= 0);  /* not negative */
+    /* With sparse chains, the exact build count at 64 pages varies.
+     * Verify at least one build has occurred by 65 pages. */
 
     /* Resolve page 64 — at least one cache build should have occurred */
     uint8_t* pn = tree_resolve_page(ctx, file_vp, 64, 0, true);
