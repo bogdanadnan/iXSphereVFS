@@ -494,7 +494,7 @@ static void test_nameentry_50byte(void) {
 
     int64_t first_vp;
     int n = nodes_write_name(pool, name, &first_vp);
-    CHECK_EQ(n, 3); /* 24+24+2 */
+    CHECK_EQ(n, 3); /* 16+24+10 */
     CHECK(first_vp != VFS_VPTR_NULL);
 
     char buf[128];
