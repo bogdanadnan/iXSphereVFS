@@ -131,15 +131,16 @@ void* var_array_resolve_base(VarArrayBase* a, int idx);
  * (no error signal) if idx is out of range or resolve returns NULL —
  * this matches var_array_lookup's NULL-return behavior. */
 #define var_array_update(a, idx, entry) ({ \
-    void* _rp = var_array_resolve_base((VarArrayBase*)(a), (idx)); \
-    if (_rp) ((VarArrayChunk_T(typeof(entry))*)_rp)->entries[(idx) % (a)->chunk_size] = (entry); \
+    int _idx = (idx); \
+    void* _rp = var_array_resolve_base((VarArrayBase*)(a), _idx); \
+    if (_rp) ((VarArrayChunk_T(typeof(entry))*)_rp)->entries[_idx % (a)->chunk_size] = (entry); \
 })
 
 /* Look up an entry by index.  Returns a pointer to the element, or NULL
  * if idx is out of range or the slot was never written. */
 #define var_array_lookup(a, idx) ({ \
-    typeof((a)->root) _rp = (typeof((a)->root))var_array_resolve_base((VarArrayBase*)(a), (idx)); \
-    _rp ? &_rp[(idx) % (a)->chunk_size] : NULL; \
+    void* _rp = var_array_resolve_base((VarArrayBase*)(a), (idx)); \
+    _rp ? &((VarArrayChunk_T(typeof(*(a)->root))*)_rp)->entries[(idx) % (a)->chunk_size] : NULL; \
 })
 
 #endif /* VFS_VAR_ARRAY_H */
