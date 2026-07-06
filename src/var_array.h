@@ -29,6 +29,24 @@ typedef struct {
 } VarArrayChunk;
 
 /* ---------------------------------------------------------------------------
+ * VarArrayLevel — internal node holding pointers to children.
+ *
+ * height   — always > 0; distinguishes a level from a chunk (height == 0).
+ *            Must be the first field for type-dispatch via void* cast.
+ * slots    — points to a chunk_size-element pointer table located immediately
+ *            after this struct in the same malloc'd block.
+ * reserved — padding for 8-byte alignment.
+ *
+ * Layout: 4 bytes height, 4 bytes reserved, 8 bytes slots = 16 bytes.
+ *          The pointer table (chunk_size * 8 bytes) follows immediately.
+ * --------------------------------------------------------------------------- */
+typedef struct {
+    volatile int height;
+    int           reserved;
+    void*         slots;
+} VarArrayLevel;
+
+/* ---------------------------------------------------------------------------
  * VarArrayBase — compact, fixed-size header for a variable-length array.
  *
  * root       — void* to the topmost chunk (height == 0) or level node
