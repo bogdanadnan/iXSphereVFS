@@ -215,7 +215,7 @@ int  nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_l
  * for simplicity. */
 uint64_t nodes_read_name_hash(Pool* pool, int64_t namePtr);
 
-#ifdef VFS_VAR_ARRAY_TESTING
+#ifndef NDEBUG
 /* Test-only: write a name with a pre-determined hash. */
 int nodes_write_name_with_hash(Pool* pool, const char* utf8_name, uint64_t hash,
                                 int64_t* first_slot_vp);
