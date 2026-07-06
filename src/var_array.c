@@ -79,6 +79,76 @@ VarArrayBase* var_array_new_base(int entry_size, int chunk_size) {
     a->root = alloc_chunk_typed(chunk_size, (size_t)entry_size);
     if (!a->root) { free(a); return NULL; }
     a->chunk_size = chunk_size;
+    a->entry_size = entry_size;
     a->count      = 0;
     return a;
+}
+
+/* ---------------------------------------------------------------------------
+ * grow_base — claim the next slot index, promoting root as needed.
+ * Multi-level CAS promotion: atomically claims count, computes the
+ * required tree height, then promotes the root from chunk to level node
+ * when the current root overflows.  Thread-safe via CAS on a->root.
+ * --------------------------------------------------------------------------- */
+
+int var_array_grow_base(VarArrayBase* a) {
+    if (!a) return -1;
+    int cs = a->chunk_size;
+    int es = a->entry_size;
+
+    /* Atomically claim the next index */
+    int idx = vfs_atomic_add_i32((int32_t*)&a->count, 1);
+
+    /* Compute required height: how many levels needed to address idx slots */
+    int needed_height = 0;
+    int64_t cap = cs;
+    while ((int64_t)idx >= cap) {
+        needed_height++;
+        cap *= cs;
+    }
+
+    /* CAS loop: promote root until its height >= needed_height */
+    void* old_root = a->root;
+    while (height_of(old_root) < needed_height) {
+        int new_height = height_of(old_root) + 1;
+        void* new_level = alloc_level_typed(cs, new_height);
+        if (!new_level) return -1;
+        *slot_of((VarArrayLevel*)new_level, 0) = old_root;
+
+        void* cas_result = vfs_cas_ptr(&a->root, old_root, new_level);
+        if (cas_result == old_root) {
+            old_root = new_level;
+        } else {
+            free(new_level);
+            old_root = cas_result;
+        }
+    }
+
+    /* Walk from root down to the leaf chunk for this index */
+    void* node = a->root;
+    int h = height_of(node);
+    /* Pre-compute divisor for each level: cs^level */
+    int64_t div = 1;
+    for (int i = 0; i < h; i++) div *= cs;
+    for (int level = h; level > 0; level--, div /= cs) {
+        VarArrayLevel* lv = (VarArrayLevel*)node;
+        int slot = (int)(((int64_t)idx / div) % cs);
+        void* child = *slot_of(lv, slot);
+        if (!child) {
+            if (level > 1) {
+                child = alloc_level_typed(cs, level - 1);
+            } else {
+                child = alloc_chunk_typed(cs, (size_t)es);
+            }
+            if (!child) return -1;
+            void** slot_ptr = slot_of(lv, slot);
+            void* old = vfs_cas_ptr(slot_ptr, NULL, child);
+            if (old != NULL) {
+                free(child);
+                child = old;
+            }
+        }
+        node = child;
+    }
+    return idx;
 }

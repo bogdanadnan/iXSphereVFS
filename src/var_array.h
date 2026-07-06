@@ -66,6 +66,7 @@ typedef struct {
     void*          root;
     int            chunk_size;
     volatile int   count;
+    int            entry_size;  /* byte size of each element */
 } VarArrayBase;
 
 /* ---------------------------------------------------------------------------
