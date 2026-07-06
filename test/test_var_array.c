@@ -208,6 +208,45 @@ static void test_var_array_chunk_capacity(void) {
     var_array_delete(arr);
 }
 
+static void test_var_array_root_promotion_to_level_1(void) {
+    VarArray(int) arr = var_array_new(int);
+    CHECK(arr != NULL);
+
+    /* Append 257 entries — triggers root promotion from chunk to level */
+    for (int i = 0; i < 257; i++) {
+        int idx = var_array_append(arr, i + 1);
+        CHECK_EQ(idx, i);
+    }
+    CHECK_EQ(arr->count, 257);
+
+    /* All 257 retrievable */
+    for (int i = 0; i < 257; i++) {
+        int* e = var_array_lookup(arr, i);
+        CHECK(e != NULL);
+        CHECK_EQ(*e, i + 1);
+    }
+
+    /* Verify entries 0..255 are in level->slots[0] (original chunk)
+     * and entry 256 is in level->slots[1] (newly allocated chunk) */
+    VarArrayLevel* root = (VarArrayLevel*)arr->root;
+    CHECK(root != NULL);
+    CHECK(root->height > 0);
+    void** slots = (void**)root->slots;
+    CHECK(slots[0] != NULL);
+    CHECK(slots[1] != NULL);
+    CHECK(slots[2] == NULL);  /* only 257 entries → 2 chunks */
+
+    VarArrayChunk* chunk0 = (VarArrayChunk*)slots[0];
+    VarArrayChunk* chunk1 = (VarArrayChunk*)slots[1];
+    CHECK(chunk0 != chunk1);
+
+    /* Entry 0 in chunk0, entry 256 in chunk1 */
+    CHECK_EQ(((int*)chunk0->entries)[0], 1);
+    CHECK_EQ(((int*)chunk1->entries)[0], 257);
+
+    var_array_delete(arr);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -220,6 +259,7 @@ int main(void) {
     test_large_append();
     test_var_array_basic();
     test_var_array_chunk_capacity();
+    test_var_array_root_promotion_to_level_1();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
