@@ -112,4 +112,19 @@ void* var_array_resolve_base(VarArrayBase* a, int idx);
 /* Typed convenience wrapper: free a VarArray.  Casts to VarArrayBase*. */
 #define var_array_delete(a) var_array_delete_base((VarArrayBase*)(a))
 
+/* Append an entry to a typed VarArray.  Claims a slot via grow_base,
+ * resolves it via resolve_base, and writes the entry into the chunk.
+ *
+ * NOTE: the fast path (direct chunk write via root cast) has been
+ * intentionally removed — it races with root promotion: another thread
+ * can promote root from a chunk to a level between grow_base returning
+ * and this macro reading root.  The resolve_base call handles this
+ * safely by re-walking the tree from the current root. */
+#define var_array_append(a, entry) ({ \
+    int _idx = var_array_grow_base((VarArrayBase*)(a)); \
+    void* _rp = var_array_resolve_base((VarArrayBase*)(a), _idx); \
+    if (_rp) ((VarArrayChunk_T(typeof(entry))*)_rp)->entries[_idx % (a)->chunk_size] = (entry); \
+    _idx; \
+})
+
 #endif /* VFS_VAR_ARRAY_H */
