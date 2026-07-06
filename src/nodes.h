@@ -211,6 +211,12 @@ int  nodes_write_name(Pool* pool, const char* utf8_name, int64_t* first_slot_vp)
    (excluding null terminator), or 0 if first_slot_vp is null. */
 int  nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_len);
 
+/* Read just the 8-byte FNV-1a hash from the first NameEntry slot.
+ * Returns 0 if the slot cannot be resolved.  NOTE: a real hash can
+ * theoretically be 0; the 0-on-error is a minor ambiguity accepted
+ * for simplicity. */
+uint64_t nodes_read_name_hash(Pool* pool, int64_t namePtr);
+
 /* ---------------------------------------------------------------------------
  * TouchedFile (32 bytes, 16 used, 16 reserved)
  *
