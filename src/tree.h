@@ -52,10 +52,6 @@ int tree_superblock_write(TreeContext* ctx);
  * Format migration
  * --------------------------------------------------------------------------- */
 
-/* Walk a single file's FileContent→PageNode chain, writing sequential
- * pageIndex values (0, 1, 2, ...) into each PageNode at offset 16. */
-int tree_migrate_walk_file(TreeContext* ctx, int64_t file_vp);
-
 #ifndef NDEBUG
 /* Debug counter: number of tcache rebuilds from sparse chain. */
 int tree_resolve_page_cache_builds_get(void);
