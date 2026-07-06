@@ -3,6 +3,27 @@
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
+ * splitmix64_hash — FNV-1a accumulation + splitmix64 finalizer.
+ *
+ * FNV-1a provides good dispersion for short inputs (file names are
+ * typically < 256 bytes).  The splitmix64 finalizer adds strong
+ * avalanche — a single-bit change in the input flips ~32 output bits
+ * on average, even for 1- or 2-byte names.
+ * --------------------------------------------------------------------------- */
+static uint64_t splitmix64_hash(const uint8_t* data, size_t len) {
+    uint64_t h = 14695981039346656037ULL;  /* FNV-1a offset basis */
+    for (size_t i = 0; i < len; i++) {
+        h ^= data[i];
+        h *= 1099511628211ULL;  /* FNV-1a prime */
+    }
+    /* splitmix64 finalizer */
+    h += 0x9e3779b97f4a7c15ULL;
+    h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    h = (h ^ (h >> 27)) * 0x94d049bb133111ebULL;
+    return h ^ (h >> 31);
+}
+
+/* ---------------------------------------------------------------------------
  * DirNode (Workload 4.1)
  * --------------------------------------------------------------------------- */
 
