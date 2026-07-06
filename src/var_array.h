@@ -13,4 +13,22 @@
 #define VFS_VAR_ARRAY_MIN_CHUNK_SIZE       16
 #define VFS_VAR_ARRAY_MAX_CHUNK_SIZE     4096
 
+/* ---------------------------------------------------------------------------
+ * VarArrayBase — compact, fixed-size header for a variable-length array.
+ *
+ * root       — void* to the topmost chunk (height == 0) or level node
+ *              (height > 0).  Cast to VarArrayChunk* or VarArrayLevel*
+ *              after reading the chunk's height field.
+ * chunk_size — branching factor at every height; set at init, never changed.
+ * count      — total slots ever claimed via va_claim_slot; monotonically
+ *              increasing, never decremented.
+ *
+ * Size: 16 bytes on 64-bit, 12 bytes on 32-bit.
+ * --------------------------------------------------------------------------- */
+typedef struct {
+    void*          root;
+    int            chunk_size;
+    volatile int   count;
+} VarArrayBase;
+
 #endif /* VFS_VAR_ARRAY_H */
