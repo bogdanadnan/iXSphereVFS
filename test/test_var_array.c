@@ -144,6 +144,42 @@ static void test_large_append(void) {
     var_array_delete_base(a);
 }
 
+/* ---------------------------------------------------------------------------
+ * Typed macro tests (var_array_new / append / lookup / delete)
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    uint64_t key;
+    int64_t  vp;
+} DirEntry;
+
+static void test_var_array_basic(void) {
+    VarArrayBase* list = var_array_new_base(sizeof(DirEntry), VFS_VAR_ARRAY_DEFAULT_CHUNK_SIZE);
+    CHECK(list != NULL);
+    CHECK_EQ(list->count, 0);
+
+    /* Append 10 entries */
+    for (int i = 0; i < 10; i++) {
+        DirEntry e = {(uint64_t)(i * 100), (int64_t)(i * 200)};
+        int idx = var_array_grow_base(list);
+        CHECK_EQ(idx, i);
+        void* slot = var_array_resolve_base(list, idx);
+        CHECK(slot != NULL);
+        *(DirEntry*)slot = e;
+    }
+    CHECK_EQ(list->count, 10);
+
+    /* Lookup each entry */
+    for (int i = 0; i < 10; i++) {
+        DirEntry* e = (DirEntry*)var_array_resolve_base(list, i);
+        CHECK(e != NULL);
+        CHECK_EQ(e->key, (uint64_t)(i * 100));
+        CHECK_EQ(e->vp, (int64_t)(i * 200));
+    }
+
+    var_array_delete_base(list);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -154,6 +190,7 @@ int main(void) {
     test_append_cross_chunk();
     test_resolve_out_of_range();
     test_large_append();
+    test_var_array_basic();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

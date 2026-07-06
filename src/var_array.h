@@ -110,9 +110,9 @@ void* var_array_resolve_base(VarArrayBase* a, int idx);
 #define VarArrayLevel_T(T) struct { volatile int height; int reserved; VarArrayChunk_T(T)** slots; }
 
 /* Typed convenience wrapper: allocate a new VarArray with default chunk size.
- * Casts the VarArrayBase* return to the typed VarArray(T)* pointer. */
+ * Returns VarArrayBase* — caller must cast to their VarArray(T) type. */
 #define var_array_new(T) \
-    ((VarArray(T))var_array_new_base(sizeof(T), VFS_VAR_ARRAY_DEFAULT_CHUNK_SIZE))
+    var_array_new_base(sizeof(T), VFS_VAR_ARRAY_DEFAULT_CHUNK_SIZE)
 
 /* Typed convenience wrapper: free a VarArray.  Casts to VarArrayBase*. */
 #define var_array_delete(a) var_array_delete_base((VarArrayBase*)(a))
