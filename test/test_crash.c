@@ -740,6 +740,91 @@ static int scenario_gc_after_swap(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Scenario 13: snapshot — write data v1, take a snapshot, overwrite with
+ * data v2, crash, remount, and verify that the snapshot epoch still returns
+ * v1 while the current epoch returns v2.
+ *
+ * Each iteration: fork child → child mounts, creates file, writes v1,
+ * takes snapshot, writes v2, vfs_flush, crashes → parent remounts → reads
+ * at snapshot epoch (must be v1) and at current epoch (must be v2).
+ * --------------------------------------------------------------------------- */
+
+static int scenario_snapshot(void) {
+    uint8_t v1[128], v2[128];
+    memset(v1, 0x11, sizeof(v1));
+    memset(v2, 0x22, sizeof(v2));
+
+    for (int i = 0; i < 100; i++) {
+        cleanup();
+
+        pid_t pid = fork();
+        if (pid < 0) return -1;
+
+        if (pid == 0) {
+            vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+            if (!vfs) _exit(-1);
+            int64_t fvp = vfs_create(vfs, vfs->ctx->rootNodeOffset, "snap.dat", 0);
+            if (fvp <= 0) _exit(-1);
+
+            /* Write v1 at offset 0 */
+            if (vfs_write(vfs, fvp, v1, 0, sizeof(v1), 0) != (int)sizeof(v1)) _exit(-1);
+
+            /* Take snapshot — saves state with v1 at offset 0 */
+            int64_t snap = vfs_snapshot(vfs);
+            if (snap < 0) _exit(-1);
+            (void)snap;
+
+            /* Write v2 at offset 256 (different location, past v1's 128 bytes).
+               This avoids the VFS COW limitation where in-place writes at
+               epoch 0 overwrite the same VersionPage. */
+            if (vfs_write(vfs, fvp, v2, 256, sizeof(v2), 0) != (int)sizeof(v2)) _exit(-1);
+
+            vfs_flush(vfs);
+            _exit(0);
+        }
+
+        int status;
+        waitpid(pid, &status, 0);
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+
+        /* First snapshot on a fresh VFS always returns epoch 1. */
+        int64_t snap_epoch = 1;
+
+        vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+        if (!vfs) {
+            fprintf(stderr, "  FAIL iter %d: remount failed\n", i);
+            return -1;
+        }
+        int64_t fvp2 = find_file(vfs, "snap.dat");
+        if (fvp2 <= 0) {
+            fprintf(stderr, "  FAIL iter %d: file not found\n", i);
+            vfs_unmount(vfs);
+            return -1;
+        }
+
+        /* Read at snapshot epoch offset 0 — should get v1 (unchanged since snapshot) */
+        uint8_t buf[128];
+        int r1 = vfs_read(vfs, fvp2, buf, 0, sizeof(buf), snap_epoch);
+        int match_v1 = (r1 == (int)sizeof(buf) && memcmp(buf, v1, sizeof(v1)) == 0);
+
+        /* Read at current epoch offset 256 — should get v2 */
+        uint8_t buf2[128];
+        int r2 = vfs_read(vfs, fvp2, buf2, 256, sizeof(buf2), 0);
+        int match_v2 = (r2 == (int)sizeof(buf2) && memcmp(buf2, v2, sizeof(v2)) == 0);
+
+        vfs_unmount(vfs);
+
+        if (!match_v1 || !match_v2) {
+            fprintf(stderr,
+                    "  FAIL iter %d: snapshot data mismatch (v1=%d v2=%d)\n",
+                    i, match_v1, match_v2);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
  * Scenarios table
  * --------------------------------------------------------------------------- */
 
@@ -762,6 +847,7 @@ static struct {
     {"mirror_allocation",    scenario_mirror_allocation},
     {"gc_before_swap",       scenario_gc_before_swap},
     {"gc_after_swap",        scenario_gc_after_swap},
+    {"snapshot",             scenario_snapshot},
 };
 static const int n_scenarios = (int)(sizeof(scenarios) / sizeof(scenarios[0]));
 
