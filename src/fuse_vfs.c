@@ -227,7 +227,7 @@ int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
 
     /* Acquire per-file lock for write opens */
     if (fi->flags & (O_WRONLY | O_RDWR)) {
-        int lr = vfs_lock(state->vfs, vp, state->epoch);
+        int lr = vfs_lock(state->vfs, vp, vfs_current_epoch(state->vfs));
         if (lr != VFS_OK) return -EACCES;
     }
 
@@ -255,7 +255,7 @@ int fuse_vfs_write(const char* path, const char* buf, size_t size,
        mount was opened at a snapshot epoch (odd).  Snapshot data is
        read-only; all mutations go to the current base. */
     int r = vfs_write(state->vfs, vp, buf, (int64_t)offset,
-                      (int64_t)size, 0);
+                      (int64_t)size, vfs_current_epoch(state->vfs));
     return (r >= 0) ? r : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
 
@@ -280,7 +280,8 @@ int fuse_vfs_create(const char* path, mode_t mode,
     }
     if (parent_vp <= 0) { free(path_copy); return -ENOENT; }
 
-    int64_t vp = vfs_create(state->vfs, parent_vp, name, state->epoch);
+    int64_t vp = vfs_create(state->vfs, parent_vp, name,
+                              vfs_current_epoch(state->vfs));
     free(path_copy);
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
 
@@ -311,7 +312,8 @@ int fuse_vfs_unlink(const char* path) {
     }
     if (parent_vp <= 0) { free(path_copy); return -ENOENT; }
 
-    int ret = vfs_delete(state->vfs, parent_vp, name, state->epoch);
+    int ret = vfs_delete(state->vfs, parent_vp, name,
+                        vfs_current_epoch(state->vfs));
     free(path_copy);
     return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
@@ -335,7 +337,8 @@ int fuse_vfs_mkdir(const char* path, mode_t mode) {
     }
     if (parent_vp <= 0) { free(path_copy); return -ENOENT; }
 
-    int64_t vp = vfs_mkdir(state->vfs, parent_vp, name, state->epoch);
+    int64_t vp = vfs_mkdir(state->vfs, parent_vp, name,
+                             vfs_current_epoch(state->vfs));
     free(path_copy);
     return (vp > 0) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
@@ -358,7 +361,8 @@ int fuse_vfs_rmdir(const char* path) {
     }
     if (parent_vp <= 0) { free(path_copy); return -ENOENT; }
 
-    int ret = vfs_rmdir(state->vfs, parent_vp, name, state->epoch);
+    int ret = vfs_rmdir(state->vfs, parent_vp, name,
+                        vfs_current_epoch(state->vfs));
     free(path_copy);
     return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
@@ -371,7 +375,8 @@ int fuse_vfs_rename(const char* from, const char* to, unsigned int flags) {
     int64_t root = vfs_root(state->vfs);
     const char* src_name = (from[0] == '/') ? from + 1 : from;
     const char* dst_name = (to[0] == '/') ? to + 1 : to;
-    int ret = vfs_rename(state->vfs, root, src_name, root, dst_name, state->epoch);
+    int ret = vfs_rename(state->vfs, root, src_name, root, dst_name,
+                         vfs_current_epoch(state->vfs));
     return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
 
@@ -395,7 +400,8 @@ int fuse_vfs_truncate(const char* path, off_t size,
     while (remaining > 0) {
         int64_t chunk = (remaining < (int64_t)sizeof(zbuf)) ? remaining
                                                              : (int64_t)sizeof(zbuf);
-        int r = vfs_write(state->vfs, vp, zbuf, wr_off, chunk, state->epoch);
+        int r = vfs_write(state->vfs, vp, zbuf, wr_off, chunk,
+                          vfs_current_epoch(state->vfs));
         if (r < 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
         remaining -= chunk;
         wr_off    += chunk;

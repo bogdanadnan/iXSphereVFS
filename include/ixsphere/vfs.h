@@ -85,6 +85,10 @@ vfs_error_t vfs_last_error(vfs_t* vfs);
    uninitialised.  Safe to call before any file operations. */
 int64_t vfs_root(vfs_t* vfs);
 
+/* Return the current writable base epoch (always even).  Returns 0 if
+   vfs is NULL or uninitialised. */
+int64_t vfs_current_epoch(vfs_t* vfs);
+
 /* ---------------------------------------------------------------------------
  * File Operations (§12.2)
  * --------------------------------------------------------------------------- */

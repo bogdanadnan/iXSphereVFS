@@ -285,6 +285,11 @@ int64_t vfs_root(vfs_t* vfs) {
     return vfs->ctx->rootNodeOffset;
 }
 
+int64_t vfs_current_epoch(vfs_t* vfs) {
+    if (!vfs || !vfs->ctx) return 0;
+    return vfs->ctx->currentEpoch;
+}
+
 int vfs_node_type(vfs_t* vfs, int64_t vp) {
     if (!vfs || !vfs->ctx || vp <= 0) return 0;
     uint8_t* slot = pool_resolve(&vfs->ctx->pool, vp);
