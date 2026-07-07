@@ -438,10 +438,11 @@ int main(int argc, char** argv) {
     printf("\n=== Fuzz Results ===\n");
     printf("  iterations: %d\n", iterations);
     printf("  total ops:  %d\n", ops_total);
+    printf("  crashes:    %d\n", crashes);
 
     cleanup_vfs();
     unlink(FUZZ_SEED_PATH);
-    return 0;
+    return crashes > 0 ? 1 : 0;
 }
 
 #else  /* _WIN32 — stub */
