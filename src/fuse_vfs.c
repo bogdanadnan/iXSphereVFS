@@ -162,8 +162,8 @@ void fuse_vfs_destroy(void* private_data) {
 
 int fuse_vfs_getattr(const char* path, struct fuse_darwin_attr* stbuf,
                      struct fuse_file_info* fi) {
-    (void)fi;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (!state) return -EIO;
     memset(stbuf, 0, sizeof(struct fuse_darwin_attr));
     time_t now = time(NULL);
     stbuf->uid = getuid();
@@ -172,15 +172,29 @@ int fuse_vfs_getattr(const char* path, struct fuse_darwin_attr* stbuf,
     stbuf->atimespec.tv_nsec = 0;
     stbuf->btimespec = stbuf->atimespec;
 
-    if (strcmp(path, "/") == 0) {
+    /* When macFUSE calls getattr after setattr (ftruncate path), path
+       may be NULL and the VP is conveyed via fi->fh. */
+    int64_t vp = 0;
+    if (!path || path[0] == '\0') {
+        if (fi) {
+            vp = (int64_t)fi->fh;
+        } else {
+            /* No path and no fi — return root attribtes as sentinel. */
+            stbuf->mode = S_IFDIR | 0755;
+            stbuf->nlink = 2;
+            stbuf->mtimespec = stbuf->atimespec;
+            stbuf->ctimespec = stbuf->atimespec;
+            return 0;
+        }
+    } else if (strcmp(path, "/") == 0) {
         stbuf->mode = S_IFDIR | 0755;
         stbuf->nlink = 2;
         stbuf->mtimespec = stbuf->atimespec;
         stbuf->ctimespec = stbuf->atimespec;
         return 0;
+    } else {
+        vp = resolve_full_path(state->vfs, state->epoch, path);
     }
-
-    int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
 
     if (fuse_is_dir(state->vfs, vp)) {
@@ -254,9 +268,8 @@ int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
         if (lr != VFS_OK) return -EACCES;
     }
 
-    /* Handle O_TRUNC inline.  macFUSE 3.18 cannot route truncate through
-       the setattr highlevel callback (daemon crash), so we truncate
-       the file as part of the open call. */
+    /* O_TRUNC accepted via open — kernel will follow with write, then
+       release.  Our truncate is handled inline here. */
     if ((fi->flags & O_TRUNC) && (fi->flags & (O_WRONLY | O_RDWR))) {
         int64_t cur_size = vfs_file_size(state->vfs, vp, vfs_current_epoch(state->vfs));
         if (cur_size > 0) {
@@ -453,11 +466,18 @@ int fuse_vfs_rename(const char* from, const char* to, unsigned int flags) {
 
 int fuse_vfs_truncate(const char* path, off_t size,
                       struct fuse_file_info* fi) {
-    (void)fi;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
 
-    int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
+    int64_t vp;
+    if (path && path[0] != '\0') {
+        vp = resolve_full_path(state->vfs, state->epoch, path);
+    } else if (fi) {
+        /* macFUSE ftruncate path: no path string, VP carried via fi->fh */
+        vp = (int64_t)fi->fh;
+    } else {
+        return -ENOENT;
+    }
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
 
     int r = vfs_truncate(state->vfs, vp, (int64_t)size,
@@ -619,40 +639,18 @@ int fuse_vfs_ioctl_cb(const char* path, int cmd, void* arg,
     return fuse_vfs_ioctl(state->vfs, (unsigned long)cmd, arg, data);
 }
 
-/* macFUSE 3.18 setattr handler.  When invoked via ftruncate (path=NULL,
-   fi provided), perform the truncation.  When invoked via path-only
-   (no fi), truncate via path.  Other flags (mode/uid/gid/mtime) are
-   accepted silently — VFS has no API for them.
-
-   IMPORTANT: On a successful SIZE truncate, we update attr->size to
-   the new file size so libfuse can send the implicit getattr reply
-   to the kernel with fresh attributes. */
+/* macFUSE 3.18 setattr handler.
+   MUST return -ENOSYS for FUSE_SET_ATTR_SIZE.  This causes libfuse to fall
+   through to the per-attribute handlers, specifically fuse_fs_truncate,
+   which calls fuse_vfs_truncate with fi->fh (the correct VP).
+   Returning success (0) routes into the auto_cache + fuse_reply_attr
+   path, which crashes due to `get_node(f, ino)` not finding the inode
+   in libfuse's internal node table after truncation. */
 int fuse_vfs_setattr(const char* path, struct fuse_darwin_attr* attr,
                      int to_set, struct fuse_file_info* fi) {
-    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    if (!state) return -EIO;
-    if (state->readonly && (to_set & FUSE_SET_ATTR_SIZE)) return -EROFS;
-
-    if (to_set & FUSE_SET_ATTR_SIZE) {
-        if (!attr) return -EIO;
-        int64_t vp = 0;
-        if (path && path[0] != '\0') {
-            vp = resolve_full_path(state->vfs, state->epoch, path);
-        } else if (fi) {
-            vp = (int64_t)fi->fh;
-        }
-        if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
-
-        int r = vfs_truncate(state->vfs, vp, attr->size, vfs_current_epoch(state->vfs));
-        if (r != VFS_OK) return vfs_error_to_errno(vfs_last_error(state->vfs));
-
-        /* Refresh attr out-parameter so libfuse can reply with fresh
-           attributes.  Without this, libfuse may send stale data and
-           the kernel may reject subsequent writes. */
-        attr->size = vfs_file_size(state->vfs, vp, vfs_current_epoch(state->vfs));
-        return 0;
-    }
-
+    (void)path; (void)fi;
+    if (to_set & FUSE_SET_ATTR_SIZE) return -ENOSYS;
+    if (!attr) return -EIO;
     /* mode/uid/gid/atime/mtime/etc — accept silently */
     return 0;
 }
@@ -681,10 +679,10 @@ const struct fuse_operations fuse_vfs_ops = {
     .init        = fuse_vfs_init,
     .destroy     = fuse_vfs_destroy,
     .getattr     = fuse_vfs_getattr,
-    /* setattr intentionally NOT registered: macFUSE 3.18 highlevel
-       libfuse crashes the daemon after a successful setattr reply
-       (workaround documented in fuse_vfs_setattr).  Truncate-on-create
-       is handled inline in fuse_vfs_open when O_TRUNC is set. */
+    /* .setattr intentionally NOT registered: macFUSE 3.18's setattr
+       handler has an internal abort() via get_node() when recounting
+       the fuse_reply_attr path after truncation.  We handle truncation
+       inline in fuse_vfs_open (O_TRUNC) and fuse_vfs_truncate. */
     .readdir     = fuse_vfs_readdir,
     .opendir     = fuse_vfs_opendir,
     .releasedir  = fuse_vfs_releasedir,
