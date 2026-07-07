@@ -9,6 +9,7 @@
 #include <string.h>
 
 #ifdef FUSE3_FOUND
+#define FUSE_USE_VERSION 30
 #include <fuse.h>
 #endif
 

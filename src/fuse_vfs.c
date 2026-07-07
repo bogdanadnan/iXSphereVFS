@@ -3,7 +3,7 @@
  * Exposes a VFS mount as a FUSE filesystem.
  */
 
-#define FUSE_USE_VERSION 31
+#define FUSE_USE_VERSION 30
 
 #include <errno.h>
 #include <stdlib.h>
