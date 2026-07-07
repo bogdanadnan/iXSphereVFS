@@ -101,3 +101,11 @@ int64_t resolve_full_path(vfs_t* vfs, const char* path) {
     free(path_copy);
     return parent;
 }
+
+/* ---------------------------------------------------------------------------
+ * Directory check — returns non-zero if the VFS node at vp is a directory.
+ * --------------------------------------------------------------------------- */
+
+int fuse_is_dir(vfs_t* vfs, int64_t vp) {
+    return vfs_node_type(vfs, vp) == 1;  /* 1 = NODE_TYPE_DIR, 3 = NODE_TYPE_FILE, 0 = error */
+}
