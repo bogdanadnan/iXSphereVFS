@@ -103,3 +103,9 @@ target_link_libraries(vfs_bench ixsphere_vfs pthread)
 
 add_executable(vfsctl tools/vfsctl.c)
 target_link_libraries(vfsctl ixsphere_vfs pthread)
+
+if(FUSE3_FOUND)
+  add_executable(vfs_fuse src/fuse_main.c)
+  target_link_libraries(vfs_fuse ixsphere_vfs ${FUSE3_LIBRARIES} pthread)
+  target_include_directories(vfs_fuse PRIVATE ${FUSE3_INCLUDE_DIRS})
+endif()
