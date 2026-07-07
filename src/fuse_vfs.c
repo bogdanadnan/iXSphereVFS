@@ -190,6 +190,7 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
     int64_t dir_vp = vfs_root(state->vfs);
     vfs_dirent_t ents[64];
     int n = vfs_readdir(state->vfs, dir_vp, ents, 64, state->epoch);
+    if (n < 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
     for (int i = 0; i < n; i++)
         filler(buf, ents[i].name, NULL, 0, 0);
 
@@ -218,6 +219,7 @@ int fuse_vfs_write(const char* path, const char* buf, size_t size,
                    off_t offset, struct fuse_file_info* fi) {
     (void)path;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (state->readonly) return -EROFS;
     int64_t vp = (int64_t)fi->fh;
     int r = vfs_write(state->vfs, vp, buf, (int64_t)offset,
                       (int64_t)size, state->epoch);
@@ -228,6 +230,7 @@ int fuse_vfs_create(const char* path, mode_t mode,
                     struct fuse_file_info* fi) {
     (void)mode;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (state->readonly) return -EROFS;
     /* Resolve parent directory */
     char* path_copy = strdup(path);
     if (!path_copy) return -ENOMEM;
@@ -253,6 +256,7 @@ int fuse_vfs_create(const char* path, mode_t mode,
 
 int fuse_vfs_unlink(const char* path) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (state->readonly) return -EROFS;
     /* Find parent */
     char* path_copy = strdup(path);
     if (!path_copy) return -ENOMEM;
@@ -277,6 +281,7 @@ int fuse_vfs_unlink(const char* path) {
 int fuse_vfs_mkdir(const char* path, mode_t mode) {
     (void)mode;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (state->readonly) return -EROFS;
     char* path_copy = strdup(path);
     if (!path_copy) return -ENOMEM;
     char* last_slash = strrchr(path_copy, '/');
@@ -299,6 +304,7 @@ int fuse_vfs_mkdir(const char* path, mode_t mode) {
 
 int fuse_vfs_rmdir(const char* path) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (state->readonly) return -EROFS;
     char* path_copy = strdup(path);
     if (!path_copy) return -ENOMEM;
     char* last_slash = strrchr(path_copy, '/');
@@ -322,6 +328,7 @@ int fuse_vfs_rmdir(const char* path) {
 int fuse_vfs_rename(const char* from, const char* to, unsigned int flags) {
     (void)flags;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (state->readonly) return -EROFS;
     /* For simplicity, only support rename within root */
     int64_t root = vfs_root(state->vfs);
     const char* src_name = (from[0] == '/') ? from + 1 : from;
@@ -334,14 +341,26 @@ int fuse_vfs_truncate(const char* path, off_t size,
                       struct fuse_file_info* fi) {
     (void)fi;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (state->readonly) return -EROFS;
+
     int64_t vp = resolve_full_path(state->vfs, path);
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
-    /* Truncation: write a zero byte at the target size */
-    char zero = 0;
-    if (size > 0) {
-        int r = vfs_write(state->vfs, vp, &zero, (int64_t)(size - 1),
-                          1, state->epoch);
+
+    int64_t cur_size = vfs_file_size(state->vfs, vp, state->epoch);
+    if ((int64_t)size < cur_size) return -ENOSYS;  /* shrink not supported */
+
+    /* Grow: write zeros in 1 MiB chunks from current size to target */
+    uint8_t zbuf[1048576];  /* 1 MiB */
+    memset(zbuf, 0, sizeof(zbuf));
+    int64_t remaining = (int64_t)size - cur_size;
+    int64_t wr_off = cur_size;
+    while (remaining > 0) {
+        int64_t chunk = (remaining < (int64_t)sizeof(zbuf)) ? remaining
+                                                             : (int64_t)sizeof(zbuf);
+        int r = vfs_write(state->vfs, vp, zbuf, wr_off, chunk, state->epoch);
         if (r < 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+        remaining -= chunk;
+        wr_off    += chunk;
     }
     return 0;
 }
