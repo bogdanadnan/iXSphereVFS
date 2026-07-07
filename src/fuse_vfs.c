@@ -13,6 +13,8 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 
 /* ---------------------------------------------------------------------------
@@ -155,23 +157,32 @@ int fuse_vfs_getattr(const char* path, struct stat* stbuf,
     (void)fi;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     memset(stbuf, 0, sizeof(struct stat));
+    time_t now = time(NULL);
+    stbuf->st_uid = getuid();
+    stbuf->st_gid = getgid();
 
     if (strcmp(path, "/") == 0) {
         stbuf->st_mode = S_IFDIR | 0755;
         stbuf->st_nlink = 2;
+        stbuf->st_mtime = now;
+        stbuf->st_ctime = now;
         return 0;
     }
 
-    int64_t vp = resolve_full_path(state->vfs, path);
+    int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
 
     if (fuse_is_dir(state->vfs, vp)) {
         stbuf->st_mode = S_IFDIR | 0755;
         stbuf->st_nlink = 2;
+        stbuf->st_mtime = now;
+        stbuf->st_ctime = now;
     } else {
         stbuf->st_mode = S_IFREG | 0644;
         stbuf->st_nlink = 1;
-        stbuf->st_size = vfs_file_size(state->vfs, vp, state->epoch);
+        stbuf->st_size  = vfs_file_size(state->vfs, vp, state->epoch);
+        stbuf->st_mtime = vfs_file_mtime(state->vfs, vp, state->epoch);
+        stbuf->st_ctime = vfs_file_ctime(state->vfs, vp);
     }
     return 0;
 }
@@ -199,7 +210,7 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
 
 int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    int64_t vp = resolve_full_path(state->vfs, path);
+    int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
     fi->fh = (uint64_t)vp;
     return 0;
@@ -240,7 +251,7 @@ int fuse_vfs_create(const char* path, mode_t mode,
     if (last_slash && last_slash != path_copy) {
         *last_slash = '\0';
         name = last_slash + 1;
-        parent_vp = resolve_full_path(state->vfs, path_copy);
+        parent_vp = resolve_full_path(state->vfs, state->epoch, path_copy);
     } else {
         name = path + 1;  /* "/file" → skip leading slash */
         parent_vp = vfs_root(state->vfs);
@@ -266,7 +277,7 @@ int fuse_vfs_unlink(const char* path) {
     if (last_slash && last_slash != path_copy) {
         *last_slash = '\0';
         name = last_slash + 1;
-        parent_vp = resolve_full_path(state->vfs, path_copy);
+        parent_vp = resolve_full_path(state->vfs, state->epoch, path_copy);
     } else {
         name = path + 1;
         parent_vp = vfs_root(state->vfs);
@@ -290,7 +301,7 @@ int fuse_vfs_mkdir(const char* path, mode_t mode) {
     if (last_slash && last_slash != path_copy) {
         *last_slash = '\0';
         name = last_slash + 1;
-        parent_vp = resolve_full_path(state->vfs, path_copy);
+        parent_vp = resolve_full_path(state->vfs, state->epoch, path_copy);
     } else {
         name = path + 1;
         parent_vp = vfs_root(state->vfs);
@@ -313,7 +324,7 @@ int fuse_vfs_rmdir(const char* path) {
     if (last_slash && last_slash != path_copy) {
         *last_slash = '\0';
         name = last_slash + 1;
-        parent_vp = resolve_full_path(state->vfs, path_copy);
+        parent_vp = resolve_full_path(state->vfs, state->epoch, path_copy);
     } else {
         name = path + 1;
         parent_vp = vfs_root(state->vfs);
@@ -343,7 +354,7 @@ int fuse_vfs_truncate(const char* path, off_t size,
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
 
-    int64_t vp = resolve_full_path(state->vfs, path);
+    int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
 
     int64_t cur_size = vfs_file_size(state->vfs, vp, state->epoch);
@@ -369,7 +380,7 @@ int fuse_vfs_utimens(const char* path, const struct timespec tv[2],
                      struct fuse_file_info* fi) {
     (void)tv; (void)fi;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    int64_t vp = resolve_full_path(state->vfs, path);
+    int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
     /* Touch is no-op — VFS mtime is set on write, no standalone utimens */
     return 0;
@@ -482,7 +493,7 @@ int vfs_error_to_errno(int vfs_err) {
  * Trailing slashes are stripped.
  * --------------------------------------------------------------------------- */
 
-int64_t resolve_full_path(vfs_t* vfs, const char* path) {
+int64_t resolve_full_path(vfs_t* vfs, int64_t epoch, const char* path) {
     /* root and input validation vfs_open will handle ctx-NULL downstream */
     if (!vfs) return 0;
 
@@ -525,7 +536,7 @@ int64_t resolve_full_path(vfs_t* vfs, const char* path) {
            on failure; callers read it via vfs_last_error(vfs) and
            convert via vfs_error_to_errno to produce FUSE-negative
            return values. */
-        int64_t child = vfs_open(vfs, parent, token, 0);
+        int64_t child = vfs_open(vfs, parent, token, epoch);
         if (child <= 0) {
             free(path_copy);
             return 0;

@@ -40,7 +40,7 @@ typedef struct {
  * Returns VirtualPtr on success, negative VFS error code on failure.
  * This will be implemented in Phase 4 (src/fuse_path.c).
  * --------------------------------------------------------------------------- */
-int64_t resolve_full_path(vfs_t* vfs, const char* path);
+int64_t resolve_full_path(vfs_t* vfs, int64_t epoch, const char* path);
 
 /* ---------------------------------------------------------------------------
  * Utility — returns non-zero if the VFS node at vp is a directory.
