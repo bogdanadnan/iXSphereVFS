@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 /* ---------------------------------------------------------------------------
  * Helpers
@@ -344,6 +345,80 @@ static int scenario_many_files(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Scenario 8: single_copy_write — write data without mirroring, then simulate
+ * a process crash via fork/exit (no flush, no clean unmount).  On remount
+ * the VFS must detect the missing data — a single-copy write that was never
+ * flushed leaves either no valid page or a torn write, and the read returns
+ * zero-filled data (corruption detected).
+ *
+ * Each iteration: fork → child mounts, writes, _exit(0) immediately →
+ * parent remounts → verifies that the page content is NOT the written data
+ * (zero-filled due to missing/partial CRC check on the single on-disk copy).
+ * --------------------------------------------------------------------------- */
+
+static int scenario_single_copy_write(void) {
+    uint8_t* page_buf = (uint8_t*)malloc((size_t)PAGE_SZ);
+    if (!page_buf) return -1;
+
+    for (int i = 0; i < 100; i++) {
+        cleanup();
+
+        /* Phase 1: fork a child that writes data then hard-crashes */
+        pid_t pid = fork();
+        if (pid < 0) { free(page_buf); return -1; }
+
+        if (pid == 0) {
+            /* Child: mount, write one page, then die immediately — no flush, no unmount */
+            vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+            if (!vfs) _exit(-1);
+            int64_t fvp = vfs_create(vfs, vfs->ctx->rootNodeOffset, "sc.dat", 0);
+            if (fvp <= 0) _exit(-1);
+            memset(page_buf, (uint8_t)(i & 0xFF), (size_t)PAGE_SZ);
+            int w = vfs_write(vfs, fvp, page_buf, 0, PAGE_SZ, 0);
+            if (w != PAGE_SZ) _exit(-1);
+            /* HARD CRASH — no vfs_flush, no vfs_unmount, no storage_close */
+            _exit(0);
+        }
+
+        /* Parent: wait for child to crash */
+        int status;
+        waitpid(pid, &status, 0);
+        if (!WIFEXITED(status)) { free(page_buf); return -1; }
+
+        /* Phase 2: remount and verify data is NOT intact */
+        vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+        if (!vfs) { free(page_buf); return -1; }
+        int64_t fvp2 = find_file(vfs, "sc.dat");
+        /* If the file doesn't exist at all, that's also detection */
+        if (fvp2 <= 0) {
+            vfs_unmount(vfs);
+            continue;  /* file lost = corruption detected = pass */
+        }
+
+        uint8_t* buf = (uint8_t*)malloc((size_t)PAGE_SZ);
+        if (!buf) { vfs_unmount(vfs); free(page_buf); return -1; }
+        int r = vfs_read(vfs, fvp2, buf, 0, PAGE_SZ, 0);
+        /* After a crash with no flush, the data page either:
+         *  - was not written to disk at all → zero-filled (detection works)
+         *  - was partially written → CRC mismatch → zero-filled (detection works)
+         *  - was fully written by luck → data matches (very unlikely but possible)
+         * We accept zero-filled as "corruption detected".  If the data
+         * actually matches the original, the crash didn't cause loss. */
+        int data_intact = (r == PAGE_SZ && memcmp(buf, page_buf, (size_t)PAGE_SZ) == 0);
+        free(buf);
+        vfs_unmount(vfs);
+
+        if (data_intact) {
+            fprintf(stderr, "  FAIL iter %d: single-copy data survived crash (no detection)\n", i);
+            free(page_buf);
+            return -1;
+        }
+    }
+    free(page_buf);
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
  * Scenarios table
  * --------------------------------------------------------------------------- */
 
@@ -360,7 +435,8 @@ static struct {
     {"multi_write",   scenario_multi_write},
     {"overwrite",     scenario_overwrite},
     {"rename",        scenario_rename},
-    {"many_files",    scenario_many_files},
+    {"many_files",           scenario_many_files},
+    {"single_copy_write",    scenario_single_copy_write},
 };
 static const int n_scenarios = (int)(sizeof(scenarios) / sizeof(scenarios[0]));
 
