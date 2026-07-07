@@ -430,3 +430,4 @@ FodyWeavers.xsd
 build*/
 Testing/
 build_clean/
+fuse/
