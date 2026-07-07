@@ -207,14 +207,16 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
     /* Must be a directory */
     if (!fuse_is_dir(state->vfs, dir_vp)) return -ENOTDIR;
 
-    filler(buf, ".", NULL, 0, 0);
-    filler(buf, "..", NULL, 0, 0);
+    struct stat dummy_st;
+    memset(&dummy_st, 0, sizeof(dummy_st));
+    filler(buf, ".", &dummy_st, 0, 0);
+    filler(buf, "..", &dummy_st, 0, 0);
 
     vfs_dirent_t ents[64];
     int n = vfs_readdir(state->vfs, dir_vp, ents, 64, state->epoch);
     if (n < 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
     for (int i = 0; i < n; i++)
-        filler(buf, ents[i].name, NULL, 0, 0);
+        filler(buf, ents[i].name, &dummy_st, 0, 0);
 
     return 0;
 }
