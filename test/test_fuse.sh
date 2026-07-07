@@ -88,6 +88,28 @@ test_fuse_create_read_delete() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# test_fuse_mkdir_rmdir — mkdir nested dirs, verify with ls, rmdir.
+# ---------------------------------------------------------------------------
+test_fuse_mkdir_rmdir() {
+    echo "=== test_fuse_mkdir_rmdir ==="
+    local d1="$MNT_POINT/subdir"
+    local d2="$MNT_POINT/subdir/nested"
+
+    mkdir -p "$d2" || { echo "FAIL: mkdir -p nested"; return 1; }
+    ls "$d1" >/dev/null 2>&1 || { echo "FAIL: ls subdir"; return 1; }
+    ls "$d2" >/dev/null 2>&1 || { echo "FAIL: ls nested"; return 1; }
+    echo "  created subdir/nested"
+
+    rmdir "$d2" || { echo "FAIL: rmdir nested"; return 1; }
+    if [ -d "$d2" ]; then echo "FAIL: nested still exists"; return 1; fi
+
+    rmdir "$d1" || { echo "FAIL: rmdir subdir"; return 1; }
+    if [ -d "$d1" ]; then echo "FAIL: subdir still exists"; return 1; fi
+    echo "  removed and gone"
+    return 0
+}
+
 echo "=== test_fuse smoke test ==="
 
 # Build a small test VFS
@@ -103,6 +125,7 @@ FUSE_PID=$!
 # Verify the mount
 if wait_for_mount; then
     test_fuse_create_read_delete || exit 1
+    test_fuse_mkdir_rmdir || exit 1
     # Unmount
     fusermount3 -u "$MNT_POINT" 2>/dev/null || umount "$MNT_POINT" 2>/dev/null || true
     wait $FUSE_PID 2>/dev/null || true
