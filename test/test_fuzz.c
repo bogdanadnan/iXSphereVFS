@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/types.h>
 
 /* ---------------------------------------------------------------------------
  * Deterministic PRNG — xorshift64
@@ -114,6 +116,31 @@ static int populate_seed_vfs(void) {
     vfs_flush(vfs);
     vfs_unmount(vfs);
     return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Corrupt phase — open the backing file and XOR random bits into a
+ * single random byte (excluding the page-0 XVFS magic at bytes 0..3).
+ * --------------------------------------------------------------------------- */
+
+static void fuzz_corrupt(const char* path, Rand* r) {
+    int fd = open(path, O_RDWR);
+    if (fd < 0) return;
+
+    off_t file_size = lseek(fd, 0, SEEK_END);
+    if (file_size <= 4) { close(fd); return; }  /* too small */
+
+    /* Pick a random byte offset, avoiding bytes 0-3 (page-0 magic) */
+    off_t pos = (off_t)(4 + rand_next(r) % (uint64_t)(file_size - 4));
+    uint8_t byte_val = 0;
+    if (pread(fd, &byte_val, 1, pos) != 1) { close(fd); return; }
+
+    /* XOR a random bit pattern into the byte */
+    uint8_t mask = (uint8_t)(rand_next(r) & 0xFF);
+    byte_val ^= mask;
+
+    pwrite(fd, &byte_val, 1, pos);
+    close(fd);
 }
 
 /* ---------------------------------------------------------------------------
@@ -305,9 +332,25 @@ int main(int argc, char** argv) {
             }
         }
 
-        /* Clean unmount — no crash for basic fuzz */
+        /* Flush and unmount cleanly */
         vfs_flush(vfs);
         vfs_unmount(vfs);
+
+        /* Corrupt a random byte in the backing file (avoid page-0 magic) */
+        if (rand_int(&r, 4) == 0) {  /* ~25% chance of corruption per iteration */
+            fuzz_corrupt(FUZZ_VFS_PATH, &r);
+        }
+
+        /* Remount and verify the VFS is still loadable (or gracefully fails) */
+        vfs = vfs_mount(FUZZ_VFS_PATH, FUZZ_PAGE_SZ);
+        if (vfs) {
+            /* Quick sanity: read root directory */
+            vfs_dirent_t check[16];
+            vfs_readdir(vfs, vfs->ctx->rootNodeOffset, check, 16, 0);
+            vfs_unmount(vfs);
+        }
+        /* Mount failure after corruption is acceptable — the corruption
+           may have hit critical metadata.  This doesn't count as a crash. */
 
         if (iter > 0 && iter % 1000 == 0)
             printf("  %d iterations, %d ops, %d crashes so far\n",
