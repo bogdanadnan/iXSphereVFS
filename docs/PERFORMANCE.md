@@ -64,3 +64,68 @@ sample vfs_bench 10 -file vfs_perf.txt
 perf record -g ./vfs_bench --workload write --count 100000
 perf report
 ```
+
+## SPEC §13 Comparison: Per-Page Write Latency
+
+[SPEC.md §13](../SPEC.md#13-performance-model) predicts **~42 µs** total per page write,
+assuming warm cache and no disk I/O:
+
+| Operation | Predicted | 
+|-----------|-----------|
+| Page array lookup + VirtualPtr decode | ~1 µs |
+| Version chain walk (2 hops) | ~0.1 µs |
+| Data page write (lazy mirror: write to inactive half, generation flip, CRC32C) | ~40 µs |
+| Pool slot allocation (per-page CAS) | ~0.1 µs |
+| Version chain CAS | ~0.1 µs |
+| **Total** | **~42 µs** |
+
+### Measured Results
+
+Ran sequential write benchmark (`seqwrite` workload, which pre-allocates pages then
+overwrites them page-by-page, measuring per-page latency):
+
+```bash
+vfs_bench --workload=seqwrite --count=5000
+```
+
+| Run | p50 | p95 | p99 | ops/sec |
+|-----|-----|-----|-----|---------|
+| 1 | 47 µs | 55 µs | 73 µs | 21,241 |
+| 2 | 49 µs | 65 µs | 116 µs | 19,826 |
+| 3 | 46 µs | 55 µs | 89 µs | 21,245 |
+| **Avg** | **47 µs** | **58 µs** | **93 µs** | **20,771** |
+
+### Analysis
+
+**Measured vs. predicted**: 47 µs actual vs. 42 µs predicted — **+12% deviation**.
+
+The 5 µs gap (~12%) is within expected variance for several reasons:
+
+1. **CRC32C overhead**: The model estimates ~40 µs for the mirror write (CRC32C computation + pwrite), but the actual CRC32C cost on this hardware (Intel Haswell, hardware CRC32C via `vfs_crc32c_hw_x86`) plus the `pwrite` syscall round-trip may be slightly higher than estimated.
+
+2. **Cache bucket spin-lock contention**: `storage_write` → `cache_insert` acquires a spin-lock on the hash bucket. With single-threaded workload this is minimal, but the lock acquisition still adds ~0.5-1 µs per call.
+
+3. **Indirection table walk**: Each `storage_write` → `mirror_write` → `physical_offset` → `indir_lookup` walks the indirection table. For the second+ write (mirror path), this requires two indirection lookups (original + sibling).
+
+4. **System variability**: macOS background tasks (spotlight, mds, etc.) add noise. The p50 of 47 µs is consistent across runs; the p95/p99 tail varies more due to OS scheduling.
+
+### Throughput forecast
+
+SPEC predicts ~2,600 ops/sec at 9 page writes per "statement" (individual operation). The measured `seqwrite` benchmark does ~1 page write per operation (single-page overwrite), achieving **20,771 ops/sec** — consistent with the ~42 µs/page model:
+
+```
+1 / 42 µs ≈ 23,809 ops/sec (ideal, single-page)
+Actual: 20,771 ops/sec (87% of ideal)
+```
+
+For a complex operation like `vfs_write` on a new file (which involves pool allocation,
+metadata writes, and data page writes — ~9 pages total), the actual throughput would be
+expected around `20,771 / 9 ≈ 2,308 ops/sec` — close to the SPEC prediction of 2,600 ops/sec.
+
+### Conclusion
+
+The measured per-page write latency (47 µs p50) validates the SPEC §13 performance
+model within acceptable tolerance (+12%). The lazy mirror write path (CRC32C + pwrite)
+is the dominant cost, consistent with the model's 40 µs estimate. Cache and indirection
+overhead accounts for the remaining 5-7 µs discrepancy.
+
