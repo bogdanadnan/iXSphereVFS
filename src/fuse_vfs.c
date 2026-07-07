@@ -15,6 +15,19 @@
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
+ * Option parsing state — ephemeral, populated by fuse_vfs_opt_proc
+ * during argument parsing, consumed by fuse_vfs_init to populate
+ * fuse_vfs_state_t, then destroyed.  Not retained after mount.
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    char*   vfs_path;   /* strdup'd path to VFS backing file */
+    int64_t epoch;      /* initial working epoch (0 = base) */
+    int64_t page_size;  /* VFS page size (default 8192) */
+    int     readonly;   /* non-zero for read-only mount */
+} fuse_vfs_opts;
+
+/* ---------------------------------------------------------------------------
  * Error mapping — VFS error codes to POSIX errno values.
  * Used by FUSE callbacks to translate VFS errors into negative errno
  * returns expected by FUSE.
