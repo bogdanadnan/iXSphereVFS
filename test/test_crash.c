@@ -12,13 +12,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef _WIN32
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
+#endif
 
 /* ---------------------------------------------------------------------------
  * Helpers
  * --------------------------------------------------------------------------- */
+
+#ifndef _WIN32
 
 #define VFS_PATH  "/tmp/test_crash_vfs.dat"
 #define PAGE_SZ   8192
@@ -361,7 +366,7 @@ static int scenario_many_files(void) {
  * flushed leaves either no valid page or a torn write, and the read returns
  * zero-filled data (corruption detected).
  *
- * Each iteration: fork → child mounts, writes, _exit(0) immediately →
+ * Each iteration: fork → child mounts, writes, kill(getpid(), SIGKILL) →
  * parent remounts → verifies that the page content is NOT the written data
  * (zero-filled due to missing/partial CRC check on the single on-disk copy).
  * --------------------------------------------------------------------------- */
@@ -1079,3 +1084,14 @@ int main(int argc, char** argv) {
            passed, passed + failed, failed);
     return failed > 0 ? 1 : 0;
 }
+
+#else  /* _WIN32 */
+
+#include <stdio.h>
+int main(int argc, char** argv) {
+    (void)argc; (void)argv;
+    fprintf(stderr, "test_crash: skipped on Windows (Unix-only fork/kill/waitpid)\n");
+    return 0;
+}
+
+#endif /* !_WIN32 */

@@ -76,7 +76,11 @@ set_source_files_properties(test/test_var_array.c PROPERTIES COMPILE_FLAGS "-DVF
 
 add_executable(test_crash test/test_crash.c)
 target_link_libraries(test_crash ixsphere_vfs pthread)
+if(NOT WIN32)
 add_test(NAME test_crash COMMAND test_crash)
+else()
+# test_crash uses fork/kill/waitpid — skip on Windows
+endif()
 
 add_executable(vfs_bench bench/bench.c)
 target_link_libraries(vfs_bench ixsphere_vfs pthread)
