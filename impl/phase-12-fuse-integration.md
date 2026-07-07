@@ -24,15 +24,14 @@ expose snapshot, commit, soft-delete, and GC through the mount point.
 
 ## Non-Negotiable Constraints
 
-- **libfuse 3.x only.** FUSE 2.x API is deprecated. Use the high-level API
-  (`fuse_operations` struct, `fuse_main_real`).
-- **Single-threaded FUSE by default.** The VFS is thread-safe, but FUSE's
-  default single-threaded mode simplifies initial integration. Multi-threaded
-  FUSE (`-o default_permissions,allow_other`) is optional.
-- **Epoch selection via mount option.** `-o epoch=N` selects the read epoch.
-  Default is -1 (current live head). Write operations always use the live
-  head or explicitly requested epoch.
+- **libfuse 3.x only.** Use the high-level API (`fuse_operations` struct, `fuse_main_real`).
+- **Single-threaded FUSE by default.** Multi-threaded (`-o default_permissions,allow_other`) optional.
+- **Epoch selection via mount option.** `-o epoch=N` selects the read epoch. Default -1 (live head).
 - **No VFS code changes.** This phase is purely a shim layer.
+- **VirtualPtr handles in FUSE `fi->fh`.** `vfs_create`/`vfs_open` return VirtualPtrs which fit in `uint64_t`.
+  No nodeId/VirtualPtr confusion at the FUSE level.
+- **Init/destroy callbacks required.** `init` calls `vfs_mount`, `destroy` calls `vfs_unmount`.
+  The VFS file path is passed as private data via `fuse_main_real`.
 
 ---
 
@@ -45,25 +44,25 @@ starting from root (nodeId 0).
 
 ### Path Resolution
 
-`resolve_path(vfs, parent, name, epoch) → nodeId` is a helper that walks
-one level of directory. FUSE passes full paths; we split and resolve each
-component:
+FUSE passes full paths. Split and resolve each component using `vfs_open`,
+tracking VirtualPtrs for each level. The root directory VirtualPtr is
+`vfs->ctx->rootNodeOffset`.
 
 ```c
 int64_t resolve_full_path(vfs_t* vfs, const char* path, int64_t epoch) {
-    if (strcmp(path, "/") == 0) return 0;  // root
-    int64_t parent = 0;
+    if (strcmp(path, "/") == 0) return vfs->ctx->rootNodeOffset;
+    int64_t parent = vfs->ctx->rootNodeOffset;
     char* copy = strdup(path);
     char* tok = strtok(copy, "/");
     int64_t current = 0;
     while (tok) {
         current = vfs_open(vfs, parent, tok, epoch);
-        if (current < 0) break;
-        parent = current;
+        if (current <= 0) break;  // error or not found
+        parent = current;         // current is a VirtualPtr
         tok = strtok(NULL, "/");
     }
     free(copy);
-    return current;
+    return current > 0 ? current : 0;
 }
 ```
 
@@ -71,18 +70,20 @@ int64_t resolve_full_path(vfs_t* vfs, const char* path, int64_t epoch) {
 
 | FUSE callback | VFS call | Notes |
 |---------------|----------|-------|
-| `getattr` | `vfs_file_size` + `vfs_file_mtime` + `vfs_file_ctime` | Also fills `st_mode`, `st_nlink` |
-| `readdir` | `vfs_readdir` | Fills `filler(buf, name, stat, 0)` |
-| `open` | `resolve_full_path` | Returns nodeId as file handle |
-| `read` | `vfs_read` | Uses nodeId from open |
-| `write` | `vfs_write` | |
-| `create` | `vfs_create` | |
-| `mkdir` | `vfs_mkdir` | |
-| `unlink` | `vfs_delete` | |
-| `rmdir` | `vfs_rmdir` | |
-| `rename` | `vfs_rename` | FUSE passes full src/dst paths; resolve both parents |
-| `truncate` | `vfs_write` (zero-fill to extend) or new `vfs_truncate` | |
-| `statfs` | StorageBackend `total_pages`, `page_size` | Compute `f_blocks`, `f_bfree`, `f_bsize` |
+| `init` | `vfs_mount(path, page_size)` | VFS file path from private_data |
+| `destroy` | `vfs_unmount(vfs)` | |
+| `getattr` | `vfs_file_size` + `vfs_file_mtime` + `vfs_file_ctime` | |
+| `readdir` | `vfs_readdir` | Root: parent=root_vp |
+| `open` | `vfs_open(parent_vp, name, epoch)` | Returns VirtualPtr stored in `fi->fh` |
+| `read` | `vfs_read(vp, buf, offset, count, epoch)` | `vp` from `fi->fh` |
+| `write` | `vfs_write(vp, data, offset, count, epoch)` | |
+| `create` | `vfs_create(parent_vp, name, epoch)` | Returns VirtualPtr stored in `fi->fh` |
+| `mkdir` | `vfs_mkdir(parent_vp, name, epoch)` | |
+| `unlink` | `vfs_delete(parent_vp, name, epoch)` | |
+| `rmdir` | `vfs_rmdir(parent_vp, name, epoch)` | |
+| `rename` | `vfs_rename(src_vp, src_name, dst_vp, dst_name, epoch)` | |
+| `truncate` | `vfs_write` (zero-fill to extend) | |
+| `statfs` | StorageBackend `total_pages`, `page_size` | |
 | `flush` | `vfs_flush` | Called on `close()` |
 | `ioctl` | Custom routing (Workload 12.2) | |
 
