@@ -436,10 +436,13 @@ static int fuse_vfs_releasedir(const char* path, struct fuse_file_info* fi)
 static int fuse_vfs_release(const char* path, struct fuse_file_info* fi) {
     (void)path;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    /* Release the per-file lock.  vfs_unlock is idempotent — safe to call
-       even for read-only opens that never acquired a lock. */
+    /* Release the per-file lock.  vfs_unlock is not idempotent — it
+       returns VFS_ERR_IO if no lock is held (e.g., read-only opens that
+       never called vfs_lock).  We silently discard the return value:
+       FUSE release must always succeed, and a failed unlock does not
+       affect filesystem consistency. */
     int64_t vp = (int64_t)fi->fh;
-    vfs_unlock(state->vfs, vp, vfs_current_epoch(state->vfs));
+    (void)vfs_unlock(state->vfs, vp, vfs_current_epoch(state->vfs));
     return 0;
 }
 static int fuse_vfs_flush(const char* path, struct fuse_file_info* fi)
