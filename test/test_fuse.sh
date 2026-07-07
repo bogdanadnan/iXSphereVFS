@@ -35,8 +35,8 @@ setup_test() {
 teardown_test() {
     fusermount3 -u -z "$MNT_POINT" 2>/dev/null || true
     fusermount -u -z "$MNT_POINT" 2>/dev/null || true
-    rm -rf "$(dirname "$VFS_FILE")" 2>/dev/null || true
-    rmdir "$MNT_POINT" 2>/dev/null || true
+    rm -f "$VFS_FILE" 2>/dev/null || true
+    rm -rf "$MNT_POINT" 2>/dev/null || true
 }
 
 setup_test
