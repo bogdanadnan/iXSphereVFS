@@ -145,6 +145,217 @@ void fuse_vfs_destroy(void* private_data) {
     free(state);
 }
 
+/* ---------------------------------------------------------------------------
+ * FUSE operations — each callback retrieves the per-mount state via
+ * fuse_get_context()->private_data and delegates to the VFS API.
+ * --------------------------------------------------------------------------- */
+
+int fuse_vfs_getattr(const char* path, struct stat* stbuf,
+                     struct fuse_file_info* fi) {
+    (void)fi;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    memset(stbuf, 0, sizeof(struct stat));
+
+    if (strcmp(path, "/") == 0) {
+        stbuf->st_mode = S_IFDIR | 0755;
+        stbuf->st_nlink = 2;
+        return 0;
+    }
+
+    int64_t vp = resolve_full_path(state->vfs, path);
+    if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+
+    if (fuse_is_dir(state->vfs, vp)) {
+        stbuf->st_mode = S_IFDIR | 0755;
+        stbuf->st_nlink = 2;
+    } else {
+        stbuf->st_mode = S_IFREG | 0644;
+        stbuf->st_nlink = 1;
+        stbuf->st_size = vfs_file_size(state->vfs, vp, state->epoch);
+    }
+    return 0;
+}
+
+int fuse_vfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
+                     off_t offset, struct fuse_file_info* fi,
+                     enum fuse_readdir_flags flags) {
+    (void)offset; (void)fi; (void)flags;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+
+    if (strcmp(path, "/") != 0) return -ENOENT;
+
+    filler(buf, ".", NULL, 0, 0);
+    filler(buf, "..", NULL, 0, 0);
+
+    int64_t dir_vp = vfs_root(state->vfs);
+    vfs_dirent_t ents[64];
+    int n = vfs_readdir(state->vfs, dir_vp, ents, 64, state->epoch);
+    for (int i = 0; i < n; i++)
+        filler(buf, ents[i].name, NULL, 0, 0);
+
+    return 0;
+}
+
+int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    int64_t vp = resolve_full_path(state->vfs, path);
+    if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+    fi->fh = (uint64_t)vp;
+    return 0;
+}
+
+int fuse_vfs_read(const char* path, char* buf, size_t size,
+                  off_t offset, struct fuse_file_info* fi) {
+    (void)path;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    int64_t vp = (int64_t)fi->fh;
+    int r = vfs_read(state->vfs, vp, buf, (int64_t)offset,
+                     (int64_t)size, state->epoch);
+    return (r >= 0) ? r : vfs_error_to_errno(vfs_last_error(state->vfs));
+}
+
+int fuse_vfs_write(const char* path, const char* buf, size_t size,
+                   off_t offset, struct fuse_file_info* fi) {
+    (void)path;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    int64_t vp = (int64_t)fi->fh;
+    int r = vfs_write(state->vfs, vp, buf, (int64_t)offset,
+                      (int64_t)size, state->epoch);
+    return (r >= 0) ? r : vfs_error_to_errno(vfs_last_error(state->vfs));
+}
+
+int fuse_vfs_create(const char* path, mode_t mode,
+                    struct fuse_file_info* fi) {
+    (void)mode;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    /* Resolve parent directory */
+    char* path_copy = strdup(path);
+    if (!path_copy) return -ENOMEM;
+    char* last_slash = strrchr(path_copy, '/');
+    const char* name;
+    int64_t parent_vp;
+    if (last_slash && last_slash != path_copy) {
+        *last_slash = '\0';
+        name = last_slash + 1;
+        parent_vp = resolve_full_path(state->vfs, path_copy);
+    } else {
+        name = path + 1;  /* "/file" → skip leading slash */
+        parent_vp = vfs_root(state->vfs);
+    }
+    if (parent_vp <= 0) { free(path_copy); return -ENOENT; }
+
+    int64_t vp = vfs_create(state->vfs, parent_vp, name, state->epoch);
+    free(path_copy);
+    if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+    fi->fh = (uint64_t)vp;
+    return 0;
+}
+
+int fuse_vfs_unlink(const char* path) {
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    /* Find parent */
+    char* path_copy = strdup(path);
+    if (!path_copy) return -ENOMEM;
+    char* last_slash = strrchr(path_copy, '/');
+    const char* name;
+    int64_t parent_vp;
+    if (last_slash && last_slash != path_copy) {
+        *last_slash = '\0';
+        name = last_slash + 1;
+        parent_vp = resolve_full_path(state->vfs, path_copy);
+    } else {
+        name = path + 1;
+        parent_vp = vfs_root(state->vfs);
+    }
+    if (parent_vp <= 0) { free(path_copy); return -ENOENT; }
+
+    int ret = vfs_delete(state->vfs, parent_vp, name, state->epoch);
+    free(path_copy);
+    return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
+}
+
+int fuse_vfs_mkdir(const char* path, mode_t mode) {
+    (void)mode;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    char* path_copy = strdup(path);
+    if (!path_copy) return -ENOMEM;
+    char* last_slash = strrchr(path_copy, '/');
+    const char* name;
+    int64_t parent_vp;
+    if (last_slash && last_slash != path_copy) {
+        *last_slash = '\0';
+        name = last_slash + 1;
+        parent_vp = resolve_full_path(state->vfs, path_copy);
+    } else {
+        name = path + 1;
+        parent_vp = vfs_root(state->vfs);
+    }
+    if (parent_vp <= 0) { free(path_copy); return -ENOENT; }
+
+    int64_t vp = vfs_mkdir(state->vfs, parent_vp, name, state->epoch);
+    free(path_copy);
+    return (vp > 0) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
+}
+
+int fuse_vfs_rmdir(const char* path) {
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    char* path_copy = strdup(path);
+    if (!path_copy) return -ENOMEM;
+    char* last_slash = strrchr(path_copy, '/');
+    const char* name;
+    int64_t parent_vp;
+    if (last_slash && last_slash != path_copy) {
+        *last_slash = '\0';
+        name = last_slash + 1;
+        parent_vp = resolve_full_path(state->vfs, path_copy);
+    } else {
+        name = path + 1;
+        parent_vp = vfs_root(state->vfs);
+    }
+    if (parent_vp <= 0) { free(path_copy); return -ENOENT; }
+
+    int ret = vfs_rmdir(state->vfs, parent_vp, name, state->epoch);
+    free(path_copy);
+    return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
+}
+
+int fuse_vfs_rename(const char* from, const char* to, unsigned int flags) {
+    (void)flags;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    /* For simplicity, only support rename within root */
+    int64_t root = vfs_root(state->vfs);
+    const char* src_name = (from[0] == '/') ? from + 1 : from;
+    const char* dst_name = (to[0] == '/') ? to + 1 : to;
+    int ret = vfs_rename(state->vfs, root, src_name, root, dst_name, state->epoch);
+    return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
+}
+
+int fuse_vfs_truncate(const char* path, off_t size,
+                      struct fuse_file_info* fi) {
+    (void)fi;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    int64_t vp = resolve_full_path(state->vfs, path);
+    if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+    /* Truncation: write a zero byte at the target size */
+    char zero = 0;
+    if (size > 0) {
+        int r = vfs_write(state->vfs, vp, &zero, (int64_t)(size - 1),
+                          1, state->epoch);
+        if (r < 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+    }
+    return 0;
+}
+
+int fuse_vfs_utimens(const char* path, const struct timespec tv[2],
+                     struct fuse_file_info* fi) {
+    (void)tv; (void)fi;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    int64_t vp = resolve_full_path(state->vfs, path);
+    if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+    /* Touch is no-op — VFS mtime is set on write, no standalone utimens */
+    return 0;
+}
+
 #endif /* FUSE3_FOUND */
 
 /* ---------------------------------------------------------------------------
