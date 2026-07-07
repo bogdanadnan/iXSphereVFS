@@ -28,6 +28,36 @@ typedef struct {
 } fuse_vfs_opts;
 
 /* ---------------------------------------------------------------------------
+ * FUSE option parsing keys — custom keys for -o epoch=, -o page_size=,
+ * -o readonly.  allow_other is handled by libfuse's built-in parser.
+ * --------------------------------------------------------------------------- */
+
+#ifdef FUSE3_FOUND
+
+#include <inttypes.h>
+
+/* Custom option keys (negative to avoid collision with FUSE_OPT_KEY_*). */
+enum {
+    KEY_VFS_PATH   = -1,
+    KEY_EPOCH      = -2,
+    KEY_PAGE_SIZE  = -3,
+    KEY_READONLY   = -4,
+    KEY_HELP       = -5,
+};
+
+static const struct fuse_opt fuse_vfs_opts_spec[] = {
+    { "--vfs-file=%s", 0, KEY_VFS_PATH },
+    FUSE_OPT_KEY("-o epoch=",           KEY_EPOCH),
+    FUSE_OPT_KEY("-o page_size=",       KEY_PAGE_SIZE),
+    FUSE_OPT_KEY("-o readonly",         KEY_READONLY),
+    FUSE_OPT_KEY("-h",                  KEY_HELP),
+    FUSE_OPT_KEY("--help",              KEY_HELP),
+    FUSE_OPT_END
+};
+
+#endif /* FUSE3_FOUND */
+
+/* ---------------------------------------------------------------------------
  * Error mapping — VFS error codes to POSIX errno values.
  * Used by FUSE callbacks to translate VFS errors into negative errno
  * returns expected by FUSE.
