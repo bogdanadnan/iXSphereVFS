@@ -450,12 +450,9 @@ int fuse_vfs_truncate(const char* path, off_t size,
 
 int fuse_vfs_utimens(const char* path, const struct timespec tv[2],
                      struct fuse_file_info* fi) {
-    (void)tv; (void)fi;
-    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
-    if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
-    /* Touch is no-op — VFS mtime is set on write, no standalone utimens */
-    return 0;
+    (void)path; (void)tv; (void)fi;
+    /* VFS has no standalone timestamp-setting API — mtime is write-driven */
+    return -ENOSYS;
 }
 
 /* ---------------------------------------------------------------------------
