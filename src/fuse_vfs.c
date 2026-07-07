@@ -95,6 +95,42 @@ int fuse_vfs_opt_proc(void* data, const char* arg, int key,
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * FUSE init callback — called by libfuse at mount time.
+ * Receives fuse_vfs_opts* via fuse_get_context()->private_data,
+ * heap-allocates a fuse_vfs_state_t, mounts the VFS, and returns the
+ * state as the new private_data for all subsequent FUSE callbacks.
+ * --------------------------------------------------------------------------- */
+
+void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
+    (void)conn;
+    (void)cfg;
+
+    fuse_vfs_opts* opts = (fuse_vfs_opts*)fuse_get_context()->private_data;
+    if (!opts || !opts->vfs_path) return NULL;
+
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)calloc(1, sizeof(fuse_vfs_state_t));
+    if (!state) return NULL;
+
+    /* Take ownership of the VFS path string */
+    state->vfs_path  = opts->vfs_path;
+    opts->vfs_path   = NULL;  /* opts no longer owns it */
+
+    state->epoch     = opts->epoch;
+    state->page_size = (opts->page_size > 0) ? opts->page_size : 8192;
+    state->readonly  = (opts->readonly != 0);
+
+    /* Mount the VFS */
+    state->vfs = vfs_mount(state->vfs_path, state->page_size);
+    if (!state->vfs) {
+        free(state->vfs_path);
+        free(state);
+        return NULL;
+    }
+
+    return state;
+}
+
 #endif /* FUSE3_FOUND */
 
 /* ---------------------------------------------------------------------------
