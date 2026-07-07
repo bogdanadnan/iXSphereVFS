@@ -36,6 +36,12 @@ int64_t resolve_full_path(vfs_t* vfs, const char* path);
 int fuse_is_dir(vfs_t* vfs, int64_t vp);
 
 /* ---------------------------------------------------------------------------
+ * Error mapping — converts a VFS error code (vfs_error_t) to a negative
+ * errno value suitable for FUSE callback returns.
+ * --------------------------------------------------------------------------- */
+int vfs_error_to_errno(int vfs_err);
+
+/* ---------------------------------------------------------------------------
  * FUSE option parsing callback — processes custom command-line options
  * (--vfs-file, --readonly, --epoch) and populates fuse_vfs_state_t.
  * Implementation in src/fuse_vfs.c (Phase 5).

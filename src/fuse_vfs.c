@@ -20,7 +20,7 @@
  * returns expected by FUSE.
  * --------------------------------------------------------------------------- */
 
-static int vfs_error_to_errno(int vfs_err) {
+int vfs_error_to_errno(int vfs_err) {
     switch (vfs_err) {
     case VFS_OK:            return 0;
     case VFS_ERR_IO:        return -EIO;
@@ -46,7 +46,8 @@ static int vfs_error_to_errno(int vfs_err) {
  * --------------------------------------------------------------------------- */
 
 int64_t resolve_full_path(vfs_t* vfs, const char* path) {
-    if (!vfs) return VFS_ERR_IO;
+    /* root and input validation vfs_open will handle ctx-NULL downstream */
+    if (!vfs) return 0;
 
     /* Root directory */
     if (!path || path[0] == '\0' || (path[0] == '/' && path[1] == '\0'))
@@ -58,7 +59,7 @@ int64_t resolve_full_path(vfs_t* vfs, const char* path) {
     /* Make a mutable copy for strtok_r */
     size_t path_len = strlen(path);
     char* path_copy = (char*)malloc(path_len + 1);
-    if (!path_copy) return VFS_ERR_NOMEM;
+    if (!path_copy) return 0;
     memcpy(path_copy, path, path_len + 1);
 
     char* saveptr = NULL;
@@ -77,19 +78,20 @@ int64_t resolve_full_path(vfs_t* vfs, const char* path) {
             continue;
         }
 
-        /* ".." — parent directory (not supported: VFS has no parent pointer).
-           Return an error for now; Phase 9 adds readlink/symlink support. */
+        /* ".." — parent directory (not supported: VFS has no parent pointer) */
         if (strcmp(token, "..") == 0) {
             free(path_copy);
-            return VFS_ERR_NOTDIR;
+            return 0;
         }
 
-        /* Resolve the component */
+        /* Resolve the component.  vfs_open sets vfs->ctx->last_error
+           on failure; callers read it via vfs_last_error(vfs) and
+           convert via vfs_error_to_errno to produce FUSE-negative
+           return values. */
         int64_t child = vfs_open(vfs, parent, token, 0);
         if (child <= 0) {
             free(path_copy);
-            /* vfs_open returns VFS_ERR_NOTFOUND or other negative on failure */
-            return (int)child;
+            return 0;
         }
 
         parent = child;
