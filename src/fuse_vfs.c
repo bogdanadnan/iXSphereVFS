@@ -221,6 +221,9 @@ int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+    if (fuse_is_dir(state->vfs, vp)) return -EISDIR;
+    if (state->readonly && (fi->flags & (O_WRONLY | O_RDWR)))
+        return -EROFS;
     fi->fh = (uint64_t)vp;
     return 0;
 }
