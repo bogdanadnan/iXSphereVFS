@@ -134,6 +134,8 @@ void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
     }
 
     cfg->nullpath_ok = 1;
+    /* Allow ioctl on directories (snapshot/commit/gc commands) */
+    conn->want |= FUSE_CAP_IOCTL_DIR;
 
     return state;
 }
