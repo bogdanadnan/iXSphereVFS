@@ -528,7 +528,7 @@ int fuse_vfs_chmod(const char* path, mode_t m, struct fuse_file_info* fi)
 int fuse_vfs_chown(const char* path, uid_t u, gid_t g, struct fuse_file_info* fi)
     { (void)path; (void)u; (void)g; (void)fi; return -ENOSYS; }
 int fuse_vfs_readlink(const char* path, char* buf, size_t size)
-    { (void)path; (void)buf; (void)size; return -ENOSYS; }
+    { (void)path; (void)buf; (void)size; return -EINVAL; }
 int fuse_vfs_symlink(const char* from, const char* to)
     { (void)from; (void)to; return -ENOSYS; }
 int fuse_vfs_link(const char* from, const char* to)
