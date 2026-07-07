@@ -114,5 +114,6 @@ if(FUSE3_FOUND)
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/test/test_fuse.sh"
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
   set_tests_properties(test_fuse PROPERTIES
-    ENVIRONMENT "PATH=$<TARGET_FILE_DIR:vfs_fuse>:$<TARGET_FILE_DIR:vfsctl>:$ENV{PATH}")
+    ENVIRONMENT "PATH=$<TARGET_FILE_DIR:vfs_fuse>:$<TARGET_FILE_DIR:vfsctl>:$ENV{PATH}"
+    RUN_SERIAL TRUE)
 endif()

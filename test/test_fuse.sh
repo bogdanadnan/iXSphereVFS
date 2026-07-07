@@ -7,8 +7,8 @@ set -e
 # skip_if_no_fuse — exit 0 with SKIP message if FUSE is unavailable.
 # ---------------------------------------------------------------------------
 skip_if_no_fuse() {
-    if ! command -v fusermount3 >/dev/null 2>&1 && ! command -v fusermount >/dev/null 2>&1; then
-        echo "SKIP: fusermount not available"
+    if [ ! -e /dev/fuse ] && ! command -v fusermount3 >/dev/null 2>&1 && ! command -v fusermount >/dev/null 2>&1; then
+        echo "SKIP: FUSE not available (/dev/fuse missing, no fusermount)"
         exit 0
     fi
 }
