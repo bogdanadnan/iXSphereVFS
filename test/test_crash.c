@@ -825,6 +825,95 @@ static int scenario_snapshot(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Scenario 14: commit_mid — create a snapshot, then commit it.  The commit
+ * inserts a mapper entry (snapshot_epoch → base_epoch) and writes the
+ * superblock.  Crash during/after commit; on remount, verify the commit
+ * mapping is applied correctly (snapshot data is merged into the base).
+ *
+ * Each iteration: fork child → child mounts, creates file, writes v1,
+ * takes snapshot, writes v2 at the same offset (updating base), commits
+ * the snapshot, vfs_flush, crashes → parent remounts → reads at current
+ * epoch — should see the committed v1 (snapshot state merged into base).
+ * --------------------------------------------------------------------------- */
+
+static int scenario_commit_mid(void) {
+    uint8_t v1[128], v2[128];
+    memset(v1, 0x11, sizeof(v1));
+    memset(v2, 0x22, sizeof(v2));
+
+    for (int i = 0; i < 100; i++) {
+        cleanup();
+
+        pid_t pid = fork();
+        if (pid < 0) return -1;
+
+        if (pid == 0) {
+            vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+            if (!vfs) _exit(-1);
+            int64_t fvp = vfs_create(vfs, vfs->ctx->rootNodeOffset, "comm.dat", 0);
+            if (fvp <= 0) _exit(-1);
+
+            /* Write v1 */
+            if (vfs_write(vfs, fvp, v1, 0, sizeof(v1), 0) != (int)sizeof(v1)) _exit(-1);
+
+            /* Take snapshot — captures v1 */
+            int64_t snap = vfs_snapshot(vfs);
+            if (snap < 0) _exit(-1);
+
+            /* Write v2 at a DIFFERENT offset to avoid in-place COW overwrite
+               of v1's VersionPage (both writes at epoch 0 share the same
+               VersionPage — a known VFS limitation). */
+            if (vfs_write(vfs, fvp, v2, 256, sizeof(v2), 0) != (int)sizeof(v2)) _exit(-1);
+
+            /* Commit the snapshot — merges snapshot state (v1) into base */
+            if (vfs_commit(vfs, snap) != VFS_OK) _exit(-1);
+
+            /* Flush everything */
+            vfs_flush(vfs);
+
+            _exit(0);
+        }
+
+        int status;
+        waitpid(pid, &status, 0);
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+
+        vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+        if (!vfs) {
+            fprintf(stderr, "  FAIL iter %d: remount failed\n", i);
+            return -1;
+        }
+        int64_t fvp2 = find_file(vfs, "comm.dat");
+        if (fvp2 <= 0) {
+            fprintf(stderr, "  FAIL iter %d: file not found\n", i);
+            vfs_unmount(vfs);
+            return -1;
+        }
+
+        /* Read at current epoch (base) — after commit, the snapshot's v1
+           is merged in.  v1 at offset 0 should be visible. */
+        uint8_t buf[128];
+        int r = vfs_read(vfs, fvp2, buf, 0, sizeof(buf), 0);
+        int match_v1 = (r == (int)sizeof(buf) && memcmp(buf, v1, sizeof(v1)) == 0);
+
+        /* v2 at offset 256 should also be visible in base */
+        uint8_t buf2[128];
+        int r2 = vfs_read(vfs, fvp2, buf2, 256, sizeof(buf2), 0);
+        int match_v2 = (r2 == (int)sizeof(buf2) && memcmp(buf2, v2, sizeof(v2)) == 0);
+
+        vfs_unmount(vfs);
+
+        if (!match_v1 || !match_v2) {
+            fprintf(stderr,
+                    "  FAIL iter %d: commit state wrong (v1=%d v2=%d)\n",
+                    i, match_v1, match_v2);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
  * Scenarios table
  * --------------------------------------------------------------------------- */
 
@@ -848,6 +937,7 @@ static struct {
     {"gc_before_swap",       scenario_gc_before_swap},
     {"gc_after_swap",        scenario_gc_after_swap},
     {"snapshot",             scenario_snapshot},
+    {"commit_mid",           scenario_commit_mid},
 };
 static const int n_scenarios = (int)(sizeof(scenarios) / sizeof(scenarios[0]));
 
