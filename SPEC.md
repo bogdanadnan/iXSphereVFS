@@ -1126,7 +1126,7 @@ int       vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch);
 
 - `vfs_create`: returns the nodeId of the created file. Node handles use `int64_t` for API consistency
   but on-disk `nodeId` is `uint32`; the upper 32 bits are always zero., or -1 on error.
-- `vfs_open`: resolves a path to a file nodeId. Returns -1 if not found.
+- `vfs_open`: resolves a path to a file VirtualPtr. Returns -1 if not found.
 - `vfs_read`/`vfs_write`: return bytes transferred, or -1 on error. Short
   reads/writes are possible at file boundaries.
 - `vfs_file_size`/`mtime`/`ctime`: stat-like queries at a given epoch.
