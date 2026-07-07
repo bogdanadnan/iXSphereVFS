@@ -108,4 +108,10 @@ if(FUSE3_FOUND)
   add_executable(vfs_fuse src/fuse_main.c)
   target_link_libraries(vfs_fuse ixsphere_vfs ${FUSE3_LIBRARIES} pthread)
   target_include_directories(vfs_fuse PRIVATE ${FUSE3_INCLUDE_DIRS})
+
+  add_test(NAME test_fuse
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/test/test_fuse.sh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+  set_tests_properties(test_fuse PROPERTIES
+    ENVIRONMENT "PATH=$<TARGET_FILE_DIR:vfs_fuse>:$<TARGET_FILE_DIR:vfsctl>:$ENV{PATH}")
 endif()
