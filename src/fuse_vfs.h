@@ -81,6 +81,37 @@ int   fuse_vfs_truncate(const char* path, off_t size,
                         struct fuse_file_info* fi);
 int   fuse_vfs_utimens(const char* path, const struct timespec tv[2],
                        struct fuse_file_info* fi);
+
+/* Phase 6: directory scan callbacks */
+int   fuse_vfs_opendir(const char* path, struct fuse_file_info* fi);
+int   fuse_vfs_releasedir(const char* path, struct fuse_file_info* fi);
+
+/* Phase 7: release callback */
+int   fuse_vfs_release(const char* path, struct fuse_file_info* fi);
+
+/* Phase 9: supplementary operations */
+int   fuse_vfs_flush(const char* path, struct fuse_file_info* fi);
+int   fuse_vfs_statfs(const char* path, struct statvfs* stbuf);
+int   fuse_vfs_access(const char* path, int mask);
+int   fuse_vfs_chmod(const char* path, mode_t mode, struct fuse_file_info* fi);
+int   fuse_vfs_chown(const char* path, uid_t uid, gid_t gid,
+                     struct fuse_file_info* fi);
+int   fuse_vfs_readlink(const char* path, char* buf, size_t size);
+int   fuse_vfs_symlink(const char* from, const char* to);
+int   fuse_vfs_link(const char* from, const char* to);
+
+/* Phase 9: extended attributes */
+int   fuse_vfs_setxattr(const char* path, const char* name,
+                        const char* value, size_t size, int flags);
+int   fuse_vfs_getxattr(const char* path, const char* name,
+                        char* value, size_t size);
+int   fuse_vfs_listxattr(const char* path, char* list, size_t size);
+int   fuse_vfs_removexattr(const char* path, const char* name);
+
+/* Phase 10: ioctl callback (FUSE-level, distinct from fuse_vfs_ioctl helper) */
+int   fuse_vfs_ioctl_cb(fuse_ino_t ino, int cmd, void* arg,
+                        struct fuse_file_info* fi, unsigned int flags,
+                        void* data);
 #endif /* FUSE3_FOUND */
 
 #endif /* VFS_FUSE_VFS_H */
