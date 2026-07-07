@@ -467,8 +467,14 @@ static int fuse_vfs_release(const char* path, struct fuse_file_info* fi) {
     (void)vfs_unlock(state->vfs, vp, vfs_current_epoch(state->vfs));
     return 0;
 }
-static int fuse_vfs_flush(const char* path, struct fuse_file_info* fi)
-    { (void)path; (void)fi; return -ENOSYS; }
+static int fuse_vfs_flush(const char* path, struct fuse_file_info* fi) {
+    (void)fi;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
+    if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+    int r = vfs_flush(state->vfs);
+    return (r == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
+}
 static int fuse_vfs_statfs(const char* path, struct statvfs* stbuf)
     { (void)path; (void)stbuf; return -ENOSYS; }
 static int fuse_vfs_access(const char* path, int mask)
