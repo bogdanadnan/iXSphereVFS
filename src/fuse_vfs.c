@@ -399,8 +399,14 @@ int fuse_vfs_utimens(const char* path, const struct timespec tv[2],
  * Placeholder callbacks — return -ENOSYS until Phases 6-10 implement them.
  * --------------------------------------------------------------------------- */
 
-static int fuse_vfs_opendir(const char* path, struct fuse_file_info* fi)
-    { (void)path; (void)fi; return -ENOSYS; }
+static int fuse_vfs_opendir(const char* path, struct fuse_file_info* fi) {
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
+    if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+    if (!fuse_is_dir(state->vfs, vp)) return -ENOTDIR;
+    fi->fh = (uint64_t)vp;
+    return 0;
+}
 static int fuse_vfs_releasedir(const char* path, struct fuse_file_info* fi)
     { (void)path; (void)fi; return -ENOSYS; }
 static int fuse_vfs_release(const char* path, struct fuse_file_info* fi)
