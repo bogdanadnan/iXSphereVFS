@@ -144,6 +144,13 @@ int     vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
 int     vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
                     int max, int64_t epoch);
 
+/* Truncate or extend a file to `new_size` bytes at `epoch`.
+   For shrink: just updates the FileSize chain entry (page reclamation
+   is deferred to vfs_gc).  For grow: writes zero bytes via vfs_write
+   to extend pages.  Returns 0 on success, negative error code on failure.
+   Fails with VFS_ERR_EPOCH if the epoch is not writable. */
+int     vfs_truncate(vfs_t* vfs, int64_t file, int64_t new_size, int64_t epoch);
+
 /* ---------------------------------------------------------------------------
  * Node introspection
  * --------------------------------------------------------------------------- */

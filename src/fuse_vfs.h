@@ -147,6 +147,9 @@ int   fuse_vfs_ioctl_cb(const char* path, int cmd, void* arg,
                         struct fuse_file_info* fi, unsigned int flags,
                         void* data);
 
+int   fuse_vfs_setattr(const char* path, struct fuse_darwin_attr* attr,
+                       int to_set, struct fuse_file_info* fi);
+
 /* Required by libfuse: resolve a path to its inode.
    For the root dir, returns 1; for child paths, calls vfs_open at epoch. */
 int   fuse_vfs_lookup(fuse_ino_t parent, const char* name);

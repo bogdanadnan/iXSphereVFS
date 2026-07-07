@@ -1372,6 +1372,90 @@ int64_t vfs_file_mtime(vfs_t* vfs, int64_t file, int64_t epoch) {
 }
 
 /* ---------------------------------------------------------------------------
+ * vfs_truncate — set file size at a given epoch.
+ *
+ * For grow: writes zero bytes from current size to new_size via vfs_write,
+ *           which allocates pages and updates FileSize.  Pages within
+ *           the grown region are zero-initialized.
+ * For shrink: writes a new FileSize chain entry with the smaller size;
+ *             actual page reclamation is deferred to GC.  Reads at
+ *             offsets beyond new_size will return fewer bytes (per
+ *             VFS_OK semantics — callers must consult vfs_file_size).
+ * Equal: no-op.
+ *
+ * Returns 0 on success, negative VFS_ERR_* on failure.
+ * --------------------------------------------------------------------------- */
+
+int vfs_truncate(vfs_t* vfs, int64_t file, int64_t new_size, int64_t epoch) {
+    if (!vfs || !vfs->ctx) return VFS_ERR_IO;
+    TreeContext* ctx = vfs->ctx;
+    if (new_size < 0) return VFS_ERR_IO;
+
+    if (!vfs_epoch_is_writable(ctx, epoch)) {
+        ctx->last_error = VFS_ERR_EPOCH;
+        return VFS_ERR_EPOCH;
+    }
+
+    uint8_t* file_slot = pool_resolve(&ctx->pool, file);
+    if (!file_slot) {
+        ctx->last_error = VFS_ERR_NOTFOUND;
+        return VFS_ERR_NOTFOUND;
+    }
+    if (vfs_rd2_s(file_slot, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE) {
+        ctx->last_error = VFS_ERR_IO;
+        return VFS_ERR_IO;
+    }
+
+    int64_t cur_size = vfs_file_size(vfs, file, epoch);
+    if (new_size == cur_size) return VFS_OK;
+
+    if (new_size < cur_size) {
+        /* Shrink — append a new FileSize entry at epoch with new_size.
+           Page reclamation is deferred to GC. */
+        while (1) {
+            int64_t old_sizePtr = vfs_atomic_load_i64(
+                (const int64_t*)(file_slot + FILENODE_OFF_SIZEPTR));
+            int64_t fs_vp = pool_alloc(&ctx->pool);
+            if (fs_vp == VFS_VPTR_NULL) {
+                ctx->last_error = VFS_ERR_NOMEM;
+                return VFS_ERR_NOMEM;
+            }
+            uint8_t* fs_slot = pool_resolve(&ctx->pool, fs_vp);
+            if (!fs_slot) {
+                ctx->last_error = VFS_ERR_NOMEM;
+                return VFS_ERR_NOMEM;
+            }
+            nodes_write_filesize(fs_slot, (uint32_t)epoch, (int64_t)time(NULL),
+                                 new_size, old_sizePtr, ctx->page_size);
+            vfs_mb_release();
+            int64_t cas_res = vfs_cas_i64(
+                (int64_t*)(file_slot + FILENODE_OFF_SIZEPTR),
+                old_sizePtr, fs_vp);
+            if (cas_res == old_sizePtr) break;
+        }
+        ctx->last_error = VFS_OK;
+        return VFS_OK;
+    }
+
+    /* Grow — write zeros from cur_size to new_size via vfs_write
+       (which handles page allocation and FileSize updates internally). */
+    uint8_t zbuf[1048576];  /* 1 MiB */
+    memset(zbuf, 0, sizeof(zbuf));
+    int64_t remaining = new_size - cur_size;
+    int64_t wr_off = cur_size;
+    while (remaining > 0) {
+        int64_t chunk = (remaining < (int64_t)sizeof(zbuf)) ? remaining
+                                                             : (int64_t)sizeof(zbuf);
+        int r = vfs_write(vfs, file, zbuf, wr_off, chunk, epoch);
+        if (r < 0) return (int)r;
+        remaining -= chunk;
+        wr_off    += chunk;
+    }
+    ctx->last_error = VFS_OK;
+    return VFS_OK;
+}
+
+/* ---------------------------------------------------------------------------
  * vfs_file_ctime — query file creation time (immutable, no epoch needed)
  * --------------------------------------------------------------------------- */
 
@@ -1588,6 +1672,18 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
              int64_t count, int64_t epoch) {
     if (!vfs || !vfs->ctx || !buf || count <= 0 || offset < 0) return -1;
     TreeContext* ctx = vfs->ctx;
+
+    /* Bounds-check against file size at this epoch.  Reads beyond EOF
+       return a short read (count truncated to remaining bytes).
+       Reads entirely past EOF return 0.  Pages past the file size are
+       treated as zero-filled (sparse-file semantics). */
+    int64_t file_size = vfs_file_size(vfs, file, epoch);
+    if (offset >= file_size) {
+        return 0;  /* entirely past EOF */
+    }
+    if (offset + count > file_size) {
+        count = file_size - offset;
+    }
 
     int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
 

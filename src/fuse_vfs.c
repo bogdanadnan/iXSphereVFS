@@ -14,6 +14,7 @@
 
 #ifdef FUSE3_FOUND
 #include <fuse.h>
+#include <fuse_lowlevel.h>
 #include <stdio.h>
 #endif
 
@@ -253,6 +254,17 @@ int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
         if (lr != VFS_OK) return -EACCES;
     }
 
+    /* Handle O_TRUNC inline.  macFUSE 3.18 cannot route truncate through
+       the setattr highlevel callback (daemon crash), so we truncate
+       the file as part of the open call. */
+    if ((fi->flags & O_TRUNC) && (fi->flags & (O_WRONLY | O_RDWR))) {
+        int64_t cur_size = vfs_file_size(state->vfs, vp, vfs_current_epoch(state->vfs));
+        if (cur_size > 0) {
+            int tr = vfs_truncate(state->vfs, vp, 0, vfs_current_epoch(state->vfs));
+            if (tr != VFS_OK) return vfs_error_to_errno(vfs_last_error(state->vfs));
+        }
+    }
+
     fi->fh = (uint64_t)vp;
     return 0;
 }
@@ -448,23 +460,9 @@ int fuse_vfs_truncate(const char* path, off_t size,
     int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
 
-    int64_t cur_size = vfs_file_size(state->vfs, vp, state->epoch);
-    if ((int64_t)size < cur_size) return -ENOSYS;  /* shrink not supported */
-
-    /* Grow: write zeros in 1 MiB chunks from current size to target */
-    uint8_t zbuf[1048576];  /* 1 MiB */
-    memset(zbuf, 0, sizeof(zbuf));
-    int64_t remaining = (int64_t)size - cur_size;
-    int64_t wr_off = cur_size;
-    while (remaining > 0) {
-        int64_t chunk = (remaining < (int64_t)sizeof(zbuf)) ? remaining
-                                                             : (int64_t)sizeof(zbuf);
-        int r = vfs_write(state->vfs, vp, zbuf, wr_off, chunk,
-                          vfs_current_epoch(state->vfs));
-        if (r < 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
-        remaining -= chunk;
-        wr_off    += chunk;
-    }
+    int r = vfs_truncate(state->vfs, vp, (int64_t)size,
+                         vfs_current_epoch(state->vfs));
+    if (r != VFS_OK) return vfs_error_to_errno(vfs_last_error(state->vfs));
     return 0;
 }
 
@@ -621,6 +619,44 @@ int fuse_vfs_ioctl_cb(const char* path, int cmd, void* arg,
     return fuse_vfs_ioctl(state->vfs, (unsigned long)cmd, arg, data);
 }
 
+/* macFUSE 3.18 setattr handler.  When invoked via ftruncate (path=NULL,
+   fi provided), perform the truncation.  When invoked via path-only
+   (no fi), truncate via path.  Other flags (mode/uid/gid/mtime) are
+   accepted silently — VFS has no API for them.
+
+   IMPORTANT: On a successful SIZE truncate, we update attr->size to
+   the new file size so libfuse can send the implicit getattr reply
+   to the kernel with fresh attributes. */
+int fuse_vfs_setattr(const char* path, struct fuse_darwin_attr* attr,
+                     int to_set, struct fuse_file_info* fi) {
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (!state) return -EIO;
+    if (state->readonly && (to_set & FUSE_SET_ATTR_SIZE)) return -EROFS;
+
+    if (to_set & FUSE_SET_ATTR_SIZE) {
+        if (!attr) return -EIO;
+        int64_t vp = 0;
+        if (path && path[0] != '\0') {
+            vp = resolve_full_path(state->vfs, state->epoch, path);
+        } else if (fi) {
+            vp = (int64_t)fi->fh;
+        }
+        if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+
+        int r = vfs_truncate(state->vfs, vp, attr->size, vfs_current_epoch(state->vfs));
+        if (r != VFS_OK) return vfs_error_to_errno(vfs_last_error(state->vfs));
+
+        /* Refresh attr out-parameter so libfuse can reply with fresh
+           attributes.  Without this, libfuse may send stale data and
+           the kernel may reject subsequent writes. */
+        attr->size = vfs_file_size(state->vfs, vp, vfs_current_epoch(state->vfs));
+        return 0;
+    }
+
+    /* mode/uid/gid/atime/mtime/etc — accept silently */
+    return 0;
+}
+
 /* ---------------------------------------------------------------------------
  * FUSE lookup — required by libfuse to resolve paths.
  * --------------------------------------------------------------------------- */
@@ -645,6 +681,10 @@ const struct fuse_operations fuse_vfs_ops = {
     .init        = fuse_vfs_init,
     .destroy     = fuse_vfs_destroy,
     .getattr     = fuse_vfs_getattr,
+    /* setattr intentionally NOT registered: macFUSE 3.18 highlevel
+       libfuse crashes the daemon after a successful setattr reply
+       (workaround documented in fuse_vfs_setattr).  Truncate-on-create
+       is handled inline in fuse_vfs_open when O_TRUNC is set. */
     .readdir     = fuse_vfs_readdir,
     .opendir     = fuse_vfs_opendir,
     .releasedir  = fuse_vfs_releasedir,
