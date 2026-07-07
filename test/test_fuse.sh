@@ -50,7 +50,7 @@ wait_for_mount() {
     local elapsed=0
     while [ $elapsed -lt $timeout ]; do
         if ls "$MNT_POINT" >/dev/null 2>&1; then return 0; fi
-        sleep 0.2
+        sleep 1
         elapsed=$((elapsed + 1))
     done
     return 1
