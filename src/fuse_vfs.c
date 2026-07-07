@@ -532,7 +532,7 @@ int fuse_vfs_readlink(const char* path, char* buf, size_t size)
 int fuse_vfs_symlink(const char* from, const char* to)
     { (void)from; (void)to; return -EPERM; }
 int fuse_vfs_link(const char* from, const char* to)
-    { (void)from; (void)to; return -ENOSYS; }
+    { (void)from; (void)to; return -EPERM; }
 int fuse_vfs_setxattr(const char* path, const char* name,
                               const char* value, size_t size, int flags)
     { (void)path; (void)name; (void)value; (void)size; (void)flags; return -ENOSYS; }
