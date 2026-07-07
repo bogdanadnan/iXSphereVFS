@@ -203,8 +203,21 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_darwin_fill_dir_t filler,
                      enum fuse_readdir_flags flags) {
     (void)offset; (void)fi; (void)flags;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (!state || !state->vfs) return -EIO;
 
-    int64_t dir_vp = vfs_root(state->vfs);
+    /* Path may be NULL (highlevel libfuse passes NULL for root when
+       cfg->nullpath_ok is set).  Treat NULL or "/" as the root. */
+    int64_t dir_vp;
+    if (!path || strcmp(path, "/") == 0) {
+        dir_vp = vfs_root(state->vfs);
+    } else {
+        /* Non-root directory: walk tree at state->epoch (snapshot-aware).
+           Falls back to root if path resolution fails. */
+        dir_vp = resolve_full_path(state->vfs, state->epoch, path);
+        if (dir_vp <= 0) {
+            dir_vp = vfs_root(state->vfs);
+        }
+    }
     if (dir_vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
 
     struct fuse_darwin_attr dummy_attr;
@@ -214,19 +227,15 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_darwin_fill_dir_t filler,
 
     vfs_dirent_t ents[64];
     int n = vfs_readdir(state->vfs, dir_vp, ents, 64, state->epoch);
-    if (n < 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
-    for (int i = 0; i < n; i++)
-        filler(buf, ents[i].name, &dummy_attr, 0, 0);
+    if (n < 0) {
+        return vfs_error_to_errno(vfs_last_error(state->vfs));
+    }
+    for (int i = 0; i < n; i++) {
+        if (filler(buf, ents[i].name, &dummy_attr, 0, 0)) break;
+    }
 
     return 0;
 }
-#if 0
-{
-    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    (void)state; (void)path; (void)buf;
-    return 0;
-}
-#endif
 
 int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
