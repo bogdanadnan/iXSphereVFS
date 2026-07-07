@@ -264,6 +264,65 @@ test_fuse_snapshot() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# test_fuse_vfsctl — each subcommand with fresh VFS file and mount.
+# ---------------------------------------------------------------------------
+test_fuse_vfsctl() {
+    echo "=== test_fuse_vfsctl ==="
+    local vfspath="$(mktemp -d)/ctl_test.vfs"
+    local mnt="$(mktemp -d)"
+    local epoch
+
+    # --- snapshot ---
+    ./vfs_fuse "$vfspath" "$mnt" -f &
+    local pid=$!
+    wait_for_mount || { echo "SKIP: mount failed"; rm -rf "$(dirname "$vfspath")" "$mnt"; return 0; }
+    epoch="$(./vfsctl snapshot "$mnt")" || { echo "FAIL: vfsctl snapshot"; kill $pid 2>/dev/null; return 1; }
+    echo "  snapshot ok, epoch=$epoch"
+    fusermount3 -u -z "$mnt" 2>/dev/null || true; wait $pid 2>/dev/null || true
+    rm -f "$vfspath"
+
+    # --- commit ---
+    vfspath="$(mktemp -d)/ctl_test.vfs"
+    ./vfs_fuse "$vfspath" "$mnt" -f &
+    pid=$!
+    wait_for_mount || { echo "SKIP: mount failed"; return 0; }
+    # Create file, snapshot, modify file
+    echo "data" > "$mnt/f.txt"
+    epoch="$(./vfsctl snapshot "$mnt")" || { echo "FAIL: vfsctl snapshot for commit"; kill $pid 2>/dev/null; return 1; }
+    echo "modified" > "$mnt/f.txt"
+    # Commit the snapshot
+    ./vfsctl commit "$mnt" "$epoch" || { echo "FAIL: vfsctl commit"; kill $pid 2>/dev/null; return 1; }
+    echo "  commit ok, epoch=$epoch"
+    fusermount3 -u -z "$mnt" 2>/dev/null || true; wait $pid 2>/dev/null || true
+    rm -f "$vfspath"
+
+    # --- delete-snapshot ---
+    vfspath="$(mktemp -d)/ctl_test.vfs"
+    ./vfs_fuse "$vfspath" "$mnt" -f &
+    pid=$!
+    wait_for_mount || { echo "SKIP: mount failed"; return 0; }
+    epoch="$(./vfsctl snapshot "$mnt")" || { echo "FAIL: vfsctl snapshot for delete"; kill $pid 2>/dev/null; return 1; }
+    ./vfsctl delete-snapshot "$mnt" "$epoch" || { echo "FAIL: vfsctl delete-snapshot"; kill $pid 2>/dev/null; return 1; }
+    echo "  delete-snapshot ok, epoch=$epoch"
+    fusermount3 -u -z "$mnt" 2>/dev/null || true; wait $pid 2>/dev/null || true
+    rm -f "$vfspath"
+
+    # --- gc ---
+    vfspath="$(mktemp -d)/ctl_test.vfs"
+    ./vfs_fuse "$vfspath" "$mnt" -f &
+    pid=$!
+    wait_for_mount || { echo "SKIP: mount failed"; return 0; }
+    ./vfsctl gc "$mnt" || { echo "FAIL: vfsctl gc"; kill $pid 2>/dev/null; return 1; }
+    echo "  gc ok"
+    fusermount3 -u -z "$mnt" 2>/dev/null || true; wait $pid 2>/dev/null || true
+    rm -f "$vfspath"
+
+    rmdir "$mnt" 2>/dev/null || true
+    echo "=== test_fuse_vfsctl PASS ==="
+    return 0
+}
+
 echo "=== test_fuse smoke test ==="
 
 # Build a small test VFS
@@ -284,6 +343,7 @@ if wait_for_mount; then
     test_fuse_rename || exit 1
     test_fuse_readonly || exit 1
     test_fuse_snapshot || exit 1
+    test_fuse_vfsctl || exit 1
     # Unmount
     fusermount3 -u "$MNT_POINT" 2>/dev/null || umount "$MNT_POINT" 2>/dev/null || true
     wait $FUSE_PID 2>/dev/null || true
