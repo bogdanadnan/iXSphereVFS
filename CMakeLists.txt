@@ -82,5 +82,9 @@ else()
 # test_crash uses fork/kill/waitpid — skip on Windows
 endif()
 
+add_executable(test_fuzz test/test_fuzz.c)
+target_link_libraries(test_fuzz ixsphere_vfs pthread)
+add_test(NAME test_fuzz COMMAND test_fuzz)
+
 add_executable(vfs_bench bench/bench.c)
 target_link_libraries(vfs_bench ixsphere_vfs pthread)
