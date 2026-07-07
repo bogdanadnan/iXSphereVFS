@@ -228,7 +228,7 @@ then frees TreeContext, pool resources, mapper, and the handle itself.
 1. Resolve epoch.
 2. Walk parent DirNode's headPtr chain at epoch.
    Find DirContent with matching name.
-3. If found: return childNodeId.
+3. If found: return childPtr (VirtualPtr).
    If not found: last_error = VFS_ERR_NOTFOUND, return -1.
 ```
 
