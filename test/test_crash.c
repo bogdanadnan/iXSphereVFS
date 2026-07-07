@@ -670,6 +670,92 @@ static int scenario_gc_before_swap(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Scenario 12: gc_after_swap — GC completes the pool-page swap (new pool
+ * pages are written), but the superblock may or may not have been
+ * persisted.  The test verifies that on remount, either the old superblock
+ * (pre-GC, still pointing to valid old pool pages) or the new superblock
+ * (post-GC, pointing to compacted new pool pages) is used — but never a
+ * partially-written one.  If both old and new pool pages are valid on
+ * disk, the VFS must boot cleanly regardless of which superblock wins.
+ *
+ * Each iteration: fork child → child mounts, creates 2 files with data,
+ * runs GC (shadow-compaction + superblock write), flushes, crashes →
+ * parent remounts → verifies VFS mounts cleanly and files exist.
+ * --------------------------------------------------------------------------- */
+
+static int scenario_gc_after_swap(void) {
+    for (int i = 0; i < 100; i++) {
+        cleanup();
+
+        pid_t pid = fork();
+        if (pid < 0) return -1;
+
+        if (pid == 0) {
+            vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+            if (!vfs) _exit(-1);
+
+            /* Create 2 files with data */
+            const char* names[] = {"gca_a.dat", "gca_b.dat"};
+            for (int f = 0; f < 2; f++) {
+                int64_t fvp = vfs_create(vfs, vfs->ctx->rootNodeOffset, names[f], 0);
+                if (fvp <= 0) _exit(-1);
+                uint8_t d[64];
+                memset(d, (uint8_t)(0x10 + f), sizeof(d));
+                if (vfs_write(vfs, fvp, d, 0, sizeof(d), 0) != (int)sizeof(d)) _exit(-1);
+            }
+
+            /* Run GC — shadow-compaction copies live entries to new pool
+               pages and writes a new superblock on disk via storage_flush.
+               VFS_ERR_FULL is non-fatal: GC still completes partial
+               compaction but reports pool space exhaustion. */
+            int gc_err = vfs_gc(vfs);
+            if (gc_err != VFS_OK && gc_err != VFS_ERR_FULL) _exit(-1);
+
+            /* Flush everything to disk before crash */
+            vfs_flush(vfs);
+
+            _exit(0);
+        }
+
+        int status;
+        waitpid(pid, &status, 0);
+        if (!WIFEXITED(status)) return -1;
+
+        vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+        if (!vfs) {
+            fprintf(stderr, "  FAIL iter %d: remount failed (GC corruption)\n", i);
+            return -1;
+        }
+
+        /* Verify root is readable and files survive */
+        vfs_dirent_t ents[16];
+        int n = vfs_readdir(vfs, vfs->ctx->rootNodeOffset, ents, 16, 0);
+        if (n < 0) {
+            fprintf(stderr, "  FAIL iter %d: readdir failed (GC corruption)\n", i);
+            vfs_unmount(vfs);
+            return -1;
+        }
+
+        /* Both files should exist */
+        int found_a = 0, found_b = 0;
+        for (int e = 0; e < n; e++) {
+            if (strcmp(ents[e].name, "gca_a.dat") == 0) found_a = 1;
+            if (strcmp(ents[e].name, "gca_b.dat") == 0) found_b = 1;
+        }
+        if (!found_a || !found_b) {
+            fprintf(stderr,
+                    "  FAIL iter %d: GC file state wrong (a=%d b=%d)\n",
+                    i, found_a, found_b);
+            vfs_unmount(vfs);
+            return -1;
+        }
+
+        vfs_unmount(vfs);
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
  * Scenarios table
  * --------------------------------------------------------------------------- */
 
@@ -691,6 +777,7 @@ static struct {
     {"mirrored_write",       scenario_mirrored_write},
     {"mirror_allocation",    scenario_mirror_allocation},
     {"gc_before_swap",       scenario_gc_before_swap},
+    {"gc_after_swap",        scenario_gc_after_swap},
 };
 static const int n_scenarios = (int)(sizeof(scenarios) / sizeof(scenarios[0]));
 
