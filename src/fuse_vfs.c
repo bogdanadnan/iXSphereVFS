@@ -371,12 +371,35 @@ int fuse_vfs_rename(const char* from, const char* to, unsigned int flags) {
     (void)flags;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
-    /* For simplicity, only support rename within root */
-    int64_t root = vfs_root(state->vfs);
-    const char* src_name = (from[0] == '/') ? from + 1 : from;
-    const char* dst_name = (to[0] == '/') ? to + 1 : to;
-    int ret = vfs_rename(state->vfs, root, src_name, root, dst_name,
+
+    char* from_copy = strdup(from);
+    char* to_copy   = strdup(to);
+    if (!from_copy || !to_copy) { free(from_copy); free(to_copy); return -ENOMEM; }
+
+    /* Split "from" into parent_path + src_name */
+    char* from_slash = strrchr(from_copy, '/');
+    if (!from_slash) { free(from_copy); free(to_copy); return -ENOENT; }
+    *from_slash = '\0';
+    const char* src_name = from_slash + 1;
+    int64_t src_parent = (from_slash == from_copy)  /* "/name" → root */
+                         ? vfs_root(state->vfs)
+                         : resolve_full_path(state->vfs, state->epoch, from_copy);
+    if (src_parent <= 0) { free(from_copy); free(to_copy); return -ENOENT; }
+
+    /* Split "to" into parent_path + dst_name */
+    char* to_slash = strrchr(to_copy, '/');
+    if (!to_slash) { free(from_copy); free(to_copy); return -ENOENT; }
+    *to_slash = '\0';
+    const char* dst_name = to_slash + 1;
+    int64_t dst_parent = (to_slash == to_copy)  /* "/name" → root */
+                         ? vfs_root(state->vfs)
+                         : resolve_full_path(state->vfs, state->epoch, to_copy);
+    if (dst_parent <= 0) { free(from_copy); free(to_copy); return -ENOENT; }
+
+    int ret = vfs_rename(state->vfs, src_parent, src_name, dst_parent, dst_name,
                          vfs_current_epoch(state->vfs));
+    free(from_copy);
+    free(to_copy);
     return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
 
