@@ -13,6 +13,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/ioctl.h>
 
 static void usage(const char* prog) {
@@ -46,10 +47,20 @@ int main(int argc, char** argv) {
     } else if (strcmp(subcmd, "commit") == 0) {
         if (argc < 4) {
             fprintf(stderr, "commit requires an epoch argument\n");
+            usage(argv[0]);
             close(fd); return 1;
         }
         int64_t epoch = (int64_t)atoll(argv[3]);
-        if (ioctl(fd, VFS_IOC_COMMIT, &epoch) != 0) {
+        if (epoch <= 0) {
+            fprintf(stderr, "commit: epoch must be positive\n");
+            close(fd); return 1;
+        }
+        if (ioctl(fd, VFS_IOC_COMMIT, &epoch) == 0) {
+            printf("ok\n");
+        } else if (errno == EBUSY) {
+            printf("conflict\n");
+            close(fd); return 2;
+        } else {
             perror("ioctl(VFS_IOC_COMMIT)");
             close(fd);
             return 1;
