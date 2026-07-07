@@ -27,7 +27,7 @@
 #ifndef VFS_IOC_COMMIT
 #define VFS_IOC_COMMIT          0
 #endif
-#ifndef VFS_IOC_DELETE_SNAPSHOT 0
+#ifndef VFS_IOC_DELETE_SNAPSHOT
 #define VFS_IOC_DELETE_SNAPSHOT 0
 #endif
 #ifndef VFS_IOC_GC
