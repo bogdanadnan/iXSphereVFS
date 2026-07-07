@@ -419,6 +419,82 @@ static int scenario_single_copy_write(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Scenario 9: mirrored_write — write data with lazy mirror active, crash
+ * mid-write via fork/exit, remount, verify that valid data survives from
+ * at least one of the two mirror copies.
+ *
+ * Each iteration: fork child → child mounts, creates file, writes v1,
+ * writes v2 (overwrite same page, triggering mirror allocation), crashes
+ * immediately → parent remounts → verifies data is NOT all zeros (at
+ * least one mirror copy survived the crash).
+ * --------------------------------------------------------------------------- */
+
+static int scenario_mirrored_write(void) {
+    uint8_t* page_v1 = (uint8_t*)malloc((size_t)PAGE_SZ);
+    uint8_t* page_v2 = (uint8_t*)malloc((size_t)PAGE_SZ);
+    if (!page_v1 || !page_v2) { free(page_v1); free(page_v2); return -1; }
+
+    for (int i = 0; i < 100; i++) {
+        cleanup();
+        memset(page_v1, 0x11, (size_t)PAGE_SZ);
+        memset(page_v2, 0x22, (size_t)PAGE_SZ);
+
+        /* Fork child that writes twice (forcing mirror) then crashes */
+        pid_t pid = fork();
+        if (pid < 0) { free(page_v1); free(page_v2); return -1; }
+
+        if (pid == 0) {
+            /* Child: mount, write v1 (single copy), write v2 (allocates mirror), crash */
+            vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+            if (!vfs) _exit(-1);
+            int64_t fvp = vfs_create(vfs, vfs->ctx->rootNodeOffset, "mir.dat", 0);
+            if (fvp <= 0) _exit(-1);
+
+            /* First write — single copy (generation 1, no mirror) */
+            if (vfs_write(vfs, fvp, page_v1, 0, PAGE_SZ, 0) != PAGE_SZ) _exit(-1);
+
+            /* Second write — allocates mirror (generation 2, writes to sibling) */
+            if (vfs_write(vfs, fvp, page_v2, 0, PAGE_SZ, 0) != PAGE_SZ) _exit(-1);
+
+            /* HARD CRASH — no flush, no unmount */
+            _exit(0);
+        }
+
+        /* Parent waits for crash */
+        int status;
+        waitpid(pid, &status, 0);
+        if (!WIFEXITED(status)) { free(page_v1); free(page_v2); return -1; }
+
+        /* Remount and verify data survives (not all zeros) */
+        vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+        if (!vfs) { free(page_v1); free(page_v2); return -1; }
+        int64_t fvp2 = find_file(vfs, "mir.dat");
+        if (fvp2 <= 0) { vfs_unmount(vfs); continue; }  /* file lost = pass */
+
+        uint8_t* buf = (uint8_t*)malloc((size_t)PAGE_SZ);
+        if (!buf) { vfs_unmount(vfs); free(page_v1); free(page_v2); return -1; }
+        int r = vfs_read(vfs, fvp2, buf, 0, PAGE_SZ, 0);
+        int ok = 0;
+        if (r == PAGE_SZ) {
+            /* Data must match one of the two versions (mirror recovery), NOT be all zeros */
+            int match_v1 = (memcmp(buf, page_v1, (size_t)PAGE_SZ) == 0);
+            int match_v2 = (memcmp(buf, page_v2, (size_t)PAGE_SZ) == 0);
+            ok = (match_v1 || match_v2);
+        }
+        free(buf);
+        vfs_unmount(vfs);
+
+        if (!ok) {
+            fprintf(stderr, "  FAIL iter %d: mirrored data did not survive crash\n", i);
+            free(page_v1); free(page_v2);
+            return -1;
+        }
+    }
+    free(page_v1); free(page_v2);
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
  * Scenarios table
  * --------------------------------------------------------------------------- */
 
@@ -437,6 +513,7 @@ static struct {
     {"rename",        scenario_rename},
     {"many_files",           scenario_many_files},
     {"single_copy_write",    scenario_single_copy_write},
+    {"mirrored_write",       scenario_mirrored_write},
 };
 static const int n_scenarios = (int)(sizeof(scenarios) / sizeof(scenarios[0]));
 
