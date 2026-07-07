@@ -131,6 +131,20 @@ void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
     return state;
 }
 
+/* ---------------------------------------------------------------------------
+ * FUSE destroy callback — called by libfuse at unmount time.
+ * Unmounts the VFS and frees all resources.
+ * --------------------------------------------------------------------------- */
+
+void fuse_vfs_destroy(void* private_data) {
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)private_data;
+    if (!state) return;
+
+    if (state->vfs) vfs_unmount(state->vfs);
+    free(state->vfs_path);
+    free(state);
+}
+
 #endif /* FUSE3_FOUND */
 
 /* ---------------------------------------------------------------------------
