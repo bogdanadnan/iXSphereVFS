@@ -59,7 +59,6 @@ int vfs_error_to_errno(int vfs_err);
  * Implementation in src/fuse_vfs.c (Phase 5).
  * --------------------------------------------------------------------------- */
 #ifdef FUSE3_FOUND
-#include <fuse3/fuse.h>
 int fuse_vfs_opt_proc(void* data, const char* arg, int key,
                       struct fuse_args* outargs);
 #endif

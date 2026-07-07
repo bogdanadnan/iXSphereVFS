@@ -3,19 +3,18 @@
  * Exposes a VFS mount as a FUSE filesystem.
  */
 
-#include "ixsphere/vfs.h"
-#include "fuse_vfs.h"
-
-#ifdef FUSE3_FOUND
-#include <fuse3/fuse.h>
-#endif
-
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
+#ifdef FUSE3_FOUND
+#include <fuse.h>
+#endif
+
+#include "ixsphere/vfs.h"
+#include "fuse_vfs.h"
 
 /* ---------------------------------------------------------------------------
  * FUSE option parsing keys — custom keys for -o epoch=, -o page_size=,

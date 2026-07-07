@@ -32,6 +32,7 @@ add_library(ixsphere_vfs STATIC
 
 if(FUSE3_FOUND)
   target_sources(ixsphere_vfs PRIVATE src/fuse_vfs.c)
+  set_source_files_properties(src/fuse_vfs.c PROPERTIES COMPILE_FLAGS "-DFUSE_USE_VERSION=30")
   target_include_directories(ixsphere_vfs PRIVATE ${FUSE3_INCLUDE_DIRS})
   target_link_libraries(ixsphere_vfs PRIVATE ${FUSE3_LIBRARIES})
   target_compile_definitions(ixsphere_vfs PRIVATE FUSE3_FOUND)
@@ -107,6 +108,7 @@ target_include_directories(vfsctl PRIVATE src)
 
 if(FUSE3_FOUND)
   add_executable(vfs_fuse src/fuse_main.c)
+  set_source_files_properties(src/fuse_main.c PROPERTIES COMPILE_FLAGS "-DFUSE_USE_VERSION=30")
   target_link_libraries(vfs_fuse ixsphere_vfs ${FUSE3_LIBRARIES} pthread)
   target_include_directories(vfs_fuse PRIVATE ${FUSE3_INCLUDE_DIRS})
 
