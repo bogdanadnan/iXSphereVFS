@@ -456,7 +456,13 @@ static int scenario_mirrored_write(void) {
             /* Second write — allocates mirror (generation 2, writes to sibling) */
             if (vfs_write(vfs, fvp, page_v2, 0, PAGE_SZ, 0) != PAGE_SZ) _exit(-1);
 
-            /* HARD CRASH — no flush, no unmount */
+            /* Flush all dirty pages (pool metadata + data) to disk so that
+               the file's DirContent/NameEntry survives the crash.  The mirror
+               data page was already written via pwrite in mirror_write, but
+               pool pages are modified in-place in the cache and need flush. */
+            vfs_flush(vfs);
+
+            /* HARD CRASH — no clean unmount, just exit */
             _exit(0);
         }
 
@@ -469,7 +475,13 @@ static int scenario_mirrored_write(void) {
         vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
         if (!vfs) { free(page_v1); free(page_v2); return -1; }
         int64_t fvp2 = find_file(vfs, "mir.dat");
-        if (fvp2 <= 0) { vfs_unmount(vfs); continue; }  /* file lost = pass */
+        if (fvp2 <= 0) {
+            fprintf(stderr,
+                    "  FAIL iter %d: file metadata lost — mirror mechanism did not preserve accessible data\n", i);
+            vfs_unmount(vfs);
+            free(page_v1); free(page_v2);
+            return -1;
+        }
 
         uint8_t* buf = (uint8_t*)malloc((size_t)PAGE_SZ);
         if (!buf) { vfs_unmount(vfs); free(page_v1); free(page_v2); return -1; }
