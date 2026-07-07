@@ -3,7 +3,8 @@
  * Exposes a VFS mount as a FUSE filesystem.
  */
 
-#define FUSE_USE_VERSION 30
+#define FUSE_USE_VERSION 317
+#define FUSE_DARWIN_ENABLE_EXTENSIONS 1
 
 #include <errno.h>
 #include <stdlib.h>
@@ -132,6 +133,8 @@ void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
         return NULL;
     }
 
+    cfg->nullpath_ok = 1;
+
     return state;
 }
 
@@ -154,20 +157,23 @@ void fuse_vfs_destroy(void* private_data) {
  * fuse_get_context()->private_data and delegates to the VFS API.
  * --------------------------------------------------------------------------- */
 
-int fuse_vfs_getattr(const char* path, struct stat* stbuf,
+int fuse_vfs_getattr(const char* path, struct fuse_darwin_attr* stbuf,
                      struct fuse_file_info* fi) {
     (void)fi;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    memset(stbuf, 0, sizeof(struct stat));
+    memset(stbuf, 0, sizeof(struct fuse_darwin_attr));
     time_t now = time(NULL);
-    stbuf->st_uid = getuid();
-    stbuf->st_gid = getgid();
+    stbuf->uid = getuid();
+    stbuf->gid = getgid();
+    stbuf->atimespec.tv_sec = now;
+    stbuf->atimespec.tv_nsec = 0;
+    stbuf->btimespec = stbuf->atimespec;
 
     if (strcmp(path, "/") == 0) {
-        stbuf->st_mode = S_IFDIR | 0755;
-        stbuf->st_nlink = 2;
-        stbuf->st_mtime = now;
-        stbuf->st_ctime = now;
+        stbuf->mode = S_IFDIR | 0755;
+        stbuf->nlink = 2;
+        stbuf->mtimespec = stbuf->atimespec;
+        stbuf->ctimespec = stbuf->atimespec;
         return 0;
     }
 
@@ -175,21 +181,24 @@ int fuse_vfs_getattr(const char* path, struct stat* stbuf,
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
 
     if (fuse_is_dir(state->vfs, vp)) {
-        stbuf->st_mode = S_IFDIR | 0755;
-        stbuf->st_nlink = 2;
-        stbuf->st_mtime = now;
-        stbuf->st_ctime = now;
+        stbuf->mode = S_IFDIR | 0755;
+        stbuf->nlink = 2;
+        stbuf->mtimespec = stbuf->atimespec;
+        stbuf->ctimespec = stbuf->atimespec;
     } else {
-        stbuf->st_mode = S_IFREG | 0644;
-        stbuf->st_nlink = 1;
-        stbuf->st_size  = vfs_file_size(state->vfs, vp, state->epoch);
-        stbuf->st_mtime = vfs_file_mtime(state->vfs, vp, state->epoch);
-        stbuf->st_ctime = vfs_file_ctime(state->vfs, vp);
+        stbuf->mode = S_IFREG | 0644;
+        stbuf->nlink = 1;
+        stbuf->size  = vfs_file_size(state->vfs, vp, state->epoch);
+        stbuf->mtimespec.tv_sec = (long)vfs_file_mtime(state->vfs, vp, state->epoch);
+        stbuf->mtimespec.tv_nsec = 0;
+        stbuf->ctimespec.tv_sec = (long)vfs_file_ctime(state->vfs, vp);
+        stbuf->ctimespec.tv_nsec = 0;
     }
+    stbuf->blksize = 0;
     return 0;
 }
 
-int fuse_vfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
+int fuse_vfs_readdir(const char* path, void* buf, fuse_darwin_fill_dir_t filler,
                      off_t offset, struct fuse_file_info* fi,
                      enum fuse_readdir_flags flags) {
     (void)offset; (void)fi; (void)flags;
@@ -207,16 +216,16 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
     /* Must be a directory */
     if (!fuse_is_dir(state->vfs, dir_vp)) return -ENOTDIR;
 
-    struct stat dummy_st;
-    memset(&dummy_st, 0, sizeof(dummy_st));
-    filler(buf, ".", &dummy_st, 0, 0);
-    filler(buf, "..", &dummy_st, 0, 0);
+    struct fuse_darwin_attr dummy_attr;
+    memset(&dummy_attr, 0, sizeof(dummy_attr));
+    filler(buf, ".", &dummy_attr, 0, 0);
+    filler(buf, "..", &dummy_attr, 0, 0);
 
     vfs_dirent_t ents[64];
     int n = vfs_readdir(state->vfs, dir_vp, ents, 64, state->epoch);
     if (n < 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
     for (int i = 0; i < n; i++)
-        filler(buf, ents[i].name, &dummy_st, 0, 0);
+        filler(buf, ents[i].name, &dummy_attr, 0, 0);
 
     return 0;
 }
@@ -601,6 +610,17 @@ int fuse_vfs_ioctl_cb(const char* path, int cmd, void* arg,
     (void)path; (void)fi; (void)flags;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     return fuse_vfs_ioctl(state->vfs, (unsigned long)cmd, arg, data);
+}
+
+/* ---------------------------------------------------------------------------
+ * FUSE lookup — required by libfuse to resolve paths.
+ * --------------------------------------------------------------------------- */
+
+int fuse_vfs_lookup(fuse_ino_t parent, const char* name) {
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    int64_t vp = vfs_open(state->vfs, (int64_t)parent, name, state->epoch);
+    if (vp <= 0) return -ENOENT;
+    return 0;
 }
 
 /* ---------------------------------------------------------------------------

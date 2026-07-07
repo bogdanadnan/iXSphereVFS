@@ -9,7 +9,8 @@
 #include <string.h>
 
 #ifdef FUSE3_FOUND
-#define FUSE_USE_VERSION 30
+#define FUSE_USE_VERSION 317
+#define FUSE_DARWIN_ENABLE_EXTENSIONS 1
 #include <fuse.h>
 #endif
 

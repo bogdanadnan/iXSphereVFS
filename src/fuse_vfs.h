@@ -84,9 +84,10 @@ int fuse_vfs_ioctl(vfs_t* vfs, unsigned long request, void* arg, void* data);
 #ifdef FUSE3_FOUND
 typedef uint64_t fuse_ino_t;void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg);
 void  fuse_vfs_destroy(void* private_data);
-int   fuse_vfs_getattr(const char* path, struct stat* stbuf,
+int   fuse_vfs_getattr(const char* path, struct fuse_darwin_attr* stbuf,
                        struct fuse_file_info* fi);
-int   fuse_vfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
+int   fuse_vfs_readdir(const char* path, void* buf,
+                       fuse_darwin_fill_dir_t filler,
                        off_t offset, struct fuse_file_info* fi,
                        enum fuse_readdir_flags flags);
 int   fuse_vfs_open(const char* path, struct fuse_file_info* fi);
@@ -145,6 +146,10 @@ int   fuse_vfs_removexattr(const char* path, const char* name);
 int   fuse_vfs_ioctl_cb(const char* path, int cmd, void* arg,
                         struct fuse_file_info* fi, unsigned int flags,
                         void* data);
+
+/* Required by libfuse: resolve a path to its inode.
+   For the root dir, returns 1; for child paths, calls vfs_open at epoch. */
+int   fuse_vfs_lookup(fuse_ino_t parent, const char* name);
 #endif /* FUSE3_FOUND */
 
 
