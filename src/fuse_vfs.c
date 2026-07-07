@@ -280,6 +280,11 @@ int fuse_vfs_create(const char* path, mode_t mode,
     int64_t vp = vfs_create(state->vfs, parent_vp, name, state->epoch);
     free(path_copy);
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+
+    /* Acquire lock on the newly created file */
+    if (vfs_lock(state->vfs, vp, state->epoch) != VFS_OK)
+        return -EACCES;
+
     fi->fh = (uint64_t)vp;
     return 0;
 }
