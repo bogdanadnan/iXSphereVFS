@@ -520,7 +520,7 @@ int fuse_vfs_access(const char* path, int mask) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     /* VFS has no permission model — allow all checks by default.
        Only reject write access (W_OK) when mounted read-only. */
-    if (state->readonly && (mask & W_OK)) return -EACCES;
+    if (state->readonly && (mask & W_OK)) return -EROFS;
     return 0;
 }
 int fuse_vfs_chmod(const char* path, mode_t m, struct fuse_file_info* fi)
