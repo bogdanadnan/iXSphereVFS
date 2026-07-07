@@ -110,6 +110,25 @@ test_fuse_mkdir_rmdir() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# test_fuse_readdir — create 3 files, ls and verify all listed.
+# ---------------------------------------------------------------------------
+test_fuse_readdir() {
+    echo "=== test_fuse_readdir ==="
+    touch "$MNT_POINT/a.txt" "$MNT_POINT/b.txt" "$MNT_POINT/c.txt"
+    local listing
+    listing="$(ls "$MNT_POINT")" || { echo "FAIL: ls"; return 1; }
+    for f in a.txt b.txt c.txt; do
+        if ! echo "$listing" | grep -q "$f"; then
+            echo "FAIL: $f not in listing"
+            return 1
+        fi
+    done
+    rm "$MNT_POINT"/a.txt "$MNT_POINT"/b.txt "$MNT_POINT"/c.txt
+    echo "  all 3 files listed and cleaned up"
+    return 0
+}
+
 echo "=== test_fuse smoke test ==="
 
 # Build a small test VFS
@@ -126,6 +145,7 @@ FUSE_PID=$!
 if wait_for_mount; then
     test_fuse_create_read_delete || exit 1
     test_fuse_mkdir_rmdir || exit 1
+    test_fuse_readdir || exit 1
     # Unmount
     fusermount3 -u "$MNT_POINT" 2>/dev/null || umount "$MNT_POINT" 2>/dev/null || true
     wait $FUSE_PID 2>/dev/null || true
