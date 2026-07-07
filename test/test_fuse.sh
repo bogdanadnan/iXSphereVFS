@@ -3,6 +3,21 @@
 # Requires FUSE3 and the vfs_fuse binary.
 set -e
 
+# ---------------------------------------------------------------------------
+# skip_if_no_fuse — exit 0 with SKIP message if FUSE is unavailable.
+# ---------------------------------------------------------------------------
+skip_if_no_fuse() {
+    if [ ! -c /dev/fuse ] && [ ! -e /dev/fuse ]; then
+        echo "SKIP: /dev/fuse not available"
+        exit 0
+    fi
+    if ! command -v fusermount3 >/dev/null 2>&1 && ! command -v fusermount >/dev/null 2>&1; then
+        echo "SKIP: fusermount not available"
+        exit 0
+    fi
+}
+skip_if_no_fuse
+
 VFS_FILE="/tmp/test_fuse_smoke.vfs"
 MNT_POINT="/tmp/test_fuse_mnt_$$"
 
