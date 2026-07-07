@@ -84,11 +84,9 @@ Rename a file or directory. Returns `VFS_OK` or error.
 int64_t vfs_open(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
 ```
 
-Find a file by name in a directory. Returns the child's **nodeId** (not VirtualPtr)
-on success, or a negative error code.  
-**Important**: `vfs_open` returns a nodeId, not a VirtualPtr. To read/write,
-use `vfs_readdir` to get the VirtualPtr (field `vp` in `vfs_dirent_t`), or
-use the VirtualPtr returned by `vfs_create`.
+Find a file by name in a directory. Returns the child's **VirtualPtr** on
+success, or a negative error code.  The returned VirtualPtr can be used
+directly with `vfs_read`, `vfs_write`, `vfs_file_size`, etc.
 
 ### `vfs_read`
 
@@ -273,16 +271,14 @@ contention — see [CONTENTION.md](CONTENTION.md).
 1. **No COW after snapshot**: Writes at epoch 0 after a snapshot do in-place
    updates to the same VersionPage (no copy-on-write for same-offset writes).
    Use different offsets or commit the snapshot before further writes.
-2. **vfs_open returns nodeId**: Must use `vfs_readdir` to get VirtualPtrs for
-   reading/writing. `vfs_open` returns a stable identifier, not a pool address.
-3. **vfs_unmount does not flush**: Call `vfs_flush` before `vfs_unmount` to
+2. **vfs_unmount does not flush**: Call `vfs_flush` before `vfs_unmount` to
    ensure data persistence. Data pages in the write-back cache are lost on
    unmount without flush.
-4. **readdir limit**: `vfs_readdir` is capped at 1024 entries (DENTRY_CACHE_MAX).
-5. **Single-copy writes**: The first write to a page creates a single on-disk
+3. **readdir limit**: `vfs_readdir` is capped at 1024 entries (DENTRY_CACHE_MAX).
+4. **Single-copy writes**: The first write to a page creates a single on-disk
    copy. If the process crashes before the second write (which allocates a
    mirror sibling), the data may be lost. Use `vfs_flush` frequently.
-6. **GC pool exhaustion**: `vfs_gc` returns `VFS_ERR_FULL` if it cannot
+5. **GC pool exhaustion**: `vfs_gc` returns `VFS_ERR_FULL` if it cannot
    allocate new pool pages for compaction. The old state is preserved.
-7. **Epoch limit**: `int64_t` epoch counter overflows in ~146 billion years
+6. **Epoch limit**: `int64_t` epoch counter overflows in ~146 billion years
    at 2 snapshots/second — practically unbounded.
