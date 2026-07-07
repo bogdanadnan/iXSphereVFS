@@ -251,8 +251,11 @@ int fuse_vfs_write(const char* path, const char* buf, size_t size,
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
     int64_t vp = (int64_t)fi->fh;
+    /* Writes always target the writable base epoch (0), even if the
+       mount was opened at a snapshot epoch (odd).  Snapshot data is
+       read-only; all mutations go to the current base. */
     int r = vfs_write(state->vfs, vp, buf, (int64_t)offset,
-                      (int64_t)size, state->epoch);
+                      (int64_t)size, 0);
     return (r >= 0) ? r : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
 
