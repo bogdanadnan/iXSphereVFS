@@ -1,13 +1,9 @@
-/* vfsctl — iXSphereVFS control tool (Phase 11: ioctl-based FUSE mountpoint ops).
- *
- * Implements ioctl-based snapshot/commit/delete-snapshot/gc operations on
- * a FUSE mountpoint directory fd.  The VFS_IOC_* macros are defined in
- * src/fuse_ioctl.h (Phase 3).
+/* vfsctl — iXSphereVFS control tool: ioctl-based snapshot/commit/delete-snapshot/gc.
  *
  * Usage: vfsctl <subcommand> <mountpoint> [epoch]
  *
- * This file will be fully implemented in Phase 11.  For now, it is a
- * placeholder that validates the argument shape and returns success.
+ * Operates on a FUSE mountpoint directory fd via ioctl.
+ * VFS_IOC_* macros are defined in src/fuse_ioctl.h.
  */
 
 #include "ixsphere/vfs.h"
@@ -15,6 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
 
 static void usage(const char* prog) {
     fprintf(stderr,
@@ -30,28 +29,55 @@ static void usage(const char* prog) {
 int main(int argc, char** argv) {
     if (argc < 3) { usage(argv[0]); return 1; }
 
-    const char* subcmd    = argv[1];
+    const char* subcmd     = argv[1];
     const char* mountpoint = argv[2];
 
-    /* All subcommands operate on a directory fd of the FUSE mountpoint.
-       Full implementation in Phase 11. */
-    (void)mountpoint;
+    int fd = open(mountpoint, O_RDONLY);
+    if (fd < 0) { perror(mountpoint); return 1; }
 
     if (strcmp(subcmd, "snapshot") == 0) {
-        printf("vfsctl: snapshot — pending Phase 11 implementation\n");
+        int64_t epoch = 0;
+        if (ioctl(fd, VFS_IOC_SNAPSHOT, &epoch) != 0) {
+            perror("ioctl(VFS_IOC_SNAPSHOT)");
+            close(fd);
+            return 1;
+        }
+        printf("%lld\n", (long long)epoch);
     } else if (strcmp(subcmd, "commit") == 0) {
-        if (argc < 4) { fprintf(stderr, "commit requires an epoch\n"); return 1; }
-        printf("vfsctl: commit %s — pending Phase 11 implementation\n", argv[3]);
+        if (argc < 4) {
+            fprintf(stderr, "commit requires an epoch argument\n");
+            close(fd); return 1;
+        }
+        int64_t epoch = (int64_t)atoll(argv[3]);
+        if (ioctl(fd, VFS_IOC_COMMIT, &epoch) != 0) {
+            perror("ioctl(VFS_IOC_COMMIT)");
+            close(fd);
+            return 1;
+        }
     } else if (strcmp(subcmd, "delete-snapshot") == 0) {
-        if (argc < 4) { fprintf(stderr, "delete-snapshot requires an epoch\n"); return 1; }
-        printf("vfsctl: delete-snapshot %s — pending Phase 11 implementation\n", argv[3]);
+        if (argc < 4) {
+            fprintf(stderr, "delete-snapshot requires an epoch argument\n");
+            close(fd); return 1;
+        }
+        int64_t epoch = (int64_t)atoll(argv[3]);
+        if (ioctl(fd, VFS_IOC_DELETE_SNAP, &epoch) != 0) {
+            perror("ioctl(VFS_IOC_DELETE_SNAP)");
+            close(fd);
+            return 1;
+        }
     } else if (strcmp(subcmd, "gc") == 0) {
-        printf("vfsctl: gc — pending Phase 11 implementation\n");
+        if (ioctl(fd, VFS_IOC_GC) != 0) {
+            perror("ioctl(VFS_IOC_GC)");
+            close(fd);
+            return 1;
+        }
     } else {
         fprintf(stderr, "unknown subcommand: %s\n", subcmd);
         usage(argv[0]);
+        close(fd);
         return 1;
     }
 
+    close(fd);
     return 0;
 }
