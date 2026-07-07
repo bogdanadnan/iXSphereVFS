@@ -4,17 +4,32 @@
  */
 
 #include "ixsphere/vfs.h"
-#include "ixsphere/vfs_internal.h"
+#include "fuse_vfs.h"
 
 #ifdef FUSE3_FOUND
 #include <fuse3/fuse.h>
-#include <fuse3/fuse_lowlevel.h>
 #endif
 
+#include <errno.h>
+
 /* ---------------------------------------------------------------------------
- * FUSE operations — populated when FUSE3_FOUND is defined.
- * When FUSE3 is not available, this file compiles to an empty translation
- * unit (all code behind #ifdef FUSE3_FOUND).
+ * Error mapping — VFS error codes to POSIX errno values.
+ * Used by FUSE callbacks to translate VFS errors into negative errno
+ * returns expected by FUSE.
  * --------------------------------------------------------------------------- */
 
-/* Placeholder for FUSE operations implementation */
+static int vfs_error_to_errno(int vfs_err) {
+    switch (vfs_err) {
+    case VFS_OK:            return 0;
+    case VFS_ERR_IO:        return -EIO;
+    case VFS_ERR_NOTFOUND:  return -ENOENT;
+    case VFS_ERR_EXISTS:    return -EEXIST;
+    case VFS_ERR_NOTDIR:    return -ENOTDIR;
+    case VFS_ERR_NOTEMPTY:  return -ENOTEMPTY;
+    case VFS_ERR_CONFLICT:  return -EBUSY;
+    case VFS_ERR_FULL:      return -ENOSPC;
+    case VFS_ERR_NOMEM:     return -ENOMEM;
+    case VFS_ERR_EPOCH:     return -EINVAL;
+    default:                return -EIO;
+    }
+}
