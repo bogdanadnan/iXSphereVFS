@@ -284,3 +284,13 @@ int64_t vfs_root(vfs_t* vfs) {
     if (!vfs || !vfs->ctx) return 0;
     return vfs->ctx->rootNodeOffset;
 }
+
+int vfs_node_type(vfs_t* vfs, int64_t vp) {
+    if (!vfs || !vfs->ctx || vp <= 0) return 0;
+    uint8_t* slot = pool_resolve(&vfs->ctx->pool, vp);
+    if (!slot) return 0;
+    int16_t type = (int16_t)vfs_rd2_s(slot, 0, vfs->ctx->page_size);
+    if (type == (int16_t)NODE_TYPE_DIR)  return 0x01;
+    if (type == (int16_t)NODE_TYPE_FILE) return 0x03;
+    return 0;
+}

@@ -141,6 +141,14 @@ int     vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
                     int max, int64_t epoch);
 
 /* ---------------------------------------------------------------------------
+ * Node introspection
+ * --------------------------------------------------------------------------- */
+
+/* Return the type of the node at VirtualPtr vp:
+     0x01 = NODE_TYPE_DIR, 0x03 = NODE_TYPE_FILE, 0 = error. */
+int     vfs_node_type(vfs_t* vfs, int64_t vp);
+
+/* ---------------------------------------------------------------------------
  * Lock Operations (§9.3)
  * --------------------------------------------------------------------------- */
 
