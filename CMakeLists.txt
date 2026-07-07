@@ -100,3 +100,6 @@ add_test(NAME test_fuzz COMMAND test_fuzz)
 
 add_executable(vfs_bench bench/bench.c)
 target_link_libraries(vfs_bench ixsphere_vfs pthread)
+
+add_executable(vfsctl tools/vfsctl.c)
+target_link_libraries(vfsctl ixsphere_vfs pthread)
