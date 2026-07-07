@@ -279,3 +279,8 @@ vfs_error_t vfs_last_error(vfs_t* vfs) {
     if (!vfs || !vfs->ctx) return VFS_ERR_IO;
     return vfs->ctx->last_error;
 }
+
+int64_t vfs_root(vfs_t* vfs) {
+    if (!vfs || !vfs->ctx) return 0;
+    return vfs->ctx->rootNodeOffset;
+}

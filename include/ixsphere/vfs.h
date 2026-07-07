@@ -81,6 +81,10 @@ int     vfs_flush(vfs_t* vfs);
 /* Return the error code from the last failed operation, or VFS_OK if none. */
 vfs_error_t vfs_last_error(vfs_t* vfs);
 
+/* Return the VirtualPtr of the root directory, or 0 if vfs is NULL or
+   uninitialised.  Safe to call before any file operations. */
+int64_t vfs_root(vfs_t* vfs);
+
 /* ---------------------------------------------------------------------------
  * File Operations (§12.2)
  * --------------------------------------------------------------------------- */
