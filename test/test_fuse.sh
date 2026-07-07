@@ -129,6 +129,31 @@ test_fuse_readdir() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# test_fuse_rename — create file with content, rename, verify.
+# ---------------------------------------------------------------------------
+test_fuse_rename() {
+    echo "=== test_fuse_rename ==="
+    local src="$MNT_POINT/old_name.txt"
+    local dst="$MNT_POINT/new_name.txt"
+    local content="rename test data"
+
+    echo "$content" > "$src" || { echo "FAIL: create"; return 1; }
+    mv "$src" "$dst" || { echo "FAIL: rename"; return 1; }
+
+    if [ -e "$src" ]; then echo "FAIL: old still exists"; return 1; fi
+
+    local result
+    result="$(cat "$dst")" || { echo "FAIL: cat new"; return 1; }
+    if [ "$result" != "$content" ]; then
+        echo "FAIL: content mismatch: '$result' != '$content'"
+        return 1
+    fi
+    rm "$dst"
+    echo "  renamed and verified"
+    return 0
+}
+
 echo "=== test_fuse smoke test ==="
 
 # Build a small test VFS
@@ -146,6 +171,7 @@ if wait_for_mount; then
     test_fuse_create_read_delete || exit 1
     test_fuse_mkdir_rmdir || exit 1
     test_fuse_readdir || exit 1
+    test_fuse_rename || exit 1
     # Unmount
     fusermount3 -u "$MNT_POINT" 2>/dev/null || umount "$MNT_POINT" 2>/dev/null || true
     wait $FUSE_PID 2>/dev/null || true
