@@ -33,7 +33,7 @@ enum {
     KEY_HELP       = -5,
 };
 
-static const struct fuse_opt fuse_vfs_opts_spec[] = {
+const struct fuse_opt fuse_vfs_opts_spec[] = {
     { "--vfs-file=%s", 0, KEY_VFS_PATH },
     FUSE_OPT_KEY("-o epoch=",           KEY_EPOCH),
     FUSE_OPT_KEY("-o page_size=",       KEY_PAGE_SIZE),
@@ -49,7 +49,7 @@ static const struct fuse_opt fuse_vfs_opts_spec[] = {
  * (pass through to libfuse).  Matched options return 0 (consumed).
  * --------------------------------------------------------------------------- */
 
-static int fuse_vfs_opt_proc_impl(void* data, const char* arg, int key,
+int fuse_vfs_opt_proc(void* data, const char* arg, int key,
                              struct fuse_args* outargs) {
     fuse_vfs_opts* opts = (fuse_vfs_opts*)data;
     (void)outargs;
