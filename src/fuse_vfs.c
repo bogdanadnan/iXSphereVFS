@@ -193,12 +193,21 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
     (void)offset; (void)fi; (void)flags;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
 
-    if (strcmp(path, "/") != 0) return -ENOENT;
+    /* Resolve the directory path */
+    int64_t dir_vp;
+    if (strcmp(path, "/") == 0) {
+        dir_vp = vfs_root(state->vfs);
+    } else {
+        dir_vp = resolve_full_path(state->vfs, state->epoch, path);
+    }
+    if (dir_vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+
+    /* Must be a directory */
+    if (!fuse_is_dir(state->vfs, dir_vp)) return -ENOTDIR;
 
     filler(buf, ".", NULL, 0, 0);
     filler(buf, "..", NULL, 0, 0);
 
-    int64_t dir_vp = vfs_root(state->vfs);
     vfs_dirent_t ents[64];
     int n = vfs_readdir(state->vfs, dir_vp, ents, 64, state->epoch);
     if (n < 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
