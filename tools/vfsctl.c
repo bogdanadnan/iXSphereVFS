@@ -11,28 +11,10 @@
  */
 
 #include "ixsphere/vfs.h"
+#include "fuse_ioctl.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifndef _WIN32
-#include <sys/ioctl.h>
-#endif
-
-/* Forward declaration — full FUSE ioctl integration lands in Phase 11.
- * These macros will be defined in src/fuse_ioctl.h once created. */
-#ifndef VFS_IOC_SNAPSHOT
-#define VFS_IOC_SNAPSHOT        0
-#endif
-#ifndef VFS_IOC_COMMIT
-#define VFS_IOC_COMMIT          0
-#endif
-#ifndef VFS_IOC_DELETE_SNAPSHOT
-#define VFS_IOC_DELETE_SNAPSHOT 0
-#endif
-#ifndef VFS_IOC_GC
-#define VFS_IOC_GC              0
-#endif
 
 static void usage(const char* prog) {
     fprintf(stderr,
