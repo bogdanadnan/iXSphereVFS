@@ -550,28 +550,31 @@ int fuse_vfs_removexattr(const char* path, const char* name)
 
 #include "fuse_ioctl.h"
 
-int fuse_vfs_ioctl(vfs_t* vfs, unsigned long request, void* arg) {
+int fuse_vfs_ioctl(vfs_t* vfs, unsigned long request, void* arg, void* data) {
     if (!vfs) return -EIO;
 
     switch (request) {
     case VFS_IOC_SNAPSHOT: {
         int64_t epoch = vfs_snapshot(vfs);
         if (epoch < 0) return vfs_error_to_errno(vfs_last_error(vfs));
-        if (arg) *(int64_t*)arg = epoch;
+        /* Write result to data (kernel output buffer for _IOR) */
+        if (data) *(int64_t*)data = epoch;
         return 0;
     }
     case VFS_IOC_COMMIT: {
-        if (!arg) return -EINVAL;
-        int64_t snap_epoch = *(int64_t*)arg;
+        int64_t snap_epoch = (arg && *(int64_t*)arg) ? *(int64_t*)arg
+                           : (data ? *(int64_t*)data : 0);
+        if (snap_epoch <= 0) return -EINVAL;
         int ret = vfs_commit(vfs, snap_epoch);
         if (ret != VFS_OK) return vfs_error_to_errno(vfs_last_error(vfs));
-        /* Write back the committed epoch */
-        *(int64_t*)arg = vfs_current_epoch(vfs);
+        /* Write back the committed epoch to data (_IOWR) */
+        if (data) *(int64_t*)data = vfs_current_epoch(vfs);
         return 0;
     }
     case VFS_IOC_DELETE_SNAP: {
-        if (!arg) return -EINVAL;
-        int64_t snap_epoch = *(int64_t*)arg;
+        int64_t snap_epoch = (arg && *(int64_t*)arg) ? *(int64_t*)arg
+                           : (data ? *(int64_t*)data : 0);
+        if (snap_epoch <= 0) return -EINVAL;
         int ret = vfs_delete_snapshot(vfs, snap_epoch);
         return (ret == VFS_OK) ? 0
                : vfs_error_to_errno(vfs_last_error(vfs));
@@ -590,12 +593,12 @@ int fuse_vfs_ioctl(vfs_t* vfs, unsigned long request, void* arg) {
  * FUSE ioctl callback — bridges the FUSE ioctl path to our dispatcher.
  * --------------------------------------------------------------------------- */
 
-int fuse_vfs_ioctl_cb(fuse_ino_t ino, int cmd, void* arg,
+int fuse_vfs_ioctl_cb(const char* path, int cmd, void* arg,
                       struct fuse_file_info* fi, unsigned int flags,
                       void* data) {
-    (void)ino; (void)fi; (void)flags; (void)data;
+    (void)path; (void)fi; (void)flags;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    return fuse_vfs_ioctl(state->vfs, (unsigned long)cmd, arg);
+    return fuse_vfs_ioctl(state->vfs, (unsigned long)cmd, arg, data);
 }
 
 /* ---------------------------------------------------------------------------

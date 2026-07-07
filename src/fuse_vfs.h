@@ -74,7 +74,7 @@ extern const struct fuse_opt fuse_vfs_opts_spec[];
  * VFS_IOC_DELETE_SNAP, and VFS_IOC_GC to the underlying VFS.
  * Implementation in src/fuse_vfs.c (Phase 5).
  * --------------------------------------------------------------------------- */
-int fuse_vfs_ioctl(vfs_t* vfs, unsigned long request, void* arg);
+int fuse_vfs_ioctl(vfs_t* vfs, unsigned long request, void* arg, void* data);
 
 /* ---------------------------------------------------------------------------
  * FUSE operations callbacks — each corresponds to a fuse_operations member.
@@ -142,7 +142,7 @@ int   fuse_vfs_listxattr(const char* path, char* list, size_t size);
 int   fuse_vfs_removexattr(const char* path, const char* name);
 
 /* Phase 10: ioctl callback (FUSE-level, distinct from fuse_vfs_ioctl helper) */
-int   fuse_vfs_ioctl_cb(fuse_ino_t ino, int cmd, void* arg,
+int   fuse_vfs_ioctl_cb(const char* path, int cmd, void* arg,
                         struct fuse_file_info* fi, unsigned int flags,
                         void* data);
 #endif /* FUSE3_FOUND */
