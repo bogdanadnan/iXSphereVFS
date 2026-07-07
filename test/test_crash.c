@@ -1054,9 +1054,14 @@ static const int n_scenarios = (int)(sizeof(scenarios) / sizeof(scenarios[0]));
 int main(int argc, char** argv) {
     int single = -1;
     if (argc > 1) {
-        single = atoi(argv[1]);
+        if (argc > 2 && strcmp(argv[1], "--scenario") == 0) {
+            single = atoi(argv[2]);
+        } else {
+            single = atoi(argv[1]);
+        }
         if (single < 0 || single >= n_scenarios) {
-            fprintf(stderr, "Usage: %s [scenario 0-%d]\n", argv[0], n_scenarios - 1);
+            fprintf(stderr, "Usage: %s [--scenario N] [scenario-index 0-%d]\n",
+                    argv[0], n_scenarios - 1);
             return 1;
         }
     }
