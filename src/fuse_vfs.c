@@ -475,8 +475,20 @@ static int fuse_vfs_flush(const char* path, struct fuse_file_info* fi) {
     int r = vfs_flush(state->vfs);
     return (r == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
-static int fuse_vfs_statfs(const char* path, struct statvfs* stbuf)
-    { (void)path; (void)stbuf; return -ENOSYS; }
+static int fuse_vfs_statfs(const char* path, struct statvfs* stbuf) {
+    (void)path;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    memset(stbuf, 0, sizeof(*stbuf));
+    stbuf->f_bsize   = (unsigned long)state->page_size;
+    stbuf->f_frsize  = (unsigned long)state->page_size;
+    stbuf->f_blocks  = 0;   /* capacity unknown for file-backed VFS */
+    stbuf->f_bfree   = 0;
+    stbuf->f_bavail  = 0;
+    stbuf->f_files   = UINT64_MAX;
+    stbuf->f_ffree   = UINT64_MAX;
+    stbuf->f_namemax = 255;
+    return 0;
+}
 static int fuse_vfs_access(const char* path, int mask)
     { (void)path; (void)mask; return -ENOSYS; }
 static int fuse_vfs_chmod(const char* path, mode_t m, struct fuse_file_info* fi)

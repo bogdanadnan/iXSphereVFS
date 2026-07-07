@@ -7,7 +7,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic")
 
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
-  pkg_check_modules(FUSE3 fuse3)
+  pkg_check_modules(FUSE fuse)
 endif()
 
 add_library(ixsphere_vfs STATIC
@@ -30,11 +30,11 @@ add_library(ixsphere_vfs STATIC
     src/var_array.c
 )
 
-if(FUSE3_FOUND)
+if(FUSE_FOUND)
   target_sources(ixsphere_vfs PRIVATE src/fuse_vfs.c)
   set_source_files_properties(src/fuse_vfs.c PROPERTIES COMPILE_FLAGS "-DFUSE_USE_VERSION=30")
-  target_include_directories(ixsphere_vfs PRIVATE ${FUSE3_INCLUDE_DIRS})
-  target_link_libraries(ixsphere_vfs PRIVATE ${FUSE3_LIBRARIES})
+  target_include_directories(ixsphere_vfs PRIVATE ${FUSE_INCLUDE_DIRS})
+  target_link_libraries(ixsphere_vfs PRIVATE ${FUSE_LIBRARIES})
   target_compile_definitions(ixsphere_vfs PRIVATE FUSE3_FOUND)
 endif()
 
@@ -106,11 +106,11 @@ add_executable(vfsctl tools/vfsctl.c)
 target_link_libraries(vfsctl ixsphere_vfs pthread)
 target_include_directories(vfsctl PRIVATE src)
 
-if(FUSE3_FOUND)
+if(FUSE_FOUND)
   add_executable(vfs_fuse src/fuse_main.c)
-  set_source_files_properties(src/fuse_main.c PROPERTIES COMPILE_FLAGS "-DFUSE_USE_VERSION=30")
-  target_link_libraries(vfs_fuse ixsphere_vfs ${FUSE3_LIBRARIES} pthread)
-  target_include_directories(vfs_fuse PRIVATE ${FUSE3_INCLUDE_DIRS})
+  set_source_files_properties(src/fuse_main.c PROPERTIES COMPILE_FLAGS "-DFUSE_USE_VERSION=31")
+  target_link_libraries(vfs_fuse ixsphere_vfs ${FUSE_LIBRARIES} pthread)
+  target_include_directories(vfs_fuse PRIVATE ${FUSE_INCLUDE_DIRS})
 
   add_test(NAME test_fuse
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/test/test_fuse.sh"
