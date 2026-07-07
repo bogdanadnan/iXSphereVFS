@@ -44,9 +44,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    /* Pass opts as private_data to fuse_init callback */
-    int ret = fuse_main_real(args.argc, args.argv, &fuse_vfs_ops,
-                             sizeof(fuse_vfs_ops), &opts);
+    /* Pass opts as private_data to libfuse's fuse_main.
+       fuse_main is the high-level API that handles the daemonize (-f)
+       and child-mount-fork logic. */
+    int ret = fuse_main(args.argc, args.argv, &fuse_vfs_ops, &opts);
 
     free(opts.vfs_path);
     fuse_opt_free_args(&args);
