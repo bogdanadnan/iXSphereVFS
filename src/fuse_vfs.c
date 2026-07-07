@@ -224,6 +224,13 @@ int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
     if (fuse_is_dir(state->vfs, vp)) return -EISDIR;
     if (state->readonly && (fi->flags & (O_WRONLY | O_RDWR)))
         return -EROFS;
+
+    /* Acquire per-file lock for write opens */
+    if (fi->flags & (O_WRONLY | O_RDWR)) {
+        int lr = vfs_lock(state->vfs, vp, state->epoch);
+        if (lr != VFS_OK) return -EACCES;
+    }
+
     fi->fh = (uint64_t)vp;
     return 0;
 }
