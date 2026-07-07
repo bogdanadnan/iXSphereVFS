@@ -14,18 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ---------------------------------------------------------------------------
- * Option parsing state — ephemeral, populated by fuse_vfs_opt_proc
- * during argument parsing, consumed by fuse_vfs_init to populate
- * fuse_vfs_state_t, then destroyed.  Not retained after mount.
- * --------------------------------------------------------------------------- */
-
-typedef struct {
-    char*   vfs_path;   /* strdup'd path to VFS backing file */
-    int64_t epoch;      /* initial working epoch (0 = base) */
-    int64_t page_size;  /* VFS page size (default 8192) */
-    int     readonly;   /* non-zero for read-only mount */
-} fuse_vfs_opts;
 
 /* ---------------------------------------------------------------------------
  * FUSE option parsing keys — custom keys for -o epoch=, -o page_size=,
@@ -61,7 +49,7 @@ static const struct fuse_opt fuse_vfs_opts_spec[] = {
  * (pass through to libfuse).  Matched options return 0 (consumed).
  * --------------------------------------------------------------------------- */
 
-static int fuse_vfs_opt_proc(void* data, const char* arg, int key,
+static int fuse_vfs_opt_proc_impl(void* data, const char* arg, int key,
                              struct fuse_args* outargs) {
     fuse_vfs_opts* opts = (fuse_vfs_opts*)data;
     (void)outargs;

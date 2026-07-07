@@ -1,21 +1,59 @@
 /* vfs_fuse — FUSE filesystem interface for iXSphereVFS.
  * Conditionally built when FUSE3 is available.
  *
- * Usage: ./vfs_fuse <vfs-file> <mountpoint>
- *
- * Full FUSE callback implementation is deferred to Phase 5
- * (private_data wrapper, fuse_main_real, fuse_opt_parse, vfs_root,
- *  resolve_full_path, ops table in src/fuse_vfs.c).
+ * Usage: ./vfs_fuse <vfs-file> <mountpoint> [-o options...]
  */
 
-#include <stdio.h>
+#include "ixsphere/vfs.h"
+#include "fuse_vfs.h"
 
 #ifdef FUSE3_FOUND
 #include <fuse3/fuse.h>
 #endif
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifndef FUSE3_FOUND
+
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
-    fprintf(stderr, "vfs_fuse: pending Phase 5+ implementation\n");
+    fprintf(stderr, "vfs_fuse: FUSE3 not available at build time.\n");
     return 1;
 }
+
+#else
+
+/* FUSE operations table — declared in fuse_vfs.h, defined in fuse_vfs.c
+   (Phase 5 task 8).  For now, a minimal stub so fuse_main_real can be called. */
+static const struct fuse_operations fuse_vfs_ops = {
+    /* Populated in Phase 5 Task 8 */
+};
+
+int main(int argc, char** argv) {
+    /* Default option state */
+    fuse_vfs_opts opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.page_size = 8192;
+
+    struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+
+    /* Parse custom FUSE options into opts */
+    if (fuse_opt_parse(&args, &opts, fuse_vfs_opts_spec,
+                       fuse_vfs_opt_proc) != 0) {
+        free(opts.vfs_path);
+        fuse_opt_free_args(&args);
+        return 1;
+    }
+
+    /* Pass opts as private_data to fuse_init callback */
+    int ret = fuse_main_real(args.argc, args.argv, &fuse_vfs_ops,
+                             sizeof(fuse_vfs_ops), &opts);
+
+    free(opts.vfs_path);
+    fuse_opt_free_args(&args);
+    return ret;
+}
+
+#endif /* FUSE3_FOUND */

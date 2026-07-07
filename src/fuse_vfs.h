@@ -23,6 +23,18 @@ typedef struct {
 } fuse_vfs_state_t;
 
 /* ---------------------------------------------------------------------------
+ * Option parsing state — ephemeral, populated by fuse_opt_parse,
+ * consumed by fuse_vfs_init.  Not retained after mount.
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    char*   vfs_path;   /* strdup'd path to VFS backing file */
+    int64_t epoch;      /* initial working epoch (0 = base) */
+    int64_t page_size;  /* VFS page size (default 8192) */
+    int     readonly;   /* non-zero for read-only mount */
+} fuse_vfs_opts;
+
+/* ---------------------------------------------------------------------------
  * Path resolution — splits a POSIX path ("/a/b/c.txt") into components
  * and walks the VFS tree to resolve the final VirtualPtr.
  * Returns VirtualPtr on success, negative VFS error code on failure.
@@ -51,6 +63,10 @@ int vfs_error_to_errno(int vfs_err);
 int fuse_vfs_opt_proc(void* data, const char* arg, int key,
                       struct fuse_args* outargs);
 #endif
+
+/* Exposed for fuse_main.c: the option specification table and
+   option-processing callback used by fuse_opt_parse. */
+extern const struct fuse_opt fuse_vfs_opts_spec[];
 
 /* ---------------------------------------------------------------------------
  * ioctl handler — dispatches VFS_IOC_SNAPSHOT, VFS_IOC_COMMIT,
