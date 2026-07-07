@@ -56,6 +56,38 @@ wait_for_mount() {
     return 1
 }
 
+# ---------------------------------------------------------------------------
+# test_fuse_create_read_delete — create file, read, delete, verify.
+# ---------------------------------------------------------------------------
+test_fuse_create_read_delete() {
+    echo "=== test_fuse_create_read_delete ==="
+    local testfile="$MNT_POINT/hello.txt"
+    local content="Hello, iXSphereVFS FUSE!"
+
+    # Create file via shell echo
+    echo "$content" > "$testfile" || { echo "FAIL: echo create"; return 1; }
+
+    # Read back and verify
+    local result
+    result="$(cat "$testfile")" || { echo "FAIL: cat read"; return 1; }
+    if [ "$result" != "$content" ]; then
+        echo "FAIL: content mismatch: '$result' != '$content'"
+        return 1
+    fi
+    echo "  created and verified: $content"
+
+    # Delete file
+    rm "$testfile" || { echo "FAIL: rm"; return 1; }
+
+    # Verify gone
+    if [ -e "$testfile" ]; then
+        echo "FAIL: file still exists after rm"
+        return 1
+    fi
+    echo "  deleted and gone"
+    return 0
+}
+
 echo "=== test_fuse smoke test ==="
 
 # Build a small test VFS
@@ -70,7 +102,7 @@ FUSE_PID=$!
 
 # Verify the mount
 if wait_for_mount; then
-    echo "PASS: FUSE mount successful"
+    test_fuse_create_read_delete || exit 1
     # Unmount
     fusermount3 -u "$MNT_POINT" 2>/dev/null || umount "$MNT_POINT" 2>/dev/null || true
     wait $FUSE_PID 2>/dev/null || true
