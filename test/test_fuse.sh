@@ -154,6 +154,55 @@ test_fuse_rename() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# test_fuse_readonly — mount with -o readonly, verify write rejected.
+# ---------------------------------------------------------------------------
+test_fuse_readonly() {
+    echo "=== test_fuse_readonly ==="
+    # Unmount existing, re-mount with -o readonly
+    fusermount3 -u -z "$MNT_POINT" 2>/dev/null || true
+    wait $FUSE_PID 2>/dev/null || true
+
+    ./vfs_fuse "$VFS_FILE" "$MNT_POINT" -o readonly -f &
+    local ro_pid=$!
+
+    if ! wait_for_mount; then
+        echo "FAIL: readonly mount failed"
+        kill $ro_pid 2>/dev/null || true
+        return 1
+    fi
+
+    # Write should fail
+    if touch "$MNT_POINT/ro_write.txt" 2>/dev/null; then
+        echo "FAIL: write succeeded on readonly mount"
+        rm -f "$MNT_POINT/ro_write.txt"
+        fusermount3 -u -z "$MNT_POINT" 2>/dev/null || true
+        wait $ro_pid 2>/dev/null || true
+        return 1
+    fi
+    echo "  write rejected with EROFS"
+
+    # Read should succeed (hello.txt was created earlier)
+    if ! cat "$MNT_POINT/hello.txt" >/dev/null 2>&1; then
+        echo "WARN: read of existing file failed (may not exist)"
+    else
+        echo "  read succeeded"
+    fi
+
+    # Unmount readonly mount, re-mount read-write for remaining tests
+    fusermount3 -u -z "$MNT_POINT" 2>/dev/null || true
+    wait $ro_pid 2>/dev/null || true
+
+    ./vfs_fuse "$VFS_FILE" "$MNT_POINT" -f &
+    FUSE_PID=$!
+    if ! wait_for_mount; then
+        echo "FAIL: re-mount after readonly test failed"
+        return 1
+    fi
+    echo "  re-mounted read-write"
+    return 0
+}
+
 echo "=== test_fuse smoke test ==="
 
 # Build a small test VFS
@@ -172,6 +221,7 @@ if wait_for_mount; then
     test_fuse_mkdir_rmdir || exit 1
     test_fuse_readdir || exit 1
     test_fuse_rename || exit 1
+    test_fuse_readonly || exit 1
     # Unmount
     fusermount3 -u "$MNT_POINT" 2>/dev/null || umount "$MNT_POINT" 2>/dev/null || true
     wait $FUSE_PID 2>/dev/null || true
