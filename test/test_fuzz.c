@@ -16,6 +16,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <sys/wait.h>
+#include <signal.h>
 
 /* ---------------------------------------------------------------------------
  * Deterministic PRNG — xorshift64
@@ -220,10 +222,19 @@ int main(int argc, char** argv) {
     int ops_total = 0;
 
     for (int iter = 0; iter < iterations; iter++) {
-        cleanup_vfs();
+        /* Fork a child for each iteration — protects against
+           SIGSEGV/SIGABRT crashes and hangs (alarm 30s timeout). */
+        pid_t pid = fork();
+        if (pid < 0) { printf("FAIL iter %d: fork\n", iter); return 1; }
 
-        /* Copy seed VFS to working path — each iteration starts from known state */
-        {
+        if (pid == 0) {
+            /* Child: set 30-second hang detector */
+            alarm(30);
+
+            cleanup_vfs();
+
+            /* Copy seed VFS to working path */
+            {
             FILE* src = fopen(FUZZ_SEED_PATH, "rb");
             FILE* dst = fopen(FUZZ_VFS_PATH, "wb");
             if (!src || !dst) { if (src) fclose(src); if (dst) fclose(dst); continue; }
@@ -400,10 +411,29 @@ int main(int argc, char** argv) {
             vfs_unmount(vfs);
         }
 
-        if (iter > 0 && iter % 1000 == 0)
-            printf("  %d iterations, %d ops, %d crashes so far\n",
-                   iter, ops_total, crashes);
-    }
+            _exit(0);  /* child completes successfully */
+        }
+
+        /* Parent: wait for child and check exit status */
+        int status;
+        waitpid(pid, &status, 0);
+
+        if (WIFSIGNALED(status)) {
+            int sig = WTERMSIG(status);
+            if (sig == SIGALRM) {
+                printf("HANG iter %d: alarm timeout (30s)\n", iter);
+                crashes++;
+            } else {
+                printf("CRASH iter %d: signal %d (%s)\n", iter, sig,
+                       sig == SIGSEGV ? "SIGSEGV" :
+                       sig == SIGABRT ? "SIGABRT" : "unknown");
+                crashes++;
+            }
+        } else if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+            printf("CRASH iter %d: exit code %d\n", iter, WEXITSTATUS(status));
+            crashes++;
+        }
+    }  /* end for(iter) */
 
     printf("\n=== Fuzz Results ===\n");
     printf("  iterations: %d\n", iterations);
