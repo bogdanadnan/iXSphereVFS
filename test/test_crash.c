@@ -914,6 +914,88 @@ static int scenario_commit_mid(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Scenario 15: flush_power_loss — write multiple files with data, call
+ * vfs_flush to persist all dirty pages, then crash.  On remount, verify
+ * that ALL files and their data survive.  This tests that vfs_flush
+ * correctly writes every dirty page (data, pool metadata, superblock)
+ * and that a crash during/immediately-after flush leaves a consistent store.
+ *
+ * Each iteration: fork child → child mounts, creates 3 files with distinct
+ * data, calls vfs_flush, crashes → parent remounts → verifies all files
+ * exist with correct data.
+ * --------------------------------------------------------------------------- */
+
+static int scenario_flush_power_loss(void) {
+    for (int i = 0; i < 100; i++) {
+        cleanup();
+
+        pid_t pid = fork();
+        if (pid < 0) return -1;
+
+        if (pid == 0) {
+            vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+            if (!vfs) _exit(-1);
+
+            const char* names[] = {"fpl_a.dat", "fpl_b.dat", "fpl_c.dat"};
+            for (int f = 0; f < 3; f++) {
+                int64_t fvp = vfs_create(vfs, vfs->ctx->rootNodeOffset, names[f], 0);
+                if (fvp <= 0) _exit(-1);
+                uint8_t d[64];
+                memset(d, (uint8_t)(0xA0 + f), sizeof(d));
+                if (vfs_write(vfs, fvp, d, 0, sizeof(d), 0) != (int)sizeof(d)) _exit(-1);
+            }
+
+            /* Flush all dirty pages to disk — simulates power-loss resilient write */
+            vfs_flush(vfs);
+
+            /* Crash immediately after flush */
+            _exit(0);
+        }
+
+        int status;
+        waitpid(pid, &status, 0);
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+
+        vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+        if (!vfs) {
+            fprintf(stderr, "  FAIL iter %d: store corrupted — remount failed\n", i);
+            return -1;
+        }
+
+        /* Verify all 3 files exist with correct data */
+        int found[3] = {0, 0, 0};
+        vfs_dirent_t ents[16];
+        int n = vfs_readdir(vfs, vfs->ctx->rootNodeOffset, ents, 16, 0);
+        if (n < 0) {
+            fprintf(stderr, "  FAIL iter %d: readdir failed\n", i);
+            vfs_unmount(vfs);
+            return -1;
+        }
+        for (int e = 0; e < n; e++) {
+            for (int f = 0; f < 3; f++) {
+                const char* names[] = {"fpl_a.dat", "fpl_b.dat", "fpl_c.dat"};
+                if (strcmp(ents[e].name, names[f]) == 0) {
+                    uint8_t buf[64];
+                    uint8_t expect[64];
+                    memset(expect, (uint8_t)(0xA0 + f), sizeof(expect));
+                    int r = vfs_read(vfs, ents[e].vp, buf, 0, sizeof(buf), 0);
+                    if (r == (int)sizeof(buf) && memcmp(buf, expect, sizeof(buf)) == 0)
+                        found[f] = 1;
+                }
+            }
+        }
+        vfs_unmount(vfs);
+
+        if (!found[0] || !found[1] || !found[2]) {
+            fprintf(stderr, "  FAIL iter %d: flush power-loss data loss (a=%d b=%d c=%d)\n",
+                    i, found[0], found[1], found[2]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
  * Scenarios table
  * --------------------------------------------------------------------------- */
 
@@ -938,6 +1020,7 @@ static struct {
     {"gc_after_swap",        scenario_gc_after_swap},
     {"snapshot",             scenario_snapshot},
     {"commit_mid",           scenario_commit_mid},
+    {"flush_power_loss",     scenario_flush_power_loss},
 };
 static const int n_scenarios = (int)(sizeof(scenarios) / sizeof(scenarios[0]));
 
