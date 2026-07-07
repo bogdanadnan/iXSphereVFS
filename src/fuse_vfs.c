@@ -489,8 +489,14 @@ static int fuse_vfs_statfs(const char* path, struct statvfs* stbuf) {
     stbuf->f_namemax = 255;
     return 0;
 }
-static int fuse_vfs_access(const char* path, int mask)
-    { (void)path; (void)mask; return -ENOSYS; }
+static int fuse_vfs_access(const char* path, int mask) {
+    (void)path;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    /* VFS has no permission model — allow all checks by default.
+       Only reject write access (W_OK) when mounted read-only. */
+    if (state->readonly && (mask & W_OK)) return -EACCES;
+    return 0;
+}
 static int fuse_vfs_chmod(const char* path, mode_t m, struct fuse_file_info* fi)
     { (void)path; (void)m; (void)fi; return -ENOSYS; }
 static int fuse_vfs_chown(const char* path, uid_t u, gid_t g, struct fuse_file_info* fi)
