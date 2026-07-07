@@ -64,8 +64,6 @@ int fuse_vfs_opt_proc(void* data, const char* arg, int key,
 #endif
 
 #ifdef FUSE3_FOUND
-#include <fuse.h>
-
 /* Exposed for fuse_main.c: the option specification table and
    option-processing callback used by fuse_opt_parse. */
 extern const struct fuse_opt fuse_vfs_opts_spec[];
