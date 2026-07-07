@@ -11,6 +11,7 @@ spin-locked page cache — all backed by a single sparse file.
 
 ```c
 #include "ixsphere/vfs.h"
+#include "ixsphere/vfs_internal.h"  /* for vfs->ctx->rootNodeOffset */
 
 int main(void) {
     /* Mount (or create) a VFS */
@@ -40,8 +41,8 @@ int main(void) {
 
 Compile:
 ```
-gcc -std=c11 -Ipath/to/ixspherevfs/include -o example example.c \
-    -Lpath/to/ixspherevfs/build -lixsphere_vfs -lpthread
+gcc -std=c11 -Ipath/to/ixspherevfs/include -Ipath/to/ixspherevfs/src \
+    -o example example.c -Lpath/to/ixspherevfs/build -lixsphere_vfs -lpthread
 ```
 
 ## Build
