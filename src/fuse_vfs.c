@@ -46,7 +46,7 @@ static int vfs_error_to_errno(int vfs_err) {
  * --------------------------------------------------------------------------- */
 
 int64_t resolve_full_path(vfs_t* vfs, const char* path) {
-    if (!vfs || !vfs->ctx) return VFS_ERR_IO;
+    if (!vfs) return VFS_ERR_IO;
 
     /* Root directory */
     if (!path || path[0] == '\0' || (path[0] == '/' && path[1] == '\0'))
