@@ -63,9 +63,13 @@ int fuse_vfs_opt_proc(void* data, const char* arg, int key,
                       struct fuse_args* outargs);
 #endif
 
+#ifdef FUSE3_FOUND
+#include <fuse.h>
+
 /* Exposed for fuse_main.c: the option specification table and
    option-processing callback used by fuse_opt_parse. */
 extern const struct fuse_opt fuse_vfs_opts_spec[];
+#endif
 
 /* ---------------------------------------------------------------------------
  * ioctl handler — dispatches VFS_IOC_SNAPSHOT, VFS_IOC_COMMIT,
@@ -80,7 +84,7 @@ int fuse_vfs_ioctl(vfs_t* vfs, unsigned long request, void* arg);
  * Implementations in src/fuse_vfs.c (Phase 5).
  * --------------------------------------------------------------------------- */
 #ifdef FUSE3_FOUND
-void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg);
+typedef uint64_t fuse_ino_t;void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg);
 void  fuse_vfs_destroy(void* private_data);
 int   fuse_vfs_getattr(const char* path, struct stat* stbuf,
                        struct fuse_file_info* fi);
@@ -93,7 +97,11 @@ int   fuse_vfs_read(const char* path, char* buf, size_t size, off_t offset,
 int   fuse_vfs_write(const char* path, const char* buf, size_t size,
                      off_t offset, struct fuse_file_info* fi);
 int   fuse_vfs_create(const char* path, mode_t mode,
-                      struct fuse_file_info* fi);
+                      struct fuse_file_info* fi
+#ifdef __APPLE__
+                      , uint32_t flags
+#endif
+                      );
 int   fuse_vfs_unlink(const char* path);
 int   fuse_vfs_mkdir(const char* path, mode_t mode);
 int   fuse_vfs_rmdir(const char* path);
@@ -112,7 +120,13 @@ int   fuse_vfs_release(const char* path, struct fuse_file_info* fi);
 
 /* Phase 9: supplementary operations */
 int   fuse_vfs_flush(const char* path, struct fuse_file_info* fi);
-int   fuse_vfs_statfs(const char* path, struct statvfs* stbuf);
+int   fuse_vfs_statfs(const char* path,
+#ifdef __APPLE__
+                      struct statfs* stbuf
+#else
+                      struct statvfs* stbuf
+#endif
+                      );
 int   fuse_vfs_access(const char* path, int mask);
 int   fuse_vfs_chmod(const char* path, mode_t mode, struct fuse_file_info* fi);
 int   fuse_vfs_chown(const char* path, uid_t uid, gid_t gid,
@@ -134,5 +148,7 @@ int   fuse_vfs_ioctl_cb(fuse_ino_t ino, int cmd, void* arg,
                         struct fuse_file_info* fi, unsigned int flags,
                         void* data);
 #endif /* FUSE3_FOUND */
+
+
 
 #endif /* VFS_FUSE_VFS_H */
