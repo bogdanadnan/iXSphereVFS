@@ -13,6 +13,7 @@
 
 #ifdef FUSE3_FOUND
 #include <fuse.h>
+#include <stdio.h>
 #endif
 
 #include "ixsphere/vfs.h"
@@ -29,11 +30,11 @@
 
 /* Custom option keys (negative to avoid collision with FUSE_OPT_KEY_*). */
 enum {
-    KEY_VFS_PATH   = -1,
-    KEY_EPOCH      = -2,
-    KEY_PAGE_SIZE  = -3,
-    KEY_READONLY   = -4,
-    KEY_HELP       = -5,
+    KEY_VFS_PATH   = -10,
+    KEY_EPOCH      = -20,
+    KEY_PAGE_SIZE  = -30,
+    KEY_READONLY   = -40,
+    KEY_HELP       = -50,
 };
 
 const struct fuse_opt fuse_vfs_opts_spec[] = {
@@ -262,7 +263,15 @@ int fuse_vfs_write(const char* path, const char* buf, size_t size,
 
 #ifdef __APPLE__
 int fuse_vfs_create(const char* path, mode_t mode,
-                    struct fuse_file_info* fi, uint32_t flags) {
+                    struct fuse_file_info* fi
+#ifdef __APPLE__
+                    , uint32_t flags
+#endif
+                    ) {
+    (void)mode;
+#ifdef __APPLE__
+    (void)flags;
+#endif
     (void)mode; (void)flags;
 #else
 int fuse_vfs_create(const char* path, mode_t mode,
@@ -492,13 +501,21 @@ int fuse_vfs_statfs(const char* path, struct statvfs* stbuf) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     memset(stbuf, 0, sizeof(*stbuf));
     stbuf->f_bsize   = (unsigned long)state->page_size;
+#ifdef __APPLE__
+    /* macOS struct statfs doesn't have f_frsize */
+#else
     stbuf->f_frsize  = (unsigned long)state->page_size;
-    stbuf->f_blocks  = 0;   /* capacity unknown for file-backed VFS */
+#endif
+    stbuf->f_blocks  = 0;
     stbuf->f_bfree   = 0;
     stbuf->f_bavail  = 0;
     stbuf->f_files   = UINT64_MAX;
     stbuf->f_ffree   = UINT64_MAX;
+#ifdef __APPLE__
+    /* macOS struct statfs doesn't have f_namemax */
+#else
     stbuf->f_namemax = 255;
+#endif
     return 0;
 }
 int fuse_vfs_access(const char* path, int mask) {
@@ -537,6 +554,8 @@ int fuse_vfs_removexattr(const char* path, const char* name)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-function-pointer-types"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-function-pointer-types"
 const struct fuse_operations fuse_vfs_ops = {
     .init        = fuse_vfs_init,
     .destroy     = fuse_vfs_destroy,
@@ -569,6 +588,7 @@ const struct fuse_operations fuse_vfs_ops = {
     .listxattr   = fuse_vfs_listxattr,
     .removexattr = fuse_vfs_removexattr,
 };
+#pragma GCC diagnostic pop
 #pragma GCC diagnostic pop
 
 #endif /* FUSE3_FOUND */
