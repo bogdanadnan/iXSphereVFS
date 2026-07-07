@@ -42,6 +42,20 @@ teardown_test() {
 setup_test
 trap teardown_test EXIT
 
+# ---------------------------------------------------------------------------
+# wait_for_mount — poll ls of mountpoint until success or 10s timeout.
+# ---------------------------------------------------------------------------
+wait_for_mount() {
+    local timeout=10
+    local elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        if ls "$MNT_POINT" >/dev/null 2>&1; then return 0; fi
+        sleep 0.2
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
 echo "=== test_fuse smoke test ==="
 
 # Build a small test VFS
@@ -53,19 +67,17 @@ echo "=== test_fuse smoke test ==="
 # Mount via FUSE (background)
 ./vfs_fuse "$VFS_FILE" "$MNT_POINT" -f &
 FUSE_PID=$!
-sleep 1
 
 # Verify the mount
-if mount | grep -q "$MNT_POINT" || ls "$MNT_POINT" >/dev/null 2>&1; then
+if wait_for_mount; then
     echo "PASS: FUSE mount successful"
     # Unmount
     fusermount3 -u "$MNT_POINT" 2>/dev/null || umount "$MNT_POINT" 2>/dev/null || true
     wait $FUSE_PID 2>/dev/null || true
 else
-    echo "FAIL: FUSE mount not visible"
+    echo "FAIL: FUSE mount not visible within 10s"
     kill $FUSE_PID 2>/dev/null || true
     wait $FUSE_PID 2>/dev/null || true
-    rmdir "$MNT_POINT" 2>/dev/null
     exit 1
 fi
 
