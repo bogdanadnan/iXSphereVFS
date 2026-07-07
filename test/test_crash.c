@@ -2,8 +2,8 @@
  * resilience.  Each scenario runs 100 iterations internally and returns
  * 0 (pass) or -1 (fail).  Run via CMake test or directly.
  *
- * Usage: ./test_crash                    — run all 8 scenarios
- *        ./test_crash <scenario-number>  — run one scenario (0-7)
+ * Usage: ./test_crash                    — run all scenarios
+ *        ./test_crash <scenario-number>  — run one scenario
  */
 
 #include "ixsphere/vfs.h"
@@ -14,6 +14,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <signal.h>
 
 /* ---------------------------------------------------------------------------
  * Helpers
@@ -24,6 +25,15 @@
 
 /* Clean up the VFS backing file before each iteration. */
 static void cleanup(void) { unlink(VFS_PATH); }
+
+/* After fork(), the child either exits normally (_exit(-1) on error) or
+   is killed by SIGKILL (simulated crash).  Returns non-zero if the child
+   completed successfully (exited 0 or was killed by SIGKILL). */
+static int crash_wait_ok(int status) {
+    if (WIFEXITED(status)) return WEXITSTATUS(status) == 0;
+    if (WIFSIGNALED(status)) return WTERMSIG(status) == SIGKILL;
+    return 0;
+}
 
 /* Check condition, print failure, return -1. */
 #define SCENARIO_CHECK(expr, msg) do { \
@@ -377,13 +387,14 @@ static int scenario_single_copy_write(void) {
             int w = vfs_write(vfs, fvp, page_buf, 0, PAGE_SZ, 0);
             if (w != PAGE_SZ) _exit(-1);
             /* HARD CRASH — no vfs_flush, no vfs_unmount, no storage_close */
-            _exit(0);
+            /* HARD CRASH — SIGKILL simulates process termination without cleanup */
+            kill(getpid(), SIGKILL);
         }
 
         /* Parent: wait for child to crash */
         int status;
         waitpid(pid, &status, 0);
-        if (!WIFEXITED(status)) { free(page_buf); return -1; }
+        if (!crash_wait_ok(status)) { free(page_buf); return -1; }
 
         /* Phase 2: remount and verify data is NOT intact */
         vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
@@ -463,13 +474,14 @@ static int scenario_mirrored_write(void) {
             vfs_flush(vfs);
 
             /* HARD CRASH — no clean unmount, just exit */
-            _exit(0);
+            /* HARD CRASH — SIGKILL simulates process termination without cleanup */
+            kill(getpid(), SIGKILL);
         }
 
         /* Parent waits for crash */
         int status;
         waitpid(pid, &status, 0);
-        if (!WIFEXITED(status)) { free(page_v1); free(page_v2); return -1; }
+        if (!crash_wait_ok(status)) { free(page_v1); free(page_v2); return -1; }
 
         /* Remount and verify data survives (not all zeros) */
         vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
@@ -551,12 +563,13 @@ static int scenario_mirror_allocation(void) {
             if (vfs_write(vfs, fvp, page_v2, 0, PAGE_SZ, 0) != PAGE_SZ) _exit(-1);
 
             /* HARD CRASH — no flush of the mirror write */
-            _exit(0);
+            /* HARD CRASH — SIGKILL simulates process termination without cleanup */
+            kill(getpid(), SIGKILL);
         }
 
         int status;
         waitpid(pid, &status, 0);
-        if (!WIFEXITED(status)) { free(page_v1); free(page_v2); return -1; }
+        if (!crash_wait_ok(status)) { free(page_v1); free(page_v2); return -1; }
 
         vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
         if (!vfs) { free(page_v1); free(page_v2); return -1; }
@@ -628,12 +641,13 @@ static int scenario_gc_before_swap(void) {
             (void)gc_err;  /* GC failure is acceptable — old state should survive */
 
             vfs_flush(vfs);
-            _exit(0);
+            /* HARD CRASH — SIGKILL simulates process termination without cleanup */
+            kill(getpid(), SIGKILL);
         }
 
         int status;
         waitpid(pid, &status, 0);
-        if (!WIFEXITED(status)) return -1;
+        if (!crash_wait_ok(status)) return -1;
 
         vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
         if (!vfs) {
@@ -698,12 +712,13 @@ static int scenario_gc_after_swap(void) {
             /* Flush everything to disk before crash */
             vfs_flush(vfs);
 
-            _exit(0);
+            /* HARD CRASH — SIGKILL simulates process termination without cleanup */
+            kill(getpid(), SIGKILL);
         }
 
         int status;
         waitpid(pid, &status, 0);
-        if (!WIFEXITED(status)) return -1;
+        if (!crash_wait_ok(status)) return -1;
 
         vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
         if (!vfs) {
@@ -780,12 +795,13 @@ static int scenario_snapshot(void) {
             if (vfs_write(vfs, fvp, v2, 256, sizeof(v2), 0) != (int)sizeof(v2)) _exit(-1);
 
             vfs_flush(vfs);
-            _exit(0);
+            /* HARD CRASH — SIGKILL simulates process termination without cleanup */
+            kill(getpid(), SIGKILL);
         }
 
         int status;
         waitpid(pid, &status, 0);
-        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+        if (!crash_wait_ok(status)) return -1;
 
         /* First snapshot on a fresh VFS always returns epoch 1. */
         int64_t snap_epoch = 1;
@@ -871,12 +887,13 @@ static int scenario_commit_mid(void) {
             /* Flush everything */
             vfs_flush(vfs);
 
-            _exit(0);
+            /* HARD CRASH — SIGKILL simulates process termination without cleanup */
+            kill(getpid(), SIGKILL);
         }
 
         int status;
         waitpid(pid, &status, 0);
-        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+        if (!crash_wait_ok(status)) return -1;
 
         vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
         if (!vfs) {
@@ -949,12 +966,13 @@ static int scenario_flush_power_loss(void) {
             vfs_flush(vfs);
 
             /* Crash immediately after flush */
-            _exit(0);
+            /* HARD CRASH — SIGKILL simulates process termination without cleanup */
+            kill(getpid(), SIGKILL);
         }
 
         int status;
         waitpid(pid, &status, 0);
-        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+        if (!crash_wait_ok(status)) return -1;
 
         vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
         if (!vfs) {
