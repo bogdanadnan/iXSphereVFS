@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
+
+if(APPLE AND EXISTS "/usr/local/opt/llvm/bin/clang")
+    set(CMAKE_C_COMPILER "/usr/local/opt/llvm/bin/clang" CACHE PATH "C compiler" FORCE)
+    set(CMAKE_CXX_COMPILER "/usr/local/opt/llvm/bin/clang++" CACHE PATH "C++ compiler" FORCE)
+endif()
+
 project(iXSphereVFS VERSION 0.1.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
@@ -7,7 +13,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic")
 
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
-  pkg_check_modules(FUSE fuse)
+  pkg_check_modules(FUSE3 fuse3)
 endif()
 
 add_library(ixsphere_vfs STATIC
@@ -30,12 +36,11 @@ add_library(ixsphere_vfs STATIC
     src/var_array.c
 )
 
-if(FUSE_FOUND)
+if(FUSE3_FOUND)
   target_sources(ixsphere_vfs PRIVATE src/fuse_vfs.c)
-  set_source_files_properties(src/fuse_vfs.c PROPERTIES COMPILE_FLAGS "-DFUSE_USE_VERSION=30")
-  target_include_directories(ixsphere_vfs PRIVATE ${FUSE_INCLUDE_DIRS})
-  target_link_libraries(ixsphere_vfs PRIVATE ${FUSE_LIBRARIES})
-  target_compile_definitions(ixsphere_vfs PRIVATE FUSE3_FOUND)
+  target_include_directories(ixsphere_vfs PRIVATE ${FUSE3_INCLUDE_DIRS})
+  target_link_libraries(ixsphere_vfs PRIVATE ${FUSE3_LIBRARIES})
+  target_compile_definitions(ixsphere_vfs PRIVATE FUSE3_FOUND _FILE_OFFSET_BITS=64)
 endif()
 
 set_source_files_properties(src/var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -fno-strict-aliasing")
@@ -106,11 +111,10 @@ add_executable(vfsctl tools/vfsctl.c)
 target_link_libraries(vfsctl ixsphere_vfs pthread)
 target_include_directories(vfsctl PRIVATE src)
 
-if(FUSE_FOUND)
+if(FUSE3_FOUND)
   add_executable(vfs_fuse src/fuse_main.c)
-  set_source_files_properties(src/fuse_main.c PROPERTIES COMPILE_FLAGS "-DFUSE_USE_VERSION=31")
-  target_link_libraries(vfs_fuse ixsphere_vfs ${FUSE_LIBRARIES} pthread)
-  target_include_directories(vfs_fuse PRIVATE ${FUSE_INCLUDE_DIRS})
+  target_link_libraries(vfs_fuse ixsphere_vfs ${FUSE3_LIBRARIES} pthread)
+  target_include_directories(vfs_fuse PRIVATE ${FUSE3_INCLUDE_DIRS})
 
   add_test(NAME test_fuse
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/test/test_fuse.sh"

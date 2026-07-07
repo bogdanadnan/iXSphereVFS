@@ -4,16 +4,16 @@
  * Usage: ./vfs_fuse <vfs-file> <mountpoint> [-o options...]
  */
 
-#include "ixsphere/vfs.h"
-#include "fuse_vfs.h"
-
-#ifdef FUSE3_FOUND
-#include <fuse3/fuse.h>
-#endif
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef FUSE3_FOUND
+#include <fuse.h>
+#endif
+
+#include "ixsphere/vfs.h"
+#include "fuse_vfs.h"
 
 #ifndef FUSE3_FOUND
 

@@ -1,7 +1,9 @@
 /* FUSE-based filesystem interface for iXSphereVFS.
- * Conditionally built when FUSE3 is available.
+* Conditionally built when FUSE3 is available.
  * Exposes a VFS mount as a FUSE filesystem.
  */
+
+#define FUSE_USE_VERSION 31
 
 #include <errno.h>
 #include <stdlib.h>
@@ -258,9 +260,15 @@ int fuse_vfs_write(const char* path, const char* buf, size_t size,
     return (r >= 0) ? r : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
 
+#ifdef __APPLE__
+int fuse_vfs_create(const char* path, mode_t mode,
+                    struct fuse_file_info* fi, uint32_t flags) {
+    (void)mode; (void)flags;
+#else
 int fuse_vfs_create(const char* path, mode_t mode,
                     struct fuse_file_info* fi) {
     (void)mode;
+#endif
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
     /* Resolve parent directory */
@@ -445,7 +453,7 @@ int fuse_vfs_utimens(const char* path, const struct timespec tv[2],
  * Placeholder callbacks — return -ENOSYS until Phases 6-10 implement them.
  * --------------------------------------------------------------------------- */
 
-static int fuse_vfs_opendir(const char* path, struct fuse_file_info* fi) {
+int fuse_vfs_opendir(const char* path, struct fuse_file_info* fi) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
@@ -453,9 +461,9 @@ static int fuse_vfs_opendir(const char* path, struct fuse_file_info* fi) {
     fi->fh = (uint64_t)vp;
     return 0;
 }
-static int fuse_vfs_releasedir(const char* path, struct fuse_file_info* fi)
+int fuse_vfs_releasedir(const char* path, struct fuse_file_info* fi)
     { (void)path; (void)fi; return 0; }
-static int fuse_vfs_release(const char* path, struct fuse_file_info* fi) {
+int fuse_vfs_release(const char* path, struct fuse_file_info* fi) {
     (void)path;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     /* Release the per-file lock.  vfs_unlock is not idempotent — it
@@ -467,7 +475,7 @@ static int fuse_vfs_release(const char* path, struct fuse_file_info* fi) {
     (void)vfs_unlock(state->vfs, vp, vfs_current_epoch(state->vfs));
     return 0;
 }
-static int fuse_vfs_flush(const char* path, struct fuse_file_info* fi) {
+int fuse_vfs_flush(const char* path, struct fuse_file_info* fi) {
     (void)fi;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
@@ -475,7 +483,11 @@ static int fuse_vfs_flush(const char* path, struct fuse_file_info* fi) {
     int r = vfs_flush(state->vfs);
     return (r == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
-static int fuse_vfs_statfs(const char* path, struct statvfs* stbuf) {
+#ifdef __APPLE__
+int fuse_vfs_statfs(const char* path, struct statfs* stbuf) {
+#else
+int fuse_vfs_statfs(const char* path, struct statvfs* stbuf) {
+#endif
     (void)path;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     memset(stbuf, 0, sizeof(*stbuf));
@@ -489,7 +501,7 @@ static int fuse_vfs_statfs(const char* path, struct statvfs* stbuf) {
     stbuf->f_namemax = 255;
     return 0;
 }
-static int fuse_vfs_access(const char* path, int mask) {
+int fuse_vfs_access(const char* path, int mask) {
     (void)path;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     /* VFS has no permission model — allow all checks by default.
@@ -497,30 +509,33 @@ static int fuse_vfs_access(const char* path, int mask) {
     if (state->readonly && (mask & W_OK)) return -EACCES;
     return 0;
 }
-static int fuse_vfs_chmod(const char* path, mode_t m, struct fuse_file_info* fi)
+int fuse_vfs_chmod(const char* path, mode_t m, struct fuse_file_info* fi)
     { (void)path; (void)m; (void)fi; return -ENOSYS; }
-static int fuse_vfs_chown(const char* path, uid_t u, gid_t g, struct fuse_file_info* fi)
+int fuse_vfs_chown(const char* path, uid_t u, gid_t g, struct fuse_file_info* fi)
     { (void)path; (void)u; (void)g; (void)fi; return -ENOSYS; }
-static int fuse_vfs_readlink(const char* path, char* buf, size_t size)
+int fuse_vfs_readlink(const char* path, char* buf, size_t size)
     { (void)path; (void)buf; (void)size; return -ENOSYS; }
-static int fuse_vfs_symlink(const char* from, const char* to)
+int fuse_vfs_symlink(const char* from, const char* to)
     { (void)from; (void)to; return -ENOSYS; }
-static int fuse_vfs_link(const char* from, const char* to)
+int fuse_vfs_link(const char* from, const char* to)
     { (void)from; (void)to; return -ENOSYS; }
-static int fuse_vfs_setxattr(const char* path, const char* name,
+int fuse_vfs_setxattr(const char* path, const char* name,
                               const char* value, size_t size, int flags)
     { (void)path; (void)name; (void)value; (void)size; (void)flags; return -ENOSYS; }
-static int fuse_vfs_getxattr(const char* path, const char* name,
+int fuse_vfs_getxattr(const char* path, const char* name,
                               char* value, size_t size)
     { (void)path; (void)name; (void)value; (void)size; return -ENOSYS; }
-static int fuse_vfs_listxattr(const char* path, char* list, size_t size)
+int fuse_vfs_listxattr(const char* path, char* list, size_t size)
     { (void)path; (void)list; (void)size; return -ENOSYS; }
-static int fuse_vfs_removexattr(const char* path, const char* name)
+int fuse_vfs_removexattr(const char* path, const char* name)
     { (void)path; (void)name; return -ENOSYS; }
 
 /* ---------------------------------------------------------------------------
  * FUSE operations table — registered via fuse_main_real.
  * --------------------------------------------------------------------------- */
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-function-pointer-types"
 
 const struct fuse_operations fuse_vfs_ops = {
     .init        = fuse_vfs_init,
@@ -554,6 +569,7 @@ const struct fuse_operations fuse_vfs_ops = {
     .listxattr   = fuse_vfs_listxattr,
     .removexattr = fuse_vfs_removexattr,
 };
+#pragma GCC diagnostic pop
 
 #endif /* FUSE3_FOUND */
 
