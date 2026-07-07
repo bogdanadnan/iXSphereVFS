@@ -18,7 +18,32 @@ skip_if_no_fuse() {
 }
 skip_if_no_fuse
 
-VFS_FILE="/tmp/test_fuse_smoke.vfs"
+# ---------------------------------------------------------------------------
+# setup_test — create per-test scratch dirs via mktemp.
+# Returns: sets VFS_FILE and MNT_POINT globals.
+# ---------------------------------------------------------------------------
+VFS_FILE=""
+MNT_POINT=""
+
+setup_test() {
+    VFS_FILE="$(mktemp -d)/test.vfs"
+    MNT_POINT="$(mktemp -d)"
+    # Ensure mountpoint is clean (fusermount any stale mount)
+    fusermount3 -u -z "$MNT_POINT" 2>/dev/null || true
+    fusermount -u -z "$MNT_POINT" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# teardown_test — clean up scratch dirs and unmount if needed.
+# ---------------------------------------------------------------------------
+teardown_test() {
+    fusermount3 -u -z "$MNT_POINT" 2>/dev/null || true
+    fusermount -u -z "$MNT_POINT" 2>/dev/null || true
+    rm -rf "$(dirname "$VFS_FILE")" 2>/dev/null || true
+    rmdir "$MNT_POINT" 2>/dev/null || true
+}
+
+setup_test
 MNT_POINT="/tmp/test_fuse_mnt_$$"
 
 echo "=== test_fuse smoke test ==="
@@ -50,6 +75,5 @@ else
     exit 1
 fi
 
-rmdir "$MNT_POINT" 2>/dev/null
-rm -f "$VFS_FILE"
+teardown_test
 echo "=== test_fuse PASS ==="
