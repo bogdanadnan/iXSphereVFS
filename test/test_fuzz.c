@@ -42,6 +42,7 @@ static int rand_int(Rand* r, int max) {
  * --------------------------------------------------------------------------- */
 
 #define FUZZ_VFS_PATH  "/tmp/test_fuzz.vfs"
+#define FUZZ_SEED_PATH  "/tmp/test_fuzz_seed.vfs"
 #define FUZZ_PAGE_SZ   8192
 #define FUZZ_MAX_OPEN  64
 #define FUZZ_OPS_PER_ITER  20
@@ -86,6 +87,36 @@ static int fuzz_state_find_index(FuzzState* st, const char* name) {
 static void cleanup_vfs(void) { unlink(FUZZ_VFS_PATH); }
 
 /* ---------------------------------------------------------------------------
+ * Populate a seed VFS with 10 files containing known content.
+ * Returns 0 on success, -1 on failure.
+ * --------------------------------------------------------------------------- */
+
+static int populate_seed_vfs(void) {
+    unlink(FUZZ_SEED_PATH);
+    vfs_t* vfs = vfs_mount(FUZZ_SEED_PATH, FUZZ_PAGE_SZ);
+    if (!vfs) return -1;
+    int64_t root = vfs->ctx->rootNodeOffset;
+
+    for (int f = 0; f < 10; f++) {
+        char name[32];
+        snprintf(name, sizeof(name), "seed_%d.dat", f);
+        int64_t fvp = vfs_create(vfs, root, name, 0);
+        if (fvp <= 0) { vfs_unmount(vfs); return -1; }
+
+        /* Write a page of known content: 0xAA + file index in every byte */
+        uint8_t buf[FUZZ_PAGE_SZ];
+        memset(buf, (uint8_t)(0xAA + f), (size_t)FUZZ_PAGE_SZ);
+        if (vfs_write(vfs, fvp, buf, 0, FUZZ_PAGE_SZ, 0) != FUZZ_PAGE_SZ) {
+            vfs_unmount(vfs); return -1;
+        }
+    }
+
+    vfs_flush(vfs);
+    vfs_unmount(vfs);
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
  * Fuzz loop — 10,000 iterations
  * --------------------------------------------------------------------------- */
 
@@ -106,13 +137,33 @@ int main(int argc, char** argv) {
     printf("=== Fuzz Test (seed=%llu, iterations=%d) ===\n\n",
            (unsigned long long)seed, iterations);
 
+    /* Phase 1: populate seed VFS with 10 known files */
+    if (populate_seed_vfs() != 0) {
+        printf("FAIL: seed VFS populate\n");
+        return 1;
+    }
+    printf("Seed VFS populated: 10 files with known content\n\n");
+
     int crashes = 0;
     int ops_total = 0;
 
     for (int iter = 0; iter < iterations; iter++) {
         cleanup_vfs();
 
-        /* Mount fresh VFS */
+        /* Copy seed VFS to working path — each iteration starts from known state */
+        {
+            FILE* src = fopen(FUZZ_SEED_PATH, "rb");
+            FILE* dst = fopen(FUZZ_VFS_PATH, "wb");
+            if (!src || !dst) { if (src) fclose(src); if (dst) fclose(dst); continue; }
+            uint8_t cbuf[8192];
+            size_t n;
+            while ((n = fread(cbuf, 1, sizeof(cbuf), src)) > 0)
+                fwrite(cbuf, 1, n, dst);
+            fclose(src);
+            fclose(dst);
+        }
+
+        /* Mount pre-populated VFS */
         vfs_t* vfs = vfs_mount(FUZZ_VFS_PATH, FUZZ_PAGE_SZ);
         if (!vfs) {
             printf("FAIL iter %d: mount\n", iter);
@@ -122,6 +173,14 @@ int main(int argc, char** argv) {
         FuzzState st;
         memset(&st, 0, sizeof(st));
         int64_t root = vfs->ctx->rootNodeOffset;
+
+        /* Seed fuzz state with pre-populated files */
+        vfs_dirent_t seed_ents[16];
+        int seed_n = vfs_readdir(vfs, root, seed_ents, 16, 0);
+        for (int se = 0; se < seed_n && st.count < FUZZ_MAX_OPEN; se++) {
+            fuzz_state_add(&st, seed_ents[se].vp,
+                           seed_ents[se].name, (int)seed_ents[se].isDir);
+        }
 
         int nops = rand_int(&r, FUZZ_OPS_PER_ITER) + 1;
         for (int op = 0; op < nops; op++) {
@@ -260,6 +319,7 @@ int main(int argc, char** argv) {
     printf("  total ops:  %d\n", ops_total);
 
     cleanup_vfs();
+    unlink(FUZZ_SEED_PATH);
     return 0;
 }
 
