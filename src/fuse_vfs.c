@@ -375,6 +375,80 @@ int fuse_vfs_utimens(const char* path, const struct timespec tv[2],
     return 0;
 }
 
+/* ---------------------------------------------------------------------------
+ * Placeholder callbacks — return -ENOSYS until Phases 6-10 implement them.
+ * --------------------------------------------------------------------------- */
+
+static int fuse_vfs_opendir(const char* path, struct fuse_file_info* fi)
+    { (void)path; (void)fi; return -ENOSYS; }
+static int fuse_vfs_releasedir(const char* path, struct fuse_file_info* fi)
+    { (void)path; (void)fi; return -ENOSYS; }
+static int fuse_vfs_release(const char* path, struct fuse_file_info* fi)
+    { (void)path; (void)fi; return -ENOSYS; }
+static int fuse_vfs_flush(const char* path, struct fuse_file_info* fi)
+    { (void)path; (void)fi; return -ENOSYS; }
+static int fuse_vfs_statfs(const char* path, struct statvfs* stbuf)
+    { (void)path; (void)stbuf; return -ENOSYS; }
+static int fuse_vfs_access(const char* path, int mask)
+    { (void)path; (void)mask; return -ENOSYS; }
+static int fuse_vfs_chmod(const char* path, mode_t m, struct fuse_file_info* fi)
+    { (void)path; (void)m; (void)fi; return -ENOSYS; }
+static int fuse_vfs_chown(const char* path, uid_t u, gid_t g, struct fuse_file_info* fi)
+    { (void)path; (void)u; (void)g; (void)fi; return -ENOSYS; }
+static int fuse_vfs_readlink(const char* path, char* buf, size_t size)
+    { (void)path; (void)buf; (void)size; return -ENOSYS; }
+static int fuse_vfs_symlink(const char* from, const char* to)
+    { (void)from; (void)to; return -ENOSYS; }
+static int fuse_vfs_link(const char* from, const char* to)
+    { (void)from; (void)to; return -ENOSYS; }
+static int fuse_vfs_setxattr(const char* path, const char* name,
+                              const char* value, size_t size, int flags)
+    { (void)path; (void)name; (void)value; (void)size; (void)flags; return -ENOSYS; }
+static int fuse_vfs_getxattr(const char* path, const char* name,
+                              char* value, size_t size)
+    { (void)path; (void)name; (void)value; (void)size; return -ENOSYS; }
+static int fuse_vfs_listxattr(const char* path, char* list, size_t size)
+    { (void)path; (void)list; (void)size; return -ENOSYS; }
+static int fuse_vfs_removexattr(const char* path, const char* name)
+    { (void)path; (void)name; return -ENOSYS; }
+
+/* ---------------------------------------------------------------------------
+ * FUSE operations table — registered via fuse_main_real.
+ * --------------------------------------------------------------------------- */
+
+const struct fuse_operations fuse_vfs_ops = {
+    .init        = fuse_vfs_init,
+    .destroy     = fuse_vfs_destroy,
+    .getattr     = fuse_vfs_getattr,
+    .readdir     = fuse_vfs_readdir,
+    .opendir     = fuse_vfs_opendir,
+    .releasedir  = fuse_vfs_releasedir,
+    .open        = fuse_vfs_open,
+    .create      = fuse_vfs_create,
+    .read        = fuse_vfs_read,
+    .write       = fuse_vfs_write,
+    .release     = fuse_vfs_release,
+    .unlink      = fuse_vfs_unlink,
+    .mkdir       = fuse_vfs_mkdir,
+    .rmdir       = fuse_vfs_rmdir,
+    .rename      = fuse_vfs_rename,
+    .truncate    = fuse_vfs_truncate,
+    .flush       = fuse_vfs_flush,
+    .statfs      = fuse_vfs_statfs,
+    .access      = fuse_vfs_access,
+    .utimens     = fuse_vfs_utimens,
+    .chmod       = fuse_vfs_chmod,
+    .chown       = fuse_vfs_chown,
+    .ioctl       = NULL,  /* Phase 10 */
+    .readlink    = fuse_vfs_readlink,
+    .symlink     = fuse_vfs_symlink,
+    .link        = fuse_vfs_link,
+    .setxattr    = fuse_vfs_setxattr,
+    .getxattr    = fuse_vfs_getxattr,
+    .listxattr   = fuse_vfs_listxattr,
+    .removexattr = fuse_vfs_removexattr,
+};
+
 #endif /* FUSE3_FOUND */
 
 /* ---------------------------------------------------------------------------

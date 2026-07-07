@@ -25,11 +25,8 @@ int main(int argc, char** argv) {
 
 #else
 
-/* FUSE operations table — declared in fuse_vfs.h, defined in fuse_vfs.c
-   (Phase 5 task 8).  For now, a minimal stub so fuse_main_real can be called. */
-static const struct fuse_operations fuse_vfs_ops = {
-    /* Populated in Phase 5 Task 8 */
-};
+/* FUSE operations table — defined in src/fuse_vfs.c */
+extern const struct fuse_operations fuse_vfs_ops;
 
 int main(int argc, char** argv) {
     /* Default option state */
