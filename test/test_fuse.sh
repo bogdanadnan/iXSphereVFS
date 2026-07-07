@@ -208,36 +208,59 @@ test_fuse_readonly() {
 # ---------------------------------------------------------------------------
 test_fuse_snapshot() {
     echo "=== test_fuse_snapshot ==="
-    local snapfile="$MNT_POINT/snap_test.txt"
+    local snapfile="snap_test.txt"  # relative to mountpoint
+    local fullpath="$MNT_POINT/$snapfile"
     local original="snapshot-original"
     local modified="snapshot-modified"
 
-    echo "$original" > "$snapfile" || { echo "FAIL: write original"; return 1; }
+    echo "$original" > "$fullpath" || { echo "FAIL: write original"; return 1; }
 
     # Take snapshot via vfsctl
     local epoch
     epoch="$(./vfsctl snapshot "$MNT_POINT")" || {
         echo "SKIP: vfsctl snapshot failed (ioctl may not be wired)"
-        rm -f "$snapfile"
+        rm -f "$fullpath"
         return 0
     }
     echo "  snapshot epoch: $epoch"
 
     # Overwrite with modified content
-    echo "$modified" > "$snapfile" || { echo "FAIL: write modified"; return 1; }
+    echo "$modified" > "$fullpath" || { echo "FAIL: write modified"; return 1; }
 
-    # Unmount and remount at snapshot epoch to verify original content
-    # (Note: FUSE mount at snapshot epoch requires -o epoch=N, which may
-    #  not be wired yet.  For now, just verify current content is modified.)
-    local current
-    current="$(cat "$snapfile")"
-    if [ "$current" != "$modified" ]; then
-        echo "FAIL: current content mismatch: '$current' != '$modified'"
-        rm -f "$snapfile"
+    # Unmount current mount
+    fusermount3 -u -z "$MNT_POINT" 2>/dev/null || true
+    wait $FUSE_PID 2>/dev/null || true
+
+    # Remount at snapshot epoch
+    ./vfs_fuse "$VFS_FILE" "$MNT_POINT" -o "epoch=$epoch" -f &
+    FUSE_PID=$!
+    if ! wait_for_mount; then
+        echo "FAIL: remount at snapshot epoch"
         return 1
     fi
-    echo "  current content ($modified) verified"
-    rm -f "$snapfile"
+    echo "  remounted at epoch $epoch"
+
+    # Verify original content at snapshot epoch
+    local result
+    result="$(cat "$fullpath")"
+    if [ "$result" != "$original" ]; then
+        echo "FAIL: original content not preserved at snapshot epoch: '$result' != '$original'"
+        rm -f "$fullpath"
+        return 1
+    fi
+    echo "  original content verified at snapshot epoch"
+
+    # Remount at base epoch for subsequent tests
+    fusermount3 -u -z "$MNT_POINT" 2>/dev/null || true
+    wait $FUSE_PID 2>/dev/null || true
+    ./vfs_fuse "$VFS_FILE" "$MNT_POINT" -f &
+    FUSE_PID=$!
+    if ! wait_for_mount; then
+        echo "FAIL: re-mount at base epoch"
+        return 1
+    fi
+    rm -f "$fullpath"
+    echo "  re-mounted at base epoch"
     return 0
 }
 
