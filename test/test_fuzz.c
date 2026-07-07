@@ -144,6 +144,51 @@ static void fuzz_corrupt(const char* path, Rand* r) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Verify phase — recursively walk the directory tree, read all files,
+ * and check that seed-file content is intact.  CRC or corruption errors
+ * detected by vfs_read must return error codes, not crash the test.
+ * --------------------------------------------------------------------------- */
+
+static void fuzz_verify_dir(vfs_t* vfs, int64_t dir_vp, int depth,
+                             int* files_read, int* errors) {
+    if (depth > 8) return;  /* safety limit */
+    vfs_dirent_t ents[64];
+    int n = vfs_readdir(vfs, dir_vp, ents, 64, 0);
+    if (n < 0) { (*errors)++; return; }
+
+    for (int i = 0; i < n; i++) {
+        if (ents[i].isDir) {
+            fuzz_verify_dir(vfs, ents[i].vp, depth + 1, files_read, errors);
+        } else {
+            (*files_read)++;
+            /* Read the file — must not crash even with corrupted data */
+            uint8_t buf[256];
+            int r = vfs_read(vfs, ents[i].vp, buf, 0, sizeof(buf), 0);
+            if (r < 0) { (*errors)++; continue; }
+
+            /* Verify known seed file content */
+            if (strncmp(ents[i].name, "seed_", 5) == 0) {
+                int idx = atoi(ents[i].name + 5);
+                uint8_t expected = (uint8_t)(0xAA + idx);
+                for (int b = 0; b < r; b++) {
+                    if (buf[b] != expected) {
+                        (*errors)++;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+static int fuzz_verify(vfs_t* vfs) {
+    int files_read = 0;
+    int errors = 0;
+    fuzz_verify_dir(vfs, vfs->ctx->rootNodeOffset, 0, &files_read, &errors);
+    return errors;
+}
+
+/* ---------------------------------------------------------------------------
  * Fuzz loop — 10,000 iterations
  * --------------------------------------------------------------------------- */
 
@@ -344,13 +389,16 @@ int main(int argc, char** argv) {
         /* Remount and verify the VFS is still loadable (or gracefully fails) */
         vfs = vfs_mount(FUZZ_VFS_PATH, FUZZ_PAGE_SZ);
         if (vfs) {
-            /* Quick sanity: read root directory */
-            vfs_dirent_t check[16];
-            vfs_readdir(vfs, vfs->ctx->rootNodeOffset, check, 16, 0);
+            /* Walk tree, read all files, verify seed content.
+               CRC errors from corruption must return error codes, not crash. */
+            int verrors = fuzz_verify(vfs);
+            if (verrors > 0) {
+                /* Verification errors from corrupted data are expected —
+                   the corruption phase intentionally modifies bytes.
+                   The test passes as long as no crash occurs. */
+            }
             vfs_unmount(vfs);
         }
-        /* Mount failure after corruption is acceptable — the corruption
-           may have hit critical metadata.  This doesn't count as a crash. */
 
         if (iter > 0 && iter % 1000 == 0)
             printf("  %d iterations, %d ops, %d crashes so far\n",
