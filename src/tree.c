@@ -1292,7 +1292,7 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
 }
 
 /* ---------------------------------------------------------------------------
- * vfs_open — resolve name to nodeId by walking parent's DirContent chain
+ * vfs_open — resolve name to VirtualPtr by walking parent's DirContent chain
  *
  * Returns childNodeId on success, or VFS_ERR_NOTFOUND if not found.
  * Uses read-rule: matches if epoch == query_epoch, or epoch < query AND even.
@@ -1309,8 +1309,8 @@ int64_t vfs_open(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (err == VFS_ERR_NOTDIR) { vfs->ctx->last_error = VFS_ERR_NOTDIR; return VFS_ERR_NOTDIR; }
     if (err != VFS_OK) { vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
 
-    (void)childPtr;
-    return (int64_t)nodeId;
+    (void)nodeId;
+    return childPtr;
 }
 
 /* ---------------------------------------------------------------------------

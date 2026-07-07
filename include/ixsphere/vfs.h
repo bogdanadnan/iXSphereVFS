@@ -96,7 +96,7 @@ int     vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
 int     vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                    int64_t dst_parent, const char* dst, int64_t epoch);
 
-/* Open a file by parent directory and name.  Returns the child's nodeId on
+/* Open a file by parent directory and name.  Returns the child's VirtualPtr on
    success, or a negative error code on failure. */
 int64_t vfs_open(vfs_t* vfs, int64_t parent, const char* name,
                       int64_t epoch);
