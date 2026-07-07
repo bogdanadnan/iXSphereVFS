@@ -507,6 +507,90 @@ static int scenario_mirrored_write(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Scenario 10: mirror_allocation — allocate a mirror page via a second
+ * write, crash before the mirror write-to-disk completes, remount, and
+ * verify that valid data is recovered (either from the original single
+ * copy or from the mirror, whichever completed first).
+ *
+ * Each iteration: fork child → child mounts, creates file, writes v1,
+ * vfs_flush (metadata + single-copy data on disk), writes v2 (triggers
+ * mirror allocation + sibling pwrite), crashes without flush → parent
+ * remounts → verifies data is NOT all zeros (matches v1 or v2).
+ * --------------------------------------------------------------------------- */
+
+static int scenario_mirror_allocation(void) {
+    uint8_t* page_v1 = (uint8_t*)malloc((size_t)PAGE_SZ);
+    uint8_t* page_v2 = (uint8_t*)malloc((size_t)PAGE_SZ);
+    if (!page_v1 || !page_v2) { free(page_v1); free(page_v2); return -1; }
+
+    for (int i = 0; i < 100; i++) {
+        cleanup();
+        memset(page_v1, 0x33, (size_t)PAGE_SZ);
+        memset(page_v2, 0x44, (size_t)PAGE_SZ);
+
+        pid_t pid = fork();
+        if (pid < 0) { free(page_v1); free(page_v2); return -1; }
+
+        if (pid == 0) {
+            vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+            if (!vfs) _exit(-1);
+            int64_t fvp = vfs_create(vfs, vfs->ctx->rootNodeOffset, "mirall.dat", 0);
+            if (fvp <= 0) _exit(-1);
+
+            /* Write v1 — single copy on disk (pwrite in mirror_write) */
+            if (vfs_write(vfs, fvp, page_v1, 0, PAGE_SZ, 0) != PAGE_SZ) _exit(-1);
+
+            /* Flush to persist pool metadata + data page for clean remount */
+            vfs_flush(vfs);
+
+            /* Write v2 — triggers mirror allocation (allocate sibling +
+               write_page_record sibling header + payload).  These go through
+               pwrite directly, not through the write-back cache.  If the
+               process crashes between the sibling write and the link pwrite,
+               the original copy still has valid data. */
+            if (vfs_write(vfs, fvp, page_v2, 0, PAGE_SZ, 0) != PAGE_SZ) _exit(-1);
+
+            /* HARD CRASH — no flush of the mirror write */
+            _exit(0);
+        }
+
+        int status;
+        waitpid(pid, &status, 0);
+        if (!WIFEXITED(status)) { free(page_v1); free(page_v2); return -1; }
+
+        vfs_t* vfs = vfs_mount(VFS_PATH, PAGE_SZ);
+        if (!vfs) { free(page_v1); free(page_v2); return -1; }
+        int64_t fvp2 = find_file(vfs, "mirall.dat");
+        if (fvp2 <= 0) {
+            fprintf(stderr, "  FAIL iter %d: file metadata lost\n", i);
+            vfs_unmount(vfs);
+            free(page_v1); free(page_v2);
+            return -1;
+        }
+
+        uint8_t* buf = (uint8_t*)malloc((size_t)PAGE_SZ);
+        if (!buf) { vfs_unmount(vfs); free(page_v1); free(page_v2); return -1; }
+        int r = vfs_read(vfs, fvp2, buf, 0, PAGE_SZ, 0);
+        int ok = 0;
+        if (r == PAGE_SZ) {
+            int match_v1 = (memcmp(buf, page_v1, (size_t)PAGE_SZ) == 0);
+            int match_v2 = (memcmp(buf, page_v2, (size_t)PAGE_SZ) == 0);
+            ok = (match_v1 || match_v2);
+        }
+        free(buf);
+        vfs_unmount(vfs);
+
+        if (!ok) {
+            fprintf(stderr, "  FAIL iter %d: mirror allocation recovery failed\n", i);
+            free(page_v1); free(page_v2);
+            return -1;
+        }
+    }
+    free(page_v1); free(page_v2);
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
  * Scenarios table
  * --------------------------------------------------------------------------- */
 
@@ -526,6 +610,7 @@ static struct {
     {"many_files",           scenario_many_files},
     {"single_copy_write",    scenario_single_copy_write},
     {"mirrored_write",       scenario_mirrored_write},
+    {"mirror_allocation",    scenario_mirror_allocation},
 };
 static const int n_scenarios = (int)(sizeof(scenarios) / sizeof(scenarios[0]));
 
