@@ -408,7 +408,7 @@ static int fuse_vfs_opendir(const char* path, struct fuse_file_info* fi) {
     return 0;
 }
 static int fuse_vfs_releasedir(const char* path, struct fuse_file_info* fi)
-    { (void)path; (void)fi; return -ENOSYS; }
+    { (void)path; (void)fi; return 0; }
 static int fuse_vfs_release(const char* path, struct fuse_file_info* fi)
     { (void)path; (void)fi; return -ENOSYS; }
 static int fuse_vfs_flush(const char* path, struct fuse_file_info* fi)
