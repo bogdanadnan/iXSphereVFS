@@ -30,6 +30,13 @@ add_library(ixsphere_vfs STATIC
     src/var_array.c
 )
 
+if(FUSE3_FOUND)
+  target_sources(ixsphere_vfs PRIVATE src/fuse_vfs.c)
+  target_include_directories(ixsphere_vfs PRIVATE ${FUSE3_INCLUDE_DIRS})
+  target_link_libraries(ixsphere_vfs PRIVATE ${FUSE3_LIBRARIES})
+  target_compile_definitions(ixsphere_vfs PRIVATE FUSE3_FOUND)
+endif()
+
 set_source_files_properties(src/var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -fno-strict-aliasing")
 set_source_files_properties(src/tree.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING")
 set_source_files_properties(src/nodes.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING")
