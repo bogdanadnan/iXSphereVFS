@@ -55,6 +55,58 @@ static const struct fuse_opt fuse_vfs_opts_spec[] = {
     FUSE_OPT_END
 };
 
+/* ---------------------------------------------------------------------------
+ * Option processing — called by libfuse for every matched option.
+ * Populates the fuse_vfs_opts struct.  Non-matched options return 1
+ * (pass through to libfuse).  Matched options return 0 (consumed).
+ * --------------------------------------------------------------------------- */
+
+static int fuse_vfs_opt_proc(void* data, const char* arg, int key,
+                             struct fuse_args* outargs) {
+    fuse_vfs_opts* opts = (fuse_vfs_opts*)data;
+    (void)outargs;
+
+    switch (key) {
+    case KEY_VFS_PATH:
+        free(opts->vfs_path);
+        opts->vfs_path = strdup(arg);
+        return 0;
+
+    case KEY_EPOCH:
+        opts->epoch = (int64_t)strtoll(arg, NULL, 10);
+        return 0;
+
+    case KEY_PAGE_SIZE:
+        opts->page_size = (int64_t)strtoll(arg, NULL, 10);
+        return 0;
+
+    case KEY_READONLY:
+        opts->readonly = 1;
+        return 0;
+
+    case KEY_HELP:
+        fprintf(stderr,
+            "Usage: vfs_fuse <vfs-file> <mountpoint> [options]\n"
+            "FUSE options:\n"
+            "  -o epoch=N        initial epoch (0 = base, default)\n"
+            "  -o page_size=N    VFS page size (default 8192)\n"
+            "  -o readonly       mount read-only\n"
+            "  -o allow_other    allow other users (libfuse built-in)\n");
+        return 0;
+
+    case FUSE_OPT_KEY_NONOPT:
+        /* Positional argument — first non-option is the VFS file path */
+        if (!opts->vfs_path) {
+            opts->vfs_path = strdup(arg);
+            return 0;
+        }
+        return 1;  /* second positional = mountpoint, pass to libfuse */
+
+    default:
+        return 1;  /* pass to libfuse */
+    }
+}
+
 #endif /* FUSE3_FOUND */
 
 /* ---------------------------------------------------------------------------
