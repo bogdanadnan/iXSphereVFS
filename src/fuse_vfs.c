@@ -204,17 +204,8 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_darwin_fill_dir_t filler,
     (void)offset; (void)fi; (void)flags;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
 
-    /* Resolve the directory path */
-    int64_t dir_vp;
-    if (strcmp(path, "/") == 0) {
-        dir_vp = vfs_root(state->vfs);
-    } else {
-        dir_vp = resolve_full_path(state->vfs, state->epoch, path);
-    }
+    int64_t dir_vp = vfs_root(state->vfs);
     if (dir_vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
-
-    /* Must be a directory */
-    if (!fuse_is_dir(state->vfs, dir_vp)) return -ENOTDIR;
 
     struct fuse_darwin_attr dummy_attr;
     memset(&dummy_attr, 0, sizeof(dummy_attr));
@@ -229,6 +220,13 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_darwin_fill_dir_t filler,
 
     return 0;
 }
+#if 0
+{
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    (void)state; (void)path; (void)buf;
+    return 0;
+}
+#endif
 
 int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
