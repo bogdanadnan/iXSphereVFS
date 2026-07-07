@@ -562,18 +562,18 @@ int fuse_vfs_ioctl(vfs_t* vfs, unsigned long request, void* arg, void* data) {
         return 0;
     }
     case VFS_IOC_COMMIT: {
-        int64_t snap_epoch = (arg && *(int64_t*)arg) ? *(int64_t*)arg
-                           : (data ? *(int64_t*)data : 0);
+        if (!data) return -EINVAL;
+        int64_t snap_epoch = *(int64_t*)data;
         if (snap_epoch <= 0) return -EINVAL;
         int ret = vfs_commit(vfs, snap_epoch);
         if (ret != VFS_OK) return vfs_error_to_errno(vfs_last_error(vfs));
         /* Write back the committed epoch to data (_IOWR) */
-        if (data) *(int64_t*)data = vfs_current_epoch(vfs);
+        *(int64_t*)data = vfs_current_epoch(vfs);
         return 0;
     }
     case VFS_IOC_DELETE_SNAP: {
-        int64_t snap_epoch = (arg && *(int64_t*)arg) ? *(int64_t*)arg
-                           : (data ? *(int64_t*)data : 0);
+        if (!data) return -EINVAL;
+        int64_t snap_epoch = *(int64_t*)data;
         if (snap_epoch <= 0) return -EINVAL;
         int ret = vfs_delete_snapshot(vfs, snap_epoch);
         return (ret == VFS_OK) ? 0
