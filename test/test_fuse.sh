@@ -7,10 +7,6 @@ set -e
 # skip_if_no_fuse — exit 0 with SKIP message if FUSE is unavailable.
 # ---------------------------------------------------------------------------
 skip_if_no_fuse() {
-    if [ ! -c /dev/fuse ] && [ ! -e /dev/fuse ]; then
-        echo "SKIP: /dev/fuse not available"
-        exit 0
-    fi
     if ! command -v fusermount3 >/dev/null 2>&1 && ! command -v fusermount >/dev/null 2>&1; then
         echo "SKIP: fusermount not available"
         exit 0
@@ -44,7 +40,7 @@ teardown_test() {
 }
 
 setup_test
-MNT_POINT="/tmp/test_fuse_mnt_$$"
+trap teardown_test EXIT
 
 echo "=== test_fuse smoke test ==="
 
@@ -53,8 +49,6 @@ echo "=== test_fuse smoke test ==="
     echo "SKIP: vfsctl unavailable or VFS prep failed"
     exit 0
 }
-
-mkdir -p "$MNT_POINT"
 
 # Mount via FUSE (background)
 ./vfs_fuse "$VFS_FILE" "$MNT_POINT" -f &
