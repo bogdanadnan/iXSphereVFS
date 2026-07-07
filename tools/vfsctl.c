@@ -53,6 +53,7 @@ int main(int argc, char** argv) {
         int64_t epoch = (int64_t)atoll(argv[3]);
         if (epoch <= 0) {
             fprintf(stderr, "commit: epoch must be positive\n");
+            usage(argv[0]);
             close(fd); return 1;
         }
         if (ioctl(fd, VFS_IOC_COMMIT, &epoch) == 0) {
@@ -68,6 +69,7 @@ int main(int argc, char** argv) {
     } else if (strcmp(subcmd, "delete-snapshot") == 0) {
         if (argc < 4) {
             fprintf(stderr, "delete-snapshot requires an epoch argument\n");
+            usage(argv[0]);
             close(fd); return 1;
         }
         int64_t epoch = (int64_t)atoll(argv[3]);
