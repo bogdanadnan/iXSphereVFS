@@ -545,6 +545,60 @@ int fuse_vfs_removexattr(const char* path, const char* name)
     { (void)path; (void)name; return -ENOSYS; }
 
 /* ---------------------------------------------------------------------------
+ * ioctl dispatcher — maps VFS_IOC_* commands to VFS API calls.
+ * --------------------------------------------------------------------------- */
+
+#include "fuse_ioctl.h"
+
+int fuse_vfs_ioctl(vfs_t* vfs, unsigned long request, void* arg) {
+    if (!vfs) return -EIO;
+
+    switch (request) {
+    case VFS_IOC_SNAPSHOT: {
+        int64_t epoch = vfs_snapshot(vfs);
+        if (epoch < 0) return vfs_error_to_errno(vfs_last_error(vfs));
+        if (arg) *(int64_t*)arg = epoch;
+        return 0;
+    }
+    case VFS_IOC_COMMIT: {
+        if (!arg) return -EINVAL;
+        int64_t snap_epoch = *(int64_t*)arg;
+        int ret = vfs_commit(vfs, snap_epoch);
+        if (ret != VFS_OK) return vfs_error_to_errno(vfs_last_error(vfs));
+        /* Write back the committed epoch */
+        *(int64_t*)arg = vfs_current_epoch(vfs);
+        return 0;
+    }
+    case VFS_IOC_DELETE_SNAP: {
+        if (!arg) return -EINVAL;
+        int64_t snap_epoch = *(int64_t*)arg;
+        int ret = vfs_delete_snapshot(vfs, snap_epoch);
+        return (ret == VFS_OK) ? 0
+               : vfs_error_to_errno(vfs_last_error(vfs));
+    }
+    case VFS_IOC_GC: {
+        int ret = vfs_gc(vfs);
+        return (ret == VFS_OK) ? 0
+               : vfs_error_to_errno(vfs_last_error(vfs));
+    }
+    default:
+        return -ENOTTY;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * FUSE ioctl callback — bridges the FUSE ioctl path to our dispatcher.
+ * --------------------------------------------------------------------------- */
+
+int fuse_vfs_ioctl_cb(fuse_ino_t ino, int cmd, void* arg,
+                      struct fuse_file_info* fi, unsigned int flags,
+                      void* data) {
+    (void)ino; (void)fi; (void)flags; (void)data;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    return fuse_vfs_ioctl(state->vfs, (unsigned long)cmd, arg);
+}
+
+/* ---------------------------------------------------------------------------
  * FUSE operations table — registered via fuse_main_real.
  * --------------------------------------------------------------------------- */
 
@@ -576,7 +630,7 @@ const struct fuse_operations fuse_vfs_ops = {
     .utimens     = fuse_vfs_utimens,
     .chmod       = fuse_vfs_chmod,
     .chown       = fuse_vfs_chown,
-    .ioctl       = NULL,  /* Phase 10 */
+    .ioctl       = fuse_vfs_ioctl_cb,  /* Phase 10 */
     .readlink    = fuse_vfs_readlink,
     .symlink     = fuse_vfs_symlink,
     .link        = fuse_vfs_link,
