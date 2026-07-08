@@ -1438,8 +1438,12 @@ int vfs_truncate(vfs_t* vfs, int64_t file, int64_t new_size, int64_t epoch) {
     }
 
     /* Grow — write zeros from cur_size to new_size via vfs_write
-       (which handles page allocation and FileSize updates internally). */
-    uint8_t zbuf[1048576];  /* 1 MiB */
+       (which handles page allocation and FileSize updates internally).
+       Buffer size is one page (8 KiB) to keep stack usage low — FUSE
+       worker threads on macOS have small stacks.  vfs_write handles
+       arbitrarily large writes, so chunk size doesn't matter for
+       correctness, only for the number of vfs_write calls. */
+    uint8_t zbuf[8192];
     memset(zbuf, 0, sizeof(zbuf));
     int64_t remaining = new_size - cur_size;
     int64_t wr_off = cur_size;
