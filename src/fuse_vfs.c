@@ -19,6 +19,7 @@
 #endif
 
 #include "ixsphere/vfs.h"
+#include "ixsphere/vfs_internal.h"
 #include "fuse_vfs.h"
 
 /* ---------------------------------------------------------------------------
@@ -588,9 +589,18 @@ int fuse_vfs_statfs(const char* path, struct statvfs* stbuf) {
 #else
     stbuf->f_frsize  = (unsigned long)state->page_size;
 #endif
-    stbuf->f_blocks  = 0;
-    stbuf->f_bfree   = 0;
-    stbuf->f_bavail  = 0;
+
+    /* The VFS is self-growing — the backing file expands as writes happen.
+       Report a generous capacity (16 TiB) and subtract current usage
+       from the free/avail figures so Finder doesn't treat us as full.
+       Without this, f_blocks=0 makes Finder display "0 bytes available
+       out of 0 bytes" and refuse all writes. */
+    const uint64_t kTotalBytes = (uint64_t)16 * 1024 * 1024 * 1024 * 1024ULL;  /* 16 TiB */
+    int64_t used_bytes = state->vfs ? state->vfs->ctx->sb->physical_tail : 0;
+    uint64_t used_blks = (uint64_t)used_bytes / (uint64_t)state->page_size;
+    stbuf->f_blocks  = kTotalBytes / (uint64_t)state->page_size;
+    stbuf->f_bfree   = stbuf->f_blocks - used_blks;
+    stbuf->f_bavail  = stbuf->f_bfree;
     stbuf->f_files   = UINT64_MAX;
     stbuf->f_ffree   = UINT64_MAX;
 #ifdef __APPLE__
