@@ -161,16 +161,6 @@ void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
         return NULL;
     }
 
-    /* Spawn periodic mirror metrics dumper if enabled (stashed instrumentation) */
-    if (getenv("VFS_LAZY_MIRROR_METRICS") != NULL) {
-        pthread_t tid;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_create(&tid, &attr, mirror_metrics_pump, NULL);
-        pthread_attr_destroy(&attr);
-    }
-
     return state;
 }
 
