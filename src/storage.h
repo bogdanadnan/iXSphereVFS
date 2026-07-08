@@ -168,6 +168,7 @@ CacheEntry* cache_find(PageCache* cache, int64_t logical_page);
 void        cache_insert(PageCache* cache, int64_t logical_page,
                          uint8_t* payload, int priority, int dirty);
 void        cache_mark_dirty(PageCache* cache, int64_t logical_page, int priority);
+void        cache_mark_ptr_dirty(PageCache* cache, const void* slot, int priority);
 void        cache_flush_page(StorageBackend* sb, int64_t logical_page);
 void        cache_evict_all(StorageBackend* sb);
 void        cache_flush_all(StorageBackend* sb);

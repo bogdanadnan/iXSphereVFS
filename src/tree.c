@@ -3,6 +3,7 @@
 #include "page_array.h"
 #include "touched.h"
 #include "gc.h"
+#include "storage.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -663,10 +664,12 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
 
     if (!file_slot) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
     nodes_write_filenode(file_slot, new_nodeId, 0, 0, (int64_t)time(NULL), ctx->page_size);
+    cache_mark_ptr_dirty(&ctx->sb->cache, file_slot, FLUSH_PRIO_POOL);
 
     /* Allocate NameEntry chain for the file name */
     int64_t name_vp;
     int name_slots = nodes_write_name(&ctx->pool, name, &name_vp);
+    (void)name_slots;  /* nodes_write_name marks its pages dirty internally via pool state CAS */
 
     if (name_slots == 0) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
 
@@ -686,9 +689,11 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
 
         nodes_write_dircontent(dc_slot, new_nodeId, (uint32_t)epoch,
                                file_vp, name_vp, old_head, ctx->page_size);
+        cache_mark_ptr_dirty(&ctx->sb->cache, dc_slot, FLUSH_PRIO_POOL);
         vfs_mb_release();
     } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
                          old_head, dc_vp) != old_head);
+    cache_mark_ptr_dirty(&ctx->sb->cache, parent_slot, FLUSH_PRIO_POOL);
 
     dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
@@ -765,6 +770,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     if (!dir_slot) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
     nodes_write_dirnode(dir_slot, new_nodeId, 0, ctx->page_size);
+    cache_mark_ptr_dirty(&ctx->sb->cache, dir_slot, FLUSH_PRIO_POOL);
 
     int64_t name_vp;
     int name_slots = nodes_write_name(&ctx->pool, name, &name_vp);
@@ -784,9 +790,11 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
             (const int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR));
         nodes_write_dircontent(dc_slot, new_nodeId, (uint32_t)epoch,
                                dir_vp, name_vp, old_head, ctx->page_size);
+        cache_mark_ptr_dirty(&ctx->sb->cache, dc_slot, FLUSH_PRIO_POOL);
         vfs_mb_release();
     } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
                          old_head, dc_vp) != old_head);
+    cache_mark_ptr_dirty(&ctx->sb->cache, parent_slot, FLUSH_PRIO_POOL);
 
     dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
