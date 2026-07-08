@@ -224,8 +224,6 @@ void cache_mark_dirty(PageCache* cache, int64_t logical_page, int priority) {
     int bkt = bucket_index(cache, logical_page);
     spin_lock(&cache->bucket_locks[bkt]);
 
-
-
     CacheEntry* e = cache->buckets[bkt];
     while (e) {
         if (e->logical_page == logical_page) {
@@ -239,28 +237,6 @@ void cache_mark_dirty(PageCache* cache, int64_t logical_page, int priority) {
     }
 
     spin_unlock(&cache->bucket_locks[bkt]);
-}
-
-/* ---------------------------------------------------------------------------
- * Mark dirty by slot pointer — finds the cache entry whose payload == ptr
- * --------------------------------------------------------------------------- */
-
-void cache_mark_ptr_dirty(PageCache* cache, const void* slot, int priority) {
-    for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
-        spin_lock(&cache->bucket_locks[bkt]);
-        CacheEntry* e = cache->buckets[bkt];
-        while (e) {
-            if (e->payload == slot) {
-                if (!e->dirty) cache->dirty_count++;
-                e->dirty = 1;
-                e->priority = priority;
-                spin_unlock(&cache->bucket_locks[bkt]);
-                return;
-            }
-            e = e->hash_next;
-        }
-        spin_unlock(&cache->bucket_locks[bkt]);
-    }
 }
 
 /* ---------------------------------------------------------------------------
