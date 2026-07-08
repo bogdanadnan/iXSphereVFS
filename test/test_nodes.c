@@ -391,32 +391,7 @@ static void test_filesize_chain(void) {
     CHECK_EQ(nextPtr, 0);
 }
 
-/* ---------------------------------------------------------------------------
- * TouchedFile tests (Workload 4.9)
- * --------------------------------------------------------------------------- */
-
-static void test_touchedfile(void) {
-    uint8_t slot[32];
-    memset(slot, 0, sizeof(slot));
-
-    /* Single TouchedFile {epoch=3, nodeId=7} */
-    nodes_write_touchedfile(slot, 3, 7, 0, VFS_PAGE_SIZE);
-
-    uint32_t epoch, nodeId;
-    int64_t nextPtr;
-    nodes_read_touchedfile(slot, &epoch, &nodeId, &nextPtr, VFS_PAGE_SIZE);
-
-    CHECK_EQ(epoch, 3u);
-    CHECK_EQ(nodeId, 7u);
-    CHECK_EQ(nextPtr, 0);
-
-    /* Verify reserved bytes 16-31 are zero */
-    int all_zero = 1;
-    for (int i = 16; i < 32; i++) {
-        if (slot[i] != 0) { all_zero = 0; break; }
-    }
-    CHECK(all_zero);
-}
+/* TouchedFile tests removed (feature retired). */
 
 /* ---------------------------------------------------------------------------
  * MapperEntry tests (Workload 4.10)
@@ -668,10 +643,7 @@ static void test_zero_slot_safety(void) {
     CHECK(data_all_zero);
     CHECK_EQ(vfs_rd8(slot, NAMEENTRY_OFF_NEXTPTR), 0);
 
-    /* TouchedFile: epoch=0, nodeId=0, nextPtr=0 */
-    CHECK_EQ(vfs_rd4(slot, TOUCHEDFILE_OFF_EPOCH), 0);
-    CHECK_EQ(vfs_rd4(slot, TOUCHEDFILE_OFF_NODEID), 0);
-    CHECK_EQ(vfs_rd8(slot, TOUCHEDFILE_OFF_NEXTPTR), 0);
+    /* TouchedFile removed — skip the {epoch,nodeId,nextPtr}=0 checks */
 
     /* MapperEntry: fromEpoch=0, toEpoch=0, flags=0, nextPtr=0 */
     CHECK_EQ(vfs_rd4(slot, MAPPER_OFF_FROMEPOCH), 0);
@@ -880,7 +852,7 @@ int main(void) {
     test_filesize();
     test_filesize_chain();
 
-    test_touchedfile();
+    /* test_touchedfile removed */
     test_mapperentry();
 
     test_nameentry_short();

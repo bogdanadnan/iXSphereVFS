@@ -225,25 +225,7 @@ int nodes_write_name_with_hash(Pool* pool, const char* utf8_name, uint64_t hash,
  * nodes_write_name stores in the first NameEntry slot at offset 0. */
 uint64_t name_hash_compute(const char* name, int len);
 
-/* ---------------------------------------------------------------------------
- * TouchedFile (32 bytes, 16 used, 16 reserved)
- *
- *   Offset  Size  Field
- *   ──────  ────  ─────
- *     0      4    epoch    (uint32 — snapshot epoch)
- *     4      4    nodeId   (uint32 — modified file's nodeId)
- *     8      8    nextPtr  (VirtualPtr — next TouchedFile, 0 = end)
- *    16     16    reserved
- * --------------------------------------------------------------------------- */
-
-#define TOUCHEDFILE_OFF_EPOCH    0
-#define TOUCHEDFILE_OFF_NODEID   4
-#define TOUCHEDFILE_OFF_NEXTPTR  8
-
-void nodes_write_touchedfile(uint8_t* slot, uint32_t epoch, uint32_t nodeId,
-                             int64_t nextPtr, int64_t page_size);
-void nodes_read_touchedfile(const uint8_t* slot, uint32_t* epoch,
-                            uint32_t* nodeId, int64_t* nextPtr, int64_t page_size);
+/* TouchedFile was removed — see commit notes (touched.c deleted). */
 
 /* ---------------------------------------------------------------------------
  * MapperEntry (32 bytes, 16 used, 16 reserved)

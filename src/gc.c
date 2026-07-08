@@ -879,13 +879,7 @@ int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
  * GC touched file rebuild — drop all entries since they're rebuilt fresh
  * --------------------------------------------------------------------------- */
 
-void gc_rebuild_touchedfiles(TreeContext* ctx) {
-    if (!ctx) return;
-    /* All existing TouchedFile entries become stale after GC because the
-       VersionPage chains they reference have been rewritten.  Setting the
-       chain head to 0 discards them; pool slots are reclaimed by GC. */
-    ctx->touchedFilesPtr = 0;
-}
+/* TouchedFile was removed — gc_rebuild_touchedfiles deleted. */
 
 /* ---------------------------------------------------------------------------
  * GC new superblock builder
@@ -895,7 +889,7 @@ void gc_rebuild_touchedfiles(TreeContext* ctx) {
  * rootNodeOffset, currentEpoch, and nextNodeId are preserved from ctx.
  * epochMapperPtr and poolListHead are the post-GC values.
  * treeLockState is written as 0 (exclusive lock released for new tree).
- * touchedFilesPtr is written as 0 (rebuilt for active epochs only). */
+ * touchedFilesPtr is no longer used. */
 int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
                              int64_t new_poolListHead) {
     if (!ctx) return VFS_ERR_IO;
@@ -983,8 +977,7 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
         }
     }
 
-    /* Drop all TouchedFile entries */
-    gc_rebuild_touchedfiles(ctx);
+    /* TouchedFile was removed — no per-GC cleanup needed. */
 
     /* Write the new superblock with post-GC values */
     int64_t new_pool_head = ctx->pool.list_head ? *ctx->pool.list_head : 0;

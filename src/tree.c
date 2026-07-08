@@ -1,7 +1,6 @@
 /* Phase 5: Tree Operations — Bootstrap, Init, Superblock I/O */
 #include "tree.h"
 #include "page_array.h"
-#include "touched.h"
 #include "gc.h"
 #include <stdlib.h>
 #include <string.h>
@@ -43,7 +42,8 @@ int tree_superblock_read(TreeContext* ctx) {
     ctx->epochMapperPtr   = vfs_rd8_s(payload, SB_OFF_EPOCH_MAPPER_PTR, ctx->page_size);
     ctx->treeLockState    = vfs_rd8_s(payload, SB_OFF_TREE_LOCK_STATE, ctx->page_size);
     ctx->nextNodeId       = (uint32_t)vfs_rd4_s(payload, SB_OFF_NEXT_NODE_ID, ctx->page_size);
-    ctx->touchedFilesPtr  = vfs_rd8_s(payload, SB_OFF_TOUCHED_FILES_PTR, ctx->page_size);
+    /* TouchedFile chain removed — slot is no longer in TreeContext.
+       On-disk byte at SB_OFF_TOUCHED_FILES_PTR is reserved and ignored. */
 
     /* poolListHead — wire into pool allocator */
     int64_t pool_list_head = vfs_rd8_s(payload, SB_OFF_POOL_LIST_HEAD, ctx->page_size);
@@ -64,7 +64,9 @@ int tree_superblock_write(TreeContext* ctx) {
     vfs_wr8_s(buf, SB_OFF_POOL_LIST_HEAD,    ctx->pool.list_head ? *ctx->pool.list_head : 0, ctx->page_size);
     vfs_wr8_s(buf, SB_OFF_TREE_LOCK_STATE,   ctx->treeLockState, ctx->page_size);
     vfs_wr4_s(buf, SB_OFF_NEXT_NODE_ID,      (int32_t)ctx->nextNodeId, ctx->page_size);
-    vfs_wr8_s(buf, SB_OFF_TOUCHED_FILES_PTR, ctx->touchedFilesPtr, ctx->page_size);
+    /* TouchedFile chain removed — write 0 at this offset for forward
+       compatibility with old images.  The on-disk byte is never read. */
+    vfs_wr8_s(buf, SB_OFF_TOUCHED_FILES_PTR, 0, ctx->page_size);
 
     storage_write(ctx->sb, SUPERBLOCK_PAGE, buf, 3);
     storage_flush(ctx->sb, -1);
@@ -86,7 +88,6 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     ctx->rootNodeOffset   = 0;
     ctx->currentEpoch     = 0;
     ctx->epochMapperPtr   = 0;
-    ctx->touchedFilesPtr  = 0;
     ctx->nextNodeId       = 0;  /* first vfs_atomic_add_i32 returns 1 */
     ctx->treeLockState    = 0;
 
@@ -1520,8 +1521,6 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
     if (offset + count > new_size) new_size = offset + count;
     int grew = (new_size > old_size);
 
-    /* Track first write to this file in this epoch for TouchedFile */
-    int touched_this_epoch = 0;
     uint32_t file_nodeId = (uint32_t)vfs_rd4_s(file_slot, FILENODE_OFF_NODEID, ctx->page_size);
 
     for (int64_t p = first_page; p <= last_page; p++) {
@@ -1627,14 +1626,9 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
                Our orphaned data page and VersionPage will be reclaimed by GC. */
         }
 
-        /* TouchedFile: record first write to this file in this epoch.
-           Uses touchedfile_add which handles dedup (checks for existing
-           (epoch, nodeId) pair before inserting) and CAS-prepend. */
-        if (!touched_this_epoch) {
-            touchedfile_add(&ctx->pool, &ctx->touchedFilesPtr,
-                            (uint32_t)epoch, file_nodeId);
-            touched_this_epoch = 1;
-        }
+        /* TouchedFile was removed — commit_scan_dir walks the live tree to
+           detect conflicts via VersionPage chains, no per-write chain
+           walk needed. */
 
         src += page_count;
         remaining -= page_count;

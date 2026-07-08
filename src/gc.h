@@ -190,11 +190,6 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
 int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
                        GCAllocCursor* alloc);
 
-/* Drop all TouchedFile entries during GC (rebuilt fresh for active epochs).
-   Since the touched file chain is rebuilt from scratch for active epochs,
-   all existing entries are discarded by setting touchedFilesPtr = 0. */
-void gc_rebuild_touchedfiles(TreeContext* ctx);
-
 /* Write a new superblock with GC-updated values.
  * Returns VFS_OK on success. */
 int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
@@ -203,8 +198,8 @@ int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
 /* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *
- * Walks the pool chain, the DententryCache, the epoch mapper chain,
- * and the TouchedFile chain to build the live set, then shadow-compacts.
+ * Walks the pool chain, the DententryCache, the epoch mapper chain
+ * to build the live set, then shadow-compacts.
  * Returns VFS_OK on success. */
 int vfs_gc(vfs_t* vfs);
 

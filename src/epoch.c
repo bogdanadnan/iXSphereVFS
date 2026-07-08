@@ -1,7 +1,6 @@
 /* Phase 6: Epoch system — replaces Phase 5a stubs. */
 #include "epoch.h"
 #include "ixsphere/vfs_internal.h"
-#include "touched.h"
 #include "tree.h"
 #include <stdlib.h>
 
@@ -33,11 +32,6 @@ bool vfs_epoch_is_writable(TreeContext* ctx, int64_t epoch) {
 
     /* Even epoch that isn't currentEpoch → not writable (frozen past) */
     return false;
-}
-
-void epoch_touchedfile_add(TreeContext* ctx, int64_t epoch, uint32_t nodeId) {
-    if (!ctx) return;
-    touchedfile_add(&ctx->pool, &ctx->touchedFilesPtr, (uint32_t)epoch, nodeId);
 }
 
 int64_t vfs_snapshot(vfs_t* vfs) {
@@ -152,27 +146,16 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
         return VFS_ERR_IO;
         }
 
-    /* Conflict detection: walk the TouchedFile chain directly (no fixed buffer).
-       For each file modified in this snapshot epoch, scan its version chains
-       looking for conflicts at even epochs > snapshot_epoch. */
-    int64_t tf_vp = ctx->touchedFilesPtr;
-    while (tf_vp != 0) {
-        uint8_t* tf_slot = pool_resolve_ro(&ctx->pool, tf_vp);
-        if (!tf_slot) break;
-        uint32_t tf_epoch, tf_nodeId;
-        int64_t tf_next;
-        nodes_read_touchedfile(tf_slot, &tf_epoch, &tf_nodeId, &tf_next, ctx->page_size);
-
-        if (tf_epoch == s_epoch) {
-            /* Get the file's VirtualPtr from the root DirContent chain.
-               commit_scan_dir handles recursive subdirectory walks. */
-            int err = commit_scan_dir(ctx, ctx->rootNodeOffset, s_epoch);
-            if (err != 0) {
-                vfs->ctx->last_error = err;
-                return err;
-            }
+    /* Conflict detection: walk the live directory tree (commit_scan_dir)
+       at the snapshot epoch.  For each FILE visible at s_epoch, scan
+       its per-page VersionPage chains and flag a conflict if BOTH
+       have a snapshot-epoch entry AND a higher live-epoch entry. */
+    {
+        int err = commit_scan_dir(ctx, ctx->rootNodeOffset, s_epoch);
+        if (err != 0) {
+            vfs->ctx->last_error = err;
+            return err;
         }
-        tf_vp = tf_next;
     }
 
     /* Insert commit mapping: snapshot_epoch → currentEpoch with traversalApply */
@@ -187,9 +170,6 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
                       (uint32_t)snapshot_epoch, (uint32_t)current, true);
         if (err != VFS_OK) return err;
     }
-
-    /* Drop TouchedFile chain for this epoch */
-    touchedfile_drop(&ctx->pool, &ctx->touchedFilesPtr, s_epoch);
 
     /* Flush superblock to persist the mapper change */
     ret = tree_superblock_write(ctx);
@@ -226,9 +206,6 @@ int vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch) {
                       (uint32_t)snapshot_epoch, toEpoch, false);
         if (err != VFS_OK) return err;
     }
-
-    /* Drop TouchedFile chain for this epoch */
-    touchedfile_drop(&ctx->pool, &ctx->touchedFilesPtr, (uint32_t)snapshot_epoch);
 
     /* Flush superblock */
     ret = tree_superblock_write(ctx);

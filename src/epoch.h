@@ -17,10 +17,6 @@
    Phase 6: returns true only for current live head and active snapshots. */
 bool vfs_epoch_is_writable(TreeContext* ctx, int64_t epoch);
 
-/* Record that a file was touched in a given epoch (for commit conflict detection).
-   Delegates to touchedfile_add from touched.c. Renamed to avoid symbol collision. */
-void epoch_touchedfile_add(TreeContext* ctx, int64_t epoch, uint32_t nodeId);
-
 /* Test helper: override vfs_epoch_is_writable return value.
    Pass non-zero for writable (default), zero for frozen. */
 void test_set_epoch_writable(int writable);

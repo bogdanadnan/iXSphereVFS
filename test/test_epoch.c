@@ -2,7 +2,6 @@
 #include "ixsphere/vfs_internal.h"
 #include "epoch.h"
 #include "mapper.h"
-#include "touched.h"
 #include "tree.h"
 #include <stdio.h>
 #include <string.h>
@@ -213,44 +212,9 @@ static void test_epoch_invalid(void) {
  * TouchedFile tests
  * --------------------------------------------------------------------------- */
 
-static void test_touchedfile_chain(void) {
-    vfs_t* vfs = epoch_setup();
-    CHECK(vfs != NULL);
-    TreeContext* ctx = vfs->ctx;
-
-    /* Add entries */
-    CHECK_EQ(touchedfile_add(&ctx->pool, &ctx->touchedFilesPtr, 1, 100), VFS_OK);
-    CHECK_EQ(touchedfile_add(&ctx->pool, &ctx->touchedFilesPtr, 1, 200), VFS_OK);
-    /* Duplicate (epoch=1, nodeId=100) → idempotent */
-    CHECK_EQ(touchedfile_add(&ctx->pool, &ctx->touchedFilesPtr, 1, 100), VFS_OK);
-    /* Different epoch */
-    CHECK_EQ(touchedfile_add(&ctx->pool, &ctx->touchedFilesPtr, 3, 300), VFS_OK);
-
-    /* Collect epoch 1 → should have [100, 200] */
-    uint32_t ids[8];
-    int n = touchedfile_collect(&ctx->pool, ctx->touchedFilesPtr, 1, ids, 8);
-    CHECK_EQ(n, 2);
-    int found_a = 0, found_b = 0;
-    for (int i = 0; i < n; i++) {
-        if (ids[i] == 100) found_a = 1;
-        if (ids[i] == 200) found_b = 1;
-    }
-    CHECK(found_a && found_b);
-
-    /* Drop epoch 1 */
-    touchedfile_drop(&ctx->pool, &ctx->touchedFilesPtr, 1);
-
-    /* After drop, collect epoch 1 → should return 0 */
-    n = touchedfile_collect(&ctx->pool, ctx->touchedFilesPtr, 1, ids, 8);
-    CHECK_EQ(n, 0);
-
-    /* Epoch 3 entries still present */
-    n = touchedfile_collect(&ctx->pool, ctx->touchedFilesPtr, 3, ids, 8);
-    CHECK_EQ(n, 1);
-    CHECK_EQ(ids[0], 300);
-
-    epoch_teardown(vfs);
-}
+/* TouchedFile tests removed — touchedfile feature was retired (the chain
+   is always a no-op now).  Conflict detection is performed by
+   commit_scan_dir walking the live directory tree at snapshot epoch. */
 
 /* ---------------------------------------------------------------------------
  * Commit subdir conflict: mkdir sub, create file inside, snapshot, modify
@@ -389,7 +353,7 @@ int main(void) {
     test_epoch_lifecycle();
     test_snapshot_soft_delete();
     test_epoch_invalid();
-    test_touchedfile_chain();
+    /* test_touchedfile_chain removed — touchedfile feature was retired */
 
     unlink(test_path);
     test_commit_subdir_conflict();

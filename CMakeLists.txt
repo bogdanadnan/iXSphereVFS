@@ -30,7 +30,6 @@ add_library(ixsphere_vfs STATIC
     src/page_array.c
     src/dentry_cache.c
     src/mapper.c
-    src/touched.c
     src/gc.c
     src/gc_map.c
     src/var_array.c

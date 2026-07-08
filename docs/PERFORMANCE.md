@@ -46,10 +46,8 @@ File creation involves: directory chain walk (O(entries) per directory), hash co
 
 | Function | Samples | Notes |
 |----------|---------|-------|
-| `nodes_read_touchedfile` | 183 | TouchedFile chain scan during writes |
 | `nodes_read_dircontent` | 166 | DirContent entry parsing for name collision checks |
 | `pwrite` (kernel) | 148 | Direct disk writes via mirror_write |
-| `touchedfile_add` | 107 | Tracking modified files for snapshot/commit |
 | `nodes_read_name_hash` | 73 | FNV-1a hash fast-reject during dirchain walks |
 | `storage_allocate` | 91 | New logical page allocation + indirection setup |
 

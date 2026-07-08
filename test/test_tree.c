@@ -86,8 +86,7 @@ static void test_bootstrap_reopen(void) {
     /* epochMapperPtr should be 0 (no mappings) */
     CHECK_EQ(ctx->epochMapperPtr, 0);
 
-    /* touchedFilesPtr should be 0 */
-    CHECK_EQ(ctx->touchedFilesPtr, 0);
+    /* touchedFilesPtr removed — no field to check */
 
     /* treeLockState should be 0 */
     CHECK_EQ(ctx->treeLockState, 0);

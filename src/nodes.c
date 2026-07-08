@@ -179,24 +179,8 @@ void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
 }
 
 /* ---------------------------------------------------------------------------
- * TouchedFile (Workload 4.9)
+ * TouchedFile was removed — see commit notes (touched.c deleted).
  * --------------------------------------------------------------------------- */
-
-void nodes_write_touchedfile(uint8_t* slot, uint32_t epoch, uint32_t nodeId,
-                             int64_t nextPtr, int64_t page_size) {
-    vfs_wr4_s(slot, TOUCHEDFILE_OFF_EPOCH, (int32_t)epoch, page_size);
-    vfs_wr4_s(slot, TOUCHEDFILE_OFF_NODEID, (int32_t)nodeId, page_size);
-    vfs_wr8_s(slot, TOUCHEDFILE_OFF_NEXTPTR, nextPtr, page_size);
-    memset(slot + 16, 0, 16);
-}
-
-void nodes_read_touchedfile(const uint8_t* slot, uint32_t* epoch,
-                            uint32_t* nodeId, int64_t* nextPtr,
-                            int64_t page_size) {
-    *epoch  = (uint32_t)vfs_rd4_s(slot, TOUCHEDFILE_OFF_EPOCH, page_size);
-    *nodeId = (uint32_t)vfs_rd4_s(slot, TOUCHEDFILE_OFF_NODEID, page_size);
-    *nextPtr = vfs_rd8_s(slot, TOUCHEDFILE_OFF_NEXTPTR, page_size);
-}
 
 /* ---------------------------------------------------------------------------
  * MapperEntry (Workload 4.10)

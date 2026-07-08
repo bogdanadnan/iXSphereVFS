@@ -19,7 +19,7 @@
 #define SB_OFF_POOL_LIST_HEAD   24  /* int64_t — logical page of first pool page */
 #define SB_OFF_TREE_LOCK_STATE  32  /* int64_t — §9.6 bit layout */
 #define SB_OFF_NEXT_NODE_ID     40  /* uint32_t */
-#define SB_OFF_TOUCHED_FILES_PTR 48 /* int64_t — VirtualPtr */
+#define SB_OFF_TOUCHED_FILES_PTR 48 /* int64_t — RESERVED (touchedfile feature removed, value is 0 on disk) */
 #define SB_OFF_SEGMENT_SIZE     16  /* in StorageBackend header page (page 0) */
 
 #define SUPERBLOCK_PAGE 1
