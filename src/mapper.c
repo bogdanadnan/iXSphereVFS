@@ -14,7 +14,7 @@ int mapper_insert(Mapper* m, uint32_t fromEpoch, uint32_t toEpoch,
     /* Walk the chain to enforce single-hop invariant */
     int64_t vp = *m->epochMapperPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve(m->pool, vp);
+        uint8_t* slot = pool_resolve_ro(m->pool, vp);
         if (!slot) return VFS_ERR_IO;
 
         uint32_t entry_from, entry_to;
@@ -39,7 +39,7 @@ int mapper_insert(Mapper* m, uint32_t fromEpoch, uint32_t toEpoch,
     int64_t new_vp = pool_alloc(m->pool);
     if (new_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
 
-    uint8_t* new_slot = pool_resolve(m->pool, new_vp);
+    uint8_t* new_slot = pool_resolve_rw(m->pool, new_vp);
     if (!new_slot) return VFS_ERR_IO;
 
     /* CAS-prepend to chain head */
@@ -59,7 +59,7 @@ int64_t mapper_resolve(Mapper* m, int64_t epoch) {
     uint32_t query = (uint32_t)epoch;
     int64_t vp = *m->epochMapperPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve(m->pool, vp);
+        uint8_t* slot = pool_resolve_ro(m->pool, vp);
         if (!slot) break;
 
         uint32_t entry_from, entry_to;
@@ -82,7 +82,7 @@ bool mapper_traversal_apply(Mapper* m, int64_t epoch) {
     uint32_t query = (uint32_t)epoch;
     int64_t vp = *m->epochMapperPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve(m->pool, vp);
+        uint8_t* slot = pool_resolve_ro(m->pool, vp);
         if (!slot) break;
 
         uint32_t entry_from, entry_to;
@@ -105,7 +105,7 @@ int mapper_validate(Mapper* m) {
     int count = 0;
     int64_t vp = *m->epochMapperPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve(m->pool, vp);
+        uint8_t* slot = pool_resolve_ro(m->pool, vp);
         if (!slot) return VFS_ERR_IO;
 
         uint32_t entry_from, entry_to;
@@ -139,7 +139,7 @@ int mapper_table_init(MapperTable* tbl, Pool* pool, int64_t* epochMapperPtr) {
     if (epochMapperPtr) {
         int64_t vp = *epochMapperPtr;
         while (vp != 0) {
-            uint8_t* slot = pool_resolve(pool, vp);
+            uint8_t* slot = pool_resolve_ro(pool, vp);
             if (!slot) return VFS_ERR_IO;
             uint32_t fromE, toE;
             uint16_t flags;
@@ -252,7 +252,7 @@ int mapper_table_rebuild(MapperTable* tbl) {
     if (mapper_ptr) {
         int64_t vp = *mapper_ptr;
         while (vp != 0) {
-            uint8_t* slot = pool_resolve(tbl->pool, vp);
+            uint8_t* slot = pool_resolve_ro(tbl->pool, vp);
             if (!slot) return VFS_ERR_IO;
 
             uint32_t fromE, toE;

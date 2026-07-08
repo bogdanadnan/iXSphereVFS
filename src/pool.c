@@ -189,9 +189,15 @@ int64_t pool_alloc(Pool* pool) {
  * pool_resolve (Workload 3.3)
  *
  * Resolve a VirtualPtr to a pointer into the page cache buffer.
+ *
+ * writable=0  — read-only, no dirty mark.
+ * writable!=0 — mark the page dirty (FLUSH_PRIO_POOL) AFTER the cache
+ *               layer returns the buffer, so any eviction racing the
+ *               caller's subsequent write sees the page as dirty
+ *               (cache_evict only drops clean entries).
  * --------------------------------------------------------------------------- */
 
-uint8_t* pool_resolve(Pool* pool, int64_t vptr) {
+uint8_t* pool_resolve(Pool* pool, int64_t vptr, int writable) {
     if (vptr == VFS_VPTR_NULL) return NULL;
 
     int64_t page_index = VFS_VPTR_PAGE(vptr);
@@ -199,6 +205,10 @@ uint8_t* pool_resolve(Pool* pool, int64_t vptr) {
 
     uint8_t* payload = storage_read(pool->sb, page_index);
     if (payload == NULL) return NULL;
+
+    if (writable) {
+        cache_mark_dirty(&pool->sb->cache, page_index, FLUSH_PRIO_POOL);
+    }
 
     return payload + VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
 }

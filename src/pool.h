@@ -107,8 +107,24 @@ void pool_init(Pool* pool, StorageBackend* sb, int64_t* list_head);
 int64_t pool_alloc(Pool* pool);
 
 /* Resolve a VirtualPtr to a pointer into the page cache.
-   Returns NULL if the page is not in cache. */
-uint8_t* pool_resolve(Pool* pool, int64_t vptr);
+   writable=0 is read-only (no cache_mark_dirty).
+   writable!=0 marks the cache page dirty (FLUSH_PRIO_POOL) so a
+   subsequent modification of the returned slot survives cache eviction.
+   The dirty mark happens before the pointer is returned to the caller,
+   so any eviction that runs after this call does not see the slot
+   pages as clean. */
+uint8_t* pool_resolve(Pool* pool, int64_t vptr, int writable);
+
+/* Read-only convenience wrapper — same semantics as old pool_resolve. */
+static inline uint8_t* pool_resolve_ro(Pool* pool, int64_t vptr) {
+    return pool_resolve(pool, vptr, 0);
+}
+
+/* Read-write convenience wrapper — marks page dirty on resolve so any
+   write to the returned slot is guaranteed to be flushed. */
+static inline uint8_t* pool_resolve_rw(Pool* pool, int64_t vptr) {
+    return pool_resolve(pool, vptr, 1);
+}
 
 /* Add a pool page to the global list (CAS on poolListHead). */
 void pool_list_add(Pool* pool, int64_t page_index, uint8_t* payload);

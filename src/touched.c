@@ -10,7 +10,7 @@ int touchedfile_add(Pool* pool, int64_t* touchedFilesPtr,
     /* Walk the chain to check for an existing entry (epoch, nodeId) */
     int64_t vp = *touchedFilesPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve(pool, vp);
+        uint8_t* slot = pool_resolve_rw(pool, vp);
         if (!slot) return VFS_ERR_IO;
 
         uint32_t entry_epoch, entry_nodeId;
@@ -27,7 +27,7 @@ int touchedfile_add(Pool* pool, int64_t* touchedFilesPtr,
     int64_t new_vp = pool_alloc(pool);
     if (new_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
 
-    uint8_t* new_slot = pool_resolve(pool, new_vp);
+    uint8_t* new_slot = pool_resolve_rw(pool, new_vp);
     if (!new_slot) return VFS_ERR_IO;
 
     /* CAS-prepend to chain head */
@@ -48,7 +48,7 @@ int touchedfile_collect(Pool* pool, int64_t touchedFilesPtr,
     int count = 0;
     int64_t vp = touchedFilesPtr;
     while (vp != 0 && count < max_count) {
-        uint8_t* slot = pool_resolve(pool, vp);
+        uint8_t* slot = pool_resolve_rw(pool, vp);
         if (!slot) break;
 
         uint32_t entry_epoch, entry_nodeId;
@@ -81,7 +81,7 @@ void touchedfile_drop(Pool* pool, int64_t* touchedFilesPtr, uint32_t epoch) {
        vfs_commit's TouchedFile walk (which filters by s_epoch). */
     int64_t vp = *touchedFilesPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve(pool, vp);
+        uint8_t* slot = pool_resolve_rw(pool, vp);
         if (!slot) break;
         uint32_t entry_epoch, entry_nodeId;
         int64_t entry_next;

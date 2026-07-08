@@ -17,7 +17,7 @@ int segment_array_build(Pool* pool, int64_t fc_pageRootPtr,
     int64_t page_size = pool->sb->page_size;
     int64_t vp = fc_pageRootPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve(pool, vp);
+        uint8_t* slot = pool_resolve_ro(pool, vp);
         if (!slot) break;
         uint32_t pn_idx;
         int64_t pn_next;
@@ -39,7 +39,7 @@ uint8_t* segment_array_resolve(Pool* pool, SegmentArray* arr,
     assert(page_index < arr->seg_size);
     int64_t vp = arr->vptr_array[page_index];
     if (vp == VFS_VPTR_NULL) return NULL;
-    return pool_resolve(pool, vp);
+    return pool_resolve_ro(pool, vp);
 }
 
 void segment_array_destroy(SegmentArray* arr) {

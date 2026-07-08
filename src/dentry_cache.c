@@ -6,7 +6,7 @@
 int dentry_cache_build(Pool* pool, MapperTable* mapper_table, int64_t root_vp, int64_t epoch,
                        DentryCache* arr) {
     if (!pool || !mapper_table) return VFS_ERR_IO;
-    uint8_t* dir_slot = pool_resolve(pool, root_vp);
+    uint8_t* dir_slot = pool_resolve_ro(pool, root_vp);
     if (!dir_slot) return VFS_ERR_IO;
 
     int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, pool->sb->page_size);
@@ -24,7 +24,7 @@ int dentry_cache_build(Pool* pool, MapperTable* mapper_table, int64_t root_vp, i
 
     int64_t walk_vp = headPtr;
     while (walk_vp != 0 && best_count < DENTRY_CACHE_MAX) {
-        uint8_t* dc_slot = pool_resolve(pool, walk_vp);
+        uint8_t* dc_slot = pool_resolve_ro(pool, walk_vp);
         if (!dc_slot) break;
 
         uint32_t ce_child, ce_epoch;
@@ -75,7 +75,7 @@ int dentry_cache_build(Pool* pool, MapperTable* mapper_table, int64_t root_vp, i
         entry->name[0] = '\0';
         entry->isDir = false;
 
-        uint8_t* child_slot = pool_resolve(pool, best_childPtr[i]);
+        uint8_t* child_slot = pool_resolve_ro(pool, best_childPtr[i]);
         if (child_slot) {
             int16_t type = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, pool->sb->page_size);
             entry->isDir = (type == (int16_t)NODE_TYPE_DIR);
@@ -84,7 +84,7 @@ int dentry_cache_build(Pool* pool, MapperTable* mapper_table, int64_t root_vp, i
         /* Find the name by walking chain for this specific entry */
         walk_vp = headPtr;
         while (walk_vp != 0) {
-            uint8_t* dc_slot = pool_resolve(pool, walk_vp);
+            uint8_t* dc_slot = pool_resolve_ro(pool, walk_vp);
             if (!dc_slot) break;
             uint32_t dc_child, dc_epoch;
             int64_t dc_childPtrv, dc_namePtr, dc_next;

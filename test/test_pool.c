@@ -442,9 +442,9 @@ void test_vptr_slot_encoding(void) {
     CHECK_EQ(VFS_VPTR_PAGE(vp_a), VFS_VPTR_PAGE(vp_b));
 
     /* Resolve should return valid pointers */
-    uint8_t* ptr_a = pool_resolve(&pool, vp_a);
+    uint8_t* ptr_a = pool_resolve_ro(&pool, vp_a);
     CHECK(ptr_a != NULL);
-    uint8_t* ptr_b = pool_resolve(&pool, vp_b);
+    uint8_t* ptr_b = pool_resolve_ro(&pool, vp_b);
     CHECK(ptr_b != NULL);
 
     /* Pointers should be different */
@@ -481,14 +481,14 @@ void test_vptr_resolve_roundtrip(void) {
     CHECK_EQ(VFS_VPTR_SLOT(vp), 0);
 
     /* Write a pattern into the resolved slot */
-    uint8_t* slot_ptr = pool_resolve(&pool, vp);
+    uint8_t* slot_ptr = pool_resolve_ro(&pool, vp);
     CHECK(slot_ptr != NULL);
     if (slot_ptr) {
         memset(slot_ptr, 0xAB, VFS_POOL_SLOT_SIZE);
     }
 
     /* Resolve again — should return the same pointer (from cache) */
-    uint8_t* slot_ptr2 = pool_resolve(&pool, vp);
+    uint8_t* slot_ptr2 = pool_resolve_ro(&pool, vp);
     CHECK(slot_ptr2 == slot_ptr);
     if (slot_ptr2) {
         CHECK_EQ(slot_ptr2[0], 0xAB);
@@ -496,7 +496,7 @@ void test_vptr_resolve_roundtrip(void) {
     }
 
     /* Resolve VFS_VPTR_NULL → NULL */
-    CHECK(pool_resolve(&pool, VFS_VPTR_NULL) == NULL);
+    CHECK(pool_resolve_ro(&pool, VFS_VPTR_NULL) == NULL);
 
     storage_close(sb);
     cleanup(path);
@@ -773,7 +773,7 @@ void test_pool_init_existing_file(void) {
         CHECK_EQ(VFS_VPTR_PAGE(vp), saved_page);
 
         /* Verify the slot is usable */
-        uint8_t* slot = pool_resolve(&pool, vp);
+        uint8_t* slot = pool_resolve_ro(&pool, vp);
         CHECK(slot != NULL);
         if (slot) {
             memset(slot, 0xCD, VFS_POOL_SLOT_SIZE);

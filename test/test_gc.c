@@ -370,13 +370,13 @@ static void test_gc_crash_before_swap(void) {
 
     /* Verify data is correctly written before crash simulation */
     {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
         CHECK(rs != NULL);
         int64_t head_check = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
         CHECK(head_check != 0);
         uint32_t cc, ce;
         int64_t cp, np, nx;
-        uint8_t* dc = pool_resolve(&ctx->pool, head_check);
+        uint8_t* dc = pool_resolve_ro(&ctx->pool, head_check);
         CHECK(dc != NULL);
         nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
@@ -404,7 +404,7 @@ static void test_gc_crash_before_swap(void) {
     CHECK_EQ(vfs->ctx->rootNodeOffset, root_vp_saved);
     CHECK_EQ((int64_t)vfs->ctx->nextNodeId, next_nodeid_before);
     {
-        uint8_t* rs = pool_resolve(&vfs->ctx->pool, vfs->ctx->rootNodeOffset);
+        uint8_t* rs = pool_resolve_ro(&vfs->ctx->pool, vfs->ctx->rootNodeOffset);
         CHECK(rs != NULL);
         CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
     }
@@ -548,7 +548,7 @@ static void test_gc_vptr_remapping(void) {
        before compaction).  This verification runs regardless of GC outcome. */
     {
         /* 1. Root DirNode headPtr → DirContent */
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
         CHECK(rs != NULL);
         CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
         int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
@@ -557,33 +557,33 @@ static void test_gc_vptr_remapping(void) {
         /* 2. DirContent → FileNode */
         uint32_t cc, ce;
         int64_t dc_childPtr, dc_namePtr, dc_next;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
+        nodes_read_dircontent(pool_resolve_ro(&ctx->pool, head),
                               &cc, &ce, &dc_childPtr, &dc_namePtr, &dc_next, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)dc_namePtr; (void)dc_next;
         CHECK(dc_childPtr != 0);
 
         /* 3. FileNode → FileContent */
-        uint8_t* fn_slot = pool_resolve(&ctx->pool, dc_childPtr);
+        uint8_t* fn_slot = pool_resolve_ro(&ctx->pool, dc_childPtr);
         CHECK(fn_slot != NULL);
         CHECK_EQ(vfs_rd2(fn_slot, FILENODE_OFF_TYPE), (int16_t)NODE_TYPE_FILE);
         int64_t fc_vp = vfs_rd8(fn_slot, FILENODE_OFF_HEADPTR);
         CHECK(fc_vp != 0);
 
         /* 4. FileContent → PageNode */
-        uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
+        uint8_t* fc_slot = pool_resolve_ro(&ctx->pool, fc_vp);
         CHECK(fc_slot != NULL);
         int64_t pn_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
         CHECK(pn_vp != 0);
 
         /* 5. PageNode → VersionPage chain */
-        uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
+        uint8_t* pn_slot = pool_resolve_ro(&ctx->pool, pn_vp);
         CHECK(pn_slot != NULL);
         int64_t vp_vp_pre = vfs_atomic_load_i64(
             (const int64_t*)(pn_slot + PAGENODE_OFF_VERSIONROOT));
         CHECK(vp_vp_pre != 0);
 
         /* 6. VersionPage has valid epoch and dataPage */
-        uint8_t* vp_slot = pool_resolve(&ctx->pool, vp_vp_pre);
+        uint8_t* vp_slot = pool_resolve_ro(&ctx->pool, vp_vp_pre);
         CHECK(vp_slot != NULL);
         uint32_t vp_e;
         int64_t vp_dp, vp_nx;
@@ -602,7 +602,7 @@ static void test_gc_vptr_remapping(void) {
     int gc_ret = vfs_gc(vfs);
     if (gc_ret == VFS_OK) {
         /* After GC: walk the remapped chain — same structure, new VirtualPtrs */
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
         CHECK(rs != NULL);
         CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
         int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
@@ -610,12 +610,12 @@ static void test_gc_vptr_remapping(void) {
 
         uint32_t cc, ce;
         int64_t dc_childPtr2, dn2, dx2;
-        nodes_read_dircontent(pool_resolve(&ctx->pool, head),
+        nodes_read_dircontent(pool_resolve_ro(&ctx->pool, head),
                               &cc, &ce, &dc_childPtr2, &dn2, &dx2, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)dn2; (void)dx2;
         CHECK(dc_childPtr2 != 0);
 
-        uint8_t* fn_slot = pool_resolve(&ctx->pool, dc_childPtr2);
+        uint8_t* fn_slot = pool_resolve_ro(&ctx->pool, dc_childPtr2);
         CHECK(fn_slot != NULL);
         CHECK_EQ(vfs_rd2(fn_slot, FILENODE_OFF_TYPE), (int16_t)NODE_TYPE_FILE);
 
@@ -653,11 +653,11 @@ static void test_gc_dircontent_survival(void) {
     /* Verify two entries exist at epoch 0 */
     int entries_before = 0;
     {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
         if (rs) {
             int64_t h = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
             while (h != 0) {
-                uint8_t* dc_s = pool_resolve(&ctx->pool, h);
+                uint8_t* dc_s = pool_resolve_ro(&ctx->pool, h);
                 if (!dc_s) break;
                 uint32_t cc, ce; int64_t cp, np, nx;
                 nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
@@ -804,13 +804,13 @@ static void test_gc_crash_after_swap(void) {
 
     /* Pre-swap verification: DirContent chain is intact and data readable */
     {
-        uint8_t* rs = pool_resolve(&ctx->pool, root_vp);
+        uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
         CHECK(rs != NULL);
         int64_t h = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
         CHECK(h != 0);
         uint32_t cc, ce;
         int64_t cp, np, nx;
-        uint8_t* dc = pool_resolve(&ctx->pool, h);
+        uint8_t* dc = pool_resolve_ro(&ctx->pool, h);
         CHECK(dc != NULL);
         nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)np; (void)nx;
@@ -834,14 +834,14 @@ static void test_gc_crash_after_swap(void) {
        Data verification uses if-guards because CAS-modified cache entries
        may not survive close/reopen even after explicit tree_superblock_write. */
     {
-        uint8_t* rs = pool_resolve(&vfs->ctx->pool, vfs->ctx->rootNodeOffset);
+        uint8_t* rs = pool_resolve_ro(&vfs->ctx->pool, vfs->ctx->rootNodeOffset);
         CHECK(rs != NULL);
         CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
         int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
         if (head != 0) {
             uint32_t cc, ce;
             int64_t cp, np, nx;
-            uint8_t* dc = pool_resolve(&vfs->ctx->pool, head);
+            uint8_t* dc = pool_resolve_ro(&vfs->ctx->pool, head);
             if (dc) {
                 nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
                 (void)cc; (void)ce; (void)np; (void)nx;

@@ -236,7 +236,7 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                     LivePageSet* lps) {
     if (!ctx || !gc_map || !alloc || dir_vp == 0) return VFS_ERR_IO;
 
-    uint8_t* dir_slot = pool_resolve(&ctx->pool, dir_vp);
+    uint8_t* dir_slot = pool_resolve_ro(&ctx->pool, dir_vp);
     if (!dir_slot) return VFS_ERR_NOTFOUND;
     if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
         return VFS_ERR_NOTDIR;
@@ -249,7 +249,7 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     }
     int64_t new_dir_vp = VFS_VPTR_MAKE(VFS_VPTR_PAGE(alloc->cur_page_vp),
                                         alloc->cur_slot);
-    uint8_t* new_dir_slot = pool_resolve(&ctx->pool, new_dir_vp);
+    uint8_t* new_dir_slot = pool_resolve_ro(&ctx->pool, new_dir_vp);
     if (!new_dir_slot) return VFS_ERR_IO;
     alloc->cur_slot++;
 
@@ -283,7 +283,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     if (!ctx || !gc_map || !alloc || file_vp == 0) return VFS_ERR_IO;
     (void)epoch;
 
-    uint8_t* file_slot = pool_resolve(&ctx->pool, file_vp);
+    uint8_t* file_slot = pool_resolve_ro(&ctx->pool, file_vp);
     if (!file_slot) return VFS_ERR_NOTFOUND;
     if (vfs_rd2_s(file_slot, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE)
         return VFS_ERR_IO;
@@ -301,7 +301,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     GC_NEXT_SLOT();
     int64_t new_file_vp = VFS_VPTR_MAKE(VFS_VPTR_PAGE(alloc->cur_page_vp),
                                          alloc->cur_slot);
-    uint8_t* new_file_slot = pool_resolve(&ctx->pool, new_file_vp);
+    uint8_t* new_file_slot = pool_resolve_ro(&ctx->pool, new_file_vp);
     if (!new_file_slot) return VFS_ERR_IO;
     alloc->cur_slot++;
 
@@ -322,7 +322,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
     int64_t seg_idx = 0;
     while (fc_vp != 0) {
-        uint8_t* fc_slot = pool_resolve(&ctx->pool, fc_vp);
+        uint8_t* fc_slot = pool_resolve_ro(&ctx->pool, fc_vp);
         if (!fc_slot) break;
 
         /* Skip segments beyond the highest surviving file size.
@@ -348,12 +348,12 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
         /* First pass: count live VersionPages to decide if segment survives */
         while (pn_vp != 0) {
-            uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
+            uint8_t* pn_slot = pool_resolve_ro(&ctx->pool, pn_vp);
             if (!pn_slot) break;
 
             int64_t vp_chain = vfs_rd8_s(pn_slot, PAGENODE_OFF_VERSIONROOT, ctx->page_size);
             while (vp_chain != 0) {
-                uint8_t* vp_slot = pool_resolve(&ctx->pool, vp_chain);
+                uint8_t* vp_slot = pool_resolve_ro(&ctx->pool, vp_chain);
                 if (!vp_slot) break;
                 uint32_t vp_epoch;
                 int64_t vp_dataPage, vp_next;
@@ -381,7 +381,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
         GC_NEXT_SLOT();
         int64_t new_fc_vp = VFS_VPTR_MAKE(
             VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-        uint8_t* new_fc_slot = pool_resolve(&ctx->pool, new_fc_vp);
+        uint8_t* new_fc_slot = pool_resolve_ro(&ctx->pool, new_fc_vp);
         if (!new_fc_slot) return VFS_ERR_IO;
         alloc->cur_slot++;
         gc_copy_entry(gc_map, fc_vp, new_fc_vp, fc_slot, new_fc_slot, ctx->page_size);
@@ -401,7 +401,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
          *     = 131072). */
         pn_vp = fc_page_root;
         while (pn_vp != 0) {
-            uint8_t* pn_slot = pool_resolve(&ctx->pool, pn_vp);
+            uint8_t* pn_slot = pool_resolve_ro(&ctx->pool, pn_vp);
             if (!pn_slot) break;
             int64_t pn_next = vfs_rd8_s(pn_slot, PAGENODE_OFF_NEXTPTR, ctx->page_size);
 
@@ -411,7 +411,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
             /* Check if any VersionPage in this PageNode survives */
             int64_t vp_walk = vp_chain;
             while (vp_walk != 0) {
-                uint8_t* vp_slot = pool_resolve(&ctx->pool, vp_walk);
+                uint8_t* vp_slot = pool_resolve_ro(&ctx->pool, vp_walk);
                 if (!vp_slot) break;
                 uint32_t vp_epoch;
                 int64_t vp_dataPage, vp_next;
@@ -435,7 +435,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
             GC_NEXT_SLOT();
             int64_t new_pn_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_pn_slot = pool_resolve(&ctx->pool, new_pn_vp);
+            uint8_t* new_pn_slot = pool_resolve_ro(&ctx->pool, new_pn_vp);
             if (!new_pn_slot) return VFS_ERR_IO;
             alloc->cur_slot++;
             gc_copy_entry(gc_map, pn_vp, new_pn_vp, pn_slot, new_pn_slot, ctx->page_size);
@@ -443,7 +443,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
             /* Copy live VersionPages */
             vp_walk = vp_chain;
             while (vp_walk != 0) {
-                uint8_t* vp_slot = pool_resolve(&ctx->pool, vp_walk);
+                uint8_t* vp_slot = pool_resolve_ro(&ctx->pool, vp_walk);
                 if (!vp_slot) break;
                 uint32_t vp_epoch;
                 int64_t vp_dataPage, vp_next;
@@ -467,7 +467,7 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                     GC_NEXT_SLOT();
                     int64_t new_vp_slot_vp = VFS_VPTR_MAKE(
                         VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-                    uint8_t* new_vp_slot = pool_resolve(&ctx->pool, new_vp_slot_vp);
+                    uint8_t* new_vp_slot = pool_resolve_ro(&ctx->pool, new_vp_slot_vp);
                     if (!new_vp_slot) return VFS_ERR_IO;
                     alloc->cur_slot++;
                     gc_copy_entry(gc_map, vp_walk, new_vp_slot_vp,
@@ -516,7 +516,7 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
 
     int64_t vp_walk = version_root_vp;
     while (vp_walk != 0) {
-        uint8_t* vp_slot = pool_resolve(&ctx->pool, vp_walk);
+        uint8_t* vp_slot = pool_resolve_ro(&ctx->pool, vp_walk);
         if (!vp_slot) break;
 
         uint32_t vp_epoch;
@@ -545,7 +545,7 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
             GC_NEXT_SLOT();
             int64_t new_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_slot = pool_resolve(&ctx->pool, new_vp);
+            uint8_t* new_slot = pool_resolve_ro(&ctx->pool, new_vp);
             if (!new_slot) return VFS_ERR_IO;
             alloc->cur_slot++;
 
@@ -597,7 +597,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
 
     int64_t walk_vp = head_content_vp;
     while (walk_vp != 0 && child_count < MAX_CHILDREN) {
-        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
         if (!dc_slot) break;
 
         uint32_t dc_child, dc_epoch;
@@ -649,7 +649,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
 
     walk_vp = head_content_vp;
     while (walk_vp != 0) {
-        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
         if (!dc_slot) break;
 
         uint32_t dc_child, dc_epoch;
@@ -690,7 +690,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
             }
             int64_t new_dc_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_dc_slot = pool_resolve(&ctx->pool, new_dc_vp);
+            uint8_t* new_dc_slot = pool_resolve_ro(&ctx->pool, new_dc_vp);
             if (!new_dc_slot) { free(child_has_kept); return VFS_ERR_IO; }
             alloc->cur_slot++;
 
@@ -705,7 +705,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
     /* Third pass: recursively walk child nodes for any surviving entry */
     walk_vp = head_content_vp;
     while (walk_vp != 0) {
-        uint8_t* dc_slot = pool_resolve(&ctx->pool, walk_vp);
+        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
         if (!dc_slot) break;
 
         uint32_t dc_child, dc_epoch;
@@ -721,7 +721,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
 
         if (cidx >= 0 && child_has_kept[cidx] && dc_namePtr != 0 && dc_childPtr != 0) {
             child_has_kept[cidx] = 0;  /* walk each child exactly once */
-            uint8_t* child_slot = pool_resolve(&ctx->pool, dc_childPtr);
+            uint8_t* child_slot = pool_resolve_ro(&ctx->pool, dc_childPtr);
             if (child_slot) {
                 int16_t ctype = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size);
                 if (ctype == (int16_t)NODE_TYPE_DIR) {
@@ -767,7 +767,7 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
     int64_t highest_file_size = 0;
 
     while (fs_vp != 0) {
-        uint8_t* fs_slot = pool_resolve(&ctx->pool, fs_vp);
+        uint8_t* fs_slot = pool_resolve_ro(&ctx->pool, fs_vp);
         if (!fs_slot) break;
 
         uint32_t fs_epoch;
@@ -797,7 +797,7 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
             GC_NEXT_SLOT();
             int64_t new_fs_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_fs_slot = pool_resolve(&ctx->pool, new_fs_vp);
+            uint8_t* new_fs_slot = pool_resolve_ro(&ctx->pool, new_fs_vp);
             if (!new_fs_slot) return VFS_ERR_IO;
             alloc->cur_slot++;
 
@@ -845,7 +845,7 @@ int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
        the FileNode walk (committed → REWRITE, soft-deleted → DROP). */
     int64_t vp = ctx->epochMapperPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve(&ctx->pool, vp);
+        uint8_t* slot = pool_resolve_ro(&ctx->pool, vp);
         if (!slot) break;
 
         uint32_t fromEpoch, toEpoch;
@@ -861,7 +861,7 @@ int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
             GC_NEXT_SLOT();
             int64_t new_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_slot = pool_resolve(&ctx->pool, new_vp);
+            uint8_t* new_slot = pool_resolve_ro(&ctx->pool, new_vp);
             if (!new_slot) return VFS_ERR_IO;
             alloc->cur_slot++;
 

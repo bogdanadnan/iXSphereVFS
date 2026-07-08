@@ -264,7 +264,7 @@ int nodes_write_name(Pool* pool, const char* utf8_name, int64_t* first_slot_vp) 
             *first_slot_vp = VFS_VPTR_NULL;
             return 0;
         }
-        uint8_t* slot_data = pool_resolve(pool, vp);
+        uint8_t* slot_data = pool_resolve_rw(pool, vp);
         if (!slot_data) {
             *first_slot_vp = VFS_VPTR_NULL;
             return 0;
@@ -307,7 +307,7 @@ int nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_le
     int slot_idx = 0;
 
     while (vp != VFS_VPTR_NULL && total < max_len - 1) {
-        uint8_t* slot_data = pool_resolve(pool, vp);
+        uint8_t* slot_data = pool_resolve_rw(pool, vp);
         if (!slot_data) break;
 
         size_t data_off, data_len;
@@ -340,7 +340,7 @@ int nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_le
 
 uint64_t nodes_read_name_hash(Pool* pool, int64_t namePtr) {
     if (namePtr == 0) return 0;
-    uint8_t* slot = pool_resolve(pool, namePtr);
+    uint8_t* slot = pool_resolve_ro(pool, namePtr);
     if (!slot) return 0;
     uint64_t h;
     memcpy(&h, slot, 8);
@@ -367,7 +367,7 @@ int nodes_write_name_with_hash(Pool* pool, const char* utf8_name, uint64_t hash,
     for (int i = slots_needed - 1; i >= 0; i--) {
         int64_t vp = pool_alloc(pool);
         if (vp == VFS_VPTR_NULL) { *first_slot_vp = VFS_VPTR_NULL; return 0; }
-        uint8_t* slot_data = pool_resolve(pool, vp);
+        uint8_t* slot_data = pool_resolve_rw(pool, vp);
         if (!slot_data) { *first_slot_vp = VFS_VPTR_NULL; return 0; }
         uint8_t buf[NAMEENTRY_DATA_SIZE] = {0};
         if (i == 0) {
