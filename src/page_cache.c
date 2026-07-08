@@ -255,19 +255,13 @@ void cache_flush_page(StorageBackend* sb, int64_t logical_page) {
     int bkt = bucket_index(cache, logical_page);
     spin_lock(&cache->bucket_locks[bkt]);
 
-    /* Write through the storage backend */
-    int64_t offset = indir_lookup(sb, logical_page);
-    if (offset != 0) {
-        uint32_t crc = vfs_crc32c(e->payload, (size_t)sb->page_size);
-
-        PageHeader ph;
-        ssize_t n = pread(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
-        if (n == PAGE_HEADER_SIZE) {
-            ph.checksum = crc;
-            ssize_t w1 = pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
-            ssize_t w2 = pwrite(sb->fd, e->payload, (size_t)sb->page_size,
-                                offset + PAGE_HEADER_SIZE);
-            if (w1 == PAGE_HEADER_SIZE && w2 == sb->page_size) {
+    /* Re-check after acquiring the lock — another thread may have flushed
+       or evicted the entry in the meantime. */
+    e = cache->buckets[bkt];
+    while (e && e->logical_page != logical_page) e = e->hash_next;
+    if (e && e->dirty) {
+        if (indir_lookup(sb, logical_page) != 0) {
+            if (mirror_write(sb, logical_page, e->payload, (uint32_t)e->priority) == 0) {
                 e->dirty = 0;
                 cache->dirty_count--;
             }
@@ -307,9 +301,12 @@ void cache_evict_all(StorageBackend* sb) {
 void cache_flush_all(StorageBackend* sb) {
     PageCache* cache = &sb->cache;
 
-    /* Flush in priority order: 0 (data) first, 3 (superblock) last */
+    /* Flush in priority order: 0 (data) first, 3 (superblock) last.
+       Per-page disk I/O goes through mirror_write, which transparently
+       handles the lazy mirror lifecycle (first write = single copy, second
+       = allocate mirror sibling, subsequent = alternate).  The mirror is a
+       property of the on-disk page state, not the cache. */
     for (int prio = 0; prio <= 3; prio++) {
-        /* Scan all buckets */
         for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
             spin_lock(&cache->bucket_locks[bkt]);
 
@@ -317,21 +314,14 @@ void cache_flush_all(StorageBackend* sb) {
             while (e) {
                 CacheEntry* next = e->hash_next;
                 if (e->dirty && e->priority == prio) {
-                    /* Write to disk */
-                    int64_t offset = indir_lookup(sb, e->logical_page);
-                    if (offset != 0) {
-                        uint32_t crc = vfs_crc32c(e->payload, (size_t)sb->page_size);
-                        PageHeader ph;
-                        ssize_t n = pread(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
-                        if (n == PAGE_HEADER_SIZE) {
-                            ph.checksum = crc;
-                            ssize_t w1 = pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
-                            ssize_t w2 = pwrite(sb->fd, e->payload, (size_t)sb->page_size,
-                                                offset + PAGE_HEADER_SIZE);
-                            if (w1 == PAGE_HEADER_SIZE && w2 == sb->page_size) {
-                                e->dirty = 0;
-                                cache->dirty_count--;
-                            }
+                    /* Indirection must have an entry for this page (allocated
+                       by pool_alloc) — otherwise skip; we don't know where to
+                       write it. */
+                    if (indir_lookup(sb, e->logical_page) != 0) {
+                        if (mirror_write(sb, e->logical_page, e->payload,
+                                         (uint32_t)e->priority) == 0) {
+                            e->dirty = 0;
+                            cache->dirty_count--;
                         }
                     }
                 }

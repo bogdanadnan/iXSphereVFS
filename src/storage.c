@@ -520,10 +520,15 @@ uint8_t* storage_read(StorageBackend* sb, int64_t logical_page) {
 
 void storage_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload,
                    uint32_t priority) {
-    /* 1. Write through lazy mirror to disk */
-    mirror_write(sb, logical_page, payload, priority);
+    /* Cache-only update.  Disk persistence happens in cache_flush_all, which
+       invokes the lazy mirror logic per dirty page (see SPEC §3.7).  This
+       makes Write() pure CPU: it copies the payload into the cache, marks
+       the page dirty, and returns.  No disk I/O is performed here.
 
-    /* 2. Update cache — mark dirty */
+       Lazy mirror is a property of the ON-DISK page state, not the cache
+       entry.  The cache holds a payload buffer + dirty flag; the
+       on-disk page header (generation, mirrorPage) is owned by the storage
+       backend and updated by mirror_write inside cache_flush_all. */
     cache_insert(&sb->cache, logical_page, (uint8_t*)payload, (int)priority, 1);
 }
 
