@@ -435,3 +435,4 @@ fuse/
 # Screenshots and other temporary files dropped in for debugging
 Screenshot*.png
 *.heic
+test_vscode.zip

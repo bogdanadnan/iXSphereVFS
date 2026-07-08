@@ -571,3 +571,12 @@ void storage_flush(StorageBackend* sb, int64_t logical_page) {
         cache_flush_page(sb, logical_page);
     }
 }
+
+/* Flush dirty cache pages WITHOUT fsync — used for per-file flush
+   callbacks where the durability cost of fsync is not warranted.
+   fsync is reserved for unmount-time durability (fuse_vfs_destroy
+   calls vfs_flush which DOES fsync). */
+void storage_flush_cache_only(StorageBackend* sb) {
+    if (!sb) return;
+    cache_flush_all(sb);
+}

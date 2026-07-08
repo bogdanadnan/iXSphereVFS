@@ -570,10 +570,15 @@ int fuse_vfs_release(const char* path, struct fuse_file_info* fi) {
 int fuse_vfs_flush(const char* path, struct fuse_file_info* fi) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     FV_LOG("flush", "called");
-    /* vfs_flush flushes the entire VFS — no per-file resolution needed. */
+    /* Per-file flush: write back dirty cache pages without fsync.
+       fsync is expensive (forces disk sync) and is only needed at
+       unmount time.  FUSE calls .flush once per close, and many
+       small files (e.g. zip extraction) would otherwise trigger
+       thousands of fsyncs.  fuse_vfs_destroy still calls vfs_flush
+       (which DOES fsync) for durability at unmount. */
     (void)path; (void)fi;
-    int r = vfs_flush(state->vfs);
-    return (r == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
+    storage_flush_cache_only(state->vfs->ctx->sb);
+    return 0;
 }
 #ifdef __APPLE__
 int fuse_vfs_statfs(const char* path, struct statfs* stbuf) {

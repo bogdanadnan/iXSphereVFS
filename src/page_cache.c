@@ -210,8 +210,12 @@ void cache_insert(PageCache* cache, int64_t logical_page,
 
     spin_unlock(&cache->bucket_locks[bkt]);
 
-    /* Evict if over capacity */
-    if (cache->entry_count > cache->max_entries) {
+    /* Evict if over capacity.  Fast-skip if every entry is dirty
+       (cache_evict can't reclaim anything in that case, and the full
+       bucket scan is O(buckets) per insert which pegs CPU under
+       heavy write load). */
+    if (cache->entry_count > cache->max_entries &&
+        cache->dirty_count < cache->entry_count) {
         cache_evict(cache);
     }
 }

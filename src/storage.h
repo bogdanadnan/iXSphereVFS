@@ -74,7 +74,7 @@ typedef struct CacheEntry {
  * --------------------------------------------------------------------------- */
 
 #define CACHE_DEFAULT_BUCKETS  16384
-#define CACHE_DEFAULT_MAX      32768   /* 256 MB at 8KB pages */
+#define CACHE_DEFAULT_MAX      65536   /* 512 MB at 8KB pages */
 
 typedef struct {
     CacheEntry** buckets;
@@ -124,6 +124,7 @@ void            storage_free(StorageBackend* sb, int64_t logical_page);
 uint8_t*        storage_read(StorageBackend* sb, int64_t logical_page);
 void            storage_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload, uint32_t priority);
 void            storage_flush(StorageBackend* sb, int64_t logical_page);
+void            storage_flush_cache_only(StorageBackend* sb);
 
 /* Set the deferred-free queue — called by GC so storage_allocate skips
    pages that may still be referenced by in-flight readers. */
