@@ -10,6 +10,15 @@
 
 #include "ixsphere/vfs.h"
 #include <stdbool.h>
+#include <pthread.h>
+
+#ifdef FUSE3_FOUND
+/* struct fuse_darwin_attr and the Darwin fill_dir typedef are referenced
+   by the high-level API callbacks.  Including only the public highlevel
+   header here so the public API surface stays limited to the FUSE
+   library layer. */
+#include <fuse.h>
+#endif
 
 /* Per-mount state passed to FUSE callbacks via private_data.
    All fields are owned by the caller; the FUSE layer does not
@@ -20,7 +29,53 @@ typedef struct {
     int64_t epoch;      /* current working epoch (0 = base, odd = snapshot) */
     int64_t page_size;  /* VFS page size in bytes */
     bool    readonly;   /* mount is read-only */
+
+    /* -----------------------------------------------------------------------
+     * Control-file protocol (substitute for ioctl on macFUSE).
+     *
+     * macFUSE 3.18 does not deliver ioctl() calls on a directory fd to
+     * the user-space daemon (kernel does not advertise FUSE_CAP_IOCTL_DIR).
+     * To keep vfsctl functional without ioctl, the daemon exposes a
+     * special hidden file at mount root: ".vfsctl".
+     *
+     * vfsctl opens this file, writes a text command ("snapshot\n",
+     * "commit <epoch>\n", "delete-snapshot <epoch>\n", "gc\n"), then
+     * reads the textual response.  On a fresh write the buffer is reset;
+     * a read after each write returns the result of the most recent
+     * command.  Standard FUSE read/write callbacks handle all of it.
+     *
+     * The buffer is mutex-protected so concurrent writers/reads from
+     * multiple FUSE worker threads cannot interleave their bytes.
+     * ----------------------------------------------------------------------- */
+    pthread_mutex_t ctl_lock;
+    char*   ctl_buf;       /* response bytes, or NULL if no command yet */
+    int     ctl_len;       /* valid bytes in ctl_buf */
+    int     ctl_cap;       /* allocated capacity of ctl_buf */
 } fuse_vfs_state_t;
+
+/* ---------------------------------------------------------------------------
+ * Control-file helpers (see .vfsctl description above).
+ *
+ *   fuse_vfs_ctl_init(state)    — initialize the lock + buffer (called in init)
+ *   fuse_vfs_ctl_destroy(state) — free buffer + destroy lock (called in destroy)
+ *
+ * Plus the FUSE-facing entry points called from the read/write/open/
+ * getattr callbacks in fuse_vfs.c:
+ *
+ *   fuse_vfs_is_ctl_path(path)          — predicate: is this path "/.vfsctl"?
+ *   fuse_vfs_ctl_getattr(stbuf, state)  — fill synthetic stat for the file
+ *   fuse_vfs_ctl_write(state, buf, sz, off) — accept a command
+ *   fuse_vfs_ctl_read(state, buf, sz, off)  — return next bytes of response
+ * --------------------------------------------------------------------------- */
+void fuse_vfs_ctl_init(fuse_vfs_state_t* state);
+void fuse_vfs_ctl_destroy(fuse_vfs_state_t* state);
+int  fuse_vfs_is_ctl_path(const char* path);
+void fuse_vfs_ctl_getattr(struct fuse_darwin_attr* stbuf,
+                          const fuse_vfs_state_t* state);
+int  fuse_vfs_ctl_write(fuse_vfs_state_t* state,
+                       const char* buf, size_t size, off_t offset);
+int  fuse_vfs_ctl_read(fuse_vfs_state_t* state,
+                      char* buf, size_t size, off_t offset);
 
 /* ---------------------------------------------------------------------------
  * Option parsing state — ephemeral, populated by fuse_opt_parse,
@@ -53,6 +108,10 @@ int fuse_is_dir(vfs_t* vfs, int64_t vp);
  * --------------------------------------------------------------------------- */
 int vfs_error_to_errno(int vfs_err);
 
+/* Same mapping but to a stable, ASCII string ("OK", "not_found", ...).
+   Used by the control-file protocol in src/fuse_vfs_ctl.c. */
+const char* vfs_error_to_str(int vfs_err);
+
 /* ---------------------------------------------------------------------------
  * FUSE option parsing callback — processes custom command-line options
  * (--vfs-file, --readonly, --epoch) and populates fuse_vfs_state_t.
@@ -68,13 +127,6 @@ int fuse_vfs_opt_proc(void* data, const char* arg, int key,
    option-processing callback used by fuse_opt_parse. */
 extern const struct fuse_opt fuse_vfs_opts_spec[];
 #endif
-
-/* ---------------------------------------------------------------------------
- * ioctl handler — dispatches VFS_IOC_SNAPSHOT, VFS_IOC_COMMIT,
- * VFS_IOC_DELETE_SNAP, and VFS_IOC_GC to the underlying VFS.
- * Implementation in src/fuse_vfs.c (Phase 5).
- * --------------------------------------------------------------------------- */
-int fuse_vfs_ioctl(vfs_t* vfs, unsigned long request, void* arg, void* data);
 
 /* ---------------------------------------------------------------------------
  * FUSE operations callbacks — each corresponds to a fuse_operations member.
@@ -141,11 +193,6 @@ int   fuse_vfs_getxattr(const char* path, const char* name,
                         char* value, size_t size);
 int   fuse_vfs_listxattr(const char* path, char* list, size_t size);
 int   fuse_vfs_removexattr(const char* path, const char* name);
-
-/* Phase 10: ioctl callback (FUSE-level, distinct from fuse_vfs_ioctl helper) */
-int   fuse_vfs_ioctl_cb(const char* path, int cmd, void* arg,
-                        struct fuse_file_info* fi, unsigned int flags,
-                        void* data);
 
 int   fuse_vfs_setattr(const char* path, struct fuse_darwin_attr* attr,
                        int to_set, struct fuse_file_info* fi);

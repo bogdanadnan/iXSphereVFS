@@ -153,9 +153,13 @@ void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
     state->page_size = (opts->page_size > 0) ? opts->page_size : 8192;
     state->readonly  = (opts->readonly != 0);
 
+    /* Initialize control-file buffer + lock */
+    fuse_vfs_ctl_init(state);
+
     /* Mount the VFS */
     state->vfs = vfs_mount(state->vfs_path, state->page_size);
     if (!state->vfs) {
+        fuse_vfs_ctl_destroy(state);
         free(state->vfs_path);
         free(state);
         return NULL;
@@ -180,6 +184,7 @@ void fuse_vfs_destroy(void* private_data) {
         vfs_flush(state->vfs);
         vfs_unmount(state->vfs);
     }
+    fuse_vfs_ctl_destroy(state);
     free(state->vfs_path);
     free(state);
 }
@@ -222,6 +227,11 @@ int fuse_vfs_getattr(const char* path, struct fuse_darwin_attr* stbuf,
         stbuf->nlink = 2;
         stbuf->mtimespec = stbuf->atimespec;
         stbuf->ctimespec = stbuf->atimespec;
+        return 0;
+    } else if (fuse_vfs_is_ctl_path(path)) {
+        /* Synthetic file — used by vfsctl to send control commands
+           (substitute for ioctl).  Size tracks the latest response. */
+        fuse_vfs_ctl_getattr(stbuf, state);
         return 0;
     } else {
         vp = resolve_full_path(state->vfs, state->epoch, path);
@@ -289,8 +299,22 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_darwin_fill_dir_t filler,
     return 0;
 }
 
+/* Magic sentinel for the synthetic control-file fd.  Any real VFS
+   VirtualPtr is non-negative, so UINT64_MAX is safe and cannot collide. */
+#define FUSE_VFS_CTL_FH_SENTINEL  ((uint64_t)-1)
+
 int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+
+    /* Control file: synthetic, no VFS state required.  open always
+       succeeds with no per-fd allocation. */
+    if (fuse_vfs_is_ctl_path(path)) {
+        if (state->readonly && (fi->flags & (O_WRONLY | O_RDWR)))
+            return -EROFS;
+        fi->fh = FUSE_VFS_CTL_FH_SENTINEL;
+        return 0;
+    }
+
     int64_t vp = 0;
     /* With cfg->nullpath_ok=1, macFUSE may call open with NULL path when
        the kernel already has an inode handle.  Prefer fi->fh if set. */
@@ -323,8 +347,12 @@ int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
 
 int fuse_vfs_read(const char* path, char* buf, size_t size,
                   off_t offset, struct fuse_file_info* fi) {
-    (void)path;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (fuse_vfs_is_ctl_path(path) ||
+        (fi && fi->fh == FUSE_VFS_CTL_FH_SENTINEL)) {
+        int r = fuse_vfs_ctl_read(state, buf, size, offset);
+        return (r >= 0) ? r : vfs_error_to_errno(-r);
+    }
     int64_t vp = (int64_t)fi->fh;
     int r = vfs_read(state->vfs, vp, buf, (int64_t)offset,
                      (int64_t)size, state->epoch);
@@ -333,9 +361,13 @@ int fuse_vfs_read(const char* path, char* buf, size_t size,
 
 int fuse_vfs_write(const char* path, const char* buf, size_t size,
                    off_t offset, struct fuse_file_info* fi) {
-    (void)path;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
+    if (fuse_vfs_is_ctl_path(path) ||
+        (fi && fi->fh == FUSE_VFS_CTL_FH_SENTINEL)) {
+        int r = fuse_vfs_ctl_write(state, buf, size, offset);
+        return (r >= 0) ? r : vfs_error_to_errno(-r);
+    }
     FV_LOG("write", "vp=%ld off=%lld sz=%zu%s%s", (long)fi->fh,
           (long long)offset, size,
           fi ? "" : " no-fi",
@@ -556,8 +588,12 @@ int fuse_vfs_opendir(const char* path, struct fuse_file_info* fi) {
 int fuse_vfs_releasedir(const char* path, struct fuse_file_info* fi)
     { (void)path; (void)fi; return 0; }
 int fuse_vfs_release(const char* path, struct fuse_file_info* fi) {
-    (void)path;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (fuse_vfs_is_ctl_path(path) ||
+        (fi && fi->fh == FUSE_VFS_CTL_FH_SENTINEL)) {
+        /* No per-fd state for the control file. */
+        return 0;
+    }
     FV_LOG("release", "vp=%ld flags=0x%x", (long)fi->fh, fi ? fi->flags : 0);
     /* Release the per-file lock.  vfs_unlock is not idempotent — it
        returns VFS_ERR_IO if no lock is held (e.g., read-only opens that
@@ -646,61 +682,23 @@ int fuse_vfs_removexattr(const char* path, const char* name)
     { (void)path; (void)name; return -ENOSYS; }
 
 /* ---------------------------------------------------------------------------
- * ioctl dispatcher — maps VFS_IOC_* commands to VFS API calls.
+ * Note on ioctl:
+ *
+ * The original FUSE interface registered an .ioctl callback so that
+ * vfsctl could send VFS_IOC_* commands via ioctl() on a directory fd.
+ * However, the macFUSE 3.18 kernel does not advertise FUSE_CAP_IOCTL_DIR
+ * (it never sets FUSE_INIT_EXT in INIT flags), so even setting
+ * conn->want |= FUSE_CAP_IOCTL_DIR has no effect on macOS.  ioctl() on
+ * a FUSE fd returns ENOTTY without dispatching to userspace.
+ *
+ * The control-file protocol (src/fuse_vfs_ctl.c) replaces ioctl: vfsctl
+ * opens "<mountpoint>/.vfsctl", writes a text command, and reads the
+ * textual response.  This works on every FUSE version because it
+ * uses regular read/write, not ioctl.
+ *
+ * If a future macFUSE release adds ioctl support, the dispatcher can
+ * be restored from the vfsctl snapshot in commit history.
  * --------------------------------------------------------------------------- */
-
-#include "fuse_ioctl.h"
-
-int fuse_vfs_ioctl(vfs_t* vfs, unsigned long request, void* arg, void* data) {
-    if (!vfs) return -EIO;
-
-    switch (request) {
-    case VFS_IOC_SNAPSHOT: {
-        int64_t epoch = vfs_snapshot(vfs);
-        if (epoch < 0) return vfs_error_to_errno(vfs_last_error(vfs));
-        /* Write result to data (kernel output buffer for _IOR) */
-        if (data) *(int64_t*)data = epoch;
-        return 0;
-    }
-    case VFS_IOC_COMMIT: {
-        if (!data) return -EINVAL;
-        int64_t snap_epoch = *(int64_t*)data;
-        if (snap_epoch <= 0) return -EINVAL;
-        int ret = vfs_commit(vfs, snap_epoch);
-        if (ret != VFS_OK) return vfs_error_to_errno(vfs_last_error(vfs));
-        /* Write back the committed epoch to data (_IOWR) */
-        *(int64_t*)data = vfs_current_epoch(vfs);
-        return 0;
-    }
-    case VFS_IOC_DELETE_SNAP: {
-        if (!data) return -EINVAL;
-        int64_t snap_epoch = *(int64_t*)data;
-        if (snap_epoch <= 0) return -EINVAL;
-        int ret = vfs_delete_snapshot(vfs, snap_epoch);
-        return (ret == VFS_OK) ? 0
-               : vfs_error_to_errno(vfs_last_error(vfs));
-    }
-    case VFS_IOC_GC: {
-        int ret = vfs_gc(vfs);
-        return (ret == VFS_OK) ? 0
-               : vfs_error_to_errno(vfs_last_error(vfs));
-    }
-    default:
-        return -ENOTTY;
-    }
-}
-
-/* ---------------------------------------------------------------------------
- * FUSE ioctl callback — bridges the FUSE ioctl path to our dispatcher.
- * --------------------------------------------------------------------------- */
-
-int fuse_vfs_ioctl_cb(const char* path, int cmd, void* arg,
-                      struct fuse_file_info* fi, unsigned int flags,
-                      void* data) {
-    (void)path; (void)fi; (void)flags;
-    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    return fuse_vfs_ioctl(state->vfs, (unsigned long)cmd, arg, data);
-}
 
 /* macFUSE 3.18 setattr handler.  Called for explicit truncate (ftruncate
    syscall) and implicit truncate (open with O_TRUNC).  We perform the
@@ -768,7 +766,9 @@ const struct fuse_operations fuse_vfs_ops = {
     .utimens     = fuse_vfs_utimens,
     .chmod       = fuse_vfs_chmod,
     .chown       = fuse_vfs_chown,
-    .ioctl       = fuse_vfs_ioctl_cb,  /* Phase 10 */
+    /* .ioctl not registered — macFUSE 3.18 doesn't deliver ioctl to
+       userspace daemons.  Use the control-file protocol via
+       "<mountpoint>/.vfsctl" instead. */
     .readlink    = fuse_vfs_readlink,
     .symlink     = fuse_vfs_symlink,
     .link        = fuse_vfs_link,
@@ -801,6 +801,22 @@ int vfs_error_to_errno(int vfs_err) {
     case VFS_ERR_NOMEM:     return -ENOMEM;
     case VFS_ERR_EPOCH:     return -EINVAL;
     default:                return -EIO;
+    }
+}
+
+const char* vfs_error_to_str(int vfs_err) {
+    switch (vfs_err) {
+    case VFS_OK:            return "OK";
+    case VFS_ERR_IO:        return "IO";
+    case VFS_ERR_NOTFOUND:  return "not_found";
+    case VFS_ERR_EXISTS:    return "exists";
+    case VFS_ERR_NOTDIR:    return "not_a_directory";
+    case VFS_ERR_NOTEMPTY:  return "not_empty";
+    case VFS_ERR_CONFLICT:  return "conflict";
+    case VFS_ERR_FULL:      return "full";
+    case VFS_ERR_NOMEM:     return "out_of_memory";
+    case VFS_ERR_EPOCH:     return "invalid_epoch";
+    default:                return "unknown";
     }
 }
 
