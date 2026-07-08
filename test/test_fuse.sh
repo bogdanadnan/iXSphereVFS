@@ -218,7 +218,7 @@ test_fuse_snapshot() {
     # Take snapshot via vfsctl
     local epoch
     epoch="$(./vfsctl snapshot "$MNT_POINT")" || {
-        echo "SKIP: vfsctl snapshot failed (ioctl may not be wired)"
+        echo "SKIP: vfsctl snapshot failed (control file may not be wired)"
         rm -f "$fullpath"
         return 0
     }

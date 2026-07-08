@@ -58,9 +58,9 @@ enum {
 
 const struct fuse_opt fuse_vfs_opts_spec[] = {
     { "--vfs-file=%s", 0, KEY_VFS_PATH },
-    FUSE_OPT_KEY("-o epoch=",           KEY_EPOCH),
-    FUSE_OPT_KEY("-o page_size=",       KEY_PAGE_SIZE),
-    FUSE_OPT_KEY("-o readonly",         KEY_READONLY),
+    FUSE_OPT_KEY("epoch=",              KEY_EPOCH),
+    FUSE_OPT_KEY("page_size=",          KEY_PAGE_SIZE),
+    FUSE_OPT_KEY("readonly",            KEY_READONLY),
     FUSE_OPT_KEY("-h",                  KEY_HELP),
     FUSE_OPT_KEY("--help",              KEY_HELP),
     FUSE_OPT_END
@@ -83,13 +83,20 @@ int fuse_vfs_opt_proc(void* data, const char* arg, int key,
         opts->vfs_path = strdup(arg);
         return 0;
 
-    case KEY_EPOCH:
-        opts->epoch = (int64_t)strtoll(arg, NULL, 10);
+    case KEY_EPOCH: {
+        /* arg may be either the full form (e.g. "epoch=1") when
+           matched via FUSE_OPT_KEY, or just the value when libfuse
+           already stripped the prefix.  Strip the prefix if present. */
+        const char* p = strchr(arg, '=');
+        opts->epoch = (int64_t)strtoll(p ? p + 1 : arg, NULL, 10);
         return 0;
+    }
 
-    case KEY_PAGE_SIZE:
-        opts->page_size = (int64_t)strtoll(arg, NULL, 10);
+    case KEY_PAGE_SIZE: {
+        const char* p = strchr(arg, '=');
+        opts->page_size = (int64_t)strtoll(p ? p + 1 : arg, NULL, 10);
         return 0;
+    }
 
     case KEY_READONLY:
         opts->readonly = 1;
