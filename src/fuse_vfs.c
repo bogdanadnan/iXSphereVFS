@@ -7,6 +7,7 @@
 #define FUSE_DARWIN_ENABLE_EXTENSIONS 1
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -158,6 +159,16 @@ void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
         free(state->vfs_path);
         free(state);
         return NULL;
+    }
+
+    /* Spawn periodic mirror metrics dumper if enabled (stashed instrumentation) */
+    if (getenv("VFS_LAZY_MIRROR_METRICS") != NULL) {
+        pthread_t tid;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        pthread_create(&tid, &attr, mirror_metrics_pump, NULL);
+        pthread_attr_destroy(&attr);
     }
 
     return state;
@@ -568,16 +579,16 @@ int fuse_vfs_release(const char* path, struct fuse_file_info* fi) {
     return 0;
 }
 int fuse_vfs_flush(const char* path, struct fuse_file_info* fi) {
-    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    FV_LOG("flush", "called");
-    /* Per-file flush: write back dirty cache pages without fsync.
-       fsync is expensive (forces disk sync) and is only needed at
-       unmount time.  FUSE calls .flush once per close, and many
-       small files (e.g. zip extraction) would otherwise trigger
-       thousands of fsyncs.  fuse_vfs_destroy still calls vfs_flush
-       (which DOES fsync) for durability at unmount. */
+    /* Per-file flush is a no-op.  FUSE calls .flush once per close, and
+       each close was triggering a full cache_flush_all (every dirty page
+       walked + mirror_write).  For workloads with many small files (e.g.
+       zip extraction with 1000+ files), this caused thousands of full
+       scans + lazy-mirror dance.
+
+       Dirty pages now flow through cache_evict_batch (flushed + evicted
+       at 100% cache usage, in batches of 25%).  Final durability is
+       handled by fuse_vfs_destroy calling vfs_flush at unmount. */
     (void)path; (void)fi;
-    storage_flush_cache_only(state->vfs->ctx->sb);
     return 0;
 }
 #ifdef __APPLE__

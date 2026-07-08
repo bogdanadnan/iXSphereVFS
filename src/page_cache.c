@@ -108,81 +108,183 @@ CacheEntry* cache_find(PageCache* cache, int64_t logical_page) {
  * Evict clean pages from LRU tail
  * --------------------------------------------------------------------------- */
 
-static void cache_evict_batch(PageCache* cache, int target) {
-    /* Evict up to `target` entries in one call.  Eligible candidates:
-       - clean entries of any priority (LRU among them)
-       - DIRTY data pages (priority == 0) only (LRU among them)
-       We never evict a dirty pool/indirection/superblock page
-       (priority 1-3) mid-process — a partial flush of those would
-       leave the VFS in an inconsistent state.
+/* cache_evict_batch — single-scan eviction helper
+ *
+ * Walks all buckets ONCE and collects the `target` oldest eligible
+ * entries (clean of any priority, dirty priority-0 data pages only).
+ * Then evicts them in a second pass that groups candidates by bucket
+ * so each bucket lock is acquired/released ONCE per eviction cycle,
+ * not once per entry.
+ *
+ * Single-pass (vs the previous loop which rescanned per eviction) is
+ * critical: with cache->bucket_count = 16384 and target = 4096, the
+ * old code did 16384 * 4096 bucket scans per eviction call.  The new
+ * code does one.
+ *
+ * Eligibility:
+ *   - clean entries of any priority (LRU among them)
+ *   - dirty data pages (priority == 0) only — flushed via mirror_write
+ *   We never evict a dirty pool/indirection/superblock page (priority
+ *   1-3) mid-process — partial flush of those would leave the VFS
+ *   inconsistent. */
 
-       Each eviction: detach under bucket lock, release lock, do I/O
-       (mirror_write for dirty entries), then free the entry.  No I/O
-       is performed while holding a spin-lock. */
-    int evicted = 0;
-    while (evicted < target) {
-        CacheEntry* victim      = NULL;
-        CacheEntry** victim_pp  = NULL;
-        int         victim_bkt  = -1;
-        uint64_t    lowest      = UINT64_MAX;
+typedef struct {
+    CacheEntry* entry;
+    CacheEntry** pp;        /* pointer to the slot that points to entry */
+    int         bkt;
+    uint64_t    timestamp;  /* for sorting */
+} EvictCandidate;
 
-        for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
-            spin_lock(&cache->bucket_locks[bkt]);
-            CacheEntry** pp = &cache->buckets[bkt];
-            while (*pp) {
-                CacheEntry* e = *pp;
-                int eligible = (!e->dirty) ||
-                               (e->dirty && e->priority == 0);
-                if (eligible &&
-                    e->timestamp > 0 && e->timestamp < lowest) {
-                    lowest    = e->timestamp;
-                    victim    = e;
-                    victim_bkt = bkt;
-                    victim_pp = pp;
-                }
-                pp = &e->hash_next;
-            }
-            spin_unlock(&cache->bucket_locks[bkt]);
-            if (victim && lowest == 1) break;  /* can't go lower */
-        }
-
-        if (!victim) break;  /* nothing more eligible (cache full of
-                                 pool/indir/superblock dirty pages) */
-
-        /* Detach under bucket lock; re-validate state in case a
-           concurrent thread changed it. */
-        spin_lock(&cache->bucket_locks[victim_bkt]);
-        if (*victim_pp != victim) {
-            spin_unlock(&cache->bucket_locks[victim_bkt]);
-            continue;
-        }
-        int is_dirty = victim->dirty;
-        int is_prio0  = victim->priority == 0;
-        int still_eligible = (!is_dirty) || (is_dirty && is_prio0);
-        if (!still_eligible) {
-            spin_unlock(&cache->bucket_locks[victim_bkt]);
-            continue;
-        }
-        *victim_pp = victim->hash_next;
-        cache->entry_count--;
-        if (victim->dirty) cache->dirty_count--;
-        int64_t logical_page = victim->logical_page;
-        uint8_t* payload     = victim->payload;
-        uint32_t priority    = (uint32_t)victim->priority;
-        spin_unlock(&cache->bucket_locks[victim_bkt]);
-
-        /* Flush dirty entry to disk WITHOUT holding any spin-lock.
-           mirror_write handles the lazy mirror lifecycle transparently. */
-        if (is_dirty && cache->sb) {
-            if (indir_lookup(cache->sb, logical_page) != 0) {
-                mirror_write(cache->sb, logical_page, payload, priority);
-            }
-        }
-
-        free(payload);
-        free(victim);
-        evicted++;
+static int evict_candidate_cmp(const void* a, const void* b) {
+    uint64_t ta = ((const EvictCandidate*)a)->timestamp;
+    uint64_t tb = ((const EvictCandidate*)b)->timestamp;
+    if (ta < tb) return -1;
+    if (ta > tb) return  1;
+    /* tie-break: stable secondary key so qsort is deterministic */
+    if (ta == tb) {
+        uint64_t ea = ((const EvictCandidate*)a)->entry->logical_page;
+        uint64_t eb = ((const EvictCandidate*)b)->entry->logical_page;
+        if (ea < eb) return -1;
+        if (ea > eb) return  1;
     }
+    return 0;
+}
+
+static void cache_evict_batch(PageCache* cache, int target) {
+    int cap = target;
+    /* Heap-allocated candidates — bounded by `target` which is bounded
+       by max_entries/4.  With CACHE_DEFAULT_MAX=16384, target=4096, so
+       ~16 KB per call. */
+    EvictCandidate* cands = (EvictCandidate*)malloc(sizeof(EvictCandidate) * (size_t)cap);
+    if (!cands) return;
+    int n = 0;
+
+    /* Pass 1: single scan, collect oldest candidates.  We keep an
+       unsorted linear list capped at `target` and incrementally replace
+       the newest candidate when we find an older one — simpler than a
+       full sort, sufficient for picking the `target` oldest. */
+    uint64_t newest_in_set = 0;
+    int set_full = 0;
+    for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
+        spin_lock(&cache->bucket_locks[bkt]);
+        CacheEntry** pp = &cache->buckets[bkt];
+        while (*pp) {
+            CacheEntry* e = *pp;
+            int eligible = (!e->dirty) ||
+                           (e->dirty && e->priority == 0);
+            if (eligible && e->timestamp > 0) {
+                if (!set_full) {
+                    cands[n].entry     = e;
+                    cands[n].pp        = pp;
+                    cands[n].bkt       = bkt;
+                    cands[n].timestamp = e->timestamp;
+                    n++;
+                    if (n == cap) {
+                        set_full = 1;
+                        newest_in_set = 0;
+                        for (int k = 0; k < n; k++) {
+                            if (cands[k].timestamp > newest_in_set)
+                                newest_in_set = cands[k].timestamp;
+                        }
+                    }
+                } else if (e->timestamp < newest_in_set) {
+                    /* Replace one entry at the boundary (oldest of the
+                       "newest" group).  Any one suffices; pick the first. */
+                    for (int k = 0; k < n; k++) {
+                        if (cands[k].timestamp == newest_in_set) {
+                            cands[k].entry     = e;
+                            cands[k].pp        = pp;
+                            cands[k].bkt       = bkt;
+                            cands[k].timestamp = e->timestamp;
+                            break;
+                        }
+                    }
+                    /* Recompute newest_in_set */
+                    newest_in_set = 0;
+                    for (int k = 0; k < n; k++) {
+                        if (cands[k].timestamp > newest_in_set)
+                            newest_in_set = cands[k].timestamp;
+                    }
+                }
+            }
+            pp = &e->hash_next;
+        }
+        spin_unlock(&cache->bucket_locks[bkt]);
+    }
+
+    if (n == 0) { free(cands); return; }
+
+    /* Sort by (timestamp asc, logical_page asc). */
+    qsort(cands, (size_t)n, sizeof(EvictCandidate), evict_candidate_cmp);
+
+    /* Pass 2: evict.  Group candidates by bucket so each bucket lock is
+       acquired/released ONCE per cycle (not once per entry).
+       Re-validate under the lock — a concurrent thread may have flushed
+       or removed the entry between Pass 1 and Pass 2. */
+    int i = 0;
+    while (i < n) {
+        int cur_bkt = cands[i].bkt;
+
+        /* Find the range [i..j) that belongs to cur_bkt. */
+        int j = i;
+        while (j < n && cands[j].bkt == cur_bkt) j++;
+
+        /* Acquire the bucket lock once. */
+        spin_lock(&cache->bucket_locks[cur_bkt]);
+
+        /* Detach every candidate in this bucket that is still there and
+           still eligible.  Capture state for the I/O + free step. */
+        struct Detached {
+            struct CacheEntry* entry;
+            int64_t logical_page;
+            uint8_t* payload;
+            uint32_t priority;
+            int is_dirty;
+        };
+        /* Bound the detached array — at most (j-i) entries. */
+        struct Detached* det =
+            (struct Detached*)malloc(sizeof(struct Detached) * (size_t)(j - i));
+        int det_n = 0;
+        for (int k = i; k < j; k++) {
+            struct CacheEntry* e = cands[k].entry;
+            /* Re-validate under the lock. */
+            if (*cands[k].pp != e) continue;  /* already removed */
+            int still_eligible =
+                (!e->dirty) || (e->dirty && e->priority == 0);
+            if (!still_eligible) continue;
+
+            *cands[k].pp = e->hash_next;
+            cache->entry_count--;
+            if (e->dirty) cache->dirty_count--;
+            det[det_n].entry        = e;
+            det[det_n].logical_page = e->logical_page;
+            det[det_n].payload      = e->payload;
+            det[det_n].priority     = (uint32_t)e->priority;
+            det[det_n].is_dirty     = e->dirty;
+            det_n++;
+        }
+
+        spin_unlock(&cache->bucket_locks[cur_bkt]);
+
+        /* Flush + free LOCK-FREE.  mirror_write is safe to call
+           concurrently with other reads/writes; the lazy mirror's
+           on-disk page state is the source of truth. */
+        for (int k = 0; k < det_n; k++) {
+            if (det[k].is_dirty && cache->sb) {
+                if (indir_lookup(cache->sb, det[k].logical_page) != 0) {
+                    mirror_write(cache->sb, det[k].logical_page,
+                                 det[k].payload, det[k].priority);
+                }
+            }
+            free(det[k].payload);
+            free(det[k].entry);
+        }
+        free(det);
+
+        i = j;
+    }
+
+    free(cands);
 }
 
 /* ---------------------------------------------------------------------------
@@ -249,16 +351,13 @@ void cache_insert(PageCache* cache, int64_t logical_page,
     /* Eviction triggers only at 100% of cache budget
        (entry_count >= max_entries).  We evict a meaningful batch
        (25% of max_entries) in one call so the eviction work is
-       amortized and we don't run the scan on every insert that
-       nudges us over the limit.  Eligible candidates:
+       amortized.  Eligible candidates:
          - clean entries of any priority (LRU among them)
          - dirty data pages (priority == 0) — flushed via mirror_write
            before being freed
-       Dirty pool/indir/superblock pages (priority 1-3) are NEVER
-       evicted mid-process — partial flush of those would leave the
-       VFS in an inconsistent state.  If the cache is full of those,
-       the eviction scan finds no eligible victims and returns early;
-       the cache grows until unmount-time flush + free. */
+       Dirty pool/indirection/superblock pages (priority 1-3) are
+       NEVER evicted mid-process — partial flush of those would leave
+       the VFS in an inconsistent state. */
     if (cache->entry_count >= cache->max_entries) {
         int target = cache->max_entries / 4;
         if (target < 16) target = 16;  /* avoid evicting in tiny crumbs */

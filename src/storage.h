@@ -141,6 +141,11 @@ int  raw_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload,
 
 /* Internal helpers (storage.c) */
 int64_t phys_record_size(StorageBackend* sb);
+
+/* Diagnostics — dump lazy mirror metrics if VFS_LAZY_MIRROR_METRICS=1.
+   Stashed instrumentation; opt-in via env var. */
+void mirror_metrics_dump(void);
+void* mirror_metrics_pump(void* arg);
 int     inline_entry_count(int64_t page_size);
 
 /* ---------------------------------------------------------------------------
