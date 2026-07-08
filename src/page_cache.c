@@ -327,17 +327,8 @@ void cache_flush_all(StorageBackend* sb) {
                             if (w1 == PAGE_HEADER_SIZE && w2 == sb->page_size) {
                                 e->dirty = 0;
                                 cache->dirty_count--;
-                            } else {
-                                fprintf(stderr, "[pclean] flush failed page=%ld w1=%zd w2=%zd\n",
-                                        (long)e->logical_page, w1, w2);
                             }
-                        } else {
-                            fprintf(stderr, "[pclean] pread hdr failed page=%ld n=%zd\n",
-                                    (long)e->logical_page, n);
                         }
-                    } else {
-                        fprintf(stderr, "[pclean] SKIP page=%ld prio=%d: indir offset=0\n",
-                                (long)e->logical_page, prio);
                     }
                 }
                 e = next;
@@ -349,22 +340,6 @@ void cache_flush_all(StorageBackend* sb) {
 }
 
 void cache_dump_dirty_by_priority(StorageBackend* sb) {
-    PageCache* cache = &sb->cache;
-    int counts[4] = {0, 0, 0, 0};
-    for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
-        spin_lock(&cache->bucket_locks[bkt]);
-        CacheEntry* e = cache->buckets[bkt];
-        while (e) {
-            if (e->dirty && e->priority >= 0 && e->priority <= 3) {
-                counts[e->priority]++;
-                fprintf(stderr, "[pclean]   leftover page=%ld prio=%d\n",
-                        (long)e->logical_page, e->priority);
-            }
-            e = e->hash_next;
-        }
-        spin_unlock(&cache->bucket_locks[bkt]);
-    }
-    fprintf(stderr, "[pclean] dirty-by-prio: 0=%d 1=%d 2=%d 3=%d total=%lld\n",
-            counts[0], counts[1], counts[2], counts[3],
-            (long long)cache->dirty_count);
+    /* No-op stub — diagnostic helper, off by default. */
+    (void)sb;
 }
