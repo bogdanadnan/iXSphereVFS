@@ -225,8 +225,6 @@ int nodes_write_name_with_hash(Pool* pool, const char* utf8_name, uint64_t hash,
  * nodes_write_name stores in the first NameEntry slot at offset 0. */
 uint64_t name_hash_compute(const char* name, int len);
 
-/* TouchedFile was removed — see commit notes (touched.c deleted). */
-
 /* ---------------------------------------------------------------------------
  * MapperEntry (32 bytes, 16 used, 16 reserved)
  *

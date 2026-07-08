@@ -209,14 +209,6 @@ static void test_epoch_invalid(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * TouchedFile tests
- * --------------------------------------------------------------------------- */
-
-/* TouchedFile tests removed — touchedfile feature was retired (the chain
-   is always a no-op now).  Conflict detection is performed by
-   commit_scan_dir walking the live directory tree at snapshot epoch. */
-
-/* ---------------------------------------------------------------------------
  * Commit subdir conflict: mkdir sub, create file inside, snapshot, modify
  * at live head, commit → VFS_ERR_CONFLICT.
  * --------------------------------------------------------------------------- */
@@ -239,7 +231,7 @@ static void test_commit_subdir_conflict(void) {
     int64_t snap = vfs_snapshot(vfs);
     CHECK(snap > 0);
 
-    /* Write at snapshot epoch (epoch 1) — creates TouchedFile for epoch 1 */
+    /* Write at snapshot epoch (epoch 1) — sets up the conflict */
     CHECK_EQ(vfs_write(vfs, file_vp, "SNAP", 0, 4, 1), 4);
 
     /* Write at live head (epoch 2) — creates conflict (same page) */
@@ -353,7 +345,6 @@ int main(void) {
     test_epoch_lifecycle();
     test_snapshot_soft_delete();
     test_epoch_invalid();
-    /* test_touchedfile_chain removed — touchedfile feature was retired */
 
     unlink(test_path);
     test_commit_subdir_conflict();

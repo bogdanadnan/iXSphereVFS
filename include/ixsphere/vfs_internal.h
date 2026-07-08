@@ -22,7 +22,6 @@ typedef struct {
     int64_t  rootNodeOffset;     /* VirtualPtr to root DirNode */
     int64_t  currentEpoch;       /* latest epoch counter (even = live head) */
     int64_t  epochMapperPtr;     /* VirtualPtr to first MapperEntry, 0 = none */
-    /* touchedFilesPtr removed — touchedfile feature retired */
     uint32_t nextNodeId;         /* next available node identifier */
     int64_t  treeLockState;      /* bit 63 = GC exclusive lock, bits 32-62 = reader count */
     int64_t  gc_generation;       /* incremented after each GC compaction, atomically loaded */

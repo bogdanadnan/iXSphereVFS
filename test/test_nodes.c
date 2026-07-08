@@ -391,8 +391,6 @@ static void test_filesize_chain(void) {
     CHECK_EQ(nextPtr, 0);
 }
 
-/* TouchedFile tests removed (feature retired). */
-
 /* ---------------------------------------------------------------------------
  * MapperEntry tests (Workload 4.10)
  * --------------------------------------------------------------------------- */
@@ -643,8 +641,6 @@ static void test_zero_slot_safety(void) {
     CHECK(data_all_zero);
     CHECK_EQ(vfs_rd8(slot, NAMEENTRY_OFF_NEXTPTR), 0);
 
-    /* TouchedFile removed — skip the {epoch,nodeId,nextPtr}=0 checks */
-
     /* MapperEntry: fromEpoch=0, toEpoch=0, flags=0, nextPtr=0 */
     CHECK_EQ(vfs_rd4(slot, MAPPER_OFF_FROMEPOCH), 0);
     CHECK_EQ(vfs_rd4(slot, MAPPER_OFF_TOEPOCH), 0);
@@ -852,7 +848,6 @@ int main(void) {
     test_filesize();
     test_filesize_chain();
 
-    /* test_touchedfile removed */
     test_mapperentry();
 
     test_nameentry_short();

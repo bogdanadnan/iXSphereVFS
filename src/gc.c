@@ -879,8 +879,6 @@ int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
  * GC touched file rebuild — drop all entries since they're rebuilt fresh
  * --------------------------------------------------------------------------- */
 
-/* TouchedFile was removed — gc_rebuild_touchedfiles deleted. */
-
 /* ---------------------------------------------------------------------------
  * GC new superblock builder
  * --------------------------------------------------------------------------- */
@@ -888,8 +886,7 @@ int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
 /* Write the superblock page with GC-updated values after shadow-compaction.
  * rootNodeOffset, currentEpoch, and nextNodeId are preserved from ctx.
  * epochMapperPtr and poolListHead are the post-GC values.
- * treeLockState is written as 0 (exclusive lock released for new tree).
- * touchedFilesPtr is no longer used. */
+ * treeLockState is written as 0 (exclusive lock released for new tree). */
 int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
                              int64_t new_poolListHead) {
     if (!ctx) return VFS_ERR_IO;
@@ -904,7 +901,6 @@ int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
     vfs_wr8_s(buf, SB_OFF_POOL_LIST_HEAD,    new_poolListHead, ctx->page_size);
     vfs_wr8_s(buf, SB_OFF_TREE_LOCK_STATE,   0, ctx->page_size);
     vfs_wr4_s(buf, SB_OFF_NEXT_NODE_ID,      (int32_t)ctx->nextNodeId, ctx->page_size);
-    vfs_wr8_s(buf, SB_OFF_TOUCHED_FILES_PTR, 0, ctx->page_size);
 
     storage_write(ctx->sb, SUPERBLOCK_PAGE, buf, 3);
     storage_flush(ctx->sb, -1);
@@ -976,8 +972,6 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
             return err_mt;
         }
     }
-
-    /* TouchedFile was removed — no per-GC cleanup needed. */
 
     /* Write the new superblock with post-GC values */
     int64_t new_pool_head = ctx->pool.list_head ? *ctx->pool.list_head : 0;
