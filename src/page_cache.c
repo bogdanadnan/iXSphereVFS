@@ -108,122 +108,81 @@ CacheEntry* cache_find(PageCache* cache, int64_t logical_page) {
  * Evict clean pages from LRU tail
  * --------------------------------------------------------------------------- */
 
-static void cache_evict(PageCache* cache) {
-    /* Evict clean entries with lowest generation timestamp.
-       Lock-free on the hot path — only bucket locks during scanning.
-       timestamp=0 means the entry was removed (dangling). */
-    while (cache->entry_count > cache->max_entries) {
-        CacheEntry* victim = NULL;
-        uint64_t    lowest = UINT64_MAX;
-        int         victim_bkt = -1;
-        CacheEntry** victim_pp = NULL;
+static void cache_evict_batch(PageCache* cache, int target) {
+    /* Evict up to `target` entries in one call.  Eligible candidates:
+       - clean entries of any priority (LRU among them)
+       - DIRTY data pages (priority == 0) only (LRU among them)
+       We never evict a dirty pool/indirection/superblock page
+       (priority 1-3) mid-process — a partial flush of those would
+       leave the VFS in an inconsistent state.
+
+       Each eviction: detach under bucket lock, release lock, do I/O
+       (mirror_write for dirty entries), then free the entry.  No I/O
+       is performed while holding a spin-lock. */
+    int evicted = 0;
+    while (evicted < target) {
+        CacheEntry* victim      = NULL;
+        CacheEntry** victim_pp  = NULL;
+        int         victim_bkt  = -1;
+        uint64_t    lowest      = UINT64_MAX;
 
         for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
             spin_lock(&cache->bucket_locks[bkt]);
             CacheEntry** pp = &cache->buckets[bkt];
             while (*pp) {
                 CacheEntry* e = *pp;
-                if (!e->dirty && e->timestamp > 0 && e->timestamp < lowest) {
-                    lowest = e->timestamp;
-                    victim = e;
+                int eligible = (!e->dirty) ||
+                               (e->dirty && e->priority == 0);
+                if (eligible &&
+                    e->timestamp > 0 && e->timestamp < lowest) {
+                    lowest    = e->timestamp;
+                    victim    = e;
                     victim_bkt = bkt;
                     victim_pp = pp;
                 }
                 pp = &e->hash_next;
             }
             spin_unlock(&cache->bucket_locks[bkt]);
-            if (victim && lowest == 1) break;  /* can't get lower than 1 */
+            if (victim && lowest == 1) break;  /* can't go lower */
         }
 
-        if (!victim) break;  /* no clean entries to evict */
+        if (!victim) break;  /* nothing more eligible (cache full of
+                                 pool/indir/superblock dirty pages) */
 
-        /* Remove victim from its bucket */
+        /* Detach under bucket lock; re-validate state in case a
+           concurrent thread changed it. */
         spin_lock(&cache->bucket_locks[victim_bkt]);
-        if (*victim_pp == victim) {
-            *victim_pp = victim->hash_next;
-            cache->entry_count--;
+        if (*victim_pp != victim) {
+            spin_unlock(&cache->bucket_locks[victim_bkt]);
+            continue;
         }
+        int is_dirty = victim->dirty;
+        int is_prio0  = victim->priority == 0;
+        int still_eligible = (!is_dirty) || (is_dirty && is_prio0);
+        if (!still_eligible) {
+            spin_unlock(&cache->bucket_locks[victim_bkt]);
+            continue;
+        }
+        *victim_pp = victim->hash_next;
+        cache->entry_count--;
+        if (victim->dirty) cache->dirty_count--;
+        int64_t logical_page = victim->logical_page;
+        uint8_t* payload     = victim->payload;
+        uint32_t priority    = (uint32_t)victim->priority;
         spin_unlock(&cache->bucket_locks[victim_bkt]);
 
-        free(victim->payload);
-        free(victim);
-    }
-}
-
-/* ---------------------------------------------------------------------------
- * cache_evict_dirty_data_page
- *
- * When the cache is full of dirty entries (so cache_evict has nothing
- * clean to reclaim), fall back to flushing + evicting a DIRTY DATA PAGE
- * (priority 0).  Pool/indirection/superblock pages (priority 1-3) are
- * NEVER touched here — partial flush of those would leave the VFS in
- * an inconsistent state mid-process (some pool pages flushed, some not).
- * Data pages, by contrast, are byte buffers with no cross-page consistency
- * to maintain, so a mid-process flush is safe.
- *
- * The victim is detached from its bucket under the bucket lock, the
- * bucket lock is released, then mirror_write is called (does I/O), and
- * finally the entry is freed.  This way, no I/O is performed while
- * holding a spin-lock.
- * --------------------------------------------------------------------------- */
-
-static void cache_evict_dirty_data_page(PageCache* cache) {
-    if (!cache->sb) return;
-
-    /* Phase 1: find the oldest dirty data page (priority 0). */
-    int         victim_bkt = -1;
-    CacheEntry* victim      = NULL;
-    CacheEntry** victim_pp   = NULL;
-    uint64_t    lowest      = UINT64_MAX;
-
-    for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
-        spin_lock(&cache->bucket_locks[bkt]);
-        CacheEntry** pp = &cache->buckets[bkt];
-        while (*pp) {
-            CacheEntry* e = *pp;
-            if (e->dirty && e->priority == 0 &&
-                e->timestamp > 0 && e->timestamp < lowest) {
-                lowest    = e->timestamp;
-                victim    = e;
-                victim_bkt = bkt;
-                victim_pp = pp;
+        /* Flush dirty entry to disk WITHOUT holding any spin-lock.
+           mirror_write handles the lazy mirror lifecycle transparently. */
+        if (is_dirty && cache->sb) {
+            if (indir_lookup(cache->sb, logical_page) != 0) {
+                mirror_write(cache->sb, logical_page, payload, priority);
             }
-            pp = &e->hash_next;
         }
-        spin_unlock(&cache->bucket_locks[bkt]);
-        if (victim && lowest == 1) break;
+
+        free(payload);
+        free(victim);
+        evicted++;
     }
-
-    if (!victim) return;  /* no dirty data pages to evict */
-
-    /* Phase 2: detach from bucket under lock.  Re-validate state
-       (another thread may have flushed/evicted it). */
-    spin_lock(&cache->bucket_locks[victim_bkt]);
-    if (*victim_pp != victim || !victim->dirty || victim->priority != 0) {
-        spin_unlock(&cache->bucket_locks[victim_bkt]);
-        return;  /* lost the race — let the caller try again */
-    }
-    *victim_pp = victim->hash_next;
-    cache->entry_count--;
-    cache->dirty_count--;
-    /* Save the values we need after releasing the lock */
-    int64_t logical_page = victim->logical_page;
-    uint8_t* payload     = victim->payload;
-    uint32_t priority    = (uint32_t)victim->priority;
-    spin_unlock(&cache->bucket_locks[victim_bkt]);
-
-    /* Phase 3: flush to disk without holding any lock.  mirror_write is
-       safe to call concurrently with other reads/writes — the lazy
-       mirror's on-disk page state is the source of truth, and its
-       atomic-update protocol (header generation, mirror-page CAS) gives
-       crash-safety for the in-progress write. */
-    if (indir_lookup(cache->sb, logical_page) != 0) {
-        mirror_write(cache->sb, logical_page, payload, priority);
-    }
-
-    /* Phase 4: free the entry's memory. */
-    free(payload);
-    free(victim);
 }
 
 /* ---------------------------------------------------------------------------
@@ -287,18 +246,23 @@ void cache_insert(PageCache* cache, int64_t logical_page,
 
     spin_unlock(&cache->bucket_locks[bkt]);
 
-    /* Evict if over capacity.  Two paths:
-       1. Clean entries available: cache_evict (LRU of clean entries).
-       2. All dirty: cache_evict_dirty_data_page (flush + evict a single
-          dirty data page).  This is bounded — at most one flushed+evicted
-          entry per cache_insert call.  If the cache is full of pool/indir/
-          superblock dirty pages, neither path can reclaim anything and the
-          cache grows (the flush-during-unmount path takes care of those). */
-    if (cache->entry_count > cache->max_entries &&
-        cache->dirty_count < cache->entry_count) {
-        cache_evict(cache);
-    } else if (cache->entry_count > cache->max_entries) {
-        cache_evict_dirty_data_page(cache);
+    /* Eviction triggers only at 100% of cache budget
+       (entry_count >= max_entries).  We evict a meaningful batch
+       (25% of max_entries) in one call so the eviction work is
+       amortized and we don't run the scan on every insert that
+       nudges us over the limit.  Eligible candidates:
+         - clean entries of any priority (LRU among them)
+         - dirty data pages (priority == 0) — flushed via mirror_write
+           before being freed
+       Dirty pool/indir/superblock pages (priority 1-3) are NEVER
+       evicted mid-process — partial flush of those would leave the
+       VFS in an inconsistent state.  If the cache is full of those,
+       the eviction scan finds no eligible victims and returns early;
+       the cache grows until unmount-time flush + free. */
+    if (cache->entry_count >= cache->max_entries) {
+        int target = cache->max_entries / 4;
+        if (target < 16) target = 16;  /* avoid evicting in tiny crumbs */
+        cache_evict_batch(cache, target);
     }
 }
 
