@@ -11,7 +11,7 @@ All code optimized for throughput — hot paths avoid allocations, use inline fu
 | 1 | Platform & Primitives | CRC32C, atomics, memory barriers, page buffer helpers |
 | 2 | StorageBackend | Page allocation, indirection table, lazy mirror, file I/O, cache, flush |
 | 3 | Pool Allocator | 32-byte fixed-slot pool, VirtualPtr, CAS allocation, arena optimization |
-| 4 | Node Types | DirNode, FileNode, DirContent, FileContent, PageNode, VersionPage, FileSize, NameEntry, TouchedFile |
+| 4 | Node Types | DirNode, FileNode, DirContent, FileContent, PageNode, VersionPage, FileSize, NameEntry |
 | 5 | Tree Operations | Create, read, write, delete, rename, directory listing, in-memory arrays |
 | 6 | Epoch System | Snapshot, commit, conflict detection, soft-delete, epoch mapper |
 | 7 | Garbage Collection | Shadow compaction, deferred-free queue |

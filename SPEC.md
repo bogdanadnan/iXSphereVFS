@@ -383,9 +383,7 @@ Offset  Size  Field
 24       8    poolListHead    (int64 — head of pool page flat list, 0 if none)
 32       8    treeLockState   (int64 — §9.6 bit layout)
 40       4    nextNodeId      (uint32 — next available node identifier)
-44       4    reserved
-48       8    touchedFilesPtr (VirtualPtr — touched-files chain for conflict detection, 0 if none)
-56    8136    reserved
+44    8148    reserved
 ```
 
 ### 4.2 Tree Lock
@@ -885,37 +883,26 @@ epoch is lost (zombie) and reclaimed on the next GC cycle. Data written
 at the new epoch that hasn't been flushed is also lost, same as any
 unflushed write.
 
-### 9.5 TouchedFile Entry
-
-```
-Offset  Size  Field
-──────  ────  ─────
- 0       4    epoch          (uint32 — snapshot epoch)
- 4       4    nodeId         (uint32 — file node identifier)
- 8       8    nextPtr        (VirtualPtr — next TouchedFile entry)
-16      16    reserved
-```
-
-### 9.5.1 Conflict Detection (Commit)
+### 9.5 Commit Conflict Detection
 
 Commit must detect whether the same logical page was modified in both the
 snapshot epoch S and any live-head epoch between S and the current live head.
 Since sibling snapshots (multiple active snapshots taken before any commit)
 advance the live head, the check walks all even epochs in [S+1, current_live_head]
-looking for pages modified at both S and any live-head epoch. To avoid scanning all version chains on every commit, a per-epoch
-**touched-files list** is maintained:
+looking for pages modified at both S and any live-head epoch.
 
-- When a VersionPage is first written at epoch S for a file F, the VFS
-  CAS-prepends a `TouchedFile` pool entry {epoch=S, nodeId=F, nextPtr=...}
-  to the epoch's chain, rooted at `touchedFilesPtr` in the superblock.
-- At commit: walk the `TouchedFile` chain for epoch S. For each file,
-  scan its version chains. If any logical page has VersionPage entries at
-  BOTH epoch S and epoch E → conflict → abort.
-- After commit or soft-delete: the chain is dropped. GC reclaims the entries.
+The walk is performed by `commit_scan_dir(ctx, rootNodeOffset, s_epoch)` at
+`vfs_commit` time.  Starting from the root directory, it walks every
+`DirContent` entry visible at the snapshot epoch, recurses into subdirectories,
+and for each FILE inspects each per-page VersionPage chain.  If any page
+has VersionPage entries at BOTH epoch S and any live-head epoch E → conflict
+→ `VFS_ERR_CONFLICT`.
 
-The chain is persisted to disk on every write that touches a new file in
-the epoch, so crash recovery does not require a full tree scan. The superblock
-gains a `touchedFilesPtr` field (VirtualPtr, 0 if none).
+Note: a per-epoch touched-files chain was previously used to hint which
+files to re-scan, but `commit_scan_dir` already walks the live directory
+tree, so the hint was redundant.  Conflict detection cost is therefore
+proportional to the size of the live directory tree — no hint chain is
+maintained.  A future O(1) content-hash scheme could replace this walk.
 
 ### 9.6 Tree Lock (GC Exclusion)
 
