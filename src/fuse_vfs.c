@@ -156,7 +156,13 @@ void fuse_vfs_destroy(void* private_data) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)private_data;
     if (!state) return;
 
-    if (state->vfs) vfs_unmount(state->vfs);
+    /* FUSE does not call .flush on umount.  Flush all dirty pool
+       metadata pages + storage cache before unmount so writes survive
+       a SIGKILL or unexpected termination. */
+    if (state->vfs) {
+        vfs_flush(state->vfs);
+        vfs_unmount(state->vfs);
+    }
     free(state->vfs_path);
     free(state);
 }
