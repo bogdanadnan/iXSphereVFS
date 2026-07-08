@@ -22,6 +22,21 @@
 #include "fuse_vfs.h"
 
 /* ---------------------------------------------------------------------------
+ * Per-mount debug logging — toggled via env var FUSE_VFS_LOG (set to a
+ * substring of the callback name to enable; "*" for everything).  Used to
+ * diagnose the cp -R persistence bug.  Off in production (no env var).
+ * --------------------------------------------------------------------------- */
+static int fv_log_enabled(const char* what) {
+    const char* env = getenv("FUSE_VFS_LOG");
+    if (!env || !*env) return 0;
+    if (env[0] == '*' && env[1] == 0) return 1;
+    return strstr(env, what) != NULL;
+}
+#define FV_LOG(what, fmt, ...) do { \
+    if (fv_log_enabled(what)) fprintf(stderr, "[fvfs] %s " fmt "\n", what, ##__VA_ARGS__); \
+} while (0)
+
+/* ---------------------------------------------------------------------------
  * FUSE option parsing keys — custom keys for -o epoch=, -o page_size=,
  * -o readonly.  allow_other is handled by libfuse's built-in parser.
  * --------------------------------------------------------------------------- */
@@ -176,6 +191,8 @@ int fuse_vfs_getattr(const char* path, struct fuse_darwin_attr* stbuf,
                      struct fuse_file_info* fi) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (!state) return -EIO;
+    FV_LOG("getattr", "path=%s%s%s", path ? path : "(null)",
+          fi ? "" : " no-fi", (path && fi) ? " w-fi" : "");
     memset(stbuf, 0, sizeof(struct fuse_darwin_attr));
     time_t now = time(NULL);
     stbuf->uid = getuid();
@@ -233,6 +250,7 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_darwin_fill_dir_t filler,
     (void)offset; (void)fi; (void)flags;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (!state || !state->vfs) return -EIO;
+    FV_LOG("readdir", "path=%s", path ? path : "(null)");
 
     /* Path may be NULL (highlevel libfuse passes NULL for root when
        cfg->nullpath_ok is set).  Treat NULL or "/" as the root. */
@@ -316,6 +334,10 @@ int fuse_vfs_write(const char* path, const char* buf, size_t size,
     (void)path;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
+    FV_LOG("write", "vp=%ld off=%lld sz=%zu%s%s", (long)fi->fh,
+          (long long)offset, size,
+          fi ? "" : " no-fi",
+          (size > 10000) ? " (large)" : "");
     int64_t vp = (int64_t)fi->fh;
     /* Writes always target the writable base epoch (0), even if the
        mount was opened at a snapshot epoch (odd).  Snapshot data is
@@ -342,6 +364,7 @@ int fuse_vfs_create(const char* path, mode_t mode,
                     struct fuse_file_info* fi) {
     (void)mode;
 #endif
+    FV_LOG("create", "%s", path);
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
     /* Resolve parent directory */
@@ -376,6 +399,7 @@ int fuse_vfs_create(const char* path, mode_t mode,
 int fuse_vfs_unlink(const char* path) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
+    FV_LOG("unlink", "%s", path);
     /* Find parent */
     char* path_copy = strdup(path);
     if (!path_copy) return -ENOMEM;
@@ -402,6 +426,7 @@ int fuse_vfs_mkdir(const char* path, mode_t mode) {
     (void)mode;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
+    FV_LOG("mkdir", "%s", path);
     char* path_copy = strdup(path);
     if (!path_copy) return -ENOMEM;
     char* last_slash = strrchr(path_copy, '/');
@@ -426,6 +451,7 @@ int fuse_vfs_mkdir(const char* path, mode_t mode) {
 int fuse_vfs_rmdir(const char* path) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
+    FV_LOG("rmdir", "%s", path);
     char* path_copy = strdup(path);
     if (!path_copy) return -ENOMEM;
     char* last_slash = strrchr(path_copy, '/');
@@ -451,6 +477,7 @@ int fuse_vfs_rename(const char* from, const char* to, unsigned int flags) {
     (void)flags;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (state->readonly) return -EROFS;
+    FV_LOG("rename", "%s -> %s", from, to);
 
     char* from_copy = strdup(from);
     char* to_copy   = strdup(to);
@@ -529,6 +556,7 @@ int fuse_vfs_releasedir(const char* path, struct fuse_file_info* fi)
 int fuse_vfs_release(const char* path, struct fuse_file_info* fi) {
     (void)path;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    FV_LOG("release", "vp=%ld flags=0x%x", (long)fi->fh, fi ? fi->flags : 0);
     /* Release the per-file lock.  vfs_unlock is not idempotent — it
        returns VFS_ERR_IO if no lock is held (e.g., read-only opens that
        never called vfs_lock).  We silently discard the return value:
@@ -540,6 +568,7 @@ int fuse_vfs_release(const char* path, struct fuse_file_info* fi) {
 }
 int fuse_vfs_flush(const char* path, struct fuse_file_info* fi) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    FV_LOG("flush", "called");
     /* vfs_flush flushes the entire VFS — no per-file resolution needed. */
     (void)path; (void)fi;
     int r = vfs_flush(state->vfs);

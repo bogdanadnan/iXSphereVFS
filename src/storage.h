@@ -172,6 +172,9 @@ void        cache_flush_page(StorageBackend* sb, int64_t logical_page);
 void        cache_evict_all(StorageBackend* sb);
 void        cache_flush_all(StorageBackend* sb);
 
+/* Dump per-priority dirty page count (diagnostic only; thread-safe traversal). */
+void        cache_dump_dirty_by_priority(StorageBackend* sb);
+
 /* ---------------------------------------------------------------------------
  * Cache performance counters (for benchmark tracking).
  * --------------------------------------------------------------------------- */

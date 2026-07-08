@@ -274,7 +274,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
             continue;
         }
 
-        uint8_t* fc_slot = pool_resolve_ro(&ctx->pool, fc_vp);
+        uint8_t* fc_slot = pool_resolve_rw(&ctx->pool, fc_vp);
         if (!fc_slot) return NULL;
 
         if (i == segment_idx) {
@@ -323,7 +323,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
 #endif
             while (pn_vp != 0) {
                 total_pages_seen++;
-                uint8_t* pn_slot = pool_resolve_ro(&ctx->pool, pn_vp);
+                uint8_t* pn_slot = pool_resolve_rw(&ctx->pool, pn_vp);
                 if (!pn_slot) break;
                 uint32_t pn_idx;
                 int64_t pn_next;
@@ -448,7 +448,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
 #endif
                 }
             }
-            return pool_resolve_ro(&ctx->pool, result_vp);
+            return pool_resolve_rw(&ctx->pool, result_vp);
 
         retry_walk:
             /* CAS failed — re-walk the chain from the (possibly updated) root */
@@ -462,7 +462,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
 #endif
                 while (pn_vp != 0) {
                     total_pages_seen++;
-                    uint8_t* pn_slot = pool_resolve_ro(&ctx->pool, pn_vp);
+                    uint8_t* pn_slot = pool_resolve_rw(&ctx->pool, pn_vp);
                     if (!pn_slot) break;
                     uint32_t pn_idx;
                     int64_t pn_next;
@@ -474,7 +474,7 @@ uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                     prev_page_index = (int64_t)pn_idx;
 #endif
                     if ((int64_t)pn_idx == page_in_segment)
-                        return pool_resolve_ro(&ctx->pool, pn_vp);
+                        return pool_resolve_rw(&ctx->pool, pn_vp);
                     prev_vp = pn_vp;
                     pn_vp = pn_next;
                 }
@@ -1492,7 +1492,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
         return -1;
     }
 
-    uint8_t* file_slot = pool_resolve_ro(&ctx->pool, file);
+    uint8_t* file_slot = pool_resolve_rw(&ctx->pool, file);
     if (!file_slot) {
         vfs->ctx->last_error = VFS_ERR_NOTFOUND;
         return -1;

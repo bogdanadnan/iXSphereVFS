@@ -258,12 +258,15 @@ vfs_t* vfs_mount(const char* path, int64_t page_size) {
 void vfs_unmount(vfs_t* vfs) {
     if (!vfs) return;
     if (vfs->ctx) {
+        fprintf(stderr, "[vfs] unmount begin (dirty_count=%lld)\n",
+                (long long)vfs->ctx->sb->cache.dirty_count);
         /* Flush superblock to persist any pending changes */
         tree_superblock_write(vfs->ctx);
         /* Destroy page array cache if built */
         /* Free in-memory mapper table entries */
         mapper_table_destroy(&vfs->ctx->mapper_table);
         storage_close(vfs->ctx->sb);
+        fprintf(stderr, "[vfs] unmount end\n");
         free(vfs->ctx);
     }
     free(vfs);
@@ -271,7 +274,17 @@ void vfs_unmount(vfs_t* vfs) {
 
 int vfs_flush(vfs_t* vfs) {
     if (!vfs || !vfs->ctx) return VFS_ERR_IO;
+    fprintf(stderr, "[vfs] flush begin (dirty_count=%lld pages_pool=%lld)\n",
+            (long long)vfs->ctx->sb->cache.dirty_count,
+            (long long)0);  /* filled below */
+    int before_dirty = vfs->ctx->sb->cache.dirty_count;
     storage_flush(vfs->ctx->sb, -1);
+    fprintf(stderr, "[vfs] flush end (dirty before=%d after=%lld)\n",
+            before_dirty,
+            (long long)vfs->ctx->sb->cache.dirty_count);
+    if (vfs->ctx->sb->cache.dirty_count > 0) {
+        cache_dump_dirty_by_priority(vfs->ctx->sb);
+    }
     return VFS_OK;
 }
 
