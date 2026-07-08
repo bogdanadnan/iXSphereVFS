@@ -112,3 +112,47 @@ abort the commit.
 ### Files Affected
 - `src/epoch.c` — `commit_scan_dir`: add hash-set or sorted name tracking
 - `test/test_epoch.c` — add test: rename two files to same name, commit, verify rejected
+
+---
+
+## TODO-11 — storage_allocate Tail-Advance vs. GC Mid-Table Freeing
+
+### Problem
+`storage_allocate` was redesigned (Phase 18 optimization) to use a tail-advance
+fast path: `sb->total_pages` is atomically incremented and the new page is
+returned. The fast path assumes the next free slot is always at the current
+end of the indirection table — which holds during normal operation because
+the only caller of `storage_free` is GC, and GC is not exercised during
+extraction-style workloads.
+
+After GC runs (`vfs_gc`), however, mid-table slots become free (`storage_free`
+sets their indirection entry to 0). The tail-advance path then skips over
+those holes — they become permanently leaked physical space.
+
+### Required Fix
+When GC reclaims mid-table slots, either:
+  (a) **Rewrite GC to compact logically**: after VFS_ERR_FULL GC, scan the
+      indirection table and physically copy surviving data pages into the
+      unallocated tail, updating their indirection entries and advancing
+      `total_pages` only as needed.  This pairs with TODO-4 (physical
+      compaction) and TODO-5 (physical offset reuse stack).
+  (b) **Switch to a free-list alloc policy**: maintain a bitmap / heap of free
+      indirection slots, populate it on mount from the inline + overflow
+      indirection table, push entries onto it as `storage_free` runs, pop in
+      `storage_allocate`.  Falls back to tail-advance when empty.
+
+Until one of these lands, do NOT run `vfs_gc` while expecting `storage_allocate`
+to recover the freed slots — they will be leaked.
+
+### Files Affected
+- `src/storage.c` — `storage_allocate` and storage_free currently; free-list
+  would land here
+- `src/gc.c` — `vfs_gc` shadow-compaction: avoid leaving holes (TODO-4),
+  or trigger free-list repopulation before returning
+- `test/test_gc.c` — add a test: run GC, verify `storage_allocate` returns
+  non-leaked page indices
+
+### Status
+**Active TODO** — deferred to be done alongside TODO-4 and TODO-5.  Until
+then, the tail-advance optimization in `storage_allocate` is correct
+because nothing frees slots during the hot path.

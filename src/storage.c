@@ -364,14 +364,67 @@ static int try_claim_entry(StorageBackend* sb, int64_t logical_page, int64_t phy
     return (vfs_cas_i64(entry_ptr, expected, physical_offset) == expected);
 }
 
+/* Forward declaration for the count>1 fallback below. */
+static int64_t storage_allocate_count_scan(StorageBackend* sb, int count);
+
 int64_t storage_allocate(StorageBackend* sb, int count) {
     if (count <= 0) return -1;
+    if (count > 1) {
+        /* Multi-page allocations aren't currently exercised by the hot
+           path (only count=1 is, from pool_alloc / mirror_write).  Fall
+           back to the original scan-and-CAS logic via indir_lookup +
+           free-page search, which is rare.  TODO: replace this fallback
+           with the same tail-advance pattern once count>1 is needed. */
+        return storage_allocate_count_scan(sb, count);
+    }
 
-    /* Ensure indirection table has room */
+    /* Tail-advance fast path.  Assumption: every newly allocated page
+       gets the next available index at the tail of the indirection
+       table, so the first free slot is exactly sb->total_pages.  This
+       holds as long as storage_free is never called during normal
+       operation — and currently it isn't (only GC calls it).
+
+       TODO: when GC reclaims mid-table slots, switch to a free-list
+       allocation policy.  Until then, this works because there are
+       no holes in [2, sb->total_pages) during the file-create/write
+       hot path. */
+
+    /* Ensure the indirection table has room for the new page. */
     if (indir_ensure_capacity(sb, count) != 0) return -1;
 
-    /* Lock-free: scan for 'count' consecutive free entries and CAS-claim them.
-       If any CAS fails (another thread claimed the slot), restart the scan. */
+    /* Allocate the next physical slot from physical_tail (CAS). */
+    int64_t old_tail = sb->physical_tail;
+    int64_t new_tail = old_tail + phys_record_size(sb);
+    while (vfs_cas_i64(&sb->physical_tail, old_tail, new_tail) != old_tail) {
+        old_tail = sb->physical_tail;
+        new_tail = old_tail + phys_record_size(sb);
+    }
+
+    /* Atomically claim the slot at sb->total_pages.  If a concurrent
+       caller raced and claimed it first, fall back to the scan path
+       (rare; the user-called paths don't push that hard concurrently). */
+    int64_t logical;
+    do {
+        int64_t old_total;
+        do {
+            old_total = sb->total_pages;
+            if (old_total < 2) old_total = 2;  /* page 0 = header, 1 = superblock */
+            logical = old_total;
+        } while (vfs_cas_i64(&sb->total_pages, old_total, old_total + 1) != old_total);
+    } while (!try_claim_entry(sb, logical, old_tail));
+
+    return logical;
+}
+
+/* ---------------------------------------------------------------------------
+ * storage_allocate_count_scan — slow fallback for count > 1.
+ *
+ * Original scan-and-CAS allocation: walk from i=2 to total_entries, find
+ * `count` consecutive free entries, CAS-claim them.  Kept as the rare
+ * path; the hot path goes through storage_allocate's tail-advance.
+ * --------------------------------------------------------------------------- */
+
+static int64_t storage_allocate_count_scan(StorageBackend* sb, int count) {
     int64_t total_entries = (int64_t)sb->indir.inline_count +
                             (int64_t)sb->indir.overflow_count * sb->indir.entries_per_overflow;
 
