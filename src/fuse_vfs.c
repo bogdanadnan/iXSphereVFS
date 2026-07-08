@@ -661,21 +661,14 @@ int fuse_vfs_setattr(const char* path, struct fuse_darwin_attr* attr,
     if (!state) return -EIO;
     if (state->readonly && (to_set & FUSE_SET_ATTR_SIZE)) return -EROFS;
 
-    if (to_set & FUSE_SET_ATTR_SIZE) {
-        if (!attr) return -EIO;
-        int64_t vp = 0;
-        if (path && path[0] != '\0') {
-            vp = resolve_full_path(state->vfs, state->epoch, path);
-        } else if (fi) {
-            vp = (int64_t)fi->fh;
-        }
-        if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
-
-        int r = vfs_truncate(state->vfs, vp, attr->size, vfs_current_epoch(state->vfs));
-        if (r != VFS_OK) return vfs_error_to_errno(vfs_last_error(state->vfs));
-        return 0;
-    }
-
+    /* Return -ENOSYS for SIZE: libfuse falls through to its per-attribute
+       handler (fuse_fs_truncate) which calls fuse_vfs_truncate.  With
+       cfg->auto_cache=0 (set in init), the implicit getattr after
+       our return uses the normal reply path without abort() on a missing
+       node.  Returning 0 here causes macFUSE 3.18 to crash because
+       the implicit getattr reply packs inconsistent attr fields. */
+    if (to_set & FUSE_SET_ATTR_SIZE) return -ENOSYS;
+    if (!attr) return -EIO;
     /* mode/uid/gid/atime/mtime/etc — accept silently */
     return 0;
 }
