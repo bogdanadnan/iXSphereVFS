@@ -109,6 +109,16 @@ int fuse_vfs_opt_proc(void* data, const char* arg, int key,
  * --------------------------------------------------------------------------- */
 
 void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
+    /* Disable libfuse's auto_cache: macFUSE 3.18's update_stat path calls
+       get_node(f, ino) which aborts if the inode isn't in libfuse's
+       internal node tree.  Truncate/setattr replies crash the daemon
+       in that case.  Disabling auto_cache routes attribute updates
+       through the regular getattr reply path which doesn't abort. */
+    if (cfg) cfg->auto_cache = 0;
+    cfg->nullpath_ok = 1;
+    /* Allow ioctl on directories (snapshot/commit/gc commands) */
+    conn->want |= FUSE_CAP_IOCTL_DIR;
+
     (void)conn;
     (void)cfg;
 
@@ -133,10 +143,6 @@ void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
         free(state);
         return NULL;
     }
-
-    cfg->nullpath_ok = 1;
-    /* Allow ioctl on directories (snapshot/commit/gc commands) */
-    conn->want |= FUSE_CAP_IOCTL_DIR;
 
     return state;
 }
@@ -224,16 +230,19 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_darwin_fill_dir_t filler,
 
     /* Path may be NULL (highlevel libfuse passes NULL for root when
        cfg->nullpath_ok is set).  Treat NULL or "/" as the root. */
-    int64_t dir_vp;
-    if (!path || strcmp(path, "/") == 0) {
-        dir_vp = vfs_root(state->vfs);
-    } else {
+    int64_t dir_vp = 0;
+    if (path && path[0] != '\0' && strcmp(path, "/") != 0) {
         /* Non-root directory: walk tree at state->epoch (snapshot-aware).
            Falls back to root if path resolution fails. */
         dir_vp = resolve_full_path(state->vfs, state->epoch, path);
         if (dir_vp <= 0) {
             dir_vp = vfs_root(state->vfs);
         }
+    } else if (fi && fi->fh != 0) {
+        /* Path is NULL or "/" but fi->fh has the VP from opendir. */
+        dir_vp = (int64_t)fi->fh;
+    } else {
+        dir_vp = vfs_root(state->vfs);
     }
     if (dir_vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
 
@@ -256,7 +265,18 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_darwin_fill_dir_t filler,
 
 int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
+    int64_t vp = 0;
+    /* With cfg->nullpath_ok=1, macFUSE may call open with NULL path when
+       the kernel already has an inode handle.  Prefer fi->fh if set. */
+    if (!path || path[0] == '\0') {
+        if (fi && fi->fh) {
+            vp = (int64_t)fi->fh;
+        } else {
+            vp = vfs_root(state->vfs);
+        }
+    } else {
+        vp = resolve_full_path(state->vfs, state->epoch, path);
+    }
     if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
     if (fuse_is_dir(state->vfs, vp)) return -EISDIR;
     if (state->readonly && (fi->flags & (O_WRONLY | O_RDWR)))
@@ -268,16 +288,9 @@ int fuse_vfs_open(const char* path, struct fuse_file_info* fi) {
         if (lr != VFS_OK) return -EACCES;
     }
 
-    /* O_TRUNC accepted via open — kernel will follow with write, then
-       release.  Our truncate is handled inline here. */
-    if ((fi->flags & O_TRUNC) && (fi->flags & (O_WRONLY | O_RDWR))) {
-        int64_t cur_size = vfs_file_size(state->vfs, vp, vfs_current_epoch(state->vfs));
-        if (cur_size > 0) {
-            int tr = vfs_truncate(state->vfs, vp, 0, vfs_current_epoch(state->vfs));
-            if (tr != VFS_OK) return vfs_error_to_errno(vfs_last_error(state->vfs));
-        }
-    }
-
+    /* O_TRUNC handling: macFUSE will call our setattr after open.
+       Don't truncate inline here — setattr is the canonical path
+       now that auto_cache is disabled (no abort). */
     fi->fh = (uint64_t)vp;
     return 0;
 }
@@ -520,10 +533,9 @@ int fuse_vfs_release(const char* path, struct fuse_file_info* fi) {
     return 0;
 }
 int fuse_vfs_flush(const char* path, struct fuse_file_info* fi) {
-    (void)fi;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
-    int64_t vp = resolve_full_path(state->vfs, state->epoch, path);
-    if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+    /* vfs_flush flushes the entire VFS — no per-file resolution needed. */
+    (void)path; (void)fi;
     int r = vfs_flush(state->vfs);
     return (r == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
@@ -639,18 +651,31 @@ int fuse_vfs_ioctl_cb(const char* path, int cmd, void* arg,
     return fuse_vfs_ioctl(state->vfs, (unsigned long)cmd, arg, data);
 }
 
-/* macFUSE 3.18 setattr handler.
-   MUST return -ENOSYS for FUSE_SET_ATTR_SIZE.  This causes libfuse to fall
-   through to the per-attribute handlers, specifically fuse_fs_truncate,
-   which calls fuse_vfs_truncate with fi->fh (the correct VP).
-   Returning success (0) routes into the auto_cache + fuse_reply_attr
-   path, which crashes due to `get_node(f, ino)` not finding the inode
-   in libfuse's internal node table after truncation. */
+/* macFUSE 3.18 setattr handler.  Called for explicit truncate (ftruncate
+   syscall) and implicit truncate (open with O_TRUNC).  We perform the
+   truncation via vfs_truncate and rely on the regular getattr reply
+   path (auto_cache is disabled in init) so no internal abort() is hit. */
 int fuse_vfs_setattr(const char* path, struct fuse_darwin_attr* attr,
                      int to_set, struct fuse_file_info* fi) {
-    (void)path; (void)fi;
-    if (to_set & FUSE_SET_ATTR_SIZE) return -ENOSYS;
-    if (!attr) return -EIO;
+    fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
+    if (!state) return -EIO;
+    if (state->readonly && (to_set & FUSE_SET_ATTR_SIZE)) return -EROFS;
+
+    if (to_set & FUSE_SET_ATTR_SIZE) {
+        if (!attr) return -EIO;
+        int64_t vp = 0;
+        if (path && path[0] != '\0') {
+            vp = resolve_full_path(state->vfs, state->epoch, path);
+        } else if (fi) {
+            vp = (int64_t)fi->fh;
+        }
+        if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
+
+        int r = vfs_truncate(state->vfs, vp, attr->size, vfs_current_epoch(state->vfs));
+        if (r != VFS_OK) return vfs_error_to_errno(vfs_last_error(state->vfs));
+        return 0;
+    }
+
     /* mode/uid/gid/atime/mtime/etc — accept silently */
     return 0;
 }
@@ -679,10 +704,7 @@ const struct fuse_operations fuse_vfs_ops = {
     .init        = fuse_vfs_init,
     .destroy     = fuse_vfs_destroy,
     .getattr     = fuse_vfs_getattr,
-    /* .setattr intentionally NOT registered: macFUSE 3.18's setattr
-       handler has an internal abort() via get_node() when recounting
-       the fuse_reply_attr path after truncation.  We handle truncation
-       inline in fuse_vfs_open (O_TRUNC) and fuse_vfs_truncate. */
+    .setattr     = fuse_vfs_setattr,
     .readdir     = fuse_vfs_readdir,
     .opendir     = fuse_vfs_opendir,
     .releasedir  = fuse_vfs_releasedir,
