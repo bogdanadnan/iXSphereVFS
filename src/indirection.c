@@ -28,15 +28,13 @@ void indir_init(StorageBackend* sb) {
 
     int64_t chain_page = sb->indirection_head;
     while (chain_page != 0) {
-        int64_t offset = 0;
-        /* Look up the physical offset for this overflow page */
-        if (chain_page < it->inline_count) {
-            offset = it->inline_entries[chain_page];
-        } else {
-            /* It's in a previous overflow page — but we load sequentially,
-               so this should have been set up by a prior iteration */
-            break;  /* shouldn't happen in a well-formed file */
-        }
+        /* Look up the physical offset for this overflow page.  After
+           each iteration the in-RAM indirection table is partially
+           built (overflow_pages[0..i-1] registered), so indir_lookup
+           can resolve subsequent chain links.  indir_lookup also
+           handles inline entries (chain_page < inline_count) via the
+           header buffer. */
+        int64_t offset = indir_lookup(sb, chain_page);
         if (offset == 0) break;
 
         /* Read the overflow page */
