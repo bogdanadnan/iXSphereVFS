@@ -127,10 +127,10 @@ int indir_ensure_capacity(StorageBackend* sb, int needed) {
     /* Check if we already have enough entries */
     /* We need entries up to at least total_pages + needed */
     int64_t required = sb->total_pages + needed;
-    if (required <= total_entries) return 0;
+    if (required < total_entries) return 0;
 
     /* Need to allocate overflow pages */
-    while (required > total_entries) {
+    while (required >= total_entries) {
         /* Allocate a new overflow page by advancing physical_tail */
         int64_t old_tail = sb->physical_tail;
         int64_t new_tail = old_tail + phys_record_size(sb);

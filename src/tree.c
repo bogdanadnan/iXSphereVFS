@@ -993,8 +993,6 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
 
     int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
     int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
-    fprintf(stderr, "[DCL] dir_vp=%ld headPtr=0x%lx read_epoch=%ld\n",
-            (long)dir_vp, (long)headPtr, (long)read_epoch);
 
     /* Temporary per-child tracking arrays (max entries == max output) */
     int64_t best_child[DENTRY_CACHE_MAX];
@@ -1007,9 +1005,6 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     int64_t walk_vp = headPtr;
     while (walk_vp != 0 && best_count < DENTRY_CACHE_MAX) {
         uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
-        fprintf(stderr, "[DCL]  walk vp=%ld pg=%ld sl=%d dc_slot=%p\n",
-                (long)walk_vp, (long)(walk_vp >> 16), (int)(walk_vp & 0xffff),
-                (void*)dc_slot);
         if (!dc_slot) break;
         uint32_t ce_child, ce_epoch;
         int64_t ce_childPtr, ce_namePtr, ce_next;
@@ -1022,9 +1017,6 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
 
         int applies = (eff_epoch == read_epoch) ||
                       (eff_epoch < read_epoch && eff_epoch % 2 == 0);
-        fprintf(stderr, "[DCL] walk vp=%ld pg=%ld sl=%d child=%u epoch=%u eff_epoch=%ld read_epoch=%ld applies=%d next=%ld\n",
-                (long)walk_vp, (long)(walk_vp >> 16), (int)(walk_vp & 0xffff),
-                ce_child, ce_epoch, (long)eff_epoch, (long)read_epoch, applies, (long)ce_next);
         if (!applies) { walk_vp = ce_next; continue; }
 
         /* Find or insert in tracking arrays */
