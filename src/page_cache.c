@@ -51,7 +51,7 @@ static void lru_insert_head(PageCache* cache, CacheEntry* e) {
  * cache_init / cache_destroy
  * --------------------------------------------------------------------------- */
 
-void cache_init(PageCache* cache, int64_t page_size) {
+void cache_init(PageCache* cache, StorageBackend* sb, int64_t page_size) {
     cache->bucket_count = CACHE_DEFAULT_BUCKETS;
     cache->buckets      = calloc((size_t)cache->bucket_count, sizeof(CacheEntry*));
     cache->bucket_locks = calloc((size_t)cache->bucket_count, sizeof(int));
@@ -61,6 +61,7 @@ void cache_init(PageCache* cache, int64_t page_size) {
     cache->writeback_threshold = cache->max_entries / 4;
     cache->page_size    = page_size;
     cache->lru_clock    = 1;
+    cache->sb           = sb;
 }
 
 void cache_destroy(PageCache* cache) {
@@ -150,6 +151,82 @@ static void cache_evict(PageCache* cache) {
 }
 
 /* ---------------------------------------------------------------------------
+ * cache_evict_dirty_data_page
+ *
+ * When the cache is full of dirty entries (so cache_evict has nothing
+ * clean to reclaim), fall back to flushing + evicting a DIRTY DATA PAGE
+ * (priority 0).  Pool/indirection/superblock pages (priority 1-3) are
+ * NEVER touched here — partial flush of those would leave the VFS in
+ * an inconsistent state mid-process (some pool pages flushed, some not).
+ * Data pages, by contrast, are byte buffers with no cross-page consistency
+ * to maintain, so a mid-process flush is safe.
+ *
+ * The victim is detached from its bucket under the bucket lock, the
+ * bucket lock is released, then mirror_write is called (does I/O), and
+ * finally the entry is freed.  This way, no I/O is performed while
+ * holding a spin-lock.
+ * --------------------------------------------------------------------------- */
+
+static void cache_evict_dirty_data_page(PageCache* cache) {
+    if (!cache->sb) return;
+
+    /* Phase 1: find the oldest dirty data page (priority 0). */
+    int         victim_bkt = -1;
+    CacheEntry* victim      = NULL;
+    CacheEntry** victim_pp   = NULL;
+    uint64_t    lowest      = UINT64_MAX;
+
+    for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
+        spin_lock(&cache->bucket_locks[bkt]);
+        CacheEntry** pp = &cache->buckets[bkt];
+        while (*pp) {
+            CacheEntry* e = *pp;
+            if (e->dirty && e->priority == 0 &&
+                e->timestamp > 0 && e->timestamp < lowest) {
+                lowest    = e->timestamp;
+                victim    = e;
+                victim_bkt = bkt;
+                victim_pp = pp;
+            }
+            pp = &e->hash_next;
+        }
+        spin_unlock(&cache->bucket_locks[bkt]);
+        if (victim && lowest == 1) break;
+    }
+
+    if (!victim) return;  /* no dirty data pages to evict */
+
+    /* Phase 2: detach from bucket under lock.  Re-validate state
+       (another thread may have flushed/evicted it). */
+    spin_lock(&cache->bucket_locks[victim_bkt]);
+    if (*victim_pp != victim || !victim->dirty || victim->priority != 0) {
+        spin_unlock(&cache->bucket_locks[victim_bkt]);
+        return;  /* lost the race — let the caller try again */
+    }
+    *victim_pp = victim->hash_next;
+    cache->entry_count--;
+    cache->dirty_count--;
+    /* Save the values we need after releasing the lock */
+    int64_t logical_page = victim->logical_page;
+    uint8_t* payload     = victim->payload;
+    uint32_t priority    = (uint32_t)victim->priority;
+    spin_unlock(&cache->bucket_locks[victim_bkt]);
+
+    /* Phase 3: flush to disk without holding any lock.  mirror_write is
+       safe to call concurrently with other reads/writes — the lazy
+       mirror's on-disk page state is the source of truth, and its
+       atomic-update protocol (header generation, mirror-page CAS) gives
+       crash-safety for the in-progress write. */
+    if (indir_lookup(cache->sb, logical_page) != 0) {
+        mirror_write(cache->sb, logical_page, payload, priority);
+    }
+
+    /* Phase 4: free the entry's memory. */
+    free(payload);
+    free(victim);
+}
+
+/* ---------------------------------------------------------------------------
  * cache_insert
  * --------------------------------------------------------------------------- */
 
@@ -210,13 +287,18 @@ void cache_insert(PageCache* cache, int64_t logical_page,
 
     spin_unlock(&cache->bucket_locks[bkt]);
 
-    /* Evict if over capacity.  Fast-skip if every entry is dirty
-       (cache_evict can't reclaim anything in that case, and the full
-       bucket scan is O(buckets) per insert which pegs CPU under
-       heavy write load). */
+    /* Evict if over capacity.  Two paths:
+       1. Clean entries available: cache_evict (LRU of clean entries).
+       2. All dirty: cache_evict_dirty_data_page (flush + evict a single
+          dirty data page).  This is bounded — at most one flushed+evicted
+          entry per cache_insert call.  If the cache is full of pool/indir/
+          superblock dirty pages, neither path can reclaim anything and the
+          cache grows (the flush-during-unmount path takes care of those). */
     if (cache->entry_count > cache->max_entries &&
         cache->dirty_count < cache->entry_count) {
         cache_evict(cache);
+    } else if (cache->entry_count > cache->max_entries) {
+        cache_evict_dirty_data_page(cache);
     }
 }
 

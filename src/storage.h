@@ -86,13 +86,14 @@ typedef struct {
     int64_t      writeback_threshold;
     int64_t      page_size;
     volatile uint64_t lru_clock; /* monotonic generation counter for eviction */
+    struct StorageBackend* sb;  /* back-pointer for flush-during-evict */
 } PageCache;
 
 /* ---------------------------------------------------------------------------
  * StorageBackend — the main handle
  * --------------------------------------------------------------------------- */
 
-typedef struct {
+typedef struct StorageBackend {
     int              fd;            /* backing file descriptor */
     int64_t          total_pages;   /* highest allocated logical page + 1 */
     int64_t          page_size;     /* payload size in bytes */
@@ -163,8 +164,8 @@ int  mirror_write(StorageBackend* sb, int64_t logical_page, const uint8_t* paylo
  * Internal: page cache  (page_cache.c)
  * --------------------------------------------------------------------------- */
 
-void        cache_init(PageCache* cache, int64_t page_size);
-void        cache_destroy(PageCache* cache);
+void cache_init(PageCache* cache, struct StorageBackend* sb, int64_t page_size);
+void cache_destroy(PageCache* cache);
 CacheEntry* cache_find(PageCache* cache, int64_t logical_page);
 void        cache_insert(PageCache* cache, int64_t logical_page,
                          uint8_t* payload, int priority, int dirty);

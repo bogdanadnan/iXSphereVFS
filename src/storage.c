@@ -300,7 +300,7 @@ StorageBackend* storage_open(const char* path, int64_t page_size) {
     /* Initialize mirror tracking arrays */
 
     /* Initialize page cache */
-    cache_init(&sb->cache, sb->page_size);
+    cache_init(&sb->cache, sb, sb->page_size);
 
     return sb;
 }
