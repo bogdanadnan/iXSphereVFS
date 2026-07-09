@@ -622,7 +622,7 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
         return VFS_ERR_NOTDIR;
         }
 
-    /* Check for name collision — tree lookup when available, chain fallback. */
+    /* Check for name collision — tree lookup first, chain walk as safety net. */
     int64_t indexRoot = vfs_rd8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR,
                                    ctx->page_size);
     uint64_t target_hash = name_hash_compute(name, (int)strlen(name));
@@ -665,8 +665,13 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
                 linkVP = nextLinkVP;
             }
         }
-    } else {
-        /* No tree — walk the DirContent chain */
+    }
+
+    /* Chain walk — always runs as safety net.  Catches entries not yet
+       in the tree (pre-Phase-18 files, race windows during lazy builds,
+       or orphan chain entries).  When the tree is present and complete,
+       this is a quick negative-pass: the tree already confirmed no match. */
+    {
         int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR,
                                      ctx->page_size);
         int64_t walk_vp = headPtr;
