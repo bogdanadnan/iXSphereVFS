@@ -33,6 +33,7 @@
 #define DIRNODE_OFF_RSVD      2
 #define DIRNODE_OFF_NODEID    4
 #define DIRNODE_OFF_HEADPTR   8
+#define DIRNODE_OFF_INDEXHEADPTR 16  /* int64_t — VirtualPtr to first DirContentIndex at level 0 */
 
 void nodes_write_dirnode(uint8_t* slot, uint32_t nodeId, int64_t headPtr, int64_t page_size);
 void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr, int64_t page_size);
