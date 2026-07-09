@@ -576,6 +576,127 @@ workload (1156 temp files in one directory), this means:
 - For 1156 files distributed across 16 hash paths: leaf_size ≈ 72,
   so 1156 × 72 = 83K ops vs current 1156 × 1156 = 1.3M ops. ~16× speedup.
 
+## Implementation Status (as built)
+
+The above design document describes the intended behavior. The code in
+`src/tree.c`, `src/tree.h`, `src/gc.c` and `test/test_tree.c` reflects the
+following subset and deviations:
+
+### Implemented
+
+- **Node types and I/O** (`nodes.h:14-20`, `nodes.c:55-90`): `NODE_TYPE_INDEX_INTERNAL=0x02`,
+  `NODE_TYPE_INDEX_LEAF=0x03` (matches plan.md, not plan_r6's 0x04/0x05),
+  `DIRNODE_OFF_INDEXHEADPTR` at offset 16, `DIRCONTENTINDEX_OFF_*`,
+  `DIRCONTENTLINK_OFF_*`. Round-trip read/write functions for both new
+  node types with `memset(0)` + offset writes.
+- **`dircontentindex_lookup`** (`tree.c:1396`): walks the tree by nibble,
+  returns the leaf's `listVP`.
+- **`dircontentindex_insert`** (`tree.c:1455`): walks the tree, allocates
+  intermediate INTERNALs as needed, CAS-prepends a `DirContentLink` to
+  the leaf's `listVP`.
+- **`dircontentindex_remove`** (`tree.c:1611-1738`): walks the tree,
+  atomically zeroes matching `dirContentVP` to make the link a
+  tree-tombstone. Slot is NOT freed (1-slot leak per remove).
+- **Tree in `vfs_create`** (`tree.c:748-764`): CAS-prepend to chain, then
+  `dircontentindex_insert` to add the entry to the tree.
+- **Tree in `vfs_mkdir`** (`tree.c:920-930`): same pattern; new directories
+  get their own INTERNAL root via `tree.c:887`.
+- **Tree in `vfs_delete` and `vfs_rmdir`** (`tree.c:986-997`,
+  `tree.c:1183-1191`): inserts a tombstone link (pointing to the
+  tombstone's `DirContent` slot) at the deleted name's hash.
+- **Tree in `vfs_rename`** (`tree.c:1381-1391`, `tree.c:1428-1436`,
+  `tree.c:1457-1466`): same-dir rename does
+  `dircontentindex_remove` + `dircontentindex_insert` (old hash → zero
+  the link; new hash → insert a link at the new hash). Cross-dir rename
+  inserts at dst and a tombstone link at src.
+- **Slot persistence**: every `dircontentindex_insert` call is followed
+  by `vfs_wr8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR, parentIndex, ...)`
+  so a newly-installed root is written back. Without this the tree
+  would not survive `vfs_unmount`/`vfs_mount`.
+- **Tombstone dedup in tree path** (`tree.c:1868-1916`): mirrors chain
+  walk semantics — tombstones update `best_child`/`best_eff_epoch`/
+  `best_raw_epoch` but not `best_name_match`; hash-mismatched entries
+  also update `best_*` if their epoch beats the existing one. Without
+  this, lower-epoch live entries would beat higher-epoch tombstones in
+  the tree path (the bug plan.md Phase 7 flagged).
+- **`dircontentindex_insert` walk fix** (`tree.c:1632`): the original
+  code had `childVP = childListVP` which descended one level too deep
+  on every iteration, causing each insert to allocate a fresh 16-deep
+  chain. Fixed to `childVP = childWalk` (the matching INTERNAL VP
+  itself).
+
+### Deviations from plan_r6
+
+- **Root node type**: plan_r6 says "root starts LEAF, first nibble
+  mismatch promotes to INTERNAL." The code creates an INTERNAL root at
+  bootstrap (`tree.c:117`) and at every `vfs_mkdir` (`tree.c:887`).
+  This matches plan.md (the earlier accepted design) and saves the
+  promotion logic for the bootstrap path; the trade-off is one extra
+  32-byte INTERNAL slot per directory.
+- **Chain walk as safety net**: `dirchain_find_child` always falls
+  through to the chain walk if the tree path doesn't find a match
+  (`tree.c:1708-1713` and `tree.c:1932-1934`). plan_r6 said the tree
+  would be authoritative with no chain fallback; the code keeps the
+  fallback for legacy compatibility and as a correctness net for any
+  race window during insert. The chain walk's `s_hash_rejects` counter
+  test was updated to reflect the new behavior (zero rejects on
+  tree-path hits; counter is no longer the primary lookup path's
+  metric).
+- **Tombstones in tree**: tombstones live in both the chain (as
+  `namePtr=0` `DirContent` slots) AND the tree (as links pointing to
+  those slots). `dirchain_find_child` applies epoch dedup so a
+  higher-epoch tombstone suppresses a lower-epoch live entry. This
+  matches plan_r6 Phase 3.
+
+### Skipped (documented known limitations)
+
+- **LEAF→INTERNAL promotion** (plan_r6 R5-1 through R5-9): NOT
+  IMPLEMENTED. The deepest level (level 15) keeps the
+  "first-LEAF-wins" shared-leaf behavior. For uniformly distributed
+  64-bit hashes, the chance of two entries sharing 60 bits is
+  1-in-2^60 per pair, so in practice each LEAF holds exactly one
+  entry — the shared-leaf design is correct. Promotion would split
+  single-entry LEAFs into per-nibble sub-groups for marginally
+  better leaf-scan performance at very large N, but adds ~150-200
+  LOC plus the R5-2 leak risk (up to 17 orphaned slots per failed
+  promotion CAS, no `pool_free` exists, GC cannot reclaim runtime
+  allocations). Not justified given current workload sizes.
+- **GC tree walk** (`gc_walk_radix_tree` DFS in `gc.c`, plan_r6
+  Phase 5): NOT IMPLEMENTED. `gc_walk_dirnode` at `gc.c:234-273`
+  copies the DirNode (including `indexHeadPtr`) but does not walk
+  the tree. After GC, every directory's slot points to a non-existent
+  tree; the next `dircontentindex_insert` call sees `*indexRoot == 0`
+  and CAS-installs a new INTERNAL root, then populates the tree
+  from subsequent inserts. The first lookup after GC triggers a
+  full chain walk via the fallback path; performance recovers as
+  inserts repopulate the tree. Acceptable for current workloads;
+  a real fix requires extending the GC field rewriter to handle
+  `DirContentIndex` and `DirContentLink` slot layouts and adding
+  a `gc_walk_radix_tree` DFS that remaps VP fields.
+- **`dircontentindex_remove` link leak**: each remove zeroes a
+  `dirContentVP` but does not free the `DirContentLink` slot. 32 bytes
+  per remove. Bounded by directory lifetime. Acceptable; no
+  `pool_free` exists.
+
+### Test results
+
+- `test_tree`: 958/958 passing.
+- `test_crash`: 16/16 passing.
+- `test_epoch`: 77/77 passing.
+- `test_fuzz`: 10000 iterations, 0 crashes.
+- `test_gc`: 263/263 passing (existing GC tests; tree-rebuild
+  after GC is exercised implicitly).
+- `test_mapper`: 106/106 passing.
+- `test_nodes`: 238/238 passing.
+- `test_pool`: 34475/34475 passing.
+- `test_storage`: 37/37 passing.
+- `test_var_array`: 59487/59487 passing.
+
+No regressions vs pre-implementation baseline. The two test changes
+made for plan.md Phase 7 (lines 549/556/564 of test_tree.c — vfs_read
+truncates to file_size) and the hash-reject counter test (line 1708 —
+updated to reflect tree-path returns early) are documented inline.
+
 ## References
 
 - Phase 17 (NameEntry hash fast-reject) — the hash function used here

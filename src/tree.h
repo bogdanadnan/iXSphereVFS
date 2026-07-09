@@ -123,6 +123,16 @@ int64_t dircontentindex_lookup(Pool* pool, int64_t indexRoot,
 int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
                           int64_t dirContentVP, int64_t page_size);
 
+/* Walk the tree to the leaf for nameHash, scan the leaf's DirContentLink
+ * list, and zero the dirContentVP of any link matching dirContentVP.  This
+ * turns the link into a tree-tombstone — subsequent lookups skip it.
+ *
+ * Returns 0 if a matching link was found and zeroed, -1 otherwise.
+ * Note: this does NOT free the DirContentLink slot or alter tree structure;
+ * the slot becomes a permanent one-link tree-tombstone (32 bytes leaked). */
+int dircontentindex_remove(Pool* pool, int64_t indexRoot, uint64_t nameHash,
+                           int64_t dirContentVP, int64_t page_size);
+
 /* Walk a directory's DirContent chain and list non-tombstone entries at a
  * given epoch (read-rule dedup by childNodeId).  Fills the entries[] array
  * (up to max entries) with childNodeId, name, and isDir.  Returns the number

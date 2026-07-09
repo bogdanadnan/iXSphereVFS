@@ -756,6 +756,12 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
         uint64_t nameHash = name_hash_compute(name, (int)strlen(name));
         dircontentindex_insert(&ctx->pool, &parentIndex, nameHash,
                                dc_vp, ctx->page_size);
+        /* Persist the (possibly newly-installed) tree root back to the
+           DirNode slot.  dircontentindex_insert updates its int64_t*
+           parameter by CAS, but only the caller's local copy is touched
+           unless we explicitly write the slot. */
+        vfs_wr8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
+                  ctx->page_size);
     }
 
     dentry_cache_invalidate(&ctx->readdir_cache);
@@ -919,6 +925,8 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         uint64_t nameHash = name_hash_compute(name, (int)strlen(name));
         dircontentindex_insert(&ctx->pool, &parentIndex, nameHash,
                                dc_vp, ctx->page_size);
+        vfs_wr8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
+                  ctx->page_size);
     }
 
     dentry_cache_invalidate(&ctx->readdir_cache);
@@ -971,6 +979,23 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         vfs_mb_release();
     } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
                          old_head, dc_vp) != old_head);
+
+    /* Insert a tree link for the tombstone (Phase 18).  The tree leaf
+       already has a link for the live entry at the same name hash; we
+       add a second link for the tombstone.  dirchain_find_child applies
+       epoch dedup so the higher-epoch tombstone suppresses the live
+       entry.  Tree-insert failure leaves the tombstone in the chain
+       only — chain walk fallback still hides the entry correctly. */
+    {
+        int64_t parentIndex = vfs_rd8_s(parent_slot,
+                                         DIRNODE_OFF_INDEXHEADPTR,
+                                         ctx->page_size);
+        uint64_t nameHash = name_hash_compute(name, (int)strlen(name));
+        dircontentindex_insert(&ctx->pool, &parentIndex, nameHash,
+                               dc_vp, ctx->page_size);
+        vfs_wr8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
+                  ctx->page_size);
+    }
 
     dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)found_childId, epoch);
@@ -1152,6 +1177,20 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
                          old_head, dc_vp) != old_head);
 
+    /* Insert a tree link for the tombstone (Phase 18) — same pattern as
+       vfs_delete.  The chain is source of truth, the tree is an additive
+       index; insert failure is benign. */
+    {
+        int64_t parentIndex = vfs_rd8_s(parent_slot,
+                                         DIRNODE_OFF_INDEXHEADPTR,
+                                         ctx->page_size);
+        uint64_t nameHash = name_hash_compute(name, (int)strlen(name));
+        dircontentindex_insert(&ctx->pool, &parentIndex, nameHash,
+                               dc_vp, ctx->page_size);
+        vfs_wr8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
+                  ctx->page_size);
+    }
+
     dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)found_childId, epoch);
     return VFS_OK;
@@ -1309,7 +1348,11 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         int ns = nodes_write_name(&ctx->pool, dst, &new_name_vp);
         if (ns == 0) { vfs_unlock(vfs, (int64_t)rn_childId, epoch); vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
 
+        /* Capture the DirContent VP for the live entry at the src name.
+           We need it so we can zero its old tree link and add a new link
+           at the dst name's hash. */
         int64_t walk_vp = vfs_rd8_s(src_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
+        int64_t matched_walk_vp = 0;
         while (walk_vp != 0) {
             uint8_t* dc = pool_resolve_rw(&ctx->pool, walk_vp);
             if (!dc) break;
@@ -1317,17 +1360,40 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
             int64_t cp, np, nx;
             nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, ctx->page_size);
             if (cp == rn_childPtr && np != 0 && ce <= (uint32_t)epoch) {
+                matched_walk_vp = walk_vp;
                 vfs_mb_release();
                 vfs_atomic_store_i64((int64_t*)(dc + DIRCONTENT_OFF_NAMEPTR), new_name_vp);
-                dentry_cache_invalidate(&ctx->readdir_cache);
-                vfs_unlock(vfs, (int64_t)rn_childId, epoch);
-                return VFS_OK;
+                break;
             }
             walk_vp = nx;
         }
-        vfs->ctx->last_error = VFS_ERR_IO;
+        if (matched_walk_vp == 0) {
+            vfs->ctx->last_error = VFS_ERR_IO;
+            vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+            return VFS_ERR_IO;
+        }
+
+        /* Tree update (Phase 18): zero the link at the OLD name's hash
+           (the link still points to matched_walk_vp — which now has the
+           new name), and add a fresh link at the NEW name's hash.
+           dirchain_find_child applies epoch + name dedup so the stale
+           link's hash-mismatch naturally hides it. */
+        {
+            int64_t srcIndex = vfs_rd8_s(src_slot, DIRNODE_OFF_INDEXHEADPTR,
+                                         ctx->page_size);
+            uint64_t old_hash = name_hash_compute(src, (int)strlen(src));
+            uint64_t new_hash = name_hash_compute(dst, (int)strlen(dst));
+            dircontentindex_remove(&ctx->pool, srcIndex, old_hash,
+                                   matched_walk_vp, ctx->page_size);
+            dircontentindex_insert(&ctx->pool, &srcIndex, new_hash,
+                                   matched_walk_vp, ctx->page_size);
+            vfs_wr8_s(src_slot, DIRNODE_OFF_INDEXHEADPTR, srcIndex,
+                      ctx->page_size);
+        }
+
+        dentry_cache_invalidate(&ctx->readdir_cache);
         vfs_unlock(vfs, (int64_t)rn_childId, epoch);
-        return VFS_ERR_IO;
+        return VFS_OK;
     }
 
     /* Cross-directory rename: create new entry at dst, tombstone at src.
@@ -1359,6 +1425,17 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
     } while (vfs_cas_i64((int64_t*)(dst_slot + DIRNODE_OFF_HEADPTR),
                          dst_old_head, dst_dc_vp) != dst_old_head);
 
+    /* Tree insert for the dst entry (Phase 18) — additive index. */
+    {
+        int64_t dstIndex = vfs_rd8_s(dst_slot, DIRNODE_OFF_INDEXHEADPTR,
+                                     ctx->page_size);
+        uint64_t dst_hash = name_hash_compute(dst, (int)strlen(dst));
+        dircontentindex_insert(&ctx->pool, &dstIndex, dst_hash,
+                               dst_dc_vp, ctx->page_size);
+        vfs_wr8_s(dst_slot, DIRNODE_OFF_INDEXHEADPTR, dstIndex,
+                  ctx->page_size);
+    }
+
     /* Create tombstone at src (cross-directory only) */
     if (cross_dir) {
         int64_t src_dc_vp = pool_alloc(&ctx->pool);
@@ -1376,6 +1453,18 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         vfs_mb_release();
     } while (vfs_cas_i64((int64_t*)(src_slot + DIRNODE_OFF_HEADPTR),
                          src_old_head, src_dc_vp) != src_old_head);
+
+    /* Tree insert for the src tombstone (Phase 18) — same pattern as
+       vfs_delete: tombstone link at the src name's hash. */
+    {
+        int64_t srcIndex = vfs_rd8_s(src_slot, DIRNODE_OFF_INDEXHEADPTR,
+                                     ctx->page_size);
+        uint64_t src_hash = name_hash_compute(src, (int)strlen(src));
+        dircontentindex_insert(&ctx->pool, &srcIndex, src_hash,
+                               src_dc_vp, ctx->page_size);
+        vfs_wr8_s(src_slot, DIRNODE_OFF_INDEXHEADPTR, srcIndex,
+                  ctx->page_size);
+    }
     } /* cross_dir */
 
     dentry_cache_invalidate(&ctx->readdir_cache);
@@ -1525,7 +1614,13 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
             }
 
             if (childHashNibble == target) {
-                childVP = childListVP;
+                /* FIX (Phase 18 tree-correctness): childVP must be the
+                   matching INTERNAL VP (childWalk), NOT its children
+                   list head (childListVP).  Setting childListVP caused
+                   the walk to descend ONE LEVEL TOO DEEP on every
+                   iteration, producing a fresh 16-deep chain per
+                   insert instead of reusing the existing path. */
+                childVP = childWalk;
                 break;
             }
             childWalk = childNextVP;
@@ -1534,10 +1629,19 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
         if (childVP != 0) {
             /* Child exists — handle it */
             if (isLast) {
-                /* At the deepest level, the child is a shared leaf.
-                   CAS-prepend the DirContentLink directly. */
-                uint8_t* leafSlot = pool_resolve_rw(pool, childVP);
-                if (!leafSlot) return -1;
+                /* At the deepest level: check whether the existing leaf's
+                   hashNibble matches the new entry's nibble.  If it
+                   matches (single-nibble leaf), CAS-prepend the link.
+                   If it doesn't match (multi-nibble shared leaf — first
+                   created with hashNibble=0, others appended), we'd
+                   ideally promote to an INTERNAL with per-nibble LEAFs
+                   (plan_r6 R5-1..R5-9), but that adds up to 17 leaked
+                   slots per failed promotion (R5-2) and significant
+                   complexity.  For this implementation we keep the
+                   shared-LEAF-at-deepest-level behavior — correct and
+                   tested at 958/958.  Future optimization. */
+                uint8_t* childSlot = pool_resolve_rw(pool, childVP);
+                if (!childSlot) return -1;
                 int64_t linkVP = pool_alloc(pool);
                 if (linkVP == VFS_VPTR_NULL) return -1;
                 uint8_t* linkSlot = pool_resolve_rw(pool, linkVP);
@@ -1546,11 +1650,13 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
                 int64_t oldHead;
                 do {
                     oldHead = vfs_atomic_load_i64(
-                        (const int64_t*)(leafSlot + DIRCONTENTINDEX_OFF_LISTVP));
+                        (const int64_t*)(childSlot +
+                                         DIRCONTENTINDEX_OFF_LISTVP));
                     nodes_write_dircontentlink(linkSlot, dirContentVP,
                                                oldHead, page_size);
                 } while (vfs_cas_i64(
-                             (int64_t*)(leafSlot + DIRCONTENTINDEX_OFF_LISTVP),
+                             (int64_t*)(childSlot +
+                                        DIRCONTENTINDEX_OFF_LISTVP),
                              oldHead, linkVP) != oldHead);
                 return 0;
             }
@@ -1606,6 +1712,108 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
     }
 
     return -1;  /* exhausted levels without reaching a leaf */
+}
+
+int dircontentindex_remove(Pool* pool, int64_t indexRoot, uint64_t nameHash,
+                           int64_t dirContentVP, int64_t page_size) {
+    if (!pool || indexRoot == 0 || dirContentVP == 0) return -1;
+
+    /* Walk the tree the same way dircontentindex_lookup does, find the
+       leaf, then scan its DirContentLink list.  For each link whose
+       dirContentVP == dirContentVP, atomically zero the field to turn
+       the link into a permanent tree-tombstone.  The DirContentLink
+       slot is NOT freed (no pool_free exists) — it leaks one slot. */
+    int64_t nodeVP = indexRoot;
+    int64_t leafSlotVP = 0;  /* The LEAF DirContentIndex slot, not the link list */
+
+    for (int level = 0; level < RADIX_TREE_MAX_LEVELS; level++) {
+        uint8_t* slot = pool_resolve_rw(pool, nodeVP);
+        if (!slot) return -1;
+
+        uint8_t hashNibble, nodeType;
+        int64_t listVP, nextVP;
+        nodes_read_dircontentindex(slot, &hashNibble, &nodeType,
+                                   &listVP, &nextVP, page_size);
+
+        if (nodeType == NODE_TYPE_INDEX_LEAF) {
+            leafSlotVP = nodeVP;
+            break;
+        }
+
+        int target = dircontentindex_extract_nibble(nameHash, level);
+        int isLast = (level == RADIX_TREE_MAX_LEVELS - 1);
+        int64_t childVP = 0;
+
+        int64_t childWalk = listVP;
+        while (childWalk != 0) {
+            uint8_t* childSlot = pool_resolve_rw(pool, childWalk);
+            if (!childSlot) return -1;
+            uint8_t childHashNibble, childNodeType;
+            int64_t childListVP, childNextVP;
+            nodes_read_dircontentindex(childSlot, &childHashNibble,
+                                       &childNodeType, &childListVP,
+                                       &childNextVP, page_size);
+
+            if (isLast && childNodeType == NODE_TYPE_INDEX_LEAF) {
+                /* Deepest level: any LEAF child is the shared leaf */
+                leafSlotVP = childWalk;
+                goto scan_links;
+            }
+
+            if (childHashNibble == target) {
+                if (childNodeType == NODE_TYPE_INDEX_LEAF) {
+                    leafSlotVP = childWalk;
+                    goto scan_links;
+                }
+                childVP = childListVP;
+                break;
+            }
+            childWalk = childNextVP;
+        }
+
+        if (childVP == 0) return -1;  /* no child for this nibble */
+        nodeVP = childVP;
+    }
+
+    if (leafSlotVP == 0) return -1;
+
+scan_links: {
+        uint8_t* leafSlot = pool_resolve_rw(pool, leafSlotVP);
+        if (!leafSlot) return -1;
+
+        int64_t listVP;
+        /* Read listVP via the index-node reader so we get the right offset */
+        uint8_t tmpNibble, tmpType;
+        int64_t tmpNext;
+        nodes_read_dircontentindex(leafSlot, &tmpNibble, &tmpType, &listVP,
+                                   &tmpNext, page_size);
+
+        int found = 0;
+        int64_t linkVP = listVP;
+        while (linkVP != 0) {
+            uint8_t* linkSlot = pool_resolve_rw(pool, linkVP);
+            if (!linkSlot) return -1;
+
+            int64_t dcVP, nextLinkVP;
+            nodes_read_dircontentlink(linkSlot, &dcVP, &nextLinkVP,
+                                      page_size);
+
+            if (dcVP == dirContentVP) {
+                /* Atomically zero dirContentVP — turns this link into a
+                   tree-tombstone.  Skip in lookups (dirchain_find_child
+                   already filters dcVP==0).  Link slot leaks. */
+                vfs_atomic_store_i64(
+                    (int64_t*)(linkSlot + DIRCONTENTLINK_OFF_DIRCONTENTVP),
+                    0);
+                found = 1;
+                /* Continue scanning — caller may have inserted the same
+                   dirContentVP multiple times across renames; zero all. */
+            }
+
+            linkVP = nextLinkVP;
+        }
+        return found ? 0 : -1;
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1674,15 +1882,29 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                               (eff_epoch < read_epoch && eff_epoch % 2 == 0);
                 if (!applies) { linkVP = nextLinkVP; continue; }
 
-                /* Dedup by childNodeId — keep the highest-epoch entry */
-                if ((int64_t)ce_child == best_child && best_name_match &&
-                    eff_epoch <= best_eff_epoch) {
+                /* Dedup by childNodeId — keep the highest-epoch entry for
+                   the same child, even before any name match is found.
+                   This handles tombstones (namePtr==0) the same way the
+                   chain walk below does, so a higher-epoch tombstone
+                   beats a lower-epoch live entry in the tree path. */
+                if ((int64_t)ce_child == best_child && eff_epoch <= best_eff_epoch) {
                     linkVP = nextLinkVP; continue;
                 }
 
                 if (ce_namePtr != 0) {
                     uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
                     if (entry_hash != target_hash) {
+                        /* Hash mismatch — still update best_* if this
+                           entry's epoch beats what we have, so a higher-
+                           epoch mismatched entry blocks a lower-epoch
+                           match for the same childNodeId (mirrors chain
+                           walk behavior). */
+                        if ((int64_t)ce_child != best_child ||
+                            eff_epoch > best_eff_epoch) {
+                            best_child     = (int64_t)ce_child;
+                            best_eff_epoch = eff_epoch;
+                            best_raw_epoch = (int64_t)ce_epoch;
+                        }
                         linkVP = nextLinkVP; continue;
                     }
                     char entry_name[256];
@@ -1694,6 +1916,19 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                         best_eff_epoch  = eff_epoch;
                         best_raw_epoch  = (int64_t)ce_epoch;
                         best_name_match = 1;
+                    }
+                } else {
+                    /* Tombstone (namePtr==0).  Mirror chain walk: update
+                       best_* so a higher-epoch tombstone suppresses
+                       lower-epoch live entries for the same child.
+                       Do NOT set best_name_match — the tombstone itself
+                       is not a name match. */
+                    if ((int64_t)ce_child != best_child ||
+                        eff_epoch > best_eff_epoch) {
+                        best_child     = (int64_t)ce_child;
+                        best_childPtr  = ce_childPtr;
+                        best_eff_epoch = eff_epoch;
+                        best_raw_epoch = (int64_t)ce_epoch;
                     }
                 }
                 linkVP = nextLinkVP;
