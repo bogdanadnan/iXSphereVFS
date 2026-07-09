@@ -1970,6 +1970,27 @@ static void test_delete_recreate_same_name(void) {
     vfs_unmount(vfs);
 }
 
+static void test_rename_tree(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t vp = vfs_create(vfs, root_vp, "old.txt", 0);
+    CHECK(vp > 0);
+
+    int ret = vfs_rename(vfs, root_vp, "old.txt", root_vp, "new.txt", 0);
+    CHECK_EQ(ret, VFS_OK);
+
+    int64_t old = vfs_open(vfs, root_vp, "old.txt", 0);
+    CHECK_EQ(old, (int64_t)VFS_ERR_NOTFOUND);
+
+    int64_t newfile = vfs_open(vfs, root_vp, "new.txt", 0);
+    CHECK(newfile > 0);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -2116,6 +2137,7 @@ int main(void) {
     test_vfs_create_open_tree();
     test_vfs_create_open_many();
     test_delete_recreate_same_name();
+    test_rename_tree();
 
     /* Clean up */
     unlink(test_path);
