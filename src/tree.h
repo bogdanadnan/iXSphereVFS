@@ -120,6 +120,8 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
 /* --- Directory radix tree (Phase 18) --- */
 int64_t dircontentindex_lookup(Pool* pool, int64_t indexRoot,
                                uint64_t nameHash, int64_t page_size);
+int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
+                          int64_t dirContentVP, int64_t page_size);
 
 /* Walk a directory's DirContent chain and list non-tombstone entries at a
  * given epoch (read-rule dedup by childNodeId).  Fills the entries[] array
