@@ -28,7 +28,7 @@ static void test_dirnode_write_read(void) {
     memset(slot, 0, sizeof(slot));
 
     /* Write DirNode with nodeId=5, headPtr points to page=10, slot=3 */
-    nodes_write_dirnode(slot, 5, VFS_VPTR_MAKE(10, 3), VFS_PAGE_SIZE);
+    nodes_write_dirnode(slot, 5, VFS_VPTR_MAKE(10, 3), 0, VFS_PAGE_SIZE);
 
     /* Verify type field at byte 0 */
     CHECK_EQ(vfs_rd2(slot, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);

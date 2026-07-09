@@ -106,7 +106,7 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     if (!root_slot) return VFS_ERR_IO;
 
     /* Write root DirNode: nodeId=0, no children */
-    nodes_write_dirnode(root_slot, 0, 0, ctx->page_size);
+    nodes_write_dirnode(root_slot, 0, 0, 0, ctx->page_size);
 
     /* Update superblock with root pointer */
     ctx->rootNodeOffset = root_vp;
@@ -760,7 +760,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     uint8_t* dir_slot = pool_resolve_rw(&ctx->pool, dir_vp);
 
     if (!dir_slot) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
-    nodes_write_dirnode(dir_slot, new_nodeId, 0, ctx->page_size);
+    nodes_write_dirnode(dir_slot, new_nodeId, 0, 0, ctx->page_size);
 
     int64_t name_vp;
     int name_slots = nodes_write_name(&ctx->pool, name, &name_vp);
