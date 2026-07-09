@@ -65,6 +65,71 @@ static void test_dirnode_zero_slot(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * DirContentIndex tests (Phase 18)
+ * --------------------------------------------------------------------------- */
+
+static void test_dircontentindex_write_read(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Write INTERNAL node with non-trivial fields */
+    nodes_write_dircontentindex(slot, 3, NODE_TYPE_INDEX_INTERNAL,
+                                 VFS_VPTR_MAKE(7, 2),
+                                 VFS_VPTR_MAKE(8, 4), VFS_PAGE_SIZE);
+
+    /* Verify direct field reads */
+    CHECK_EQ((int)slot[DIRCONTENTINDEX_OFF_HASHNIBBLE], 3);
+    CHECK_EQ((int)slot[DIRCONTENTINDEX_OFF_NODETYPE], (int)NODE_TYPE_INDEX_INTERNAL);
+
+    /* Read back all fields */
+    uint8_t hashNibble, nodeType;
+    int64_t listVP, nextVP;
+    nodes_read_dircontentindex(slot, &hashNibble, &nodeType,
+                               &listVP, &nextVP, VFS_PAGE_SIZE);
+
+    CHECK_EQ(hashNibble, 3u);
+    CHECK_EQ(nodeType, NODE_TYPE_INDEX_INTERNAL);
+    CHECK_EQ(VFS_VPTR_PAGE(listVP), 7);
+    CHECK_EQ(VFS_VPTR_SLOT(listVP), 2);
+    CHECK_EQ(VFS_VPTR_PAGE(nextVP), 8);
+    CHECK_EQ(VFS_VPTR_SLOT(nextVP), 4);
+
+    /* Verify reserved bytes 2-7 are zero */
+    int zero_2_7 = 1;
+    for (int i = 2; i < 8; i++) {
+        if (slot[i] != 0) { zero_2_7 = 0; break; }
+    }
+    CHECK(zero_2_7);
+
+    /* Verify reserved bytes 24-31 are zero */
+    int zero_24_31 = 1;
+    for (int i = 24; i < 32; i++) {
+        if (slot[i] != 0) { zero_24_31 = 0; break; }
+    }
+    CHECK(zero_24_31);
+}
+
+static void test_dircontentindex_leaf_roundtrip(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Write LEAF node */
+    nodes_write_dircontentindex(slot, 15, NODE_TYPE_INDEX_LEAF,
+                                 VFS_VPTR_MAKE(20, 10), 0, VFS_PAGE_SIZE);
+
+    uint8_t hashNibble, nodeType;
+    int64_t listVP, nextVP;
+    nodes_read_dircontentindex(slot, &hashNibble, &nodeType,
+                               &listVP, &nextVP, VFS_PAGE_SIZE);
+
+    CHECK_EQ(hashNibble, 15u);
+    CHECK_EQ(nodeType, NODE_TYPE_INDEX_LEAF);
+    CHECK_EQ(VFS_VPTR_PAGE(listVP), 20);
+    CHECK_EQ(VFS_VPTR_SLOT(listVP), 10);
+    CHECK_EQ(nextVP, 0);
+}
+
+/* ---------------------------------------------------------------------------
  * FileNode tests (Workload 4.2)
  * --------------------------------------------------------------------------- */
 
@@ -831,6 +896,8 @@ static void test_name_slots_needed_formula(void) {
 int main(void) {
     test_dirnode_write_read();
     test_dirnode_zero_slot();
+    test_dircontentindex_write_read();
+    test_dircontentindex_leaf_roundtrip();
     test_filenode_write_read();
     test_filenode_ctime();
     test_filenode_dirnode_overlap();
