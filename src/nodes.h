@@ -43,6 +43,11 @@
 #define DIRCONTENTINDEX_OFF_LISTVP 8      /* int64 — VP of first entry in this level's list */
 #define DIRCONTENTINDEX_OFF_NEXTVP 16     /* int64 — VP of next sibling at the same level */
 
+/* DirContentLink — leaf-list entry pointing to a DirContent in the chain.
+   32 bytes per slot. */
+#define DIRCONTENTLINK_OFF_DIRCONTENTVP 8  /* int64 — VP of the actual DirContent slot */
+#define DIRCONTENTLINK_OFF_NEXTVP 16       /* int64 — VP of next link in the leaf's list */
+
 void nodes_write_dirnode(uint8_t* slot, uint32_t nodeId, int64_t headPtr, int64_t page_size);
 void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr, int64_t page_size);
 
