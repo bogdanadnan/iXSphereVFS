@@ -65,6 +65,11 @@ void nodes_read_dircontentindex(const uint8_t* slot, uint8_t* hashNibble,
                                  uint8_t* nodeType, int64_t* listVP,
                                  int64_t* nextVP, int64_t page_size);
 
+void nodes_write_dircontentlink(uint8_t* slot, int64_t dirContentVP,
+                                int64_t nextVP, int64_t page_size);
+void nodes_read_dircontentlink(const uint8_t* slot, int64_t* dirContentVP,
+                               int64_t* nextVP, int64_t page_size);
+
 /* ---------------------------------------------------------------------------
  * FileNode (32 bytes, fully packed)
  *
