@@ -1781,6 +1781,21 @@ static void test_dirchain_find_child_collision_tolerance(void) {
 }
 #endif
 
+/* --- Directory radix tree tests (Phase 18) --- */
+
+static void test_dircontentindex_lookup_empty(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+
+    /* Empty tree (indexRoot == 0) should return 0 */
+    int64_t leafVP = dircontentindex_lookup(&ctx->pool, 0, 0x12345678ULL,
+                                              ctx->page_size);
+    CHECK_EQ(leafVP, 0);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1920,6 +1935,8 @@ int main(void) {
     unlink(test_path);
     test_dirchain_find_child_collision_tolerance();
 #endif
+
+    test_dircontentindex_lookup_empty();
 
     /* Clean up */
     unlink(test_path);
