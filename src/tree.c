@@ -1449,6 +1449,91 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
         return VFS_ERR_NOTDIR;
 
     int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
+
+    /* --- Phase 18: radix tree fast path ---
+       If the directory has a tree index, walk it by name hash.  The
+       tree is the source of truth for name lookups — no chain fallback
+       when the tree exists. */
+    int64_t indexRoot = vfs_rd8_s(dir_slot, DIRNODE_OFF_INDEXHEADPTR,
+                                   ctx->page_size);
+    if (indexRoot != 0) {
+        int64_t leafVP = dircontentindex_lookup(&ctx->pool, indexRoot,
+                                                target_hash, ctx->page_size);
+        if (leafVP != 0) {
+            /* Walk the DirContentLink list at this leaf.  Each link
+               points to a DirContent in the chain.  Apply the same
+               hash-fast-reject + strcmp + read-rule dedup as the
+               chain walk below. */
+            int64_t linkVP = leafVP;
+            int64_t best_child = 0, best_childPtr = 0;
+            int64_t best_eff_epoch = 0, best_raw_epoch = 0;
+            int best_name_match = 0;
+
+            while (linkVP != 0) {
+                uint8_t* linkSlot = pool_resolve_ro(&ctx->pool, linkVP);
+                if (!linkSlot) break;
+
+                int64_t dcVP, nextLinkVP;
+                nodes_read_dircontentlink(linkSlot, &dcVP, &nextLinkVP,
+                                          ctx->page_size);
+
+                uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, dcVP);
+                if (!dc_slot) { linkVP = nextLinkVP; continue; }
+
+                uint32_t ce_child, ce_epoch;
+                int64_t ce_childPtr, ce_namePtr, ce_next;
+                nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch,
+                                      &ce_childPtr, &ce_namePtr, &ce_next,
+                                      ctx->page_size);
+
+                int64_t eff_epoch = (int64_t)ce_epoch;
+                if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
+                    eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
+
+                int applies = (eff_epoch == read_epoch) ||
+                              (eff_epoch < read_epoch && eff_epoch % 2 == 0);
+                if (!applies) { linkVP = nextLinkVP; continue; }
+
+                /* Dedup by childNodeId — keep the highest-epoch entry */
+                if ((int64_t)ce_child == best_child && best_name_match &&
+                    eff_epoch <= best_eff_epoch) {
+                    linkVP = nextLinkVP; continue;
+                }
+
+                if (ce_namePtr != 0) {
+                    uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
+                    if (entry_hash != target_hash) {
+                        linkVP = nextLinkVP; continue;
+                    }
+                    char entry_name[256];
+                    int nl = nodes_read_name(&ctx->pool, ce_namePtr,
+                                              entry_name, (int)sizeof(entry_name));
+                    if (nl > 0 && strcmp(entry_name, name) == 0) {
+                        best_child      = (int64_t)ce_child;
+                        best_childPtr   = ce_childPtr;
+                        best_eff_epoch  = eff_epoch;
+                        best_raw_epoch  = (int64_t)ce_epoch;
+                        best_name_match = 1;
+                    }
+                }
+                linkVP = nextLinkVP;
+            }
+
+            if (best_name_match) {
+                *out_childPtr = best_childPtr;
+                *out_nodeId   = (uint32_t)best_child;
+                if (out_epoch) *out_epoch = (uint32_t)best_raw_epoch;
+                return VFS_OK;
+            }
+            /* Tree exists, leaf found, but no matching name at this epoch.
+               Fall through to chain walk — the entry might have been created
+               before the tree was built (e.g. legacy files). */
+        }
+        /* Tree exists but no leaf for this hash, or leaf had no matching
+           entry.  Fall through to chain walk as safety net. */
+    }
+
+    /* --- Fallback: chain walk (for directories without a tree) --- */
     int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
 
     int64_t best_child = 0, best_childPtr = 0, best_eff_epoch = 0;
