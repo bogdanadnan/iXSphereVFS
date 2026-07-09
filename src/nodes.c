@@ -73,6 +73,18 @@ void nodes_read_dircontentindex(const uint8_t* slot, uint8_t* hashNibble,
 }
 
 /* ---------------------------------------------------------------------------
+ * DirContentLink — leaf-list entry pointing to a DirContent in the chain.
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_dircontentlink(uint8_t* slot, int64_t dirContentVP,
+                                int64_t nextVP, int64_t page_size) {
+    memset(slot + 0, 0, 8);   /* bytes 0-7: reserved */
+    vfs_wr8_s(slot, DIRCONTENTLINK_OFF_DIRCONTENTVP, dirContentVP, page_size);
+    vfs_wr8_s(slot, DIRCONTENTLINK_OFF_NEXTVP, nextVP, page_size);
+    memset(slot + 24, 0, 8);  /* bytes 24-31: reserved */
+}
+
+/* ---------------------------------------------------------------------------
  * FileNode (Workload 4.2)
  * --------------------------------------------------------------------------- */
 
