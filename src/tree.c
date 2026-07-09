@@ -1415,6 +1415,7 @@ int64_t dircontentindex_lookup(Pool* pool, int64_t indexRoot,
         /* INTERNAL node — find the child matching this level's nibble */
         int target = dircontentindex_extract_nibble(nameHash, level);
         int64_t childVP = 0;
+        int isLast = (level == RADIX_TREE_MAX_LEVELS - 1);
 
         /* Walk the child list at this level (linked via nextVP) */
         int64_t childWalk = listVP;
@@ -1428,13 +1429,16 @@ int64_t dircontentindex_lookup(Pool* pool, int64_t indexRoot,
                                        &childNodeType, &childListVP,
                                        &childNextVP, page_size);
 
+            if (isLast && childNodeType == NODE_TYPE_INDEX_LEAF) {
+                /* At the deepest level, any LEAF child is the shared
+                   leaf.  Return its DirContentLink list head. */
+                return childListVP;
+            }
+
             if (childHashNibble == target) {
                 if (childNodeType == NODE_TYPE_INDEX_LEAF) {
                     return childListVP;
                 }
-                /* INTERNAL — descend into the child node itself.
-                   childWalk is the child's own VP.  The next iteration
-                   reads this child and searches ITS listVP. */
                 childVP = childWalk;
                 break;
             }
@@ -1499,6 +1503,7 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
 
         /* INTERNAL — find or create child for this level's nibble */
         int target = dircontentindex_extract_nibble(nameHash, level);
+        int isLast = (level == RADIX_TREE_MAX_LEVELS - 1);
         int64_t childVP = 0;
 
         int64_t childWalk = listVP;
@@ -1511,6 +1516,14 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
                                        &childNodeType, &childListVP,
                                        &childNextVP, page_size);
 
+            if (isLast) {
+                /* At the deepest level, ALL entries share the same
+                   leaf regardless of the last nibble.  Use the first
+                   existing child (any nibble) as the leaf. */
+                childVP = childWalk;
+                break;
+            }
+
             if (childHashNibble == target) {
                 childVP = childListVP;
                 break;
@@ -1519,7 +1532,29 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
         }
 
         if (childVP != 0) {
-            /* Child exists — descend into subtree */
+            /* Child exists — handle it */
+            if (isLast) {
+                /* At the deepest level, the child is a shared leaf.
+                   CAS-prepend the DirContentLink directly. */
+                uint8_t* leafSlot = pool_resolve_rw(pool, childVP);
+                if (!leafSlot) return -1;
+                int64_t linkVP = pool_alloc(pool);
+                if (linkVP == VFS_VPTR_NULL) return -1;
+                uint8_t* linkSlot = pool_resolve_rw(pool, linkVP);
+                if (!linkSlot) return -1;
+
+                int64_t oldHead;
+                do {
+                    oldHead = vfs_atomic_load_i64(
+                        (const int64_t*)(leafSlot + DIRCONTENTINDEX_OFF_LISTVP));
+                    nodes_write_dircontentlink(linkSlot, dirContentVP,
+                                               oldHead, page_size);
+                } while (vfs_cas_i64(
+                             (int64_t*)(leafSlot + DIRCONTENTINDEX_OFF_LISTVP),
+                             oldHead, linkVP) != oldHead);
+                return 0;
+            }
+            /* INTERNAL — descend into subtree */
             nodeVP = childVP;
             continue;
         }
@@ -1534,7 +1569,6 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
         uint8_t* newChildSlot = pool_resolve_rw(pool, newChildVP);
         if (!newChildSlot) return -1;
 
-        int isLast = (level == RADIX_TREE_MAX_LEVELS - 1);
         int64_t oldHead;
         do {
             oldHead = vfs_atomic_load_i64(
