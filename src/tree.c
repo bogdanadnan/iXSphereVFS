@@ -1432,7 +1432,10 @@ int64_t dircontentindex_lookup(Pool* pool, int64_t indexRoot,
                 if (childNodeType == NODE_TYPE_INDEX_LEAF) {
                     return childListVP;
                 }
-                childVP = childListVP;
+                /* INTERNAL — descend into the child node itself.
+                   childWalk is the child's own VP.  The next iteration
+                   reads this child and searches ITS listVP. */
+                childVP = childWalk;
                 break;
             }
             childWalk = childNextVP;
