@@ -615,9 +615,11 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
     int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
     uint64_t target_hash = name_hash_compute(name, (int)strlen(name));
     int64_t walk_vp = headPtr;
+    int collision_walked = 0;
     while (walk_vp != 0) {
         uint8_t* dc_slot = pool_resolve_rw(&ctx->pool, walk_vp);
         if (!dc_slot) break;
+        collision_walked++;
         uint32_t ce_child, ce_epoch;
         int64_t ce_childPtr, ce_namePtr, ce_next;
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
@@ -641,6 +643,17 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
                 }
         }
         walk_vp = ce_next;
+    }
+    /* Diagnostic: log when the name-collision walk in vfs_create walks
+       a large number of entries.  A hot directory with many entries
+       (e.g. 100s) is a known bottleneck.  Rate-limited: skip most, keep
+       1 in 100 to bound the log volume. */
+    static int cr_log_count = 0;
+    if (collision_walked >= 200 && (cr_log_count++ % 100 == 0)) {
+        fprintf(stderr,
+                "[CR_INFO] parent=0x%llx name='%s' epoch=%lld walked=%d\n",
+                (unsigned long long)parent, name,
+                (long long)epoch, collision_walked);
     }
 
     /* Atomically increment nextNodeId */
@@ -999,9 +1012,13 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     int best_count = 0;
 
     int64_t walk_vp = headPtr;
+    int chain_walked_count = 0;
+    int chain_truncated_by_cap = 0;
+    int chain_truncated_by_null = 0;
     while (walk_vp != 0 && best_count < DENTRY_CACHE_MAX) {
         uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
-        if (!dc_slot) break;
+        if (!dc_slot) { chain_truncated_by_null = 1; break; }
+        chain_walked_count++;
         uint32_t ce_child, ce_epoch;
         int64_t ce_childPtr, ce_namePtr, ce_next;
         nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
@@ -1036,6 +1053,30 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
             best_count++;
         }
         walk_vp = ce_next;
+    }
+    if (best_count == DENTRY_CACHE_MAX && walk_vp != 0) {
+        chain_truncated_by_cap = 1;
+    }
+    if (chain_truncated_by_cap || chain_truncated_by_null) {
+        /* Diagnostic: log when the dedup is truncated — visible to
+           stderr.  One line per affected readdir. */
+        fprintf(stderr,
+                "[DCL] dir_vp=0x%llx epoch=%lld chain_walked=%d dedup=%d "
+                "truncated_by_cap=%d truncated_by_null=%d\n",
+                (unsigned long long)dir_vp, (long long)read_epoch,
+                chain_walked_count, best_count,
+                chain_truncated_by_cap, chain_truncated_by_null);
+    }
+    /* Always log the chain-walk stat so we can see what happens even
+       when no truncation occurs.  Rate-limited: only print if best_count
+       >= 100 (skips the per-syscall chatter for small directories). */
+    static int dcl_log_count = 0;
+    if (best_count >= 100 && (dcl_log_count++ % 50 == 0)) {
+        fprintf(stderr,
+                "[DCL_INFO] dir_vp=0x%llx epoch=%lld chain_walked=%d dedup=%d "
+                "chain_remaining=%lld\n",
+                (unsigned long long)dir_vp, (long long)read_epoch,
+                chain_walked_count, best_count, (long long)walk_vp);
     }
 
     /* Build output from tracking arrays, skipping tombstones */
