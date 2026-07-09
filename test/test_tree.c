@@ -1945,6 +1945,31 @@ static void test_vfs_create_open_many(void) {
     vfs_unmount(vfs);
 }
 
+static void test_delete_recreate_same_name(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    /* Create a file at epoch 0 */
+    int64_t vp1 = vfs_create(vfs, root_vp, "recreate.txt", 0);
+    CHECK(vp1 > 0);
+
+    /* Delete it at epoch 0 — creates a tombstone DirContent */
+    int ret = vfs_delete(vfs, root_vp, "recreate.txt", 0);
+    CHECK_EQ(ret, VFS_OK);
+
+    /* Re-create at the same name at epoch 2 (a new even epoch).
+       The tombstone at epoch 0 (namePtr=0) is not a collision at
+       epoch 2; the original live entry at epoch 0 does not block
+       creation at a different epoch. */
+    int64_t vp2 = vfs_create(vfs, root_vp, "recreate.txt", 2);
+    CHECK(vp2 > 0);
+    CHECK(vp1 != vp2);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -2090,6 +2115,7 @@ int main(void) {
     test_dircontentindex_same_leaf();
     test_vfs_create_open_tree();
     test_vfs_create_open_many();
+    test_delete_recreate_same_name();
 
     /* Clean up */
     unlink(test_path);
