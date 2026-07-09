@@ -771,7 +771,17 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     uint8_t* dir_slot = pool_resolve_rw(&ctx->pool, dir_vp);
 
     if (!dir_slot) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
-    nodes_write_dirnode(dir_slot, new_nodeId, 0, 0, ctx->page_size);
+
+    /* Allocate the initial radix tree root for this new directory.
+       Every DirNode starts with a valid indexHeadPtr. */
+    int64_t dirIndexVP = pool_alloc(&ctx->pool);
+    if (dirIndexVP == VFS_VPTR_NULL) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_FULL; return VFS_ERR_FULL; }
+    uint8_t* dirIndexSlot = pool_resolve_rw(&ctx->pool, dirIndexVP);
+    if (!dirIndexSlot) { vfs_unlock(vfs, (int64_t)new_nodeId, epoch); vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
+    nodes_write_dircontentindex(dirIndexSlot, 0, NODE_TYPE_INDEX_INTERNAL,
+                                 0, 0, ctx->page_size);
+
+    nodes_write_dirnode(dir_slot, new_nodeId, 0, dirIndexVP, ctx->page_size);
 
     int64_t name_vp;
     int name_slots = nodes_write_name(&ctx->pool, name, &name_vp);
