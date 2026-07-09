@@ -1200,6 +1200,16 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
 }
 
 /* ---------------------------------------------------------------------------
+ * Radix tree helpers (Phase 18)
+ * --------------------------------------------------------------------------- */
+
+/* Extract a 4-bit nibble from a 64-bit name hash.  level 0 extracts bits
+   60-63 (the most significant nibble); level 15 extracts bits 0-3. */
+static int dircontentindex_extract_nibble(uint64_t nameHash, int level) {
+    return (int)((nameHash >> (60 - level * 4)) & 0xF);
+}
+
+/* ---------------------------------------------------------------------------
  * dirchain_find_child — walk DirContent chain, read-rule dedup, return match
  * --------------------------------------------------------------------------- */
 
