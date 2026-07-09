@@ -1872,6 +1872,52 @@ static void test_dircontentindex_same_leaf(void) {
     vfs_unmount(vfs);
 }
 
+static void test_vfs_create_open_tree(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    /* Create a file — vfs_create writes to BOTH chain and tree */
+    int64_t file_vp = vfs_create(vfs, root_vp, "tree_test.txt", 0);
+    CHECK(file_vp > 0);
+
+    /* Verify the tree has an entry for this file */
+    uint8_t* rootSlot = pool_resolve_ro(&ctx->pool, root_vp);
+    CHECK(rootSlot != NULL);
+    int64_t indexRoot = vfs_rd8_s(rootSlot, DIRNODE_OFF_INDEXHEADPTR,
+                                   ctx->page_size);
+    CHECK(indexRoot != 0);
+
+    /* Lookup via the tree */
+    uint64_t nameHash = name_hash_compute("tree_test.txt", 13);
+    int64_t leafVP = dircontentindex_lookup(&ctx->pool, indexRoot,
+                                              nameHash, ctx->page_size);
+    CHECK(leafVP != 0);
+
+    /* Walk the DirContentLink list — must find the link to our DirContent */
+    int found = 0;
+    int64_t linkVP = leafVP;
+    while (linkVP != 0) {
+        int64_t dcVP, nextLinkVP;
+        nodes_read_dircontentlink(pool_resolve_ro(&ctx->pool, linkVP),
+                                  &dcVP, &nextLinkVP, ctx->page_size);
+        if (dcVP != 0) {
+            found = 1;
+            break;
+        }
+        linkVP = nextLinkVP;
+    }
+    CHECK(found == 1);
+
+    /* vfs_open should find the file (uses tree-first path in
+       dirchain_find_child, then chain walk as safety net) */
+    int64_t opened = vfs_open(vfs, root_vp, "tree_test.txt", 0);
+    CHECK(opened > 0);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -2015,6 +2061,7 @@ int main(void) {
     test_dircontentindex_lookup_empty();
     test_dircontentindex_insert_lookup();
     test_dircontentindex_same_leaf();
+    test_vfs_create_open_tree();
 
     /* Clean up */
     unlink(test_path);
