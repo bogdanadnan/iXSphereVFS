@@ -105,8 +105,19 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     uint8_t* root_slot = pool_resolve_rw(&ctx->pool, root_vp);
     if (!root_slot) return VFS_ERR_IO;
 
-    /* Write root DirNode: nodeId=0, no children */
-    nodes_write_dirnode(root_slot, 0, 0, 0, ctx->page_size);
+    /* Write root DirNode: nodeId=0, no children.
+       Allocate the initial radix tree root (INTERNAL, empty child list).
+       Every DirNode starts with a valid indexHeadPtr — no lazy build. */
+    int64_t rootIndexVP = pool_alloc(&ctx->pool);
+    if (rootIndexVP == VFS_VPTR_NULL) return VFS_ERR_FULL;
+
+    uint8_t* rootIndexSlot = pool_resolve_rw(&ctx->pool, rootIndexVP);
+    if (!rootIndexSlot) return VFS_ERR_IO;
+
+    nodes_write_dircontentindex(rootIndexSlot, 0, NODE_TYPE_INDEX_INTERNAL,
+                                 0, 0, ctx->page_size);
+
+    nodes_write_dirnode(root_slot, 0, 0, rootIndexVP, ctx->page_size);
 
     /* Update superblock with root pointer */
     ctx->rootNodeOffset = root_vp;
