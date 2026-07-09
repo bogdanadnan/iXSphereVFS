@@ -697,6 +697,19 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
     } while (vfs_cas_i64((int64_t*)(parent_slot + DIRNODE_OFF_HEADPTR),
                          old_head, dc_vp) != old_head);
 
+    /* Insert into the directory's radix tree index (Phase 18).
+       The chain entry already exists — the tree is additive.  If the
+       insert fails (pool exhausted), the tree entry is missing but
+       the chain remains the source of truth for readdir. */
+    {
+        int64_t parentIndex = vfs_rd8_s(parent_slot,
+                                         DIRNODE_OFF_INDEXHEADPTR,
+                                         ctx->page_size);
+        uint64_t nameHash = name_hash_compute(name, (int)strlen(name));
+        dircontentindex_insert(&ctx->pool, &parentIndex, nameHash,
+                               dc_vp, ctx->page_size);
+    }
+
     dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
     return file_vp;
