@@ -42,9 +42,10 @@ void nodes_write_dirnode(uint8_t* slot, uint32_t nodeId, int64_t headPtr,
 }
 
 void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr,
-                         int64_t page_size) {
+                         int64_t* indexHeadPtr, int64_t page_size) {
     *nodeId = (uint32_t)vfs_rd4_s(slot, DIRNODE_OFF_NODEID, page_size);
     *headPtr = vfs_rd8_s(slot, DIRNODE_OFF_HEADPTR, page_size);
+    *indexHeadPtr = vfs_rd8_s(slot, DIRNODE_OFF_INDEXHEADPTR, page_size);
 }
 
 /* ---------------------------------------------------------------------------

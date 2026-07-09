@@ -36,7 +36,8 @@ static void test_dirnode_write_read(void) {
     /* Read back all fields */
     uint32_t nodeId;
     int64_t headPtr;
-    nodes_read_dirnode(slot, &nodeId, &headPtr, VFS_PAGE_SIZE);
+    int64_t indexHeadPtr;
+    nodes_read_dirnode(slot, &nodeId, &headPtr, &indexHeadPtr, VFS_PAGE_SIZE);
 
     CHECK_EQ(nodeId, 5u);
     CHECK_EQ(VFS_VPTR_PAGE(headPtr), 10);

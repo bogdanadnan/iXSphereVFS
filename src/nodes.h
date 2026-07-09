@@ -58,7 +58,8 @@
 
 void nodes_write_dirnode(uint8_t* slot, uint32_t nodeId, int64_t headPtr,
                           int64_t indexHeadPtr, int64_t page_size);
-void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr, int64_t page_size);
+void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr,
+                         int64_t* indexHeadPtr, int64_t page_size);
 
 void nodes_write_dircontentindex(uint8_t* slot, uint8_t hashNibble, uint8_t nodeType,
                                   int64_t listVP, int64_t nextVP, int64_t page_size);
