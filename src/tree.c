@@ -790,33 +790,78 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         return VFS_ERR_NOTDIR;
         }
 
-    /* Walk DirContent chain, check for name collision */
-    int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
+    /* Check for name collision — tree lookup first, chain walk as safety net. */
+    int64_t indexRoot = vfs_rd8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR,
+                                   ctx->page_size);
     uint64_t target_hash = name_hash_compute(name, (int)strlen(name));
-    int64_t walk_vp = headPtr;
-    while (walk_vp != 0) {
-        uint8_t* dc_slot = pool_resolve_rw(&ctx->pool, walk_vp);
-        if (!dc_slot) break;
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(dc_slot, &cc, &ce, &cp, &np, &nx, ctx->page_size);
-        (void)cc; (void)cp;
-        if (ce == (uint32_t)epoch && np != 0) {
-            uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
-            if (entry_hash != target_hash) {
-#ifdef VFS_NAME_HASH_TESTING
-            s_hash_rejects++;
-#endif
-            walk_vp = nx; continue; }
-            char entry_name[256];
-            int nl = nodes_read_name(&ctx->pool, np, entry_name,
-                                     (int)sizeof(entry_name));
-            if (nl > 0 && strcmp(entry_name, name) == 0) {
-                vfs->ctx->last_error = VFS_ERR_EXISTS;
-                return VFS_ERR_EXISTS;
+
+    if (indexRoot != 0) {
+        int64_t leafVP = dircontentindex_lookup(&ctx->pool, indexRoot,
+                                                target_hash, ctx->page_size);
+        if (leafVP != 0) {
+            int64_t linkVP = leafVP;
+            while (linkVP != 0) {
+                uint8_t* linkSlot = pool_resolve_rw(&ctx->pool, linkVP);
+                if (!linkSlot) break;
+                int64_t dcVP, nextLinkVP;
+                nodes_read_dircontentlink(linkSlot, &dcVP, &nextLinkVP,
+                                          ctx->page_size);
+
+                uint8_t* dc_slot = pool_resolve_rw(&ctx->pool, dcVP);
+                if (!dc_slot) { linkVP = nextLinkVP; continue; }
+
+                uint32_t cc, ce;
+                int64_t cp, np, nx;
+                nodes_read_dircontent(dc_slot, &cc, &ce, &cp, &np, &nx,
+                                      ctx->page_size);
+                (void)cc; (void)cp; (void)nx;
+
+                if (ce == (uint32_t)epoch && np != 0) {
+                    uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
+                    if (entry_hash == target_hash) {
+                        char entry_name[256];
+                        int nl = nodes_read_name(&ctx->pool, np, entry_name,
+                                                 (int)sizeof(entry_name));
+                        if (nl > 0 && strcmp(entry_name, name) == 0) {
+                            vfs->ctx->last_error = VFS_ERR_EXISTS;
+                            return VFS_ERR_EXISTS;
+                        }
+                    }
                 }
+                linkVP = nextLinkVP;
+            }
         }
-        walk_vp = nx;
+    }
+
+    /* Chain walk — always runs as safety net. */
+    {
+        int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR,
+                                     ctx->page_size);
+        int64_t walk_vp = headPtr;
+        while (walk_vp != 0) {
+            uint8_t* dc_slot = pool_resolve_rw(&ctx->pool, walk_vp);
+            if (!dc_slot) break;
+            uint32_t cc, ce;
+            int64_t cp, np, nx;
+            nodes_read_dircontent(dc_slot, &cc, &ce, &cp, &np, &nx, ctx->page_size);
+            (void)cc; (void)cp;
+            if (ce == (uint32_t)epoch && np != 0) {
+                uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
+                if (entry_hash != target_hash) {
+#ifdef VFS_NAME_HASH_TESTING
+                s_hash_rejects++;
+#endif
+                walk_vp = nx; continue; }
+                char entry_name[256];
+                int nl = nodes_read_name(&ctx->pool, np, entry_name,
+                                         (int)sizeof(entry_name));
+                if (nl > 0 && strcmp(entry_name, name) == 0) {
+                    vfs->ctx->last_error = VFS_ERR_EXISTS;
+                    return VFS_ERR_EXISTS;
+                }
+            }
+            walk_vp = nx;
+        }
     }
 
     uint32_t new_nodeId = (uint32_t)vfs_atomic_add_i32(
