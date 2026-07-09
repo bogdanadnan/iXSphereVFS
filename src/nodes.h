@@ -15,6 +15,10 @@
 #define NODE_TYPE_INDEX_INTERNAL 0x02  /* internal node — navigates to children */
 #define NODE_TYPE_INDEX_LEAF     0x03  /* leaf node — holds DirContentLink list */
 
+/* Radix tree shape — 4-bit branching × 16 levels covers a 64-bit hash. */
+#define RADIX_TREE_BRANCHING   16
+#define RADIX_TREE_MAX_LEVELS  16
+
 /* ---------------------------------------------------------------------------
  * MapperEntry flags
  * --------------------------------------------------------------------------- */
