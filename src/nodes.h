@@ -35,6 +35,14 @@
 #define DIRNODE_OFF_HEADPTR   8
 #define DIRNODE_OFF_INDEXHEADPTR 16  /* int64_t — VirtualPtr to first DirContentIndex at level 0 */
 
+/* DirContentIndex — radix-tree node for directory indexing.  INTERNAL type
+   (nodeType=0x02) navigates to children; LEAF type (nodeType=0x03) holds
+   a list of DirContentLink entries.  32 bytes per slot. */
+#define DIRCONTENTINDEX_OFF_HASHNIBBLE 0  /* uint8 — which nibble of the name hash (0..15) */
+#define DIRCONTENTINDEX_OFF_NODETYPE 1    /* uint8 — 0x02=INTERNAL, 0x03=LEAF */
+#define DIRCONTENTINDEX_OFF_LISTVP 8      /* int64 — VP of first entry in this level's list */
+#define DIRCONTENTINDEX_OFF_NEXTVP 16     /* int64 — VP of next sibling at the same level */
+
 void nodes_write_dirnode(uint8_t* slot, uint32_t nodeId, int64_t headPtr, int64_t page_size);
 void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr, int64_t page_size);
 
