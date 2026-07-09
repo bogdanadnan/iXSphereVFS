@@ -63,6 +63,15 @@ void nodes_write_dircontentindex(uint8_t* slot, uint8_t hashNibble,
     memset(slot + 24, 0, 8);  /* bytes 24-31: reserved */
 }
 
+void nodes_read_dircontentindex(const uint8_t* slot, uint8_t* hashNibble,
+                                 uint8_t* nodeType, int64_t* listVP,
+                                 int64_t* nextVP, int64_t page_size) {
+    *hashNibble = slot[DIRCONTENTINDEX_OFF_HASHNIBBLE];
+    *nodeType   = slot[DIRCONTENTINDEX_OFF_NODETYPE];
+    *listVP     = vfs_rd8_s(slot, DIRCONTENTINDEX_OFF_LISTVP, page_size);
+    *nextVP     = vfs_rd8_s(slot, DIRCONTENTINDEX_OFF_NEXTVP, page_size);
+}
+
 /* ---------------------------------------------------------------------------
  * FileNode (Workload 4.2)
  * --------------------------------------------------------------------------- */
