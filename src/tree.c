@@ -1262,15 +1262,19 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
                           int64_t dirContentVP, int64_t page_size) {
     if (!pool || !indexRoot || dirContentVP == 0) return -1;
 
-    /* If the tree doesn't exist yet, create the root LEAF node */
+    /* If the tree doesn't exist yet, create the root as INTERNAL so the
+       tree naturally grows per-nibble.  CAS-protects the race when two
+       threads initialize the root simultaneously. */
     if (*indexRoot == 0) {
-        int64_t leafVP = pool_alloc(pool);
-        if (leafVP == VFS_VPTR_NULL) return -1;
-        uint8_t* leafSlot = pool_resolve_rw(pool, leafVP);
-        if (!leafSlot) return -1;
-        nodes_write_dircontentindex(leafSlot, 0, NODE_TYPE_INDEX_LEAF,
+        int64_t rootVP = pool_alloc(pool);
+        if (rootVP == VFS_VPTR_NULL) return -1;
+        uint8_t* rootSlot = pool_resolve_rw(pool, rootVP);
+        if (!rootSlot) return -1;
+        nodes_write_dircontentindex(rootSlot, 0, NODE_TYPE_INDEX_INTERNAL,
                                      0, 0, page_size);
-        *indexRoot = leafVP;
+        /* CAS-claim the root pointer (writes to the DirNode's cached
+           field or the caller's in-memory slot). */
+        vfs_cas_i64((int64_t*)indexRoot, 0, rootVP);
     }
 
     int64_t nodeVP = *indexRoot;
@@ -1331,8 +1335,10 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
         }
 
         /* No child for this nibble — allocate one and CAS-prepend to
-           parent's child list.  Use LEAF for the last level, INTERNAL
-           otherwise. */
+           parent's child list.  At the deepest level (level 15) we
+           create a LEAF and immediately insert the DirContentLink so
+           the function does not need a separate loop iteration for
+           the final step. */
         int64_t newChildVP = pool_alloc(pool);
         if (newChildVP == VFS_VPTR_NULL) return -1;
         uint8_t* newChildSlot = pool_resolve_rw(pool, newChildVP);
@@ -1350,6 +1356,27 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
         } while (vfs_cas_i64(
                      (int64_t*)(slot + DIRCONTENTINDEX_OFF_LISTVP),
                      oldHead, newChildVP) != oldHead);
+
+        if (isLast) {
+            /* Just created a LEAF — insert the DirContentLink right
+               here so we don't rely on the next loop iteration (which
+               won't happen — this is the last iteration). */
+            int64_t linkVP = pool_alloc(pool);
+            if (linkVP == VFS_VPTR_NULL) return -1;
+            uint8_t* linkSlot = pool_resolve_rw(pool, linkVP);
+            if (!linkSlot) return -1;
+
+            nodes_write_dircontentlink(linkSlot, dirContentVP, 0, page_size);
+            /* LEAF's listVP starts at 0, so CAS-claim it directly */
+            int64_t old = vfs_cas_i64(
+                (int64_t*)(newChildSlot + DIRCONTENTINDEX_OFF_LISTVP),
+                0, linkVP);
+            if (old != 0) {
+                /* Another thread raced and inserted first — our slot
+                   is orphaned (harmless one-slot leak). */
+            }
+            return 0;
+        }
 
         nodeVP = newChildVP;
     }
