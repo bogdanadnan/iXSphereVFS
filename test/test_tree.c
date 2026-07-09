@@ -1828,6 +1828,50 @@ static void test_dircontentindex_insert_lookup(void) {
     vfs_unmount(vfs);
 }
 
+static void test_dircontentindex_same_leaf(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t page_size = ctx->page_size;
+
+    uint8_t* rootSlot = pool_resolve_ro(&ctx->pool, ctx->rootNodeOffset);
+    CHECK(rootSlot != NULL);
+    int64_t indexRoot = vfs_rd8_s(rootSlot, DIRNODE_OFF_INDEXHEADPTR, page_size);
+    CHECK(indexRoot != 0);
+
+    /* Two hashes that share the first 15 nibbles (prefix) but differ
+       only in the last nibble.  They should land in the same leaf. */
+    uint64_t hash1 = 0x0123456789ABCDE0ULL;  /* last nibble = 0 */
+    uint64_t hash2 = 0x0123456789ABCDEFULL;  /* last nibble = F */
+
+    int64_t dcVP1 = pool_alloc(&ctx->pool);
+    int64_t dcVP2 = pool_alloc(&ctx->pool);
+    CHECK(dcVP1 != VFS_VPTR_NULL);
+    CHECK(dcVP2 != VFS_VPTR_NULL);
+
+    int ret = dircontentindex_insert(&ctx->pool, &indexRoot, hash1,
+                                      dcVP1, page_size);
+    CHECK_EQ(ret, 0);
+
+    ret = dircontentindex_insert(&ctx->pool, &indexRoot, hash2,
+                                  dcVP2, page_size);
+    CHECK_EQ(ret, 0);
+
+    /* Both lookups should return non-zero (leaf found) */
+    int64_t leaf1 = dircontentindex_lookup(&ctx->pool, indexRoot, hash1,
+                                            page_size);
+    int64_t leaf2 = dircontentindex_lookup(&ctx->pool, indexRoot, hash2,
+                                            page_size);
+    CHECK(leaf1 != 0);
+    CHECK(leaf2 != 0);
+
+    /* Both should return the SAME leaf — they share all but the last
+       nibble, and the tree is 16 levels deep. */
+    CHECK_EQ(leaf1, leaf2);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1970,6 +2014,7 @@ int main(void) {
 
     test_dircontentindex_lookup_empty();
     test_dircontentindex_insert_lookup();
+    test_dircontentindex_same_leaf();
 
     /* Clean up */
     unlink(test_path);
