@@ -11,6 +11,10 @@
 #define NODE_TYPE_DIR   0x01
 #define NODE_TYPE_FILE  0x03
 
+/* DirContentIndex node type values (stored at DIRCONTENTINDEX_OFF_NODETYPE) */
+#define NODE_TYPE_IDX_INTERNAL 0x02  /* internal node — navigates to children */
+#define NODE_TYPE_IDX_LEAF     0x03  /* leaf node — holds DirContentLink list */
+
 /* ---------------------------------------------------------------------------
  * MapperEntry flags
  * --------------------------------------------------------------------------- */
