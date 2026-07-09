@@ -997,29 +997,76 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     int64_t found_childPtr = 0;
     uint64_t target_hash = name_hash_compute(name, (int)strlen(name));
 
-    int64_t walk_vp = headPtr;
-    while (walk_vp != 0 && found_vp == 0) {
-        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
-        if (!dc_slot) break;
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        nodes_read_dircontent(dc_slot, &cc, &ce, &cp, &np, &nx, ctx->page_size);
-        if (np != 0 && ce <= (uint32_t)epoch) {
-            uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
-            if (entry_hash != target_hash) {
-#ifdef VFS_NAME_HASH_TESTING
-            s_hash_rejects++;
-#endif
-            walk_vp = nx; continue; }
-            char en[256];
-            int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
-            if (nl > 0 && strcmp(en, name) == 0) {
-                found_vp = walk_vp;
-                found_childId = cc;
-                found_childPtr = cp;
+    /* Tree lookup first (if index exists) */
+    {
+        int64_t indexRoot = vfs_rd8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR,
+                                       ctx->page_size);
+        if (indexRoot != 0) {
+            int64_t leafVP = dircontentindex_lookup(&ctx->pool, indexRoot,
+                                                    target_hash, ctx->page_size);
+            if (leafVP != 0) {
+                int64_t linkVP = leafVP;
+                while (linkVP != 0) {
+                    uint8_t* linkSlot = pool_resolve_rw(&ctx->pool, linkVP);
+                    if (!linkSlot) break;
+                    int64_t dcVP, nextLinkVP;
+                    nodes_read_dircontentlink(linkSlot, &dcVP, &nextLinkVP,
+                                              ctx->page_size);
+
+                    uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, dcVP);
+                    if (!dc_slot) { linkVP = nextLinkVP; continue; }
+
+                    uint32_t cc, ce;
+                    int64_t cp, np, nx;
+                    nodes_read_dircontent(dc_slot, &cc, &ce, &cp, &np, &nx,
+                                          ctx->page_size);
+                    if (np != 0 && ce <= (uint32_t)epoch) {
+                        uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
+                        if (entry_hash == target_hash) {
+                            char en[256];
+                            int nl = nodes_read_name(&ctx->pool, np, en,
+                                                     (int)sizeof(en));
+                            if (nl > 0 && strcmp(en, name) == 0) {
+                                found_vp = dcVP;
+                                found_childId = cc;
+                                found_childPtr = cp;
+                                break;
+                            }
+                        }
+                    }
+                    linkVP = nextLinkVP;
+                }
             }
         }
-        walk_vp = nx;
+    }
+
+    /* Chain walk — safety net (always runs if not found in tree) */
+    if (found_vp == 0) {
+        int64_t walk_vp = headPtr;
+        while (walk_vp != 0) {
+            uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
+            if (!dc_slot) break;
+            uint32_t cc, ce;
+            int64_t cp, np, nx;
+            nodes_read_dircontent(dc_slot, &cc, &ce, &cp, &np, &nx, ctx->page_size);
+            if (np != 0 && ce <= (uint32_t)epoch) {
+                uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
+                if (entry_hash != target_hash) {
+#ifdef VFS_NAME_HASH_TESTING
+                s_hash_rejects++;
+#endif
+                walk_vp = nx; continue; }
+                char en[256];
+                int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
+                if (nl > 0 && strcmp(en, name) == 0) {
+                    found_vp = walk_vp;
+                    found_childId = cc;
+                    found_childPtr = cp;
+                    break;
+                }
+            }
+            walk_vp = nx;
+        }
     }
 
     if (found_vp == 0) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
