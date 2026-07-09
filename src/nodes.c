@@ -84,6 +84,12 @@ void nodes_write_dircontentlink(uint8_t* slot, int64_t dirContentVP,
     memset(slot + 24, 0, 8);  /* bytes 24-31: reserved */
 }
 
+void nodes_read_dircontentlink(const uint8_t* slot, int64_t* dirContentVP,
+                               int64_t* nextVP, int64_t page_size) {
+    *dirContentVP = vfs_rd8_s(slot, DIRCONTENTLINK_OFF_DIRCONTENTVP, page_size);
+    *nextVP       = vfs_rd8_s(slot, DIRCONTENTLINK_OFF_NEXTVP, page_size);
+}
+
 /* ---------------------------------------------------------------------------
  * FileNode (Workload 4.2)
  * --------------------------------------------------------------------------- */
