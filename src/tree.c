@@ -1209,6 +1209,55 @@ static int dircontentindex_extract_nibble(uint64_t nameHash, int level) {
     return (int)((nameHash >> (60 - level * 4)) & 0xF);
 }
 
+int64_t dircontentindex_lookup(Pool* pool, int64_t indexRoot,
+                               uint64_t nameHash, int64_t page_size) {
+    if (indexRoot == 0) return 0;
+
+    int64_t nodeVP = indexRoot;
+    for (int level = 0; level < RADIX_TREE_MAX_LEVELS; level++) {
+        uint8_t* slot = pool_resolve_ro(pool, nodeVP);
+        if (!slot) return 0;
+
+        uint8_t hashNibble, nodeType;
+        int64_t listVP, nextVP;
+        nodes_read_dircontentindex(slot, &hashNibble, &nodeType,
+                                   &listVP, &nextVP, page_size);
+
+        if (nodeType == NODE_TYPE_INDEX_LEAF) {
+            /* Reached the leaf — return its DirContentLink list head */
+            return listVP;
+        }
+
+        /* INTERNAL node — find the child matching this level's nibble */
+        int target = dircontentindex_extract_nibble(nameHash, level);
+        int64_t childVP = 0;
+
+        /* Walk the child list at this level (linked via nextVP) */
+        int64_t childWalk = listVP;
+        while (childWalk != 0) {
+            uint8_t* childSlot = pool_resolve_ro(pool, childWalk);
+            if (!childSlot) return 0;
+
+            uint8_t childHashNibble, childNodeType;
+            int64_t childListVP, childNextVP;
+            nodes_read_dircontentindex(childSlot, &childHashNibble,
+                                       &childNodeType, &childListVP,
+                                       &childNextVP, page_size);
+
+            if (childHashNibble == target) {
+                childVP = childListVP;  /* follow into this child's subtree */
+                break;
+            }
+            childWalk = childNextVP;
+        }
+
+        if (childVP == 0) return 0;  /* no child for this nibble */
+        nodeVP = childVP;
+    }
+
+    return 0;  /* exhausted levels without reaching a leaf */
+}
+
 /* ---------------------------------------------------------------------------
  * dirchain_find_child — walk DirContent chain, read-rule dedup, return match
  * --------------------------------------------------------------------------- */
