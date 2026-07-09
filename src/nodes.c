@@ -49,6 +49,21 @@ void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr,
 }
 
 /* ---------------------------------------------------------------------------
+ * DirContentIndex — radix tree internal/leaf node for directory indexing.
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_dircontentindex(uint8_t* slot, uint8_t hashNibble,
+                                  uint8_t nodeType, int64_t listVP,
+                                  int64_t nextVP, int64_t page_size) {
+    slot[DIRCONTENTINDEX_OFF_HASHNIBBLE] = hashNibble;
+    slot[DIRCONTENTINDEX_OFF_NODETYPE]   = nodeType;
+    memset(slot + 2, 0, 6);   /* bytes 2-7: reserved */
+    vfs_wr8_s(slot, DIRCONTENTINDEX_OFF_LISTVP, listVP, page_size);
+    vfs_wr8_s(slot, DIRCONTENTINDEX_OFF_NEXTVP, nextVP, page_size);
+    memset(slot + 24, 0, 8);  /* bytes 24-31: reserved */
+}
+
+/* ---------------------------------------------------------------------------
  * FileNode (Workload 4.2)
  * --------------------------------------------------------------------------- */
 
