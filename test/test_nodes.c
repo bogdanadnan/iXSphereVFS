@@ -130,6 +130,57 @@ static void test_dircontentindex_leaf_roundtrip(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * DirContentLink tests (Phase 18)
+ * --------------------------------------------------------------------------- */
+
+static void test_dircontentlink_write_read(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Write DirContentLink with non-trivial fields */
+    nodes_write_dircontentlink(slot, VFS_VPTR_MAKE(15, 7),
+                                VFS_VPTR_MAKE(16, 8), VFS_PAGE_SIZE);
+
+    /* Read back all fields */
+    int64_t dirContentVP, nextVP;
+    nodes_read_dircontentlink(slot, &dirContentVP, &nextVP, VFS_PAGE_SIZE);
+
+    CHECK_EQ(VFS_VPTR_PAGE(dirContentVP), 15);
+    CHECK_EQ(VFS_VPTR_SLOT(dirContentVP), 7);
+    CHECK_EQ(VFS_VPTR_PAGE(nextVP), 16);
+    CHECK_EQ(VFS_VPTR_SLOT(nextVP), 8);
+
+    /* Verify reserved bytes 0-7 are zero */
+    int zero_0_7 = 1;
+    for (int i = 0; i < 8; i++) {
+        if (slot[i] != 0) { zero_0_7 = 0; break; }
+    }
+    CHECK(zero_0_7);
+
+    /* Verify reserved bytes 24-31 are zero */
+    int zero_24_31 = 1;
+    for (int i = 24; i < 32; i++) {
+        if (slot[i] != 0) { zero_24_31 = 0; break; }
+    }
+    CHECK(zero_24_31);
+}
+
+static void test_dircontentlink_zero_link(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Single link with no next (nextVP=0) */
+    nodes_write_dircontentlink(slot, VFS_VPTR_MAKE(1, 1), 0, VFS_PAGE_SIZE);
+
+    int64_t dirContentVP, nextVP;
+    nodes_read_dircontentlink(slot, &dirContentVP, &nextVP, VFS_PAGE_SIZE);
+
+    CHECK_EQ(VFS_VPTR_PAGE(dirContentVP), 1);
+    CHECK_EQ(VFS_VPTR_SLOT(dirContentVP), 1);
+    CHECK_EQ(nextVP, 0);
+}
+
+/* ---------------------------------------------------------------------------
  * FileNode tests (Workload 4.2)
  * --------------------------------------------------------------------------- */
 
@@ -898,6 +949,8 @@ int main(void) {
     test_dirnode_zero_slot();
     test_dircontentindex_write_read();
     test_dircontentindex_leaf_roundtrip();
+    test_dircontentlink_write_read();
+    test_dircontentlink_zero_link();
     test_filenode_write_read();
     test_filenode_ctime();
     test_filenode_dirnode_overlap();
