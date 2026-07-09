@@ -129,6 +129,22 @@ static void test_dircontentindex_leaf_roundtrip(void) {
     CHECK_EQ(nextVP, 0);
 }
 
+static void test_dircontentindex_zero_slot(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Fresh zero slot: all fields should read as 0 */
+    uint8_t hashNibble, nodeType;
+    int64_t listVP, nextVP;
+    nodes_read_dircontentindex(slot, &hashNibble, &nodeType,
+                               &listVP, &nextVP, VFS_PAGE_SIZE);
+
+    CHECK_EQ(hashNibble, 0u);
+    CHECK_EQ(nodeType, 0);
+    CHECK_EQ(listVP, 0);
+    CHECK_EQ(nextVP, 0);
+}
+
 /* ---------------------------------------------------------------------------
  * DirContentLink tests (Phase 18)
  * --------------------------------------------------------------------------- */
@@ -177,6 +193,18 @@ static void test_dircontentlink_zero_link(void) {
 
     CHECK_EQ(VFS_VPTR_PAGE(dirContentVP), 1);
     CHECK_EQ(VFS_VPTR_SLOT(dirContentVP), 1);
+    CHECK_EQ(nextVP, 0);
+}
+
+static void test_dircontentlink_zero_slot(void) {
+    uint8_t slot[32];
+    memset(slot, 0, sizeof(slot));
+
+    /* Fresh zero slot: all fields should read as 0 */
+    int64_t dirContentVP, nextVP;
+    nodes_read_dircontentlink(slot, &dirContentVP, &nextVP, VFS_PAGE_SIZE);
+
+    CHECK_EQ(dirContentVP, 0);
     CHECK_EQ(nextVP, 0);
 }
 
@@ -949,8 +977,10 @@ int main(void) {
     test_dirnode_zero_slot();
     test_dircontentindex_write_read();
     test_dircontentindex_leaf_roundtrip();
+    test_dircontentindex_zero_slot();
     test_dircontentlink_write_read();
     test_dircontentlink_zero_link();
+    test_dircontentlink_zero_slot();
     test_filenode_write_read();
     test_filenode_ctime();
     test_filenode_dirnode_overlap();
