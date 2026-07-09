@@ -1429,7 +1429,10 @@ int64_t dircontentindex_lookup(Pool* pool, int64_t indexRoot,
                                        &childNextVP, page_size);
 
             if (childHashNibble == target) {
-                childVP = childListVP;  /* follow into this child's subtree */
+                if (childNodeType == NODE_TYPE_INDEX_LEAF) {
+                    return childListVP;
+                }
+                childVP = childListVP;
                 break;
             }
             childWalk = childNextVP;

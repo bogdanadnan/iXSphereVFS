@@ -1796,6 +1796,38 @@ static void test_dircontentindex_lookup_empty(void) {
     vfs_unmount(vfs);
 }
 
+static void test_dircontentindex_insert_lookup(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+
+    int64_t page_size = ctx->page_size;
+
+    /* Use the root DirNode's actual indexHeadPtr (created by bootstrap) */
+    uint8_t* rootSlot = pool_resolve_ro(&ctx->pool, ctx->rootNodeOffset);
+    CHECK(rootSlot != NULL);
+    int64_t indexRoot = vfs_rd8_s(rootSlot, DIRNODE_OFF_INDEXHEADPTR, page_size);
+    CHECK(indexRoot != 0);  /* bootstrap should have created the tree root */
+
+    /* Allocate a dummy DirContent slot to point at */
+    int64_t dcVP = pool_alloc(&ctx->pool);
+    CHECK(dcVP != VFS_VPTR_NULL);
+
+    /* Insert via the DirNode's actual tree */
+    int ret = dircontentindex_insert(&ctx->pool, &indexRoot,
+                                      0x0123456789ABCDEFULL,
+                                      dcVP, page_size);
+    CHECK_EQ(ret, 0);
+
+    /* Lookup the same hash */
+    int64_t leafVP = dircontentindex_lookup(&ctx->pool, indexRoot,
+                                             0x0123456789ABCDEFULL,
+                                             page_size);
+    CHECK(leafVP != 0);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -1937,6 +1969,7 @@ int main(void) {
 #endif
 
     test_dircontentindex_lookup_empty();
+    test_dircontentindex_insert_lookup();
 
     /* Clean up */
     unlink(test_path);
