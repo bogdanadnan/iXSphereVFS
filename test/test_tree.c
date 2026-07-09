@@ -1918,6 +1918,33 @@ static void test_vfs_create_open_tree(void) {
     vfs_unmount(vfs);
 }
 
+static void test_vfs_create_open_many(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+    char name[32];
+
+    for (int i = 0; i < 100; i++) {
+        snprintf(name, sizeof(name), "f%03d.txt", i);
+        int64_t vp = vfs_create(vfs, root_vp, name, 0);
+        CHECK(vp > 0);
+    }
+
+    /* Verify all 100 can be opened */
+    for (int i = 0; i < 100; i++) {
+        snprintf(name, sizeof(name), "f%03d.txt", i);
+        int64_t vp = vfs_open(vfs, root_vp, name, 0);
+        CHECK(vp > 0);
+    }
+
+    /* Verify a non-existent file is not found */
+    int64_t notfound = vfs_open(vfs, root_vp, "no_such_file.txt", 0);
+    CHECK_EQ(notfound, (int64_t)VFS_ERR_NOTFOUND);
+
+    vfs_unmount(vfs);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -2062,6 +2089,7 @@ int main(void) {
     test_dircontentindex_insert_lookup();
     test_dircontentindex_same_leaf();
     test_vfs_create_open_tree();
+    test_vfs_create_open_many();
 
     /* Clean up */
     unlink(test_path);
