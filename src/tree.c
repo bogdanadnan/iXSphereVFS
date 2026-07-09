@@ -1258,6 +1258,105 @@ int64_t dircontentindex_lookup(Pool* pool, int64_t indexRoot,
     return 0;  /* exhausted levels without reaching a leaf */
 }
 
+int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
+                          int64_t dirContentVP, int64_t page_size) {
+    if (!pool || !indexRoot || dirContentVP == 0) return -1;
+
+    /* If the tree doesn't exist yet, create the root LEAF node */
+    if (*indexRoot == 0) {
+        int64_t leafVP = pool_alloc(pool);
+        if (leafVP == VFS_VPTR_NULL) return -1;
+        uint8_t* leafSlot = pool_resolve_rw(pool, leafVP);
+        if (!leafSlot) return -1;
+        nodes_write_dircontentindex(leafSlot, 0, NODE_TYPE_INDEX_LEAF,
+                                     0, 0, page_size);
+        *indexRoot = leafVP;
+    }
+
+    int64_t nodeVP = *indexRoot;
+
+    for (int level = 0; level < RADIX_TREE_MAX_LEVELS; level++) {
+        uint8_t* slot = pool_resolve_rw(pool, nodeVP);
+        if (!slot) return -1;
+
+        uint8_t hashNibble, nodeType;
+        int64_t listVP, nextVP;
+        nodes_read_dircontentindex(slot, &hashNibble, &nodeType,
+                                   &listVP, &nextVP, page_size);
+
+        if (nodeType == NODE_TYPE_INDEX_LEAF) {
+            /* Reached leaf — allocate DirContentLink and CAS-prepend */
+            int64_t linkVP = pool_alloc(pool);
+            if (linkVP == VFS_VPTR_NULL) return -1;
+            uint8_t* linkSlot = pool_resolve_rw(pool, linkVP);
+            if (!linkSlot) return -1;
+
+            int64_t oldHead;
+            do {
+                oldHead = vfs_atomic_load_i64(
+                    (const int64_t*)(slot + DIRCONTENTINDEX_OFF_LISTVP));
+                nodes_write_dircontentlink(linkSlot, dirContentVP,
+                                           oldHead, page_size);
+            } while (vfs_cas_i64(
+                         (int64_t*)(slot + DIRCONTENTINDEX_OFF_LISTVP),
+                         oldHead, linkVP) != oldHead);
+            return 0;
+        }
+
+        /* INTERNAL — find or create child for this level's nibble */
+        int target = dircontentindex_extract_nibble(nameHash, level);
+        int64_t childVP = 0;
+
+        int64_t childWalk = listVP;
+        while (childWalk != 0) {
+            uint8_t* childSlot = pool_resolve_rw(pool, childWalk);
+            if (!childSlot) return -1;
+            uint8_t childHashNibble, childNodeType;
+            int64_t childListVP, childNextVP;
+            nodes_read_dircontentindex(childSlot, &childHashNibble,
+                                       &childNodeType, &childListVP,
+                                       &childNextVP, page_size);
+
+            if (childHashNibble == target) {
+                childVP = childListVP;
+                break;
+            }
+            childWalk = childNextVP;
+        }
+
+        if (childVP != 0) {
+            /* Child exists — descend into subtree */
+            nodeVP = childVP;
+            continue;
+        }
+
+        /* No child for this nibble — allocate one and CAS-prepend to
+           parent's child list.  Use LEAF for the last level, INTERNAL
+           otherwise. */
+        int64_t newChildVP = pool_alloc(pool);
+        if (newChildVP == VFS_VPTR_NULL) return -1;
+        uint8_t* newChildSlot = pool_resolve_rw(pool, newChildVP);
+        if (!newChildSlot) return -1;
+
+        int isLast = (level == RADIX_TREE_MAX_LEVELS - 1);
+        int64_t oldHead;
+        do {
+            oldHead = vfs_atomic_load_i64(
+                (const int64_t*)(slot + DIRCONTENTINDEX_OFF_LISTVP));
+            nodes_write_dircontentindex(newChildSlot, (uint8_t)target,
+                                         isLast ? NODE_TYPE_INDEX_LEAF
+                                                : NODE_TYPE_INDEX_INTERNAL,
+                                         0, oldHead, page_size);
+        } while (vfs_cas_i64(
+                     (int64_t*)(slot + DIRCONTENTINDEX_OFF_LISTVP),
+                     oldHead, newChildVP) != oldHead);
+
+        nodeVP = newChildVP;
+    }
+
+    return -1;  /* exhausted levels without reaching a leaf */
+}
+
 /* ---------------------------------------------------------------------------
  * dirchain_find_child — walk DirContent chain, read-rule dedup, return match
  * --------------------------------------------------------------------------- */
