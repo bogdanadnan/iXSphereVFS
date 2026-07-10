@@ -299,3 +299,35 @@ int vfs_node_type(vfs_t* vfs, int64_t vp) {
     if (type == (int16_t)NODE_TYPE_FILE) return 0x03;
     return 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * vfs_readdir_alloc — heap-allocated variant of vfs_readdir.
+ *
+ * Walks the DirContent chain exactly once and produces a vfs_dirent_t[]
+ * sized to the actual entry count (no cap, no doubling, no caller
+ * guess).  Used by FUSE dir caching where the full directory listing
+ * must be retrieved to support cursor-based readdir with offset.
+ *
+ * On success returns VFS_OK and sets *out_entries / *out_count.
+ * On error returns negative error code and sets them to NULL / 0.
+ * --------------------------------------------------------------------------- */
+
+int vfs_readdir_alloc(vfs_t* vfs, int64_t dir,
+                      vfs_dirent_t** out_entries, int* out_count,
+                      int64_t epoch) {
+    if (!vfs || !vfs->ctx || !out_entries || !out_count) return VFS_ERR_IO;
+    return dirchain_list_all(vfs->ctx, dir, epoch, out_entries, out_count);
+}
+
+/* ---------------------------------------------------------------------------
+ * vfs_free_dirents — free a buffer returned by vfs_readdir_alloc.
+ *
+ * Wrapper around free() so the call site reads self-documentingly
+ * (vfs_free_dirents vs plain free) and so future changes (e.g.,
+ * pool allocator for VFS-internal memory) don't break callers.
+ * Safe on NULL.
+ * --------------------------------------------------------------------------- */
+
+void vfs_free_dirents(vfs_dirent_t* entries) {
+    free(entries);
+}

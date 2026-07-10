@@ -9,6 +9,7 @@
 #define VFS_FUSE_VFS_H
 
 #include "ixsphere/vfs.h"
+#include "fuse_dir_cache.h"
 #include <stdbool.h>
 #include <pthread.h>
 
@@ -51,6 +52,20 @@ typedef struct {
     char*   ctl_buf;       /* response bytes, or NULL if no command yet */
     int     ctl_len;       /* valid bytes in ctl_buf */
     int     ctl_cap;       /* allocated capacity of ctl_buf */
+
+    /* -----------------------------------------------------------------------
+     * Readdir cache — small LRU of full directory listings.
+     *
+     * Each entry holds the complete vfs_dirent_t[] for one directory,
+     * populated by vfs_readdir_alloc (one chain walk).  readdir
+     * callbacks serve entries from this cache using the FUSE cursor
+     * protocol (offset = position within the listing), avoiding
+     * repeated chain walks for large directories.
+     *
+     * The cache is small (FUSEDIR_CACHE_SIZE = 32) so the lock
+     * critical section is short and contention is low.
+     * ----------------------------------------------------------------------- */
+    FusedirCache dir_cache;
 } fuse_vfs_state_t;
 
 /* ---------------------------------------------------------------------------

@@ -144,6 +144,17 @@ int     vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
 int     vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
                     int max, int64_t epoch);
 
+/* List directory contents with VFS-allocated buffer.  Walks the chain
+   exactly once and allocates a buffer of exact size (no cap, no
+   doubling).  Caller must free with vfs_free_dirents().  Returns
+   VFS_OK on success, negative error code on failure. */
+int     vfs_readdir_alloc(vfs_t* vfs, int64_t dir,
+                           vfs_dirent_t** out_entries, int* out_count,
+                           int64_t epoch);
+
+/* Free a buffer returned by vfs_readdir_alloc.  Safe on NULL. */
+void    vfs_free_dirents(vfs_dirent_t* entries);
+
 /* Truncate or extend a file to `new_size` bytes at `epoch`.
    For shrink: just updates the FileSize chain entry (page reclamation
    is deferred to vfs_gc).  For grow: writes zero bytes via vfs_write

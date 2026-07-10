@@ -32,6 +32,7 @@ add_library(ixsphere_vfs STATIC
     src/gc.c
     src/gc_map.c
     src/var_array.c
+    src/fuse_dir_cache.c
 )
 
 set_source_files_properties(src/var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -fno-strict-aliasing")
@@ -106,7 +107,7 @@ add_executable(vfs_walk tools/vfs_walk.c)
 target_link_libraries(vfs_walk ixsphere_vfs pthread)
 
 if(FUSE3_FOUND)
-  add_executable(vfs_fuse src/fuse_main.c src/fuse_vfs.c src/fuse_vfs_ctl.c)
+  add_executable(vfs_fuse src/fuse_main.c src/fuse_vfs.c src/fuse_vfs_ctl.c src/fuse_dir_cache.c)
   target_compile_definitions(vfs_fuse PRIVATE FUSE3_FOUND FUSE_USE_VERSION=317 FUSE_DARWIN_ENABLE_EXTENSIONS=0)
   target_link_libraries(vfs_fuse ixsphere_vfs ${FUSE3_LIBRARIES} pthread)
   target_link_directories(vfs_fuse PRIVATE ${FUSE3_LIBRARY_DIRS})

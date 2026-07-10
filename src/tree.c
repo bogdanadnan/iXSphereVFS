@@ -1296,6 +1296,127 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     return written;
 }
 
+/* ---------------------------------------------------------------------------
+ * dirchain_list_all — like dirchain_list but with VFS-allocated output.
+ *
+ * Walks the chain exactly once, builds the dedup VarArray (same as
+ * dirchain_list), then allocates a vfs_dirent_t[] of the exact size
+ * needed (non-tombstone entries) and populates it.
+ *
+ * This is the call site used by the FUSE dir cache: it wants the
+ * complete directory listing in one shot, no caller-buffer guess, no
+ * doubling retries.
+ * --------------------------------------------------------------------------- */
+
+int dirchain_list_all(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
+                      vfs_dirent_t** out_entries, int* out_count) {
+    if (!ctx || !out_entries || !out_count) return VFS_ERR_IO;
+    *out_entries = NULL;
+    *out_count = 0;
+
+    uint8_t* dir_slot = pool_resolve_ro(&ctx->pool, dir_vp);
+    if (!dir_slot) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+        return VFS_ERR_NOTDIR;
+
+    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
+    int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
+
+    /* Walk chain once into a per-call dedup VarArray.  Same dedup
+       algorithm as dirchain_list (first-hit-wins). */
+    VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
+    if (!dedup) return VFS_ERR_IO;
+
+    int64_t walk_vp = headPtr;
+    while (walk_vp != 0) {
+        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+        uint32_t ce_child, ce_epoch;
+        int64_t ce_childPtr, ce_namePtr, ce_next;
+        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                              &ce_namePtr, &ce_next, ctx->page_size);
+
+        int64_t eff_epoch = (int64_t)ce_epoch;
+        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
+            eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
+
+        int applies = (eff_epoch == read_epoch) ||
+                      (eff_epoch < read_epoch && eff_epoch % 2 == 0);
+        if (!applies) { walk_vp = ce_next; continue; }
+
+        int found = 0;
+        for (int i = 0; i < dedup->count; i++) {
+            DirchainDedupEntry* e = var_array_lookup(dedup, i);
+            if (e && e->childNodeId == (int64_t)ce_child) { found = 1; break; }
+        }
+        if (found) { walk_vp = ce_next; continue; }
+
+        DirchainDedupEntry entry = {
+            .childNodeId = (int64_t)ce_child,
+            .childPtr    = ce_childPtr,
+            .name_set    = (ce_namePtr != 0),
+            .namePtr     = ce_namePtr,
+        };
+        (void)var_array_append(dedup, entry);
+        walk_vp = ce_next;
+    }
+
+    /* Allocate output buffer to upper bound (dedup->count including
+       tombstones), then realloc to exact size after we know the
+       non-tombstone count.  This keeps the implementation to a
+       single pass over the dedup array. */
+    int total_count = dedup->count;
+    if (total_count == 0) {
+        var_array_delete(dedup);
+        *out_entries = NULL;
+        *out_count = 0;
+        return VFS_OK;
+    }
+
+    vfs_dirent_t* out = (vfs_dirent_t*)malloc((size_t)total_count * sizeof(vfs_dirent_t));
+    if (!out) {
+        var_array_delete(dedup);
+        return VFS_ERR_IO;
+    }
+
+    int written = 0;
+    for (int i = 0; i < dedup->count; i++) {
+        DirchainDedupEntry* e = var_array_lookup(dedup, i);
+        if (!e || !e->name_set) continue;
+
+        out[written].vp     = e->childPtr;
+        out[written].nodeId = e->childNodeId;
+        out[written].name[0] = '\0';
+        out[written].isDir = false;
+
+        uint8_t* child_slot = pool_resolve_ro(&ctx->pool, e->childPtr);
+        if (child_slot) {
+            int16_t ctype = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE,
+                                       ctx->page_size);
+            out[written].isDir = (ctype == (int16_t)NODE_TYPE_DIR);
+        }
+        if (e->namePtr != 0)
+            nodes_read_name(&ctx->pool, e->namePtr,
+                            out[written].name,
+                            (int)sizeof(out[written].name));
+        written++;
+    }
+
+    var_array_delete(dedup);
+
+    /* Shrink to exact size if we skipped some tombstones.  realloc
+       with a smaller size may move the block; that's fine since the
+       caller just gets back the (possibly new) pointer. */
+    if (written < total_count) {
+        vfs_dirent_t* exact = (vfs_dirent_t*)realloc(out, (size_t)written * sizeof(vfs_dirent_t));
+        if (exact) out = exact;  /* realloc with NULL or same-size returns original */
+    }
+
+    *out_entries = out;
+    *out_count = written;
+    return VFS_OK;
+}
+
 int vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
                 int max, int64_t epoch) {
     if (!vfs || !vfs->ctx || !entries || max <= 0) return VFS_ERR_IO;

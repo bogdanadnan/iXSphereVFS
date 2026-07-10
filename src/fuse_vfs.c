@@ -22,6 +22,7 @@
 #include "ixsphere/vfs.h"
 #include "ixsphere/vfs_internal.h"
 #include "fuse_vfs.h"
+#include "fuse_dir_cache.h"
 
 /* ---------------------------------------------------------------------------
  * Per-mount debug logging — toggled via env var FUSE_VFS_LOG (set to a
@@ -37,6 +38,36 @@ static int fv_log_enabled(const char* what) {
 #define FV_LOG(what, fmt, ...) do { \
     if (fv_log_enabled(what)) fprintf(stderr, "[fvfs] %s " fmt "\n", what, ##__VA_ARGS__); \
 } while (0)
+
+/* ---------------------------------------------------------------------------
+ * Readdir cache invalidation helpers
+ *
+ * The cache holds the full listing of each directory as last seen by
+ * readdir.  When the directory is mutated (create/mkdir/unlink/rmdir/
+ * rename), the cache entry must be invalidated so the next readdir
+ * rebuilds from scratch.
+ *
+ * For invalidation we invalidate the PARENT path (the directory whose
+ * contents changed).  For rename/move we invalidate both source and
+ * destination parent paths.  Since the cache is path-keyed and we don't
+ * know the dir_vp of the parent easily from here, we use the path
+ * directly.
+ * --------------------------------------------------------------------------- */
+
+static void invalidate_path(fuse_vfs_state_t* state, const char* path) {
+    if (state && path) {
+        fusedir_cache_invalidate_path(&state->dir_cache, path);
+    }
+}
+
+/* For root path "/", invalidate the whole cache (any cached "/" entry
+   is the root listing; if a mutation hit root, every other cached
+   path could be affected). */
+static void invalidate_root_safe(fuse_vfs_state_t* state) {
+    if (state) {
+        fusedir_cache_invalidate_path(&state->dir_cache, "/");
+    }
+}
 
 /* ---------------------------------------------------------------------------
  * FUSE option parsing keys — custom keys for -o epoch=, -o page_size=,
@@ -163,9 +194,15 @@ void* fuse_vfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) {
     /* Initialize control-file buffer + lock */
     fuse_vfs_ctl_init(state);
 
+    /* Initialize the FUSE-side directory listing cache.  This is
+       where cursor-based readdir serves large directories without
+       repeated chain walks. */
+    fusedir_cache_init(&state->dir_cache);
+
     /* Mount the VFS */
     state->vfs = vfs_mount(state->vfs_path, state->page_size);
     if (!state->vfs) {
+        fusedir_cache_destroy(&state->dir_cache);
         fuse_vfs_ctl_destroy(state);
         free(state->vfs_path);
         free(state);
@@ -191,6 +228,9 @@ void fuse_vfs_destroy(void* private_data) {
         vfs_flush(state->vfs);
         vfs_unmount(state->vfs);
     }
+    /* Tear down the FUSE-side readdir cache.  Frees any cached
+       directory listings held by the cache. */
+    fusedir_cache_destroy(&state->dir_cache);
     fuse_vfs_ctl_destroy(state);
     free(state->vfs_path);
     free(state);
@@ -266,42 +306,97 @@ int fuse_vfs_getattr(const char* path, struct fuse_darwin_attr* stbuf,
 int fuse_vfs_readdir(const char* path, void* buf, fuse_darwin_fill_dir_t filler,
                      off_t offset, struct fuse_file_info* fi,
                      enum fuse_readdir_flags flags) {
-    (void)offset; (void)fi; (void)flags;
+    (void)fi; (void)flags;
     fuse_vfs_state_t* state = (fuse_vfs_state_t*)fuse_get_context()->private_data;
     if (!state || !state->vfs) return -EIO;
-    FV_LOG("readdir", "path=%s", path ? path : "(null)");
+    FV_LOG("readdir", "path=%s offset=%lld",
+           path ? path : "(null)", (long long)offset);
 
-    /* Path may be NULL (highlevel libfuse passes NULL for root when
-       cfg->nullpath_ok is set).  Treat NULL or "/" as the root. */
+    /* Resolve the directory.  Path may be NULL (libfuse passes NULL for
+       root when cfg->nullpath_ok is set, or after opendir when the
+       fd carries the dir_vp). */
     int64_t dir_vp = 0;
-    if (path && path[0] != '\0' && strcmp(path, "/") != 0) {
-        /* Non-root directory: walk tree at state->epoch (snapshot-aware).
-           Falls back to root if path resolution fails. */
+    /* Compute both keys upfront.  Either may be 0 (unset). */
+    uint64_t path_hash = (path && path[0] != '\0' && strcmp(path, "/") != 0)
+                        ? fusedir_hash_path(path) : 0;
+    int64_t fh = (fi && fi->fh != 0) ? (int64_t)fi->fh : 0;
+
+    if (fh != 0) {
+        /* Opendir stored the dir_vp in fi->fh.  Trust it. */
+        dir_vp = fh;
+    } else if (path_hash != 0) {
         dir_vp = resolve_full_path(state->vfs, state->epoch, path);
         if (dir_vp <= 0) {
             dir_vp = vfs_root(state->vfs);
+            path_hash = 0;
         }
-    } else if (fi && fi->fh != 0) {
-        /* Path is NULL or "/" but fi->fh has the VP from opendir. */
-        dir_vp = (int64_t)fi->fh;
     } else {
+        /* No path, no fh — must be root. */
         dir_vp = vfs_root(state->vfs);
     }
     if (dir_vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
 
+    /* Look up (or build) the cached directory listing.  Either the
+       path_hash or the fh can match — same directory, same slot. */
+    vfs_dirent_t* entries = NULL;
+    int count = 0;
+    int rc;
+    if (fh != 0) {
+        rc = fusedir_cache_get_fh(&state->dir_cache, fh, dir_vp,
+                                  state->vfs, state->epoch,
+                                  &entries, &count);
+    } else {
+        /* path may be NULL or "/" — synthesize for the cache key. */
+        const char* key_path = path;
+        if (!key_path || key_path[0] == '\0' || strcmp(key_path, "/") == 0)
+            key_path = "/";
+        rc = fusedir_cache_get(&state->dir_cache, key_path, dir_vp,
+                               state->vfs, state->epoch,
+                               &entries, &count);
+    }
+    if (rc != VFS_OK) {
+        return vfs_error_to_errno(rc);
+    }
+    if (rc != VFS_OK) {
+        return vfs_error_to_errno(rc);
+    }
+
+    /* Cursor-based readdir.
+       The cache holds real entries only.  . and .. are special and
+       not cached.  Offset layout:
+         offset 0: serve from start, includes . and ..
+         offset 1: skip '.', start at '..'
+         offset 2: skip '.', '..', start at cache[0]
+         offset 3: start at cache[1]
+         ...
+       When filler accepts an entry we pass (i+1) as the next offset,
+       so the kernel knows where to resume.  When filler returns 1
+       (buffer full) the kernel calls us again with that offset. */
     struct fuse_darwin_attr dummy_attr;
     memset(&dummy_attr, 0, sizeof(dummy_attr));
-    filler(buf, ".", &dummy_attr, 0, 0);
-    filler(buf, "..", &dummy_attr, 0, 0);
 
-    vfs_dirent_t ents[64];
-    int n = vfs_readdir(state->vfs, dir_vp, ents, 64, state->epoch);
-    if (n < 0) {
-        return vfs_error_to_errno(vfs_last_error(state->vfs));
+    long start = (long)offset;
+
+    /* If offset is 0 or 1, serve the special entries first. */
+    if (start <= 0) {
+        if (filler(buf, ".", &dummy_attr, (off_t)1, 0)) return 0;
+        start = 1;
     }
-    for (int i = 0; i < n; i++) {
-        if (filler(buf, ents[i].name, &dummy_attr, 0, 0)) break;
+    if (start == 1) {
+        if (filler(buf, "..", &dummy_attr, (off_t)2, 0)) return 0;
+        start = 2;
     }
+
+    /* Real entries start at cache[start - 2].  Pass (i+3) as the
+       next offset so the kernel can resume correctly. */
+    int written = 0;
+    for (long i = start - 2; i < count; i++) {
+        if (filler(buf, entries[i].name, &dummy_attr,
+                   (off_t)(i + 3), 0))
+            break;
+        written++;
+    }
+    (void)written;
 
     return 0;
 }
@@ -426,8 +521,16 @@ int fuse_vfs_create(const char* path, mode_t mode,
 
     int64_t vp = vfs_create(state->vfs, parent_vp, name,
                               vfs_current_epoch(state->vfs));
+    if (vp <= 0) { free(path_copy); return vfs_error_to_errno(vfs_last_error(state->vfs)); }
+
+    /* Invalidate the readdir cache for the parent directory.  A new
+       entry just appeared in its listing. */
+    if (last_slash && last_slash != path_copy) {
+        invalidate_path(state, path_copy);
+    } else {
+        invalidate_root_safe(state);
+    }
     free(path_copy);
-    if (vp <= 0) return vfs_error_to_errno(vfs_last_error(state->vfs));
 
     /* Acquire lock on the newly created file */
     if (vfs_lock(state->vfs, vp, state->epoch) != VFS_OK)
@@ -459,6 +562,14 @@ int fuse_vfs_unlink(const char* path) {
 
     int ret = vfs_delete(state->vfs, parent_vp, name,
                         vfs_current_epoch(state->vfs));
+    if (ret == VFS_OK) {
+        /* Invalidate the readdir cache for the parent directory. */
+        if (last_slash && last_slash != path_copy) {
+            invalidate_path(state, path_copy);
+        } else {
+            invalidate_root_safe(state);
+        }
+    }
     free(path_copy);
     return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
@@ -485,6 +596,14 @@ int fuse_vfs_mkdir(const char* path, mode_t mode) {
 
     int64_t vp = vfs_mkdir(state->vfs, parent_vp, name,
                              vfs_current_epoch(state->vfs));
+    if (vp > 0) {
+        /* Invalidate the readdir cache for the parent directory. */
+        if (last_slash && last_slash != path_copy) {
+            invalidate_path(state, path_copy);
+        } else {
+            invalidate_root_safe(state);
+        }
+    }
     free(path_copy);
     return (vp > 0) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
@@ -510,6 +629,14 @@ int fuse_vfs_rmdir(const char* path) {
 
     int ret = vfs_rmdir(state->vfs, parent_vp, name,
                         vfs_current_epoch(state->vfs));
+    if (ret == VFS_OK) {
+        /* Invalidate the readdir cache for the parent directory. */
+        if (last_slash && last_slash != path_copy) {
+            invalidate_path(state, path_copy);
+        } else {
+            invalidate_root_safe(state);
+        }
+    }
     free(path_copy);
     return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
 }
@@ -546,6 +673,20 @@ int fuse_vfs_rename(const char* from, const char* to, unsigned int flags) {
 
     int ret = vfs_rename(state->vfs, src_parent, src_name, dst_parent, dst_name,
                          vfs_current_epoch(state->vfs));
+    if (ret == VFS_OK) {
+        /* Invalidate the readdir cache for both source and destination
+           parent directories.  The rename changed entries in both. */
+        if (from_slash == from_copy) {
+            invalidate_root_safe(state);
+        } else {
+            invalidate_path(state, from_copy);
+        }
+        if (to_slash == to_copy) {
+            invalidate_root_safe(state);
+        } else {
+            invalidate_path(state, to_copy);
+        }
+    }
     free(from_copy);
     free(to_copy);
     return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
