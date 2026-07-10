@@ -32,10 +32,12 @@ add_library(ixsphere_vfs STATIC
     src/gc.c
     src/gc_map.c
     src/var_array.c
+    src/hash_map.c
     src/fuse_dir_cache.c
 )
 
 set_source_files_properties(src/var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -fno-strict-aliasing")
+set_source_files_properties(src/hash_map.c PROPERTIES COMPILE_FLAGS "-Wno-pedantic -Wno-incompatible-pointer-types -fno-strict-aliasing")
 set_source_files_properties(src/tree.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING -Wno-incompatible-pointer-types")
 set_source_files_properties(src/nodes.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING")
 
@@ -83,6 +85,11 @@ target_link_libraries(test_var_array ixsphere_vfs pthread)
 add_test(NAME test_var_array COMMAND test_var_array)
 set_source_files_properties(test/test_tree.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING")
 set_source_files_properties(test/test_var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -Wno-incompatible-pointer-types -fno-strict-aliasing")
+
+add_executable(test_hash_map test/test_hash_map.c)
+target_link_libraries(test_hash_map ixsphere_vfs pthread)
+add_test(NAME test_hash_map COMMAND test_hash_map)
+set_source_files_properties(test/test_hash_map.c PROPERTIES COMPILE_FLAGS "-Wno-pedantic -Wno-incompatible-pointer-types -fno-strict-aliasing")
 
 add_executable(test_crash test/test_crash.c)
 target_link_libraries(test_crash ixsphere_vfs pthread)
