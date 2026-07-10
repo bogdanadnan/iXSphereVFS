@@ -207,6 +207,84 @@ static void test_snapshot_write_readrule(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Rename across multiple snapshots.
+ *
+ * Sequence:
+ *   ep0:   create test.txt in head
+ *   ep0→1: snapshot A
+ *   ep1:   rename test.txt → test2.txt  (in snapshot A)
+ *   ep1→2: live head bumps to 2 (no writes at ep1 in head)
+ *   ep2:   rename test.txt → test3.txt  (in head, sees original)
+ *   ep2→3: snapshot B
+ *   ep3:   rename test3.txt → test4.txt  (in snapshot B)
+ *
+ * Expected listings:
+ *   ep0 → test.txt
+ *   ep1 → test2.txt   (snapshot A sees the rename, head's rename hidden)
+ *   ep2 → test3.txt   (live head sees its own rename, snapshot A's hidden)
+ *   ep3 → test4.txt   (snapshot B sees the rename, head's hidden)
+ *
+ * This exercises read-rule across 4 epochs with 2 active snapshots
+ * and renames that interleave with snapshots.
+ * --------------------------------------------------------------------------- */
+
+static void test_rename_across_snapshots(void) {
+    vfs_t* vfs = epoch_setup();
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = get_root_vp(vfs);
+    test_set_epoch_writable(-1);  /* use real epoch validation */
+
+    /* ep0: create test.txt in head */
+    int64_t file_vp = vfs_create(vfs, root_vp, "test.txt", 0);
+    CHECK(file_vp > 0);
+    CHECK_EQ(ctx->currentEpoch, 0);
+
+    /* Snapshot A → ep1, currentEpoch becomes 2 */
+    int64_t snapA = vfs_snapshot(vfs);
+    CHECK_EQ(snapA, 1);
+    CHECK_EQ(ctx->currentEpoch, 2);
+
+    /* ep1: rename in snapshot A */
+    CHECK_EQ(vfs_rename(vfs, root_vp, "test.txt", root_vp, "test2.txt", 1), VFS_OK);
+
+    /* ep2: rename in head — operates on the same name from ep0's perspective */
+    CHECK_EQ(vfs_rename(vfs, root_vp, "test.txt", root_vp, "test3.txt", 2), VFS_OK);
+
+    /* Snapshot B → ep3, currentEpoch becomes 4 */
+    int64_t snapB = vfs_snapshot(vfs);
+    CHECK_EQ(snapB, 3);
+    CHECK_EQ(ctx->currentEpoch, 4);
+
+    /* ep3: rename in snapshot B */
+    CHECK_EQ(vfs_rename(vfs, root_vp, "test3.txt", root_vp, "test4.txt", 3), VFS_OK);
+
+    /* Helper: assert readdir at epoch returns exactly `name` and only that. */
+    {
+        vfs_dirent_t ents[16];
+        int n;
+
+        n = vfs_readdir(vfs, root_vp, ents, 16, 0);
+        CHECK_EQ(n, 1);
+        if (n == 1) CHECK_EQ(strcmp(ents[0].name, "test.txt"), 0);
+
+        n = vfs_readdir(vfs, root_vp, ents, 16, 1);
+        CHECK_EQ(n, 1);
+        if (n == 1) CHECK_EQ(strcmp(ents[0].name, "test2.txt"), 0);
+
+        n = vfs_readdir(vfs, root_vp, ents, 16, 2);
+        CHECK_EQ(n, 1);
+        if (n == 1) CHECK_EQ(strcmp(ents[0].name, "test3.txt"), 0);
+
+        n = vfs_readdir(vfs, root_vp, ents, 16, 3);
+        CHECK_EQ(n, 1);
+        if (n == 1) CHECK_EQ(strcmp(ents[0].name, "test4.txt"), 0);
+    }
+
+    epoch_teardown(vfs);
+}
+
+/* ---------------------------------------------------------------------------
  * Snapshot → write → delete snapshot (soft-delete) test
  * --------------------------------------------------------------------------- */
 
@@ -402,6 +480,7 @@ int main(void) {
     test_epoch_writable();
     test_epoch_lifecycle();
     test_snapshot_write_readrule();
+    test_rename_across_snapshots();
     test_snapshot_soft_delete();
     test_epoch_invalid();
 
