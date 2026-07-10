@@ -4,6 +4,13 @@
 
 Replace the O(N²) linear-scan dedup in `dirchain_list` and `dirchain_list_all` with the Phase 23 hash_map. Bring uncached readdir of large directories from 0.4s (6500 children) to <1ms, and simplify ~50 lines of dedup bookkeeping.
 
+**As part of this phase**, drop the caller-buffer variants entirely:
+- Remove `vfs_readdir` (caller-buffer, capped at `max`) — keep only `vfs_readdir_alloc` (heap-allocated exact-size).
+- Remove `dirchain_list` (caller-buffer) — keep only `dirchain_list_all` (heap-allocated).
+- Rename `vfs_readdir_alloc` → `vfs_readdir` and `dirchain_list_all` → `dirchain_list` to make the alloc version the only one with the simple name.
+
+This eliminates the legacy 64-cap/caller-buffer API, which was the original motivation for the FUSE readdir cap removed in Phase 20.
+
 ## Background
 
 `dirchain_list` and `dirchain_list_all` walk the DirContent chain of a directory and produce a deduplicated, read-rule-filtered list of children. The dedup is "first-hit-wins" — for each childNodeId, only the highest-epoch applicable record is kept.
@@ -254,32 +261,73 @@ This means **output order is preserved** (chain-walk order, same as today). No i
 
 | File | Change |
 |------|--------|
-| `src/tree.c` | Replace `VarArray(DirchainDedupEntry) dedup` with `VarArray(DirchainDedupEntry) dedup + HashMap(int64_t, int64_t) seen`. Replace linear scan with `hash_map_contains`. Use `hash_map_put` for first-time insert. Apply to both `dirchain_list` and `dirchain_list_all`. |
-| `src/hash_map.h` | (already provides what we need) |
+| `src/tree.c` | Drop `dirchain_list` (caller-buffer version). Rename `dirchain_list_all` → `dirchain_list`. Drop `vfs_readdir` (caller-buffer version). Rename `vfs_readdir_alloc` → `vfs_readdir`. Replace linear scan with `hash_map_contains`. Apply to both renamed functions. |
+| `src/tree.h` | Drop `dirchain_list` declaration. Rename `dirchain_list_all` → `dirchain_list`. Update doc comments. |
+| `src/vfs.c` | Drop `vfs_readdir`. Rename `vfs_readdir_alloc` → `vfs_readdir`. Rename `vfs_free_dirents` accordingly. |
+| `include/ixsphere/vfs.h` | Drop `vfs_readdir` declaration. Rename `vfs_readdir_alloc` → `vfs_readdir`. Update `vfs_free_dirents`. |
+| `src/fuse_vfs.c` | Update `fuse_vfs_readdir` to use the renamed single `vfs_readdir` API. |
+| `test/test_crash.c` | Update 5 call sites that use `vfs_readdir` with caller-buffer. |
 
-## API usage
+## New API (after rename)
+
+```c
+/* Read directory contents into a heap-allocated buffer of exact size.
+   No cap.  Caller frees with vfs_free_dirents(). */
+int  vfs_readdir(vfs_t* vfs, int64_t dir,
+                 vfs_dirent_t** out_entries, int* out_count,
+                 int64_t epoch);
+
+void vfs_free_dirents(vfs_dirent_t* entries);
+```
+
+Old API (dropped):
+
+```c
+/* REMOVED — replaced by vfs_readdir_alloc (now renamed to vfs_readdir). */
+int vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
+                int max, int64_t epoch);
+```
+
+The caller-buffer version is gone. No more 64-cap. No more caller-guessing.
+
+## API usage (in tree.c)
 
 ```c
 #include "hash_map.h"
 
 /* At start of dirchain_list */
+VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
 HashMap(int64_t, int64_t) seen = hash_map_new(int64_t, int64_t);
-if (!seen) return VFS_ERR_IO;
+if (!seen) { var_array_delete(dedup); return VFS_ERR_IO; }
 
 /* In chain walk: replace linear scan with hash_map */
 if (hash_map_contains(seen, (int64_t)ce_child)) { walk_vp = ce_next; continue; }
 /* ... build entry ... */
 (void)var_array_append(dedup, entry);
-(void)hash_map_put(seen, (int64_t)ce_child, dedup->count - 1);
+(void)hash_map_put(seen, (int64_t)ce_child, (int64_t)(dedup->count - 1));
+
+/* Build output, walking dedup array */
+int written = 0;
+for (int64_t i = 0; i < dedup->count; i++) {
+    DirchainDedupEntry* e = var_array_lookup(dedup, i);
+    if (!e || !e->name_set) continue;
+    /* ... fill entries[written] ... */
+    written++;
+}
 
 /* At end */
 hash_map_free(seen);
+var_array_delete(dedup);
 ```
 
 ## Acceptance
 
-- [ ] `dirchain_list` uses hash_map for dedup. No linear scan loop.
-- [ ] `dirchain_list_all` uses hash_map for dedup. No linear scan loop.
+- [ ] `dirchain_list` (renamed from `dirchain_list_all`) uses hash_map for dedup.
+- [ ] `vfs_readdir` (renamed from `vfs_readdir_alloc`) uses `dirchain_list` (renamed).
+- [ ] Old `dirchain_list` (caller-buffer) is dropped.
+- [ ] Old `vfs_readdir` (caller-buffer, max-capped) is dropped.
+- [ ] FUSE callback `fuse_vfs_readdir` uses the new unified API.
+- [ ] All 5 call sites in test_crash.c are updated.
 - [ ] All 958 existing test_tree tests pass unchanged.
 - [ ] All 144 existing test_epoch tests pass unchanged.
 - [ ] All 10 unit test suites pass.
@@ -301,11 +349,20 @@ hash_map_free(seen);
 ## Implementation order
 
 1. Add `#include "hash_map.h"` to `src/tree.c` (already included via tree.h).
-2. Modify `dirchain_list` to use hash_map.
-3. Modify `dirchain_list_all` to use hash_map.
-4. Build, run all 10 unit test suites — no regression.
-5. Run FUSE bench (`bench_ditto.py`) — verify no perf regression.
+2. Rename `dirchain_list_all` → `dirchain_list` in `src/tree.c` and `src/tree.h`. Drop the old `dirchain_list` definition.
+3. Rename `vfs_readdir_alloc` → `vfs_readdir` in `src/tree.c` (or wherever the implementation is). Drop the old `vfs_readdir` (caller-buffer).
+4. Update `src/vfs.c` and `include/ixsphere/vfs.h` to expose the renamed `vfs_readdir` (with `out_entries`/`out_count` signature).
+5. Update `src/fuse_vfs.c` `fuse_vfs_readdir` callback to use the new API.
+6. Update 5 call sites in `test/test_crash.c`.
+7. Replace linear-scan dedup with `hash_map_contains` / `hash_map_put` in the renamed `dirchain_list`.
+8. Build, run all 10 unit test suites — no regression.
+9. Run FUSE bench (`bench_ditto.py`) — verify no perf regression, ideally improvement.
 
 ## Commit plan
 
-One commit for the implementation: "phase-24: hash_map for dirchain_list dedup (O(N²) → O(N))".
+Two commits:
+
+1. "phase-24a: drop vfs_readdir caller-buffer; rename _alloc to vfs_readdir (single API)" — pure rename + caller updates.
+2. "phase-24b: hash_map for dirchain_list dedup (O(N²) → O(N))" — actual dedup optimization.
+
+Splitting keeps the rename easy to review independently of the algorithmic change.
