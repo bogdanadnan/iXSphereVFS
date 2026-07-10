@@ -1,0 +1,710 @@
+{
+  "batch": "batch_02.json",
+  "total": 50,
+  "pass": 47,
+  "fail": 3,
+  "total_seconds": 83.67,
+  "results": [
+    {
+      "id": "051",
+      "description": "Create 1 parent with 1 child (minimal tree)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1298.53,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/051_16573_53532/p'",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/051_16573_53532/p/c'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/051_16573_53532/p' -> True (kind=isdir)",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/051_16573_53532/p/c' -> True (kind=isdir)"
+      ]
+    },
+    {
+      "id": "052",
+      "description": "Create 3 siblings at root, all with same prefix",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1263.84,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/052_16573_55025/dir_a /tmp/vfs_scenario_mnt/052_16573_55025/dir_ab /tmp/vfs_scenario_mnt/052_16573_55025/dir_abc'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/052_16573_55025 == 3' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "053",
+      "description": "Create tree with 2 branches of equal depth",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1257.77,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/053_16573_56465/a/b/c /tmp/vfs_scenario_mnt/053_16573_56465/a/d/e'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/053_16573_56465/a/b/c' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/053_16573_56465/a/d/e' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "054",
+      "description": "Create then remove empty subdirectory (rmdir path)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1300.38,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/054_16573_57900/parent/empty_child'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/054_16573_57900/parent/empty_child/.keep'",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/054_16573_57900/parent/empty_child/.keep'",
+        "SETUP: rc=0 cmd='rmdir /tmp/vfs_scenario_mnt/054_16573_57900/parent/empty_child'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/054_16573_57900/parent/empty_child' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/054_16573_57900/parent' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "055",
+      "description": "Create tree, rename intermediate node, verify path updated",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1300.63,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/055_16573_59380/old/path/leaf'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/055_16573_59380/old /tmp/vfs_scenario_mnt/055_16573_59380/new'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/055_16573_59380/old' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/055_16573_59380/new/path/leaf' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "056",
+      "description": "Create 5 siblings, each with a different file",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1298.66,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in a b c d e; do mkdir /tmp/vfs_scenario_mnt/056_16573_60858/$d; touch /tmp/vfs_scenario_mnt/056_16573_60858/$d/x; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/056_16573_60858 == 5' -> True (kind=count_eq)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/056_16573_60858/a/x' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/056_16573_60858/e/x' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "057",
+      "description": "Create tree then copy entire tree to another location",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1318.03,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/057_16573_62331/src/A/B/C'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/057_16573_62331/src/A/file1 /tmp/vfs_scenario_mnt/057_16573_62331/src/A/B/file2'",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/057_16573_62331/dst'",
+        "SETUP: rc=0 cmd='cp -R /tmp/vfs_scenario_mnt/057_16573_62331/src /tmp/vfs_scenario_mnt/057_16573_62331/dst/'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/057_16573_62331/dst/src/A/B/file2' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "058",
+      "description": "Create deeply nested then list with find",
+      "passed": false,
+      "error": "verify failed: exists {vfs}/d0/d1/d2/d3/d4/leaf",
+      "elapsed_ms": 1414.55,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import os; p=sys.argv[1]; os.makedirs(os.path.join(p, *[\"d\"+str(i) for i in range(5)]), exist_ok=True)\\' /tmp/vfs_scenario_mnt/058_16573_63828'",
+        "  stderr: Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    import os; p=sys.argv[1]; os.makedirs(os.path.join(p, *[\"d\"+str(i) for i in range(5)]), exist_ok=True)\n                 ^^",
+        "SETUP: rc=1 cmd='touch /tmp/vfs_scenario_mnt/058_16573_63828/d0/d1/d2/d3/d4/leaf'",
+        "  stderr: touch: /tmp/vfs_scenario_mnt/058_16573_63828/d0/d1/d2/d3/d4/leaf: No such file or directory",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/058_16573_63828/d0/d1/d2/d3/d4/leaf' -> False (kind=exists)"
+      ]
+    },
+    {
+      "id": "059",
+      "description": "Create dir, place file in it, verify chain walk finds the file",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1256.46,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/059_16573_65415/sub'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/059_16573_65415/sub/file'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/059_16573_65415/sub/file == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "060",
+      "description": "Create 2 dirs, swap their names via mv",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1298.15,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/060_16573_66844/alpha /tmp/vfs_scenario_mnt/060_16573_66844/beta'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/060_16573_66844/alpha/1 /tmp/vfs_scenario_mnt/060_16573_66844/beta/2'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/060_16573_66844/alpha /tmp/vfs_scenario_mnt/060_16573_66844/alpha_tmp'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/060_16573_66844/beta /tmp/vfs_scenario_mnt/060_16573_66844/alpha'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/060_16573_66844/alpha_tmp /tmp/vfs_scenario_mnt/060_16573_66844/beta'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/060_16573_66844/alpha/2' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/060_16573_66844/beta/1' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "061",
+      "description": "Create dir with 10 children (within readdir cap)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1313.55,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/061_16573_68315/ten'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 10); do touch /tmp/vfs_scenario_mnt/061_16573_68315/ten/c$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/061_16573_68315/ten == 10' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "062",
+      "description": "Create parent, remove parent, parent gone but no orphan check",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1233.92,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/062_16573_69805/gone'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/062_16573_69805/gone' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "063",
+      "description": "Create siblings with numeric suffixes (zero-padded)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1290.65,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/063_16573_71209/n'",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 12); do mkdir /tmp/vfs_scenario_mnt/063_16573_71209/n/d$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/063_16573_71209/n == 12' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "064",
+      "description": "Create dir, copy file from Downloads into it, MD5 verify",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1323.02,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/064_16573_72674/with_file'",
+        "SETUP: rc=0 cmd=\"cp '/Users/bogdanadnan/Downloads/Anexa includeri abonament.pdf' /tmp/vfs_scenario_mnt/064_16573_72674/with_file/large.pdf\"",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/064_16573_72674/with_file/large.pdf == src_pdf_large' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "065",
+      "description": "Create tree then run find -name to verify listing",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1306.11,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/065_16573_74174/tree1/tree2'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/065_16573_74174/tree1/a.txt /tmp/vfs_scenario_mnt/065_16573_74174/tree1/tree2/b.txt'",
+        "VERIFY: \"match test $(find /tmp/vfs_scenario_mnt/065_16573_74174/tree1 -name '*.txt' | wc -l) -eq 2\" -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "066",
+      "description": "Create 3-level nested dir, ls each level",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1265.57,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/066_16573_75652/a/b/c'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/066_16573_75652/a/file_a /tmp/vfs_scenario_mnt/066_16573_75652/a/b/file_b /tmp/vfs_scenario_mnt/066_16573_75652/a/b/c/file_c'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/066_16573_75652/a/file_a' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/066_16573_75652/a/b/file_b' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/066_16573_75652/a/b/c/file_c' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "067",
+      "description": "Create a 'projects' directory structure with code-like layout",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1242.64,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/067_16573_77092/proj/src/main /tmp/vfs_scenario_mnt/067_16573_77092/proj/src/test /tmp/vfs_scenario_mnt/067_16573_77092/proj/docs'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/067_16573_77092/proj/README.md /tmp/vfs_scenario_mnt/067_16573_77092/proj/src/main/app.c /tmp/vfs_scenario_mnt/067_16573_77092/proj/src/test/test.c'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/067_16573_77092/proj/README.md' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/067_16573_77092/proj/src/main/app.c' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/067_16573_77092/proj/src/test/test.c' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "068",
+      "description": "Create two siblings, rename one with new name in place",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1294.62,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/068_16573_78509/old_name /tmp/vfs_scenario_mnt/068_16573_78509/sibling'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/068_16573_78509/old_name /tmp/vfs_scenario_mnt/068_16573_78509/new_name'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/068_16573_78509/old_name' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/068_16573_78509/new_name' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/068_16573_78509/sibling' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "069",
+      "description": "Create dir, create nested file, append to it, read back",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1267.82,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/069_16573_79977/d/e/f'",
+        "SETUP: rc=0 cmd='echo hello > /tmp/vfs_scenario_mnt/069_16573_79977/d/e/f/greeting'",
+        "SETUP: rc=0 cmd='echo world >> /tmp/vfs_scenario_mnt/069_16573_79977/d/e/f/greeting'",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/069_16573_79977/d/e/f/greeting | tr -d \\'\\\\n\\')\" = \\'helloworld\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "070",
+      "description": "Create chain of 4 renamed dirs",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1331.37,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/070_16573_81420/d0'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/070_16573_81420/d0 /tmp/vfs_scenario_mnt/070_16573_81420/d1'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/070_16573_81420/d1 /tmp/vfs_scenario_mnt/070_16573_81420/d2'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/070_16573_81420/d2 /tmp/vfs_scenario_mnt/070_16573_81420/d3'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/070_16573_81420/d3 /tmp/vfs_scenario_mnt/070_16573_81420/d4'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/070_16573_81420/d4' -> True (kind=exists)",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/070_16573_81420/d0' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "071",
+      "description": "Create two-level nested tree with 4 leaves",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1261.09,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/071_16573_82926/root/a /tmp/vfs_scenario_mnt/071_16573_82926/root/b'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/071_16573_82926/root/a/l1 /tmp/vfs_scenario_mnt/071_16573_82926/root/a/l2 /tmp/vfs_scenario_mnt/071_16573_82926/root/b/l3 /tmp/vfs_scenario_mnt/071_16573_82926/root/b/l4'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/071_16573_82926/root -type f | wc -l) -eq 4' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "072",
+      "description": "Create dir inside a dir inside a dir, remove middle",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1276.38,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/072_16573_84363/a/b/c'",
+        "SETUP: rc=1 cmd='rmdir /tmp/vfs_scenario_mnt/072_16573_84363/a/b'",
+        "  stderr: rmdir: /tmp/vfs_scenario_mnt/072_16573_84363/a/b: Directory not empty",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/072_16573_84363/a' -> True (kind=exists)",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/072_16573_84363/a/b' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "073",
+      "description": "Create a directory of 8 sibling files, verify each",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1386.98,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/073_16573_85811/files'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 8); do echo $i > /tmp/vfs_scenario_mnt/073_16573_85811/files/f$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/073_16573_85811/files == 8' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "074",
+      "description": "Create tree, place XLSX at bottom, MD5",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1448.52,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/074_16573_87371/nested/dir/structure'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/token_plan_usage_data_20260601_20260630_8197613643.xlsx /tmp/vfs_scenario_mnt/074_16573_87371/nested/dir/structure/data.xlsx'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/074_16573_87371/nested/dir/structure/data.xlsx == src_xlsx' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "075",
+      "description": "Create deep dir with 4 sub-branches at deepest level",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1249.14,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/075_16573_88995/a/b/c/d'",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/075_16573_88995/a/b/c/d/branch1 /tmp/vfs_scenario_mnt/075_16573_88995/a/b/c/d/branch2 /tmp/vfs_scenario_mnt/075_16573_88995/a/b/c/d/branch3 /tmp/vfs_scenario_mnt/075_16573_88995/a/b/c/d/branch4'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/075_16573_88995/a/b/c/d == 4' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "076",
+      "description": "Create dir, copy ZIP into it, unzip-like extract (just extract one file)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 4183.57,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/076_16573_90420/zip_test'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip /tmp/vfs_scenario_mnt/076_16573_90420/zip_test/archive.zip'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/076_16573_90420/zip_test/archive.zip == src_zip' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "077",
+      "description": "Create 6 dirs in a row, mv all to parent",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1330.36,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/077_16573_95836/p'",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4 5 6; do mkdir /tmp/vfs_scenario_mnt/077_16573_95836/d$i; done'",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4 5 6; do mv /tmp/vfs_scenario_mnt/077_16573_95836/d$i /tmp/vfs_scenario_mnt/077_16573_95836/p/; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/077_16573_95836/p == 6' -> True (kind=count_eq)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/077_16573_95836 == 1' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "078",
+      "description": "Create 4 dirs, all but one empty; one has 3 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1235.8,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/078_16573_97341/empty1 /tmp/vfs_scenario_mnt/078_16573_97341/empty2 /tmp/vfs_scenario_mnt/078_16573_97341/full /tmp/vfs_scenario_mnt/078_16573_97341/empty3'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/078_16573_97341/full/a /tmp/vfs_scenario_mnt/078_16573_97341/full/b /tmp/vfs_scenario_mnt/078_16573_97341/full/c'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/078_16573_97341/full == 3' -> True (kind=count_eq)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/078_16573_97341/empty1 == 0' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "079",
+      "description": "Create dir tree, then rename root to new name",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1258.42,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/079_16573_98750/orig/sub1/sub2'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/079_16573_98750/orig/sub1/sub2/file'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/079_16573_98750/orig /tmp/vfs_scenario_mnt/079_16573_98750/renamed'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/079_16573_98750/orig' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/079_16573_98750/renamed/sub1/sub2/file' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "080",
+      "description": "Create two sibling subtrees, each 3 levels deep",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1288.13,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/080_16573_181/treeA/L1/L2 /tmp/vfs_scenario_mnt/080_16573_181/treeB/L1/L2'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/080_16573_181/treeA/L1/L2/x /tmp/vfs_scenario_mnt/080_16573_181/treeB/L1/L2/y'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/080_16573_181/treeA/L1/L2/x' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/080_16573_181/treeB/L1/L2/y' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "081",
+      "description": "Create dir with 5 files, delete all via rm wildcard",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1284.91,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/081_16573_1640/target'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 5); do touch /tmp/vfs_scenario_mnt/081_16573_1640/target/t$i; done'",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/081_16573_1640/target/t*'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/081_16573_1640/target == 0' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "082",
+      "description": "Create file in dir, rename dir, file follows",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1313.66,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/082_16573_3101/d1'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/082_16573_3101/d1/f'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/082_16573_3101/d1 /tmp/vfs_scenario_mnt/082_16573_3101/d2'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/082_16573_3101/d1/f' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/082_16573_3101/d2/f' -> True (kind=exists)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/082_16573_3101/d2/f == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "083",
+      "description": "Create nested structure with alternating file/dir at each level",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1324.35,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/083_16573_4593/a/b/c/d'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/083_16573_4593/a/f1 /tmp/vfs_scenario_mnt/083_16573_4593/a/b/f2 /tmp/vfs_scenario_mnt/083_16573_4593/a/b/c/f3 /tmp/vfs_scenario_mnt/083_16573_4593/a/b/c/d/f4'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/083_16573_4593/a -type f | wc -l) -eq 4' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "084",
+      "description": "Create dir, place 3 different corpus files inside",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 4398.55,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/084_16573_6092/mixed'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/084_16573_6092/mixed/a.pdf'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip /tmp/vfs_scenario_mnt/084_16573_6092/mixed/b.zip'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/watertankcontroller.yaml /tmp/vfs_scenario_mnt/084_16573_6092/mixed/c.yaml'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/084_16573_6092/mixed/a.pdf == src_pdf_small' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/084_16573_6092/mixed/b.zip == src_zip' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/084_16573_6092/mixed/c.yaml == src_yaml' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "085",
+      "description": "Create directory inside parent that already has files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1297.07,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/085_16573_12521/file1'",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/085_16573_12521/subdir'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/085_16573_12521/file1' -> True (kind=exists)",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/085_16573_12521/subdir' -> True (kind=isdir)"
+      ]
+    },
+    {
+      "id": "086",
+      "description": "Create deep nesting with files at every level",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1297.9,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/086_16573_13997/a/b/c/d/e'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/086_16573_13997/a/x /tmp/vfs_scenario_mnt/086_16573_13997/a/b/x /tmp/vfs_scenario_mnt/086_16573_13997/a/b/c/x /tmp/vfs_scenario_mnt/086_16573_13997/a/b/c/d/x /tmp/vfs_scenario_mnt/086_16573_13997/a/b/c/d/e/x'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/086_16573_13997/a -type f | wc -l) -eq 5' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "087",
+      "description": "Create dir, list it, verify . and .. entries exist (readdir entries)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1320.8,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/087_16573_15475/dotdir'",
+        "VERIFY: \"match ls -la /tmp/vfs_scenario_mnt/087_16573_15475/dotdir | grep -E '^d.*\\\\.\\\\.?$' | wc -l\" -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "088",
+      "description": "Create tree, count total directories recursively",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1319.66,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/088_16573_16979/tree/level1/level2/level3'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/088_16573_16979/tree -type d | wc -l) -eq 4' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "089",
+      "description": "Create dir, change into it, place file with relative path",
+      "passed": false,
+      "error": "verify failed: exists {vfs}/rel/rel_path.pdf",
+      "elapsed_ms": 1332.37,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/089_16573_18482/rel'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf rel_path.pdf'",
+        "SETUP: rc=127 cmd='match test -f /tmp/vfs_scenario_mnt/089_16573_18482/rel/rel_path.pdf'",
+        "  stderr: /bin/sh: match: command not found",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/089_16573_18482/rel/rel_path.pdf' -> False (kind=exists)"
+      ]
+    },
+    {
+      "id": "090",
+      "description": "Create 5 deep paths under shared parent",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1371.32,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/090_16573_19995/shared'",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4 5; do mkdir -p /tmp/vfs_scenario_mnt/090_16573_19995/shared/path$i/deep; touch /tmp/vfs_scenario_mnt/090_16573_19995/shared/path$i/deep/marker; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/090_16573_19995/shared -name marker | wc -l) -eq 5' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "091",
+      "description": "Create dir with 4 subdirs, each with own file",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1372.48,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/091_16573_21552/quarters'",
+        "SETUP: rc=0 cmd='for q in q1 q2 q3 q4; do mkdir /tmp/vfs_scenario_mnt/091_16573_21552/quarters/$q; touch /tmp/vfs_scenario_mnt/091_16573_21552/quarters/$q/report; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/091_16573_21552/quarters == 4' -> True (kind=count_eq)",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/091_16573_21552/quarters -name report | wc -l) -eq 4' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "092",
+      "description": "Create tree, then mv a leaf to root",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1342.04,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/092_16573_23109/deep/path'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/092_16573_23109/deep/path/leaf'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/092_16573_23109/deep/path/leaf /tmp/vfs_scenario_mnt/092_16573_23109/'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/092_16573_23109/leaf' -> True (kind=exists)",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/092_16573_23109/deep/path/leaf' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "093",
+      "description": "Create symlink-style by hardlink if supported (skip if not)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1344.28,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/093_16573_24635/orig'",
+        "SETUP: rc=0 cmd='ln /tmp/vfs_scenario_mnt/093_16573_24635/orig /tmp/vfs_scenario_mnt/093_16573_24635/link 2>/dev/null || cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/093_16573_24635/link'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/093_16573_24635/link' -> True (kind=exists)",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/093_16573_24635/link == src_pdf_small_size' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "094",
+      "description": "Create dir, copy file, remove orig, file in subdir remains",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1371.0,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/094_16573_26165/parent'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/094_16573_26165/orig.pdf'",
+        "SETUP: rc=0 cmd='cp /tmp/vfs_scenario_mnt/094_16573_26165/orig.pdf /tmp/vfs_scenario_mnt/094_16573_26165/parent/copy.pdf'",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/094_16573_26165/orig.pdf'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/094_16573_26165/orig.pdf' -> True (kind=not_exists)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/094_16573_26165/parent/copy.pdf == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "095",
+      "description": "Create dir with mixed files and subdirs at depth 3",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1334.95,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/095_16573_27723/top/mid/bot'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/095_16573_27723/top/file1 /tmp/vfs_scenario_mnt/095_16573_27723/top/mid/file2'",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/095_16573_27723/top/mid/bot/sub'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/095_16573_27723/top -type f | wc -l) -eq 2' -> True (kind=shell_match)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/095_16573_27723/top/mid/bot/sub' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "096",
+      "description": "Create 8 files in nested dir, ls",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1356.55,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/096_16573_29343/a/b'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 8); do touch /tmp/vfs_scenario_mnt/096_16573_29343/a/b/file$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/096_16573_29343/a/b == 8' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "097",
+      "description": "Create tree, walk with find -type f",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1361.55,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/097_16573_30885/walker'",
+        "SETUP: rc=0 cmd='for d in 1 2 3; do mkdir /tmp/vfs_scenario_mnt/097_16573_30885/walker/d$d; for f in 1 2; do touch /tmp/vfs_scenario_mnt/097_16573_30885/walker/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/097_16573_30885/walker -type f | wc -l) -eq 6' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "098",
+      "description": "Create dir, then write to a deeply nested file path",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1311.77,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/098_16573_32431/x/y/z'",
+        "SETUP: rc=0 cmd='echo content > /tmp/vfs_scenario_mnt/098_16573_32431/x/y/z/file'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/098_16573_32431/x/y/z/file' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "099",
+      "description": "Create tree, mv entire subtree to root",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1364.48,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/099_16573_33927/container/inner/deep'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/099_16573_33927/container/inner/deep/leaf'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/099_16573_33927/container/inner /tmp/vfs_scenario_mnt/099_16573_33927/moved'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/099_16573_33927/moved/deep/leaf' -> True (kind=exists)",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/099_16573_33927/container/inner/deep' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "100",
+      "description": "Create 8-deep tree, ls full depth",
+      "passed": false,
+      "error": "verify failed: exists {vfs}/d0/d1/d2/d3/d4/d5/d6/d7",
+      "elapsed_ms": 1529.9,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import os; p=sys.argv[1]; os.makedirs(os.path.join(p, *[\"d\"+str(i) for i in range(8)]), exist_ok=True)\\' /tmp/vfs_scenario_mnt/100_16573_35482'",
+        "  stderr: Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    import os; p=sys.argv[1]; os.makedirs(os.path.join(p, *[\"d\"+str(i) for i in range(8)]), exist_ok=True)\n                 ^^",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/100_16573_35482/d0/d1/d2/d3/d4/d5/d6/d7' -> False (kind=exists)"
+      ]
+    }
+  ]
+}

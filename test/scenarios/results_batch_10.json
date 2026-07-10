@@ -1,0 +1,642 @@
+{
+  "batch": "batch_10.json",
+  "total": 50,
+  "pass": 40,
+  "fail": 10,
+  "total_seconds": 66.57,
+  "results": [
+    {
+      "id": "451",
+      "description": "Create file, chmod 600, verify mode",
+      "passed": false,
+      "error": "verify failed: mode {vfs}/restricted == 0600",
+      "elapsed_ms": 1102.59,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/451_34996_17283/restricted'",
+        "SETUP: rc=0 cmd='chmod 600 /tmp/vfs_scenario_mnt/451_34996_17283/restricted'",
+        "VERIFY: 'mode /tmp/vfs_scenario_mnt/451_34996_17283/restricted == 0600' -> False (kind=mode_eq)"
+      ]
+    },
+    {
+      "id": "452",
+      "description": "Create file, chmod 755, verify mode",
+      "passed": false,
+      "error": "verify failed: mode {vfs}/executable == 0755",
+      "elapsed_ms": 1122.9,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/452_34996_18549/executable'",
+        "SETUP: rc=0 cmd='chmod 755 /tmp/vfs_scenario_mnt/452_34996_18549/executable'",
+        "VERIFY: 'mode /tmp/vfs_scenario_mnt/452_34996_18549/executable == 0755' -> False (kind=mode_eq)"
+      ]
+    },
+    {
+      "id": "453",
+      "description": "Create file, chmod 644, verify mode",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1135.8,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/453_34996_19845/normal'",
+        "SETUP: rc=0 cmd='chmod 644 /tmp/vfs_scenario_mnt/453_34996_19845/normal'",
+        "VERIFY: 'mode /tmp/vfs_scenario_mnt/453_34996_19845/normal == 0644' -> True (kind=mode_eq)"
+      ]
+    },
+    {
+      "id": "454",
+      "description": "Create file, chmod 400, verify mode",
+      "passed": false,
+      "error": "verify failed: mode {vfs}/readonly == 0400",
+      "elapsed_ms": 1114.55,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/454_34996_21145/readonly'",
+        "SETUP: rc=0 cmd='chmod 400 /tmp/vfs_scenario_mnt/454_34996_21145/readonly'",
+        "VERIFY: 'mode /tmp/vfs_scenario_mnt/454_34996_21145/readonly == 0400' -> False (kind=mode_eq)"
+      ]
+    },
+    {
+      "id": "455",
+      "description": "Create dir, chmod 700, verify",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1139.18,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/455_34996_22428/priv_dir'",
+        "SETUP: rc=0 cmd='chmod 700 /tmp/vfs_scenario_mnt/455_34996_22428/priv_dir'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/455_34996_22428/priv_dir' -> True (kind=isdir)"
+      ]
+    },
+    {
+      "id": "456",
+      "description": "Create dir, chmod 755, verify",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1111.77,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/456_34996_23735/pub_dir'",
+        "SETUP: rc=0 cmd='chmod 755 /tmp/vfs_scenario_mnt/456_34996_23735/pub_dir'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/456_34996_23735/pub_dir' -> True (kind=isdir)"
+      ]
+    },
+    {
+      "id": "457",
+      "description": "Create file, chmod 0, file still exists",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1117.73,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/457_34996_25020/noperm'",
+        "SETUP: rc=0 cmd='chmod 0 /tmp/vfs_scenario_mnt/457_34996_25020/noperm'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/457_34996_25020/noperm' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "458",
+      "description": "Create file, chmod 777, verify",
+      "passed": false,
+      "error": "verify failed: mode {vfs}/allperm == 0777",
+      "elapsed_ms": 1146.71,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/458_34996_26312/allperm'",
+        "SETUP: rc=0 cmd='chmod 777 /tmp/vfs_scenario_mnt/458_34996_26312/allperm'",
+        "VERIFY: 'mode /tmp/vfs_scenario_mnt/458_34996_26312/allperm == 0777' -> False (kind=mode_eq)"
+      ]
+    },
+    {
+      "id": "459",
+      "description": "Create file, chmod 111, verify",
+      "passed": false,
+      "error": "verify failed: mode {vfs}/exec_only == 0111",
+      "elapsed_ms": 1104.66,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/459_34996_27629/exec_only'",
+        "SETUP: rc=0 cmd='chmod 111 /tmp/vfs_scenario_mnt/459_34996_27629/exec_only'",
+        "VERIFY: 'mode /tmp/vfs_scenario_mnt/459_34996_27629/exec_only == 0111' -> False (kind=mode_eq)"
+      ]
+    },
+    {
+      "id": "460",
+      "description": "Create file, chmod 222, verify",
+      "passed": false,
+      "error": "verify failed: mode {vfs}/write_only == 0222",
+      "elapsed_ms": 1107.58,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/460_34996_28898/write_only'",
+        "SETUP: rc=0 cmd='chmod 222 /tmp/vfs_scenario_mnt/460_34996_28898/write_only'",
+        "VERIFY: 'mode /tmp/vfs_scenario_mnt/460_34996_28898/write_only == 0222' -> False (kind=mode_eq)"
+      ]
+    },
+    {
+      "id": "461",
+      "description": "Create empty file with extension .log",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1132.01,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/461_34996_30173/app.log'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/461_34996_30173/app.log' -> True (kind=exists)",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/461_34996_30173/app.log == 0' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "462",
+      "description": "Create file .DS_Store (macOS metadata file)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1109.37,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/462_34996_31472/.DS_Store'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/462_34996_31472/.DS_Store' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "463",
+      "description": "Create file with .swp extension (vim swap)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1166.53,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/463_34996_32749/file.swp'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/463_34996_32749/file.swp' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "464",
+      "description": "Create file with .bak extension (backup)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1142.88,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/464_34996_34082/data.bak'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/464_34996_34082/data.bak' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "465",
+      "description": "Create file with .tmp extension",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1102.36,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/465_34996_35561/scratch.tmp'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/465_34996_35561/scratch.tmp' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "466",
+      "description": "Create file with .lock extension",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1125.72,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/466_34996_36824/mutex.lock'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/466_34996_36824/mutex.lock' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "467",
+      "description": "Create file with .pid extension",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1116.12,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='echo 12345 > /tmp/vfs_scenario_mnt/467_34996_38113/process.pid'",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/467_34996_38113/process.pid)\" = \\'12345\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "468",
+      "description": "Create file with .json extension",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1123.78,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"echo '{}' > /tmp/vfs_scenario_mnt/468_34996_39390/config.json\"",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/468_34996_39390/config.json)\" = \\'{}\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "469",
+      "description": "Create file with .xml extension",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1162.05,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"echo '<root/>' > /tmp/vfs_scenario_mnt/469_34996_40672/data.xml\"",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/469_34996_40672/data.xml)\" = \\'<root/>\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "470",
+      "description": "Create file with .html extension",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1088.84,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"echo '<html></html>' > /tmp/vfs_scenario_mnt/470_34996_41999/page.html\"",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/470_34996_41999/page.html)\" = \\'<html></html>\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "471",
+      "description": "Create dir with .config extension",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1100.08,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/471_34996_43255/app.config'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/471_34996_43255/app.config' -> True (kind=isdir)"
+      ]
+    },
+    {
+      "id": "472",
+      "description": "Create file with .exe extension",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1145.99,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"MZ\")\\' /tmp/vfs_scenario_mnt/472_34996_44514/app.exe'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/472_34996_44514/app.exe == 2' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "473",
+      "description": "Create file with version number in name",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1089.28,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/473_34996_45821/lib-1.2.3.so'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/473_34996_45821/lib-1.2.3.so' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "474",
+      "description": "Create file with hash-like name",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1109.43,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/474_34996_47071/a1b2c3d4e5f6'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/474_34996_47071/a1b2c3d4e5f6' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "475",
+      "description": "Create file with date-like name",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1110.1,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/475_34996_48349/2026-07-09.txt'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/475_34996_48349/2026-07-09.txt' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "476",
+      "description": "Create dir with date-like name",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1095.63,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/476_34996_49620/2026-07-10'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/476_34996_49620/2026-07-10' -> True (kind=isdir)"
+      ]
+    },
+    {
+      "id": "477",
+      "description": "Create file, write CRLF line endings",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1128.06,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"printf 'line1\\\\r\\\\nline2\\\\r\\\\n' > /tmp/vfs_scenario_mnt/477_34996_50880/crlf.txt\"",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/477_34996_50880/crlf.txt | wc -l)\" -eq 2' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "478",
+      "description": "Create file with only whitespace content",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1131.74,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"printf '   \\\\n' > /tmp/vfs_scenario_mnt/478_34996_52168/ws.txt\"",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/478_34996_52168/ws.txt == 4' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "479",
+      "description": "Create file with single newline",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1097.0,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"printf '\\\\n' > /tmp/vfs_scenario_mnt/479_34996_53463/n.txt\"",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/479_34996_53463/n.txt == 1' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "480",
+      "description": "Create file with NUL byte content",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1116.53,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"printf '\\\\x00' > /tmp/vfs_scenario_mnt/480_34996_54716/null.txt\"",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/480_34996_54716/null.txt == 1' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "481",
+      "description": "Create file with single null + text",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1114.41,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"printf '\\\\x00hello' > /tmp/vfs_scenario_mnt/481_34996_56002/nullhello.txt\"",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/481_34996_56002/nullhello.txt == 6' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "482",
+      "description": "Create file with trailing whitespace",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1097.91,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"printf 'data   ' > /tmp/vfs_scenario_mnt/482_34996_57277/trail.txt\"",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/482_34996_57277/trail.txt == 7' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "483",
+      "description": "Create file with no trailing newline",
+      "passed": false,
+      "error": "verify failed: match test \"$(wc -c < {vfs}/nn.txt)\" -eq 11",
+      "elapsed_ms": 1098.66,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"printf 'no_newline' > /tmp/vfs_scenario_mnt/483_34996_58531/nn.txt\"",
+        "VERIFY: 'match test \"$(wc -c < /tmp/vfs_scenario_mnt/483_34996_58531/nn.txt)\" -eq 11' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "484",
+      "description": "Create file with multiple consecutive newlines",
+      "passed": false,
+      "error": "verify failed: size {vfs}/multi_nl.txt == 7",
+      "elapsed_ms": 1091.56,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"printf 'a\\\\n\\\\n\\\\nb\\\\n\\\\nc' > /tmp/vfs_scenario_mnt/484_34996_59787/multi_nl.txt\"",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/484_34996_59787/multi_nl.txt == 7' -> False (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "485",
+      "description": "Create file with tab characters",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1073.2,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"printf 'col1\\\\tcol2\\\\tcol3' > /tmp/vfs_scenario_mnt/485_34996_61037/tab.txt\"",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/485_34996_61037/tab.txt == 14' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "486",
+      "description": "Create file with mix of spaces and tabs",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1120.72,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"printf 'a\\\\tb c\\\\td' > /tmp/vfs_scenario_mnt/486_34996_62268/mixed_ws.txt\"",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/486_34996_62268/mixed_ws.txt' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "487",
+      "description": "Create file with ANSI escape sequences",
+      "passed": false,
+      "error": "verify failed: size {vfs}/ansi.txt == 11",
+      "elapsed_ms": 1071.27,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd=\"printf '\\\\033[31mred\\\\033[0m' > /tmp/vfs_scenario_mnt/487_34996_63550/ansi.txt\"",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/487_34996_63550/ansi.txt == 11' -> False (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "488",
+      "description": "Create file with binary pattern",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1118.1,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(bytes([0xDE,0xAD,0xBE,0xEF]*4))\\' /tmp/vfs_scenario_mnt/488_34996_64781/magic'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/488_34996_64781/magic == 16' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "489",
+      "description": "Create file with text + binary",
+      "passed": false,
+      "error": "verify failed: size {vfs}/mixed == 16",
+      "elapsed_ms": 1145.26,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"header\\\\x00\\\\x01\\\\x02binary\")\\' /tmp/vfs_scenario_mnt/489_34996_66054/mixed'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/489_34996_66054/mixed == 16' -> False (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "490",
+      "description": "Create file with leading BOM",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1168.47,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"\\\\xef\\\\xbb\\\\xbfhello\")\\' /tmp/vfs_scenario_mnt/490_34996_67354/bom.txt'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/490_34996_67354/bom.txt == 8' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "491",
+      "description": "Create file with null-padded content",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1129.73,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"data\"+b\"\\\\0\"*100)\\' /tmp/vfs_scenario_mnt/491_34996_68673/padded'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/491_34996_68673/padded == 104' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "492",
+      "description": "Create file, then read 0 bytes from offset 0",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1143.64,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/492_34996_69968/r'",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; f=open(sys.argv[1],\"rb\"); print(len(f.read(0)))\\' /tmp/vfs_scenario_mnt/492_34996_69968/r'",
+        "  stdout: 0",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/492_34996_69968/r' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "493",
+      "description": "Create file, then read past EOF",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1162.86,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/493_34996_71264/r2'",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; f=open(sys.argv[1],\"rb\"); f.seek(0,2); print(len(f.read(1000)))\\' /tmp/vfs_scenario_mnt/493_34996_71264/r2'",
+        "  stdout: 0",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/493_34996_71264/r2' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "494",
+      "description": "Create 2 dirs with similar prefix, verify count",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1102.21,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/494_34996_72583/prefix /tmp/vfs_scenario_mnt/494_34996_72583/prefixed'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/494_34996_72583 == 2' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "495",
+      "description": "Create 3 files with same name differing in dir",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1169.22,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/495_34996_73841/d1 /tmp/vfs_scenario_mnt/495_34996_73841/d2 /tmp/vfs_scenario_mnt/495_34996_73841/d3'",
+        "SETUP: rc=0 cmd='echo 1 > /tmp/vfs_scenario_mnt/495_34996_73841/d1/file'",
+        "SETUP: rc=0 cmd='echo 2 > /tmp/vfs_scenario_mnt/495_34996_73841/d2/file'",
+        "SETUP: rc=0 cmd='echo 3 > /tmp/vfs_scenario_mnt/495_34996_73841/d3/file'",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/495_34996_73841/d1/file)$(cat /tmp/vfs_scenario_mnt/495_34996_73841/d2/file)$(cat /tmp/vfs_scenario_mnt/495_34996_73841/d3/file)\" = \\'123\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "496",
+      "description": "Create file, then rename repeatedly with same name (idempotent)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1134.46,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/496_34996_75168/x'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/496_34996_75168/x /tmp/vfs_scenario_mnt/496_34996_75168/y'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/496_34996_75168/y /tmp/vfs_scenario_mnt/496_34996_75168/z'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/496_34996_75168/z /tmp/vfs_scenario_mnt/496_34996_75168/z'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/496_34996_75168/z' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "497",
+      "description": "Create file then write in increments of 1KB",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1158.29,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; f=open(sys.argv[1],\"wb\"); [f.write(b\"X\"*1024) for _ in range(8)]; f.close()\\' /tmp/vfs_scenario_mnt/497_34996_76454/inc'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/497_34996_76454/inc == 8192' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "498",
+      "description": "Create file then verify stat mode 0644 after chmod",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1153.82,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/498_34996_77764/mode_test'",
+        "SETUP: rc=0 cmd='chmod 644 /tmp/vfs_scenario_mnt/498_34996_77764/mode_test'",
+        "VERIFY: \"match test $(stat -f %p /tmp/vfs_scenario_mnt/498_34996_77764/mode_test | tail -c 4) = '644'\" -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "499",
+      "description": "Create file then re-mount flow check: write, read same",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1135.62,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/499_34996_79075/check'",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; print(open(sys.argv[1],\"rb\").read()[:10])\\' /tmp/vfs_scenario_mnt/499_34996_79075/check'",
+        "  stdout: b'%PDF-1.4\\n%'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/499_34996_79075/check == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "500",
+      "description": "Final: create comprehensive test environment",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 2863.52,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/500_34996_80369/final/sub1/sub2'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/500_34996_80369/final/a'",
+        "SETUP: rc=0 cmd=\"cp '/Users/bogdanadnan/Downloads/Anexa includeri abonament.pdf' /tmp/vfs_scenario_mnt/500_34996_80369/final/b\"",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip /tmp/vfs_scenario_mnt/500_34996_80369/final/c'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/500_34996_80369/final/sub1/file'",
+        "SETUP: rc=0 cmd='echo test > /tmp/vfs_scenario_mnt/500_34996_80369/final/sub1/sub2/inner'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/500_34996_80369/final/a == src_pdf_small' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/500_34996_80369/final/b == src_pdf_large' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/500_34996_80369/final/c == src_zip' -> True (kind=md5_specific)",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/500_34996_80369/final/sub1/sub2/inner)\" = \\'test\\'' -> True (kind=shell_match)"
+      ]
+    }
+  ],
+  "partial": false
+}

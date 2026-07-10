@@ -1,0 +1,709 @@
+{
+  "batch": "batch_04.json",
+  "total": 50,
+  "pass": 45,
+  "fail": 5,
+  "total_seconds": 70.98,
+  "results": [
+    {
+      "id": "151",
+      "description": "cp -R tree of 3 dirs, verify",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1142.46,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/151_37051_42363/src/A/B /tmp/vfs_scenario_mnt/151_37051_42363/src/C'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/151_37051_42363/src/A/file1 /tmp/vfs_scenario_mnt/151_37051_42363/src/A/B/file2 /tmp/vfs_scenario_mnt/151_37051_42363/src/C/file3'",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/151_37051_42363/dst'",
+        "SETUP: rc=0 cmd='cp -R /tmp/vfs_scenario_mnt/151_37051_42363/src /tmp/vfs_scenario_mnt/151_37051_42363/dst/'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/151_37051_42363/dst/src/A/B/file2' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/151_37051_42363/dst/src/C/file3' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "152",
+      "description": "rm -R non-empty tree",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1125.43,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/152_37051_43664/kill/A/B'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/152_37051_43664/kill/A/x /tmp/vfs_scenario_mnt/152_37051_43664/kill/A/B/y'",
+        "SETUP: rc=0 cmd='rm -R /tmp/vfs_scenario_mnt/152_37051_43664/kill'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/152_37051_43664/kill' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "153",
+      "description": "find all files in tree, count",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1170.97,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/153_37051_45048/search'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 16); do touch /tmp/vfs_scenario_mnt/153_37051_45048/search/f$i; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/153_37051_45048/search -type f | wc -l) -eq 16' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "154",
+      "description": "Copy 8 corpus files into one dir",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 8",
+      "elapsed_ms": 1143.16,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=64 cmd='for f in src_pdf_small src_pdf_large src_zip src_dmg src_xlsx src_yaml src_json src_pdf1; do cp $(eval echo \\\\$$f) /tmp/vfs_scenario_mnt/154_37051_46379/; done'",
+        "  stderr: usage: cp [-R [-H | -L | -P]] [-fi | -n] [-aclpsvXx] source_file target_file\n       cp [-R [-H | -L | -P]] [-fi | -n] [-aclpsvXx] source_file ... target_directory\nusage: cp [-R [-H | -L | -P]] [-fi | ",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/154_37051_46379 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/154_37051_46379 == 8' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "155",
+      "description": "Bulk create 24 empty files, count",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1180.27,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 24); do touch /tmp/vfs_scenario_mnt/155_37051_47679/b$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/155_37051_47679 == 24' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "156",
+      "description": "Bulk create 12 dirs, count",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1124.11,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 12); do mkdir /tmp/vfs_scenario_mnt/156_37051_49015/d$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/156_37051_49015 == 12' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "157",
+      "description": "cp -R then delete source",
+      "passed": false,
+      "error": "verify failed: exists {vfs}/copy_target/source/sub/file",
+      "elapsed_ms": 1099.18,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/157_37051_50295/source/sub'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/157_37051_50295/source/sub/file'",
+        "SETUP: rc=0 cmd='cp -R /tmp/vfs_scenario_mnt/157_37051_50295/source /tmp/vfs_scenario_mnt/157_37051_50295/copy_target/'",
+        "SETUP: rc=0 cmd='rm -R /tmp/vfs_scenario_mnt/157_37051_50295/source'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/157_37051_50295/copy_target/source/sub/file' -> False (kind=exists)"
+      ]
+    },
+    {
+      "id": "158",
+      "description": "Bulk write 6 files with content, verify all readable",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1094.7,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4 5 6; do echo $i > /tmp/vfs_scenario_mnt/158_37051_51555/f$i; done'",
+        "SETUP: rc=127 cmd='match test \"$(cat /tmp/vfs_scenario_mnt/158_37051_51555/f1 | tr -d \\'\\\\n\\')\" = \\'1\\''",
+        "  stderr: /bin/sh: match: command not found",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/158_37051_51555/f1' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/158_37051_51555/f6' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "159",
+      "description": "Find all dirs in tree (should include intermediate)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1145.36,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/159_37051_52808/a/b/c/d'",
+        "SETUP: rc=127 cmd='match test $(find /tmp/vfs_scenario_mnt/159_37051_52808/a -type d | wc -l) -eq 4'",
+        "  stderr: /bin/sh: match: command not found",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/159_37051_52808/a/b/c/d' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "160",
+      "description": "Bulk rename files with mv loop",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1139.95,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4 5; do touch /tmp/vfs_scenario_mnt/160_37051_54111/old$i; done'",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4 5; do mv /tmp/vfs_scenario_mnt/160_37051_54111/old$i /tmp/vfs_scenario_mnt/160_37051_54111/new$i; done'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/160_37051_54111/old1' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/160_37051_54111/new1' -> True (kind=exists)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/160_37051_54111 == 5' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "161",
+      "description": "cp -R entire subtree to nested location",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1113.65,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/161_37051_55411/top/inner'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/161_37051_55411/top/inner/file'",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/161_37051_55411/dst1/dst2'",
+        "SETUP: rc=0 cmd='cp -R /tmp/vfs_scenario_mnt/161_37051_55411/top /tmp/vfs_scenario_mnt/161_37051_55411/dst1/dst2/'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/161_37051_55411/dst1/dst2/top/inner/file' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "162",
+      "description": "Find files by name pattern",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1118.21,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/162_37051_56679/patterns'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/162_37051_56679/patterns/a.txt /tmp/vfs_scenario_mnt/162_37051_56679/patterns/b.md /tmp/vfs_scenario_mnt/162_37051_56679/patterns/c.txt'",
+        "VERIFY: \"match test $(find /tmp/vfs_scenario_mnt/162_37051_56679/patterns -name '*.txt' | wc -l) -eq 2\" -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "163",
+      "description": "Bulk create, then bulk delete via rm *",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1161.88,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 16); do touch /tmp/vfs_scenario_mnt/163_37051_57954/z$i; done'",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/163_37051_57954/z*'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/163_37051_57954 == 0' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "164",
+      "description": "Create 4 dirs, copy same file into each, all MD5 match",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1131.68,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in a b c d; do mkdir /tmp/vfs_scenario_mnt/164_37051_59279/$d; cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/164_37051_59279/$d/file; done'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/164_37051_59279/a/file == src_pdf_small' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/164_37051_59279/b/file == src_pdf_small' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/164_37051_59279/c/file == src_pdf_small' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/164_37051_59279/d/file == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "165",
+      "description": "rmdir on non-empty dir fails, dir remains",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1133.48,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/165_37051_60570/nonempty'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/165_37051_60570/nonempty/x'",
+        "SETUP: rc=0 cmd='rmdir /tmp/vfs_scenario_mnt/165_37051_60570/nonempty || true'",
+        "  stderr: rmdir: /tmp/vfs_scenario_mnt/165_37051_60570/nonempty: Directory not empty",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/165_37051_60570/nonempty' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/165_37051_60570/nonempty/x' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "166",
+      "description": "Copy tree, modify copies, originals untouched",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1146.31,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/166_37051_61863/orig/tree'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/166_37051_61863/orig/tree/file'",
+        "SETUP: rc=0 cmd='cp -R /tmp/vfs_scenario_mnt/166_37051_61863/orig /tmp/vfs_scenario_mnt/166_37051_61863/modified/'",
+        "SETUP: rc=1 cmd='echo new > /tmp/vfs_scenario_mnt/166_37051_61863/modified/orig/tree/file'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/166_37051_61863/modified/orig/tree/file: No such file or directory",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/166_37051_61863/orig/tree/file)\" != \\'new\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "167",
+      "description": "Count files after bulk operations",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1171.38,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/167_37051_63164/c'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 20); do touch /tmp/vfs_scenario_mnt/167_37051_63164/c/f$i; done'",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/167_37051_63164/c/f1 /tmp/vfs_scenario_mnt/167_37051_63164/c/f3 /tmp/vfs_scenario_mnt/167_37051_63164/c/f5'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/167_37051_63164/c == 17' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "168",
+      "description": "find with -name on nested",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1147.38,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/168_37051_64494/proj/src/main /tmp/vfs_scenario_mnt/168_37051_64494/proj/src/test'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/168_37051_64494/proj/src/main/a.c /tmp/vfs_scenario_mnt/168_37051_64494/proj/src/test/b.c /tmp/vfs_scenario_mnt/168_37051_64494/proj/src/main/c.h'",
+        "VERIFY: \"match test $(find /tmp/vfs_scenario_mnt/168_37051_64494/proj -name '*.c' | wc -l) -eq 2\" -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "169",
+      "description": "Bulk mkdir -p mixed depth",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1120.67,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/169_37051_65797/mix/{a/{x,y},b/{z,w},c}'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/169_37051_65797/mix/a/x' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/169_37051_65797/mix/a/y' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/169_37051_65797/mix/b/z' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/169_37051_65797/mix/b/w' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/169_37051_65797/mix/c' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "170",
+      "description": "Bulk cp multiple files at once (shell expansion)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 2532.53,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/170_37051_67079/srcs'",
+        "SETUP: rc=0 cmd=\"cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf '/Users/bogdanadnan/Downloads/Anexa includeri abonament.pdf' /Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip /tmp/vfs_scenario_mnt/170_37051_67079/srcs/\"",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/170_37051_67079/srcs == 3' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "171",
+      "description": "Create then find -empty",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1145.15,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/171_37051_70504/empty1 /tmp/vfs_scenario_mnt/171_37051_70504/empty2'",
+        "SETUP: rc=0 cmd='echo content > /tmp/vfs_scenario_mnt/171_37051_70504/nonempty'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/171_37051_70504/ -maxdepth 1 -type f -empty | wc -l) -eq 2' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "172",
+      "description": "Move all files from one dir to another",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1123.76,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/172_37051_71810/from /tmp/vfs_scenario_mnt/172_37051_71810/to'",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4; do touch /tmp/vfs_scenario_mnt/172_37051_71810/from/f$i; done'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/172_37051_71810/from/* /tmp/vfs_scenario_mnt/172_37051_71810/to/'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/172_37051_71810/to == 4' -> True (kind=count_eq)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/172_37051_71810/from == 0' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "173",
+      "description": "cp -R into existing dir merges content",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1135.77,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/173_37051_73088/existing'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/173_37051_73088/existing/existing_file'",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/173_37051_73088/src/A'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/173_37051_73088/src/A/new_file'",
+        "SETUP: rc=0 cmd='cp -R /tmp/vfs_scenario_mnt/173_37051_73088/src/A /tmp/vfs_scenario_mnt/173_37051_73088/existing/'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/173_37051_73088/existing/A/new_file' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/173_37051_73088/existing/existing_file' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "174",
+      "description": "Bulk delete specific pattern",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1133.56,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/174_37051_74384/keep /tmp/vfs_scenario_mnt/174_37051_74384/kill'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/174_37051_74384/keep/a /tmp/vfs_scenario_mnt/174_37051_74384/keep/b /tmp/vfs_scenario_mnt/174_37051_74384/kill/a /tmp/vfs_scenario_mnt/174_37051_74384/kill/b /tmp/vfs_scenario_mnt/174_37051_74384/kill/c'",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/174_37051_74384/kill/*'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/174_37051_74384/keep == 2' -> True (kind=count_eq)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/174_37051_74384/kill == 0' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "175",
+      "description": "Find dirs matching pattern",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1114.36,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/175_37051_75674/node_modules/a /tmp/vfs_scenario_mnt/175_37051_75674/node_modules/b /tmp/vfs_scenario_mnt/175_37051_75674/src'",
+        "SETUP: rc=127 cmd=\"match test $(find /tmp/vfs_scenario_mnt/175_37051_75674/ -maxdepth 1 -name 'node_modules' | wc -l) -eq 1\"",
+        "  stderr: /bin/sh: match: command not found",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/175_37051_75674/node_modules/a' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "176",
+      "description": "Bulk copy all PDFs in dir",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1217.82,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/176_37051_76947/pdfs'",
+        "SETUP: rc=0 cmd='for f in /Users/bogdanadnan/Downloads/*.pdf; do cp \"$f\" /tmp/vfs_scenario_mnt/176_37051_76947/pdfs/ 2>/dev/null; done'",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/176_37051_76947/pdfs/ | wc -l) -ge 5' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "177",
+      "description": "Count files in nested structure",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1161.73,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/177_37051_78325/d1/d2/d3'",
+        "SETUP: rc=0 cmd='for d in d1 d1/d2 d1/d2/d3; do for i in 1 2; do touch /tmp/vfs_scenario_mnt/177_37051_78325/$d/f$i; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/177_37051_78325/d1 -type f | wc -l) -eq 6' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "178",
+      "description": "Copy with trailing slash on destination",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1120.97,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/178_37051_79646/dst/'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/178_37051_79646/dst/'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/178_37051_79646/dst/181854127_Plata_GhiseulRo.pdf' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "179",
+      "description": "Bulk rename files in dir",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1162.75,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 8); do touch /tmp/vfs_scenario_mnt/179_37051_80925/temp$i; done'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 8); do mv /tmp/vfs_scenario_mnt/179_37051_80925/temp$i /tmp/vfs_scenario_mnt/179_37051_80925/final$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/179_37051_80925 == 8' -> True (kind=count_eq)",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/179_37051_80925/temp1' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "180",
+      "description": "Recursive ls to verify structure",
+      "passed": false,
+      "error": "verify failed: match test $(find {vfs}/tree | wc -l) -eq 7",
+      "elapsed_ms": 1132.58,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/180_37051_82246/tree/sub1/sub2'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/180_37051_82246/tree/a /tmp/vfs_scenario_mnt/180_37051_82246/tree/sub1/b /tmp/vfs_scenario_mnt/180_37051_82246/tree/sub1/sub2/c'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/180_37051_82246/tree | wc -l) -eq 7' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "181",
+      "description": "Create 6 dirs with same prefix, verify count",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1096.14,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in dir1 dir2 dir3 dir4 dir5 dir6; do mkdir /tmp/vfs_scenario_mnt/181_37051_83536/$d; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/181_37051_83536 == 6' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "182",
+      "description": "rm -R nested then verify gone",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1149.71,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/182_37051_84791/deep/A/B/C/D'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/182_37051_84791/deep/A/B/C/D/leaf'",
+        "SETUP: rc=0 cmd='rm -R /tmp/vfs_scenario_mnt/182_37051_84791/deep'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/182_37051_84791/deep' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "183",
+      "description": "Copy multiple distinct file types at once",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 3507.6,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip /Users/bogdanadnan/Downloads/Antigravity.dmg /Users/bogdanadnan/Downloads/watertankcontroller.yaml /Users/bogdanadnan/Downloads/config_entry-dacia_spring_connect-01KS2X0TK7D151DT6AA759EM1P.json /Users/bogdanadnan/Downloads/token_plan_usage_data_20260601_20260630_8197613643.xlsx /tmp/vfs_scenario_mnt/183_37051_86098/'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/183_37051_86098 == 6' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "184",
+      "description": "Bulk touch creates file if not exist, leaves existing",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1142.82,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/184_37051_90920/a /tmp/vfs_scenario_mnt/184_37051_90920/b'",
+        "SETUP: rc=0 cmd='echo content > /tmp/vfs_scenario_mnt/184_37051_90920/a'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/184_37051_90920/a /tmp/vfs_scenario_mnt/184_37051_90920/c'",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/184_37051_90920/a)\" = \\'content\\'' -> True (kind=shell_match)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/184_37051_90920/c' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "185",
+      "description": "Verify cwd behavior inside mounted FS",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1096.84,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/185_37051_92222/workdir'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/185_37051_92222/workdir/file'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/185_37051_92222/workdir/file' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "186",
+      "description": "Bulk chmod to make multiple files readable",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1164.44,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/186_37051_93481/multi'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 8); do touch /tmp/vfs_scenario_mnt/186_37051_93481/multi/f$i; chmod 644 /tmp/vfs_scenario_mnt/186_37051_93481/multi/f$i; done'",
+        "VERIFY: \"match test $(stat -f %p /tmp/vfs_scenario_mnt/186_37051_93481/multi/f1 | tail -c 4) = '644'\" -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "187",
+      "description": "Find biggest file in tree",
+      "passed": false,
+      "error": "verify failed: match test \"$(find {vfs}/ -type f -size +500000c | head -1)\" = '{vfs}/big'",
+      "elapsed_ms": 1223.22,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; f=open(sys.argv[1],\"wb\"); f.write(b\"\\\\0\"*100000); f.close()\\' /tmp/vfs_scenario_mnt/187_37051_94804/small'",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; f=open(sys.argv[1],\"wb\"); f.write(b\"\\\\0\"*1000000); f.close()\\' /tmp/vfs_scenario_mnt/187_37051_94804/big'",
+        "VERIFY: 'match test \"$(find /tmp/vfs_scenario_mnt/187_37051_94804/ -type f -size +500000c | head -1)\" = \\'/tmp/vfs_scenario_mnt/187_37051_94804/big\\'' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "188",
+      "description": "Bulk move all *.pdf to a subdir",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1186.49,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/188_37051_96184/pdfs'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/188_37051_96184/a.pdf'",
+        "SETUP: rc=0 cmd=\"cp '/Users/bogdanadnan/Downloads/Anexa includeri abonament.pdf' /tmp/vfs_scenario_mnt/188_37051_96184/b.pdf\"",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/188_37051_96184/*.pdf /tmp/vfs_scenario_mnt/188_37051_96184/pdfs/'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/188_37051_96184/pdfs/a.pdf' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/188_37051_96184/pdfs/b.pdf' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "189",
+      "description": "Du name shows path",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1166.01,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/189_37051_97530/deep/very/very/deep/path'",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"deep\")\\' /tmp/vfs_scenario_mnt/189_37051_97530/deep/very/very/deep/path/file'",
+        "VERIFY: 'match test \"$(du -h /tmp/vfs_scenario_mnt/189_37051_97530/deep/very/very/deep/path/file 2>/dev/null | awk \\'{print $1}\\')\" = \\'4B\\' || test -f /tmp/vfs_scenario_mnt/189_37051_97530/deep/very/very/deep/path/file' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "190",
+      "description": "Bulk rename extension",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1144.44,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/190_37051_98854/renames'",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4; do touch /tmp/vfs_scenario_mnt/190_37051_98854/renames/f$i.txt; done'",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4; do mv /tmp/vfs_scenario_mnt/190_37051_98854/renames/f$i.txt /tmp/vfs_scenario_mnt/190_37051_98854/renames/f$i.md; done'",
+        "VERIFY: \"match test $(ls /tmp/vfs_scenario_mnt/190_37051_98854/renames/ | grep -c '\\\\.md$') -eq 4\" -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "191",
+      "description": "Create 3 sibling trees, all 3 levels",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1143.64,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for t in alpha beta gamma; do mkdir -p /tmp/vfs_scenario_mnt/191_37051_160/$t/level1/level2; touch /tmp/vfs_scenario_mnt/191_37051_160/$t/level1/level2/file; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/191_37051_160/ -name file | wc -l) -eq 3' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "192",
+      "description": "Verify recursive copy preserves directory names exactly",
+      "passed": false,
+      "error": "verify failed: exists {vfs}/copy_dir/complex-name_with.dots-123/sub_dir/x",
+      "elapsed_ms": 1123.97,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/192_37051_1461/complex-name_with.dots-123/sub_dir'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/192_37051_1461/complex-name_with.dots-123/sub_dir/x'",
+        "SETUP: rc=0 cmd='cp -R /tmp/vfs_scenario_mnt/192_37051_1461/complex-name_with.dots-123 /tmp/vfs_scenario_mnt/192_37051_1461/copy_dir/'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/192_37051_1461/copy_dir/complex-name_with.dots-123/sub_dir/x' -> False (kind=exists)"
+      ]
+    },
+    {
+      "id": "193",
+      "description": "Bulk cat all files in dir",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1128.76,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/193_37051_2742/catdir'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 6); do echo \"line$i\" > /tmp/vfs_scenario_mnt/193_37051_2742/catdir/f$i; done'",
+        "SETUP: rc=127 cmd='match test \"$(cat /tmp/vfs_scenario_mnt/193_37051_2742/catdir/f1 /tmp/vfs_scenario_mnt/193_37051_2742/catdir/f2 /tmp/vfs_scenario_mnt/193_37051_2742/catdir/f3 | wc -l)\" -eq 3'",
+        "  stderr: /bin/sh: match: command not found",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/193_37051_2742/catdir == 6' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "194",
+      "description": "rm -R when destination is non-empty",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1153.39,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/194_37051_4030/keep'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/194_37051_4030/keep/x'",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/194_37051_4030/kill'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/194_37051_4030/kill/y'",
+        "SETUP: rc=0 cmd='rm -R /tmp/vfs_scenario_mnt/194_37051_4030/kill'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/194_37051_4030/kill' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/194_37051_4030/keep' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "195",
+      "description": "Bulk copy with rename",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1145.23,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4; do touch /tmp/vfs_scenario_mnt/195_37051_5341/orig$i; done'",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4; do cp /tmp/vfs_scenario_mnt/195_37051_5341/orig$i /tmp/vfs_scenario_mnt/195_37051_5341/copy$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/195_37051_5341 == 8' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "196",
+      "description": "find and xargs-style bulk delete",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1184.08,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/196_37051_6645/delete_target'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 12); do touch /tmp/vfs_scenario_mnt/196_37051_6645/delete_target/t$i; done'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 12); do rm /tmp/vfs_scenario_mnt/196_37051_6645/delete_target/t$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/196_37051_6645/delete_target == 0' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "197",
+      "description": "Bulk create deep nested dirs",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1156.91,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4 5; do mkdir -p /tmp/vfs_scenario_mnt/197_37051_7989/tree$d/A/B; touch /tmp/vfs_scenario_mnt/197_37051_7989/tree$d/A/B/f; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/197_37051_7989/ -name f | wc -l) -eq 5' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "198",
+      "description": "Copy file to 5 different locations",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1146.53,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/198_37051_9303/loc1 /tmp/vfs_scenario_mnt/198_37051_9303/loc2 /tmp/vfs_scenario_mnt/198_37051_9303/loc3 /tmp/vfs_scenario_mnt/198_37051_9303/loc4 /tmp/vfs_scenario_mnt/198_37051_9303/loc5'",
+        "SETUP: rc=0 cmd='for d in loc1 loc2 loc3 loc4 loc5; do cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/198_37051_9303/$d/copy; done'",
+        "VERIFY: 'match test $(md5 -q /tmp/vfs_scenario_mnt/198_37051_9303/loc1/copy /tmp/vfs_scenario_mnt/198_37051_9303/loc2/copy /tmp/vfs_scenario_mnt/198_37051_9303/loc3/copy /tmp/vfs_scenario_mnt/198_37051_9303/loc4/copy /tmp/vfs_scenario_mnt/198_37051_9303/loc5/copy | sort -u | wc -l) -eq 1' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "199",
+      "description": "Bulk move with extension change",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1165.63,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4 5; do touch /tmp/vfs_scenario_mnt/199_37051_10605/$i.txt; done'",
+        "SETUP: rc=1 cmd='for i in 1 2 3 4 5; do mv /tmp/vfs_scenario_mnt/199_37051_10605/$i.txt /tmp/vfs_scenario_mnt/199_37051_10605/d$i/; done'",
+        "  stderr: mv: rename /tmp/vfs_scenario_mnt/199_37051_10605/1.txt to /tmp/vfs_scenario_mnt/199_37051_10605/d1/: No such file or directory\nmv: rename /tmp/vfs_scenario_mnt/199_37051_10605/2.txt to /tmp/vfs_scenar",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/199_37051_10605/d1 /tmp/vfs_scenario_mnt/199_37051_10605/d2 /tmp/vfs_scenario_mnt/199_37051_10605/d3 /tmp/vfs_scenario_mnt/199_37051_10605/d4 /tmp/vfs_scenario_mnt/199_37051_10605/d5'",
+        "SETUP: rc=0 cmd='for i in 1 2 3 4 5; do mv /tmp/vfs_scenario_mnt/199_37051_10605/$i.txt /tmp/vfs_scenario_mnt/199_37051_10605/d$i/; done'",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/199_37051_10605/d1/ | wc -l) -eq 1' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "200",
+      "description": "Final bulk: create 24 dirs each with 1 file, count total",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1272.48,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 24); do mkdir /tmp/vfs_scenario_mnt/200_37051_11925/d$d; touch /tmp/vfs_scenario_mnt/200_37051_11925/d$d/x; done'",
+        "SETUP: rc=127 cmd='match test $(find /tmp/vfs_scenario_mnt/200_37051_11925/ -type f | wc -l) -eq 24'",
+        "  stderr: /bin/sh: match: command not found",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/200_37051_11925/ -type d -mindepth 1 | wc -l) -eq 24' -> True (kind=shell_match)"
+      ]
+    }
+  ],
+  "partial": false
+}

@@ -1,0 +1,789 @@
+{
+  "batch": "batch_05.json",
+  "total": 50,
+  "pass": 47,
+  "fail": 3,
+  "total_seconds": 145.82,
+  "results": [
+    {
+      "id": "201",
+      "description": "Write file, snapshot via .vfsctl, file persists",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1132.81,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/201_27266_18939/file'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/201_27266_18939/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/201_27266_18939/.vfsctl: Input/output error",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/201_27266_18939/file' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "202",
+      "description": "Snapshot, write new file, both exist",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1229.71,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/202_27266_20229/before'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/202_27266_20229/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/202_27266_20229/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd=\"cp '/Users/bogdanadnan/Downloads/Anexa includeri abonament.pdf' /tmp/vfs_scenario_mnt/202_27266_20229/after\"",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/202_27266_20229/before' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/202_27266_20229/after' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "203",
+      "description": "Write then snapshot then read back",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1145.0,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='echo data > /tmp/vfs_scenario_mnt/203_27266_21620/snap'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/203_27266_21620/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/203_27266_21620/.vfsctl: Input/output error",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/203_27266_21620/snap)\" = \\'data\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "204",
+      "description": "Snapshot then delete then re-create same name",
+      "passed": false,
+      "error": "verify failed: md5 {vfs}/file == src_pdf_large",
+      "elapsed_ms": 61135.66,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/204_27266_22922/file'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/204_27266_22922/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/204_27266_22922/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/204_27266_22922/file'",
+        "SETUP: rc=-1 cmd=\"cp '/Users/bogdanadnan/Downloads/Anexa includeri abonament.pdf' /tmp/vfs_scenario_mnt/204_27266_22922/file\"",
+        "  stderr: timeout",
+        "verify error (md5_specific): [Errno 2] No such file or directory: '/tmp/vfs_scenario_mnt/204_27266_22922/file'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/204_27266_22922/file == src_pdf_large' -> False (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "205",
+      "description": "Multiple snapshots in succession",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1303.45,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/205_27266_84232/v1'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/205_27266_84232/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/205_27266_84232/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd=\"cp '/Users/bogdanadnan/Downloads/Anexa includeri abonament.pdf' /tmp/vfs_scenario_mnt/205_27266_84232/v2\"",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/205_27266_84232/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/205_27266_84232/.vfsctl: Input/output error",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/205_27266_84232/v1' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/205_27266_84232/v2' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "206",
+      "description": "Snapshot then append, file size changes",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1251.98,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/206_27266_85707/app'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/206_27266_85707/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/206_27266_85707/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='printf x >> /tmp/vfs_scenario_mnt/206_27266_85707/app'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/206_27266_85707/app == src_pdf_small_size + 1' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "207",
+      "description": "Create 3 files, snapshot, verify all exist",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 3907.49,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/207_27266_87130/a'",
+        "SETUP: rc=0 cmd=\"cp '/Users/bogdanadnan/Downloads/Anexa includeri abonament.pdf' /tmp/vfs_scenario_mnt/207_27266_87130/b\"",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip /tmp/vfs_scenario_mnt/207_27266_87130/c'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/207_27266_87130/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/207_27266_87130/.vfsctl: Input/output error",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/207_27266_87130 == 3' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "208",
+      "description": "Snapshot then mkdir",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1231.01,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/208_27266_92355/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/208_27266_92355/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/208_27266_92355/newdir'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/208_27266_92355/newdir' -> True (kind=isdir)"
+      ]
+    },
+    {
+      "id": "209",
+      "description": "Snapshot then rename",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1246.1,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/209_27266_93754/orig'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/209_27266_93754/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/209_27266_93754/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/209_27266_93754/orig /tmp/vfs_scenario_mnt/209_27266_93754/renamed'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/209_27266_93754/orig' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/209_27266_93754/renamed' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "210",
+      "description": "Snapshot then overwrite file",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1302.11,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/210_27266_95172/file'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/210_27266_95172/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/210_27266_95172/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd=\"cp '/Users/bogdanadnan/Downloads/Anexa includeri abonament.pdf' /tmp/vfs_scenario_mnt/210_27266_95172/file\"",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/210_27266_95172/file == src_pdf_large_size' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "211",
+      "description": "Snapshot at empty state, then add content",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1257.0,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/211_27266_96647/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/211_27266_96647/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/211_27266_96647/x'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/211_27266_96647/x' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "212",
+      "description": "Create nested dir, snapshot, create deeper",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1277.46,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/212_27266_98075/a'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/212_27266_98075/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/212_27266_98075/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/212_27266_98075/a/b'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/212_27266_98075/a/b' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "213",
+      "description": "Snapshot after multiple writes",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1254.03,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='echo 1 > /tmp/vfs_scenario_mnt/213_27266_99524/f1'",
+        "SETUP: rc=0 cmd='echo 2 > /tmp/vfs_scenario_mnt/213_27266_99524/f2'",
+        "SETUP: rc=0 cmd='echo 3 > /tmp/vfs_scenario_mnt/213_27266_99524/f3'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/213_27266_99524/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/213_27266_99524/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='echo 4 > /tmp/vfs_scenario_mnt/213_27266_99524/f4'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/213_27266_99524/f1' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/213_27266_99524/f2' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/213_27266_99524/f3' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/213_27266_99524/f4' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "214",
+      "description": "Snapshot then chmod",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1244.37,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/214_27266_950/p'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/214_27266_950/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/214_27266_950/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='chmod 600 /tmp/vfs_scenario_mnt/214_27266_950/p'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/214_27266_950/p' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "215",
+      "description": "Snapshot then truncate",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1313.87,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/215_27266_2368/t'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/215_27266_2368/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/215_27266_2368/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"r+b\").truncate(100)\\' /tmp/vfs_scenario_mnt/215_27266_2368/t'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/215_27266_2368/t == 100' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "216",
+      "description": "Snapshot then rmdir of empty dir",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1235.85,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/216_27266_3857/empty'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/216_27266_3857/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/216_27266_3857/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='rmdir /tmp/vfs_scenario_mnt/216_27266_3857/empty'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/216_27266_3857/empty' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "217",
+      "description": "Snapshot then create file in nested dir",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1265.9,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/217_27266_5262/parent/child'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/217_27266_5262/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/217_27266_5262/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/217_27266_5262/parent/child/file'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/217_27266_5262/parent/child/file == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "218",
+      "description": "Snapshot before bulk copy",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 4869.57,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/218_27266_6699/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/218_27266_6699/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd=\"cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf '/Users/bogdanadnan/Downloads/Anexa includeri abonament.pdf' /Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip /Users/bogdanadnan/Downloads/Antigravity.dmg /tmp/vfs_scenario_mnt/218_27266_6699/\"",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/218_27266_6699 == 4' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "219",
+      "description": "Snapshot then write 1MB file",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1301.86,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/219_27266_13615/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/219_27266_13615/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"\\\\0\"*1048576)\\' /tmp/vfs_scenario_mnt/219_27266_13615/big'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/219_27266_13615/big == 1048576' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "220",
+      "description": "Snapshot then delete all files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1268.36,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 8); do touch /tmp/vfs_scenario_mnt/220_27266_15092/f$i; done'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/220_27266_15092/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/220_27266_15092/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/220_27266_15092/f*'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/220_27266_15092 == 0' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "221",
+      "description": "Create dir, snapshot, populate, verify",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1274.41,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/221_27266_16533/base'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/221_27266_16533/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/221_27266_16533/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='for i in $(seq 1 8); do touch /tmp/vfs_scenario_mnt/221_27266_16533/base/x$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/221_27266_16533/base == 8' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "222",
+      "description": "Snapshot then create deeply nested path",
+      "passed": false,
+      "error": "verify failed: exists {vfs}/d0/d1/d2/d3/d4",
+      "elapsed_ms": 1357.01,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/222_27266_17979/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/222_27266_17979/.vfsctl: No such file or directory",
+        "SETUP: rc=1 cmd='python3 -c \\'import os; p=sys.argv[1]; os.makedirs(os.path.join(p, *[\"d\"+str(i) for i in range(5)]), exist_ok=True)\\' /tmp/vfs_scenario_mnt/222_27266_17979'",
+        "  stderr: Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    import os; p=sys.argv[1]; os.makedirs(os.path.join(p, *[\"d\"+str(i) for i in range(5)]), exist_ok=True)\n                 ^^",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/222_27266_17979/d0/d1/d2/d3/d4' -> False (kind=exists)"
+      ]
+    },
+    {
+      "id": "223",
+      "description": "Snapshot file content, snapshot again after modification",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1268.23,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='echo v1 > /tmp/vfs_scenario_mnt/223_27266_19506/v'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/223_27266_19506/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/223_27266_19506/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='echo v2 > /tmp/vfs_scenario_mnt/223_27266_19506/v'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/223_27266_19506/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/223_27266_19506/.vfsctl: Input/output error",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/223_27266_19506/v)\" = \\'v2\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "224",
+      "description": "Snapshot then rename dir with content",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1297.33,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/224_27266_20947/sub'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/224_27266_20947/sub/file'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/224_27266_20947/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/224_27266_20947/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/224_27266_20947/sub /tmp/vfs_scenario_mnt/224_27266_20947/renamed'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/224_27266_20947/renamed/file' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "225",
+      "description": "Snapshot before destructive op, file unchanged at snapshot time",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1240.04,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/225_27266_22414/safe'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/225_27266_22414/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/225_27266_22414/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/225_27266_22414/safe'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/225_27266_22414/safe' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "226",
+      "description": "Snapshot at root with no files (empty state)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1195.03,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/226_27266_23822/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/226_27266_23822/.vfsctl: No such file or directory",
+        "VERIFY: 'match ls /tmp/vfs_scenario_mnt/226_27266_23822/ | wc -l' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "227",
+      "description": "Create file at epoch 0 (default), verify",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1210.03,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/227_27266_25184/e0'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/227_27266_25184/e0' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "228",
+      "description": "Create then snapshot then create then snapshot (multi-epoch)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1231.97,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='echo a > /tmp/vfs_scenario_mnt/228_27266_26558/a'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/228_27266_26558/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/228_27266_26558/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='echo b > /tmp/vfs_scenario_mnt/228_27266_26558/b'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/228_27266_26558/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/228_27266_26558/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='echo c > /tmp/vfs_scenario_mnt/228_27266_26558/c'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/228_27266_26558/a' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/228_27266_26558/b' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/228_27266_26558/c' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "229",
+      "description": "Snapshot then bulk operations across many files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1303.18,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/229_27266_27957/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/229_27266_27957/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='for i in $(seq 1 16); do touch /tmp/vfs_scenario_mnt/229_27266_27957/snap_$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/229_27266_27957 == 16' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "230",
+      "description": "Snapshot then deep copy tree",
+      "passed": false,
+      "error": "verify failed: exists {vfs}/t_copy/t/A/B/file2",
+      "elapsed_ms": 1226.19,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/230_27266_29532/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/230_27266_29532/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/230_27266_29532/t/A/B'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/230_27266_29532/t/A/file1 /tmp/vfs_scenario_mnt/230_27266_29532/t/A/B/file2'",
+        "SETUP: rc=0 cmd='cp -R /tmp/vfs_scenario_mnt/230_27266_29532/t /tmp/vfs_scenario_mnt/230_27266_29532/t_copy/'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/230_27266_29532/t_copy/t/A/B/file2' -> False (kind=exists)"
+      ]
+    },
+    {
+      "id": "231",
+      "description": "Create then snapshot then read content preserved",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1290.19,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"PRESERVED\")\\' /tmp/vfs_scenario_mnt/231_27266_30924/p'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/231_27266_30924/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/231_27266_30924/.vfsctl: Input/output error",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/231_27266_30924/p)\" = \\'PRESERVED\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "232",
+      "description": "Snapshot then file count preserved",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1263.81,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 12); do touch /tmp/vfs_scenario_mnt/232_27266_32384/keep$i; done'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/232_27266_32384/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/232_27266_32384/.vfsctl: Input/output error",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/232_27266_32384 == 12' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "233",
+      "description": "Snapshot then write huge content",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1277.86,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/233_27266_33813/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/233_27266_33813/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"x\"*5000000)\\' /tmp/vfs_scenario_mnt/233_27266_33813/big'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/233_27266_33813/big == 5000000' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "234",
+      "description": "Create with mkdir, snapshot, then create more subdirs",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1244.09,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/234_27266_35259/dir1'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/234_27266_35259/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/234_27266_35259/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/234_27266_35259/dir1/sub1 /tmp/vfs_scenario_mnt/234_27266_35259/dir1/sub2'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/234_27266_35259/dir1/sub1' -> True (kind=isdir)",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/234_27266_35259/dir1/sub2' -> True (kind=isdir)"
+      ]
+    },
+    {
+      "id": "235",
+      "description": "Snapshot then delete specific files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1211.6,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/235_27266_36665/a /tmp/vfs_scenario_mnt/235_27266_36665/b /tmp/vfs_scenario_mnt/235_27266_36665/c /tmp/vfs_scenario_mnt/235_27266_36665/d'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/235_27266_36665/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/235_27266_36665/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/235_27266_36665/a /tmp/vfs_scenario_mnt/235_27266_36665/c'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/235_27266_36665/a' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/235_27266_36665/b' -> True (kind=exists)",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/235_27266_36665/c' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/235_27266_36665/d' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "236",
+      "description": "Snapshot then verify all md5s match originals",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 5320.87,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/236_27266_38041/verify'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/236_27266_38041/verify/a'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip /tmp/vfs_scenario_mnt/236_27266_38041/verify/b'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/Antigravity.dmg /tmp/vfs_scenario_mnt/236_27266_38041/verify/c'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/236_27266_38041/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/236_27266_38041/.vfsctl: Input/output error",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/236_27266_38041/verify/a == src_pdf_small' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/236_27266_38041/verify/b == src_zip' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/236_27266_38041/verify/c == src_dmg' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "237",
+      "description": "Snapshot then read 5MB file with python chunked read",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1324.65,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"x\"*5242880)\\' /tmp/vfs_scenario_mnt/237_27266_45102/big'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/237_27266_45102/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/237_27266_45102/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; f=open(sys.argv[1],\"rb\"); print(len(f.read()))\\' /tmp/vfs_scenario_mnt/237_27266_45102/big'",
+        "  stdout: 5242880",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/237_27266_45102/big == 5242880' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "238",
+      "description": "Snapshot then mv dir with file, verify file path updated",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1222.08,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/238_27266_46589/a'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/238_27266_46589/a/f'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/238_27266_46589/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/238_27266_46589/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/238_27266_46589/a /tmp/vfs_scenario_mnt/238_27266_46589/b'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/238_27266_46589/b/f' -> True (kind=exists)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/238_27266_46589/b/f == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "239",
+      "description": "Snapshot then sequential writes to same file",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1194.96,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='echo 1 > /tmp/vfs_scenario_mnt/239_27266_47972/seq'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/239_27266_47972/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/239_27266_47972/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='echo 2 > /tmp/vfs_scenario_mnt/239_27266_47972/seq'",
+        "SETUP: rc=0 cmd='echo 3 > /tmp/vfs_scenario_mnt/239_27266_47972/seq'",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/239_27266_47972/seq)\" = \\'3\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "240",
+      "description": "Snapshot then create symlink (or copy if not supported)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1322.67,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/240_27266_49330/orig'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/240_27266_49330/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/240_27266_49330/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='ln -s /tmp/vfs_scenario_mnt/240_27266_49330/orig /tmp/vfs_scenario_mnt/240_27266_49330/link 2>/dev/null || cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/240_27266_49330/link'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/240_27266_49330/link' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "241",
+      "description": "Snapshot then verify root still readable",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1174.12,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/241_27266_50820/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/241_27266_50820/.vfsctl: No such file or directory",
+        "VERIFY: 'match test -d /tmp/vfs_scenario_mnt/241_27266_50820/' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "242",
+      "description": "Snapshot then rename nested subdirs",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1175.29,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/242_27266_52157/p1/p2/p3'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/242_27266_52157/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/242_27266_52157/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/242_27266_52157/p1/p2/p3 /tmp/vfs_scenario_mnt/242_27266_52157/p1/p2/p3_renamed'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/242_27266_52157/p1/p2/p3_renamed' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "243",
+      "description": "Snapshot then write to deeply nested file",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1178.08,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/243_27266_53496/a/b/c/d'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/243_27266_53496/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/243_27266_53496/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='echo deep > /tmp/vfs_scenario_mnt/243_27266_53496/a/b/c/d/file'",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/243_27266_53496/a/b/c/d/file)\" = \\'deep\\'' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "244",
+      "description": "Create dir, snapshot, rename dir, verify content still there",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1302.48,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/244_27266_54837/d'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/244_27266_54837/d/file'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/244_27266_54837/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/244_27266_54837/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/244_27266_54837/d /tmp/vfs_scenario_mnt/244_27266_54837/renamed'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/244_27266_54837/renamed/file' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "245",
+      "description": "Snapshot then append across page boundary",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1300.58,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"a\"*8192)\\' /tmp/vfs_scenario_mnt/245_27266_56410/p'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/245_27266_56410/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/245_27266_56410/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"ab\").write(b\"b\"*4096)\\' /tmp/vfs_scenario_mnt/245_27266_56410/p'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/245_27266_56410/p == 12288' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "246",
+      "description": "Snapshot then mv same-name-file to different parent",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1212.37,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/246_27266_57875/root_file'",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/246_27266_57875/parent'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/246_27266_57875/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/246_27266_57875/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/246_27266_57875/root_file /tmp/vfs_scenario_mnt/246_27266_57875/parent/file'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/246_27266_57875/root_file' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/246_27266_57875/parent/file' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "247",
+      "description": "Snapshot then verify all subdirs intact",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1255.87,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/247_27266_59247/d1/sub1 /tmp/vfs_scenario_mnt/247_27266_59247/d2/sub2 /tmp/vfs_scenario_mnt/247_27266_59247/d3/sub3'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/247_27266_59247/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/247_27266_59247/.vfsctl: No such file or directory",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/247_27266_59247/d1/x /tmp/vfs_scenario_mnt/247_27266_59247/d2/y /tmp/vfs_scenario_mnt/247_27266_59247/d3/z'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/247_27266_59247 == 3' -> True (kind=count_eq)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/247_27266_59247/d1 == 2' -> True (kind=count_eq)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/247_27266_59247/d2 == 2' -> True (kind=count_eq)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/247_27266_59247/d3 == 2' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "248",
+      "description": "Snapshot at file boundary, then create files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1212.61,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/248_27266_60665/boundary'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/248_27266_60665/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/248_27266_60665/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/248_27266_60665/after1 /tmp/vfs_scenario_mnt/248_27266_60665/after2'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/248_27266_60665/boundary' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/248_27266_60665/after1' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/248_27266_60665/after2' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "249",
+      "description": "Snapshot, verify FUSE mount still responsive",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1165.92,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/249_27266_62040/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/249_27266_62040/.vfsctl: No such file or directory",
+        "VERIFY: 'match ls /tmp/vfs_scenario_mnt/249_27266_62040/ | wc -l' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "250",
+      "description": "Final: snapshot multiple times, verify state preserved",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1217.56,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='echo first > /tmp/vfs_scenario_mnt/250_27266_63371/s'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/250_27266_63371/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/250_27266_63371/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='echo second > /tmp/vfs_scenario_mnt/250_27266_63371/s'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/250_27266_63371/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/250_27266_63371/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='echo third > /tmp/vfs_scenario_mnt/250_27266_63371/s'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/250_27266_63371/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/250_27266_63371/.vfsctl: Input/output error",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/250_27266_63371/s)\" = \\'third\\'' -> True (kind=shell_match)"
+      ]
+    }
+  ],
+  "partial": false
+}

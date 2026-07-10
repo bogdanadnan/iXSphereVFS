@@ -1,0 +1,688 @@
+{
+  "batch": "batch_01.json",
+  "total": 50,
+  "pass": 49,
+  "fail": 1,
+  "total_seconds": 72.23,
+  "results": [
+    {
+      "id": "001",
+      "description": "Create single empty file, verify it appears",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1107.75,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/001_15101_28086/empty.txt'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/001_15101_28086/empty.txt' -> True (kind=exists)",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/001_15101_28086/empty.txt == 0' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "002",
+      "description": "Create directory with 10 empty files inside, verify count",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1148.11,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/002_15101_29357/d1'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 10); do touch /tmp/vfs_scenario_mnt/002_15101_29357/d1/f$i; done'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/002_15101_29357/d1' -> True (kind=isdir)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/002_15101_29357/d1 == 10' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "003",
+      "description": "Create 5 nested directories depth 5, verify each exists",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1109.13,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/003_15101_30654/a/b/c/d/e'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/003_15101_30654/a/b/c/d/e' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "004",
+      "description": "Copy small PDF, verify MD5",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1121.22,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/004_15101_31923/file.pdf'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/004_15101_31923/file.pdf == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "005",
+      "description": "Copy large DMG, verify MD5",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 2314.24,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/Antigravity.dmg /tmp/vfs_scenario_mnt/005_15101_33203/disk.dmg'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/005_15101_33203/disk.dmg == src_dmg' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "006",
+      "description": "Copy ZIP archive, verify MD5",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 2901.65,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip /tmp/vfs_scenario_mnt/006_15101_36091/archive.zip'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/006_15101_36091/archive.zip == src_zip' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "007",
+      "description": "Create file, append 1 byte, verify size is original+1",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1126.63,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/007_15101_39784/f'",
+        "SETUP: rc=0 cmd='printf x >> /tmp/vfs_scenario_mnt/007_15101_39784/f'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/007_15101_39784/f == src_pdf_small_size + 1' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "008",
+      "description": "Create file, rename same directory, verify path changed",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1112.84,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/008_15101_41069/old.pdf'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/008_15101_41069/old.pdf /tmp/vfs_scenario_mnt/008_15101_41069/new.pdf'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/008_15101_41069/old.pdf' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/008_15101_41069/new.pdf' -> True (kind=exists)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/008_15101_41069/new.pdf == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "009",
+      "description": "Create file, rename cross-directory, verify moved",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1131.03,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/009_15101_42346/sub'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/009_15101_42346/a.pdf'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/009_15101_42346/a.pdf /tmp/vfs_scenario_mnt/009_15101_42346/sub/b.pdf'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/009_15101_42346/a.pdf' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/009_15101_42346/sub/b.pdf' -> True (kind=exists)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/009_15101_42346/sub/b.pdf == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "010",
+      "description": "Create file, delete, verify gone",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1141.76,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/010_15101_43637/x.pdf'",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/010_15101_43637/x.pdf'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/010_15101_43637/x.pdf' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "011",
+      "description": "Create empty directory, remove empty directory",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1132.59,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/011_15101_44937/empty_dir'",
+        "SETUP: rc=0 cmd='rmdir /tmp/vfs_scenario_mnt/011_15101_44937/empty_dir'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/011_15101_44937/empty_dir' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "012",
+      "description": "Try to remove non-empty directory (rmdir should fail, file remains)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1106.95,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/012_15101_46228/full'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/012_15101_46228/full/child'",
+        "SETUP: rc=0 cmd='rmdir /tmp/vfs_scenario_mnt/012_15101_46228/full || true'",
+        "  stderr: rmdir: /tmp/vfs_scenario_mnt/012_15101_46228/full: Directory not empty",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/012_15101_46228/full' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/012_15101_46228/full/child' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "013",
+      "description": "Create 32 empty files (under 64-entry readdir cap), verify count",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1192.85,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/013_15101_47494/hundred'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 32); do touch /tmp/vfs_scenario_mnt/013_15101_47494/hundred/f$i; done'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/013_15101_47494/hundred' -> True (kind=isdir)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/013_15101_47494/hundred == 32' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "014",
+      "description": "Create 16 directories inside one parent (under cap)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1200.03,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/014_15101_48848/parent'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 16); do mkdir /tmp/vfs_scenario_mnt/014_15101_48848/parent/d$i; done'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/014_15101_48848/parent' -> True (kind=isdir)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/014_15101_48848/parent == 16' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "015",
+      "description": "Write then overwrite file, verify final MD5",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1160.98,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/015_15101_50225/w'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/token_plan_usage_data_20260601_20260630_8197613643.xlsx /tmp/vfs_scenario_mnt/015_15101_50225/w'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/015_15101_50225/w == src_xlsx' -> True (kind=md5_specific)",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/015_15101_50225/w == src_xlsx_size' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "016",
+      "description": "Truncate file to 50% via python (BSD truncate has no %)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1201.36,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/016_15101_51545/t'",
+        "SETUP: rc=0 cmd='python3 -c \\'import os,sys; f=open(sys.argv[1],\"r+b\"); s=os.path.getsize(sys.argv[1]); f.truncate(s//2); f.close()\\' /tmp/vfs_scenario_mnt/016_15101_51545/t'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/016_15101_51545/t == src_pdf_small_size / 2' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "017",
+      "description": "Copy 5 different files, verify each MD5",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1182.88,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/017_15101_52905/a'",
+        "SETUP: rc=0 cmd=\"cp '/Users/bogdanadnan/Downloads/HaifaBogdanAdnanPFA Work Report - May, 2026.pdf' /tmp/vfs_scenario_mnt/017_15101_52905/b\"",
+        "SETUP: rc=0 cmd=\"cp '/Users/bogdanadnan/Downloads/HaifaBogdanAdnanPFA Work Report - June, 2026.pdf' /tmp/vfs_scenario_mnt/017_15101_52905/c\"",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/FA000744.pdf /tmp/vfs_scenario_mnt/017_15101_52905/d'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/Factura_FG828395.pdf /tmp/vfs_scenario_mnt/017_15101_52905/e'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/017_15101_52905/a == src_pdf1' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/017_15101_52905/b == src_pdf2' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/017_15101_52905/c == src_pdf3' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/017_15101_52905/d == src_pdf4' -> True (kind=md5_specific)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/017_15101_52905/e == src_pdf5' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "018",
+      "description": "Move file up one directory level (cross-parent)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1185.28,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/018_15101_54245/x/y'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/018_15101_54245/x/y/f'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/018_15101_54245/x/y/f /tmp/vfs_scenario_mnt/018_15101_54245/x/f'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/018_15101_54245/x/y/f' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/018_15101_54245/x/f' -> True (kind=exists)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/018_15101_54245/x/f == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "019",
+      "description": "Create deeply nested file at depth 10, read back",
+      "passed": false,
+      "error": "verify failed: exists {vfs}/d0/d1/d2/d3/d4/d5/d6/d7/d8/leaf",
+      "elapsed_ms": 1284.55,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import os,sys; p=sys.argv[1]; parts=[\"d\"+str(i) for i in range(10)]; full=os.path.join(p, *parts); os.makedirs(full, exist_ok=True); open(os.path.join(full, \"leaf\"), \"w\").write(\"deep\")\\' /tmp/vfs_scenario_mnt/019_15101_55728'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/019_15101_55728/d0/d1/d2/d3/d4/d5/d6/d7/d8/leaf' -> False (kind=exists)"
+      ]
+    },
+    {
+      "id": "020",
+      "description": "Rename directory, verify contents moved with it",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1115.65,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/020_15101_57170/orig'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/020_15101_57170/orig/a /tmp/vfs_scenario_mnt/020_15101_57170/orig/b'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/020_15101_57170/orig /tmp/vfs_scenario_mnt/020_15101_57170/renamed'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/020_15101_57170/orig' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/020_15101_57170/renamed/a' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/020_15101_57170/renamed/b' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "021",
+      "description": "Copy file with spaces in name",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1117.59,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/021_15101_58444/file\\\\ with\\\\ spaces.pdf'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/021_15101_58444/file with spaces.pdf' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "022",
+      "description": "Copy file with unicode in name",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1125.68,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/022_15101_59719/\u0444\u0430\u0439\u043b.pdf'",
+        "  stderr: cp: /tmp/vfs_scenario_mnt/022_15101_59719/\u0444\u0430\u0439\u043b.pdf: fchmod failed: No such file or directory\ncp: /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf: could not copy extended attributes to /tmp/",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/022_15101_59719/\u0444\u0430\u0439\u043b.pdf' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "023",
+      "description": "Empty filename rejected (touch fails)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1121.94,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/023_15101_61004/ || true'",
+        "VERIFY: \"match ls -la /tmp/vfs_scenario_mnt/023_15101_61004/ | grep -v '^total' | wc -l\" -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "024",
+      "description": "Long filename (200 chars), create and verify",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1203.07,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import os,sys; os.chdir(sys.argv[1]); open(\"a\"*200, \"w\").close()\\' /tmp/vfs_scenario_mnt/024_15101_62282'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/024_15101_62282/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "025",
+      "description": "Write file, snapshot via .vfsctl, write another file, both visible",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1173.28,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/025_15101_63636/before'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/025_15101_63636/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/025_15101_63636/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd=\"cp '/Users/bogdanadnan/Downloads/Anexa includeri abonament.pdf' /tmp/vfs_scenario_mnt/025_15101_63636/after\"",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/025_15101_63636/before' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/025_15101_63636/after' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "026",
+      "description": "Write file, MD5 via python chunked read",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1108.89,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/026_15101_64969/r'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/026_15101_64969/r == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "027",
+      "description": "Overwrite first half with zeros, size unchanged",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1177.18,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/027_15101_66237/o'",
+        "SETUP: rc=0 cmd='python3 -c \\'import os,sys; f=open(sys.argv[1],\"r+b\"); s=os.path.getsize(sys.argv[1]); f.write(b\"\\\\0\"*(s//2)); f.close()\\' /tmp/vfs_scenario_mnt/027_15101_66237/o'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/027_15101_66237/o == src_pdf_small_size' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "028",
+      "description": "Create 4 dirs, each with 4 files (16 total within readdir cap)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1216.4,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq 1 4); do mkdir /tmp/vfs_scenario_mnt/028_15101_67573/d$d; for f in $(seq 1 4); do touch /tmp/vfs_scenario_mnt/028_15101_67573/d$d/f$f; done; done'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/028_15101_67573/d1' -> True (kind=isdir)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/028_15101_67573/d1 == 4' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "029",
+      "description": "Move directory tree into another directory",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1131.23,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/029_15101_68947/src_tree/sub1/sub2'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/029_15101_68947/src_tree/sub1/sub2/file'",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/029_15101_68947/dest'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/029_15101_68947/src_tree /tmp/vfs_scenario_mnt/029_15101_68947/dest/tree'",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/029_15101_68947/src_tree' -> True (kind=not_exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/029_15101_68947/dest/tree/sub1/sub2/file' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "030",
+      "description": "Copy then chmod 0, file still exists",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1099.55,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/030_15101_70237/noperm'",
+        "SETUP: rc=0 cmd='chmod 0 /tmp/vfs_scenario_mnt/030_15101_70237/noperm || true'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/030_15101_70237/noperm' -> True (kind=exists)",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/030_15101_70237/noperm == src_pdf_small_size' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "031",
+      "description": "Stat file after copy, verify size",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1113.85,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/031_15101_71494/s'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/031_15101_71494/s == src_pdf_small_size' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "032",
+      "description": "Create 1.5MB file, verify size",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1151.2,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"a\"*1500000)\\' /tmp/vfs_scenario_mnt/032_15101_72770/big'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/032_15101_72770/big == 1500000' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "033",
+      "description": "Copy ZIP, verify exact size and MD5",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 2948.97,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip /tmp/vfs_scenario_mnt/033_15101_74077/b'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/033_15101_74077/b == src_zip_size' -> True (kind=size_eq)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/033_15101_74077/b == src_zip' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "034",
+      "description": "Create 32 empty files (under cap), verify count",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1222.95,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 32); do touch /tmp/vfs_scenario_mnt/034_15101_77813/f$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/034_15101_77813 == 32' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "035",
+      "description": "Create 32 then delete 16, verify 16 remain",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1208.48,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 32); do touch /tmp/vfs_scenario_mnt/035_15101_79195/f$i; done'",
+        "SETUP: rc=0 cmd='for i in $(seq 1 16); do rm /tmp/vfs_scenario_mnt/035_15101_79195/f$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/035_15101_79195 == 16' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "036",
+      "description": "Recursive copy of directory tree (3 levels, 3 files each)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1134.71,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/036_15101_80562/r1/r2/r3'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/036_15101_80562/r1/a /tmp/vfs_scenario_mnt/036_15101_80562/r1/r2/b /tmp/vfs_scenario_mnt/036_15101_80562/r1/r2/r3/c'",
+        "SETUP: rc=0 cmd='rm -rf /tmp/vfs_copy_dest && mkdir /tmp/vfs_copy_dest'",
+        "SETUP: rc=0 cmd='cp -R /tmp/vfs_scenario_mnt/036_15101_80562/r1 /tmp/vfs_copy_dest/'",
+        "VERIFY: 'exists /tmp/vfs_copy_dest/r1/a' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_copy_dest/r1/r2/b' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_copy_dest/r1/r2/r3/c' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "037",
+      "description": "Write 32 small files sequentially, verify count",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1126.47,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 32); do echo $i > /tmp/vfs_scenario_mnt/037_15101_81853/w$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/037_15101_81853 == 32' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "038",
+      "description": "Append across page boundary (8KB + 2KB = 10KB)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1226.02,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"a\"*8000)\\' /tmp/vfs_scenario_mnt/038_15101_83137/ap'",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"ab\").write(b\"b\"*2000)\\' /tmp/vfs_scenario_mnt/038_15101_83137/ap'",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/038_15101_83137/ap == 10000' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "039",
+      "description": "Snapshot, modify file, snapshot again",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1202.8,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/039_15101_84523/snap1'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/039_15101_84523/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/039_15101_84523/.vfsctl: Input/output error",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"\\\\0\"*100)\\' /tmp/vfs_scenario_mnt/039_15101_84523/snap1'",
+        "SETUP: rc=0 cmd='match printf snapshot > /tmp/vfs_scenario_mnt/039_15101_84523/.vfsctl || true'",
+        "  stderr: /bin/sh: /tmp/vfs_scenario_mnt/039_15101_84523/.vfsctl: Input/output error",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/039_15101_84523/snap1' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "040",
+      "description": "Create directory and a file inside it via single cp",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1127.04,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/040_15101_85883/parent_dir'",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/040_15101_85883/parent_dir/file.pdf'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/040_15101_85883/parent_dir/file.pdf' -> True (kind=exists)",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/040_15101_85883/parent_dir' -> True (kind=isdir)"
+      ]
+    },
+    {
+      "id": "041",
+      "description": "Read file from start, MD5 check",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1107.12,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/041_15101_87166/p'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/041_15101_87166/p == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "042",
+      "description": "Create file in non-existent dir should fail",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1121.47,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/042_15101_88431/nonexistent/f || true'",
+        "  stderr: cp: /tmp/vfs_scenario_mnt/042_15101_88431/nonexistent/f: No such file or directory",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/042_15101_88431/nonexistent' -> True (kind=not_exists)"
+      ]
+    },
+    {
+      "id": "043",
+      "description": "Copy all Downloads PDFs into VFS (mixed sizes, partial)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1210.26,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for f in /Users/bogdanadnan/Downloads/*.pdf; do cp \"$f\" /tmp/vfs_scenario_mnt/043_15101_89712/ 2>/dev/null || true; done'",
+        "VERIFY: 'match ls /tmp/vfs_scenario_mnt/043_15101_89712/ | wc -l' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "044",
+      "description": "Read last 100 bytes of a file via tail",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1133.08,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/044_15101_91082/rev'",
+        "SETUP: rc=127 cmd='match test $(stat -f %z /tmp/vfs_scenario_mnt/044_15101_91082/rev) -gt 100'",
+        "  stderr: /bin/sh: match: command not found",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/044_15101_91082/rev' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "045",
+      "description": "Create 8 dirs, each with 4 files (32 total within cap)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1272.0,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq 1 8); do mkdir /tmp/vfs_scenario_mnt/045_15101_92389/q$d; for f in $(seq 1 4); do touch /tmp/vfs_scenario_mnt/045_15101_92389/q$d/f$f; done; done'",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/045_15101_92389/q1' -> True (kind=isdir)",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/045_15101_92389/q1 == 4' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "046",
+      "description": "Create file with mode 0644, verify mode",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1131.43,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/046_15101_93822/m'",
+        "SETUP: rc=0 cmd='chmod 644 /tmp/vfs_scenario_mnt/046_15101_93822/m'",
+        "VERIFY: 'mode /tmp/vfs_scenario_mnt/046_15101_93822/m == 0644' -> True (kind=mode_eq)"
+      ]
+    },
+    {
+      "id": "047",
+      "description": "Remove all 20 files via glob, verify empty",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1164.54,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 20); do touch /tmp/vfs_scenario_mnt/047_15101_95111/x$i; done'",
+        "SETUP: rc=0 cmd='rm /tmp/vfs_scenario_mnt/047_15101_95111/x*'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/047_15101_95111 == 0' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "048",
+      "description": "Chained rename a\u2192b\u2192c, verify c exists, a and b don't",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1131.95,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/048_15101_96437/a'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/048_15101_96437/a /tmp/vfs_scenario_mnt/048_15101_96437/b'",
+        "SETUP: rc=0 cmd='mv /tmp/vfs_scenario_mnt/048_15101_96437/b /tmp/vfs_scenario_mnt/048_15101_96437/c'",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/048_15101_96437/c' -> True (kind=exists)",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/048_15101_96437/a' -> True (kind=not_exists)",
+        "VERIFY: 'not exists /tmp/vfs_scenario_mnt/048_15101_96437/b' -> True (kind=not_exists)",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/048_15101_96437/c == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "049",
+      "description": "Create 5 sibling files with similar names",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1113.07,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/049_15101_97751/file.txt /tmp/vfs_scenario_mnt/049_15101_97751/file1.txt /tmp/vfs_scenario_mnt/049_15101_97751/file2.txt /tmp/vfs_scenario_mnt/049_15101_97751/file_old.txt /tmp/vfs_scenario_mnt/049_15101_97751/file_new.txt'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/049_15101_97751 == 5' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "050",
+      "description": "Write file, verify it survives unmount/remount",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1128.89,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/050_15101_99024/persist'",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/050_15101_99024/persist == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    }
+  ]
+}

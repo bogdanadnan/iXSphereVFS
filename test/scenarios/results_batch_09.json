@@ -1,0 +1,612 @@
+{
+  "batch": "batch_09.json",
+  "total": 50,
+  "pass": 50,
+  "fail": 0,
+  "total_seconds": 69.27,
+  "results": [
+    {
+      "id": "401",
+      "description": "Create 48 empty files (under 64 readdir cap)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1238.93,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 48); do touch /tmp/vfs_scenario_mnt/401_31625_47349/s$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/401_31625_47349 == 48' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "402",
+      "description": "Create 24 directories at root",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1160.1,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 24); do mkdir /tmp/vfs_scenario_mnt/402_31625_48755/d$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/402_31625_48755 == 24' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "403",
+      "description": "Create 16 dirs each with 3 files (48 files total)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1232.84,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 16); do mkdir /tmp/vfs_scenario_mnt/403_31625_50078/d$d; for f in 1 2 3; do touch /tmp/vfs_scenario_mnt/403_31625_50078/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/403_31625_50078/ | wc -l) -eq 16' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "404",
+      "description": "Create 4 dirs each with 12 files (48 total)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1225.86,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4; do mkdir /tmp/vfs_scenario_mnt/404_31625_51476/d$d; for f in $(seq 1 12); do touch /tmp/vfs_scenario_mnt/404_31625_51476/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/404_31625_51476/ | wc -l) -eq 4' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "405",
+      "description": "Create 12 dirs each with 4 files (48 total)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1257.92,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 12); do mkdir /tmp/vfs_scenario_mnt/405_31625_52868/d$d; for f in 1 2 3 4; do touch /tmp/vfs_scenario_mnt/405_31625_52868/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/405_31625_52868/ | wc -l) -eq 12' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "406",
+      "description": "Create 8 dirs each with 6 files (48 total)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1254.75,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4 5 6 7 8; do mkdir /tmp/vfs_scenario_mnt/406_31625_54285/d$d; for f in 1 2 3 4 5 6; do touch /tmp/vfs_scenario_mnt/406_31625_54285/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/406_31625_54285/ | wc -l) -eq 8' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "407",
+      "description": "Create 6 dirs each with 8 files (48 total)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1230.6,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4 5 6; do mkdir /tmp/vfs_scenario_mnt/407_31625_55701/d$d; for f in $(seq 1 8); do touch /tmp/vfs_scenario_mnt/407_31625_55701/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/407_31625_55701/ | wc -l) -eq 6' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "408",
+      "description": "Create 3 dirs each with 16 files (48 total)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1216.79,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3; do mkdir /tmp/vfs_scenario_mnt/408_31625_57101/d$d; for f in $(seq -w 1 16); do touch /tmp/vfs_scenario_mnt/408_31625_57101/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/408_31625_57101/ | wc -l) -eq 3' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "409",
+      "description": "Create 40 empty files (under cap)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1190.34,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 40); do touch /tmp/vfs_scenario_mnt/409_31625_58480/q$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/409_31625_58480 == 40' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "410",
+      "description": "Create 20 dirs at root",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1163.72,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 20); do mkdir /tmp/vfs_scenario_mnt/410_31625_59830/q$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/410_31625_59830 == 20' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "411",
+      "description": "Create 30 empty files (under cap)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1187.83,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 30); do touch /tmp/vfs_scenario_mnt/411_31625_61164/r$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/411_31625_61164 == 30' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "412",
+      "description": "Create 16 dirs at root",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1173.92,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 16); do mkdir /tmp/vfs_scenario_mnt/412_31625_62507/r$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/412_31625_62507 == 16' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "413",
+      "description": "Create 2 dirs each with 24 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1241.48,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/413_31625_63958/a /tmp/vfs_scenario_mnt/413_31625_63958/b'",
+        "SETUP: rc=0 cmd='for d in a b; do for f in $(seq -w 1 24); do touch /tmp/vfs_scenario_mnt/413_31625_63958/$d/f$f; done; done'",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/413_31625_63958/ | wc -l) -eq 2' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "414",
+      "description": "Create 5 dirs each with 8 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1234.92,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in a b c d e; do mkdir /tmp/vfs_scenario_mnt/414_31625_65357/$d; for f in $(seq 1 8); do touch /tmp/vfs_scenario_mnt/414_31625_65357/$d/f$f; done; done'",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/414_31625_65357/ | wc -l) -eq 5' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "415",
+      "description": "Create 32 dirs with same name pattern",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1160.88,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 01 32); do mkdir /tmp/vfs_scenario_mnt/415_31625_66753/p$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/415_31625_66753 == 32' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "416",
+      "description": "Create 24 dirs each with 2 files (48 total files)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1253.01,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 24); do mkdir /tmp/vfs_scenario_mnt/416_31625_68080/d$d; touch /tmp/vfs_scenario_mnt/416_31625_68080/d$d/a /tmp/vfs_scenario_mnt/416_31625_68080/d$d/b; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/416_31625_68080/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "417",
+      "description": "Create 8 dirs each with 5 files (40 total)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1252.37,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4 5 6 7 8; do mkdir /tmp/vfs_scenario_mnt/417_31625_69489/d$d; for f in 1 2 3 4 5; do touch /tmp/vfs_scenario_mnt/417_31625_69489/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/417_31625_69489/ -type f | wc -l) -eq 40' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "418",
+      "description": "Create 16 dirs each with 3 files (48 files)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1284.27,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 16); do mkdir /tmp/vfs_scenario_mnt/418_31625_70901/D$d; for f in a b c; do touch /tmp/vfs_scenario_mnt/418_31625_70901/D$d/$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/418_31625_70901/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "419",
+      "description": "Create flat 50 files, no dirs",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1210.18,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 50); do touch /tmp/vfs_scenario_mnt/419_31625_72351/flat$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/419_31625_72351 == 50' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "420",
+      "description": "Create 32 dirs (under cap, no files)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1173.2,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 32); do mkdir /tmp/vfs_scenario_mnt/420_31625_73729/dir$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/420_31625_73729 == 32' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "421",
+      "description": "Create 12 dirs each with 4 files = 48 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1220.24,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 12); do mkdir /tmp/vfs_scenario_mnt/421_31625_75068/n$d; for f in 1 2 3 4; do touch /tmp/vfs_scenario_mnt/421_31625_75068/n$d/$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/421_31625_75068/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "422",
+      "description": "Create 24 nested pairs of file+dir",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1210.72,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 24); do touch /tmp/vfs_scenario_mnt/422_31625_76444/f$i; mkdir /tmp/vfs_scenario_mnt/422_31625_76444/d$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/422_31625_76444 == 48' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "423",
+      "description": "Create tree 5x5 = 25 dirs each with 2 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1260.78,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for a in 1 2 3 4 5; do for b in 1 2 3 4 5; do mkdir /tmp/vfs_scenario_mnt/423_31625_77818/d$a$b; touch /tmp/vfs_scenario_mnt/423_31625_77818/d$a$b/f1 /tmp/vfs_scenario_mnt/423_31625_77818/d$a$b/f2; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/423_31625_77818/ -type d -mindepth 1 | wc -l) -eq 25' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "424",
+      "description": "Create 4 dirs each with 12 files = 48 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1285.32,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4; do mkdir /tmp/vfs_scenario_mnt/424_31625_79240/d$d; for f in $(seq -w 1 12); do touch /tmp/vfs_scenario_mnt/424_31625_79240/d$d/$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/424_31625_79240/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "425",
+      "description": "Create 30 files in 5 dirs (6 each)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1196.67,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4 5; do mkdir /tmp/vfs_scenario_mnt/425_31625_80690/d$d; for f in $(seq 1 6); do touch /tmp/vfs_scenario_mnt/425_31625_80690/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/425_31625_80690/ -type f | wc -l) -eq 30' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "426",
+      "description": "Create 32 dirs with long numeric prefix",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1159.25,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 32); do mkdir /tmp/vfs_scenario_mnt/426_31625_82051/longprefix_$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/426_31625_82051 == 32' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "427",
+      "description": "Create 12 dirs each with 4 files in mixed locations",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1230.79,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in a b c d e f g h i j k l; do mkdir /tmp/vfs_scenario_mnt/427_31625_83379/$d; for f in 1 2 3 4; do touch /tmp/vfs_scenario_mnt/427_31625_83379/$d/f$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/427_31625_83379/ -type d -mindepth 1 | wc -l) -eq 12' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "428",
+      "description": "Create 24 dirs each with 2 files (48 files)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1262.54,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 24); do mkdir /tmp/vfs_scenario_mnt/428_31625_84772/N$d; touch /tmp/vfs_scenario_mnt/428_31625_84772/N$d/a /tmp/vfs_scenario_mnt/428_31625_84772/N$d/b; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/428_31625_84772/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "429",
+      "description": "Create 36 empty files in 3 dirs",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1214.62,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in a b c; do mkdir /tmp/vfs_scenario_mnt/429_31625_86200/d$d; for f in $(seq -w 1 12); do touch /tmp/vfs_scenario_mnt/429_31625_86200/d$d/$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/429_31625_86200/ -type f | wc -l) -eq 36' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "430",
+      "description": "Create 28 dirs and 14 files mixed",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1222.14,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 28); do mkdir /tmp/vfs_scenario_mnt/430_31625_87578/d$d; done'",
+        "SETUP: rc=0 cmd='for f in $(seq -w 1 14); do touch /tmp/vfs_scenario_mnt/430_31625_87578/f$f; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/430_31625_87578 == 42' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "431",
+      "description": "Create 16 dirs each with 3 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1245.3,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 16); do mkdir /tmp/vfs_scenario_mnt/431_31625_88959/D$d; for f in 1 2 3; do touch /tmp/vfs_scenario_mnt/431_31625_88959/D$d/$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/431_31625_88959/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "432",
+      "description": "Create 3 dirs with 16 files each",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1232.35,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3; do mkdir /tmp/vfs_scenario_mnt/432_31625_90367/d$d; for f in $(seq -w 1 16); do touch /tmp/vfs_scenario_mnt/432_31625_90367/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/432_31625_90367/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "433",
+      "description": "Create 16 dirs in flat structure",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1132.44,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 16); do mkdir /tmp/vfs_scenario_mnt/433_31625_91758/F$d; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/433_31625_91758 == 16' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "434",
+      "description": "Create 32 files spread across 8 dirs (4 each)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1239.64,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4 5 6 7 8; do mkdir /tmp/vfs_scenario_mnt/434_31625_93056/d$d; for f in 1 2 3 4; do touch /tmp/vfs_scenario_mnt/434_31625_93056/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/434_31625_93056/ -type f | wc -l) -eq 32' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "435",
+      "description": "Create 4 dirs each with 12 files = 48 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1249.47,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4; do mkdir /tmp/vfs_scenario_mnt/435_31625_94453/n$d; for f in $(seq -w 1 12); do touch /tmp/vfs_scenario_mnt/435_31625_94453/n$d/f$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/435_31625_94453/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "436",
+      "description": "Create 16 dirs each with 3 files + 1 special file",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1295.13,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 16); do mkdir /tmp/vfs_scenario_mnt/436_31625_95863/M$d; for f in 1 2 3; do touch /tmp/vfs_scenario_mnt/436_31625_95863/M$d/$f; done; touch /tmp/vfs_scenario_mnt/436_31625_95863/M$d/.hidden; done'",
+        "VERIFY: \"match test $(find /tmp/vfs_scenario_mnt/436_31625_95863/ -name '.hidden' | wc -l) -eq 16\" -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "437",
+      "description": "Create 24 dirs with sequential names",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1154.74,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 24); do mkdir /tmp/vfs_scenario_mnt/437_31625_97318/x$d; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/437_31625_97318 == 24' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "438",
+      "description": "Create 6 dirs each with 8 files = 48 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1231.44,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4 5 6; do mkdir /tmp/vfs_scenario_mnt/438_31625_98638/d$d; for f in $(seq 1 8); do touch /tmp/vfs_scenario_mnt/438_31625_98638/d$d/f$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/438_31625_98638/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "439",
+      "description": "Create 18 dirs at root (within cap)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1140.29,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 18); do mkdir /tmp/vfs_scenario_mnt/439_31625_29/g$d; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/439_31625_29 == 18' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "440",
+      "description": "Create 4 dirs each with 12 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1286.15,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4; do mkdir /tmp/vfs_scenario_mnt/440_31625_1335/q$d; for f in $(seq -w 1 12); do touch /tmp/vfs_scenario_mnt/440_31625_1335/q$d/$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/440_31625_1335/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "441",
+      "description": "Create 8 dirs each with 6 files (48 total)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1253.77,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4 5 6 7 8; do mkdir /tmp/vfs_scenario_mnt/441_31625_2792/m$d; for f in 1 2 3 4 5 6; do touch /tmp/vfs_scenario_mnt/441_31625_2792/m$d/$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/441_31625_2792/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "442",
+      "description": "Create 10 dirs each with 4 files = 40 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1239.01,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 10); do mkdir /tmp/vfs_scenario_mnt/442_31625_4209/L$d; for f in 1 2 3 4; do touch /tmp/vfs_scenario_mnt/442_31625_4209/L$d/$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/442_31625_4209/ -type f | wc -l) -eq 40' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "443",
+      "description": "Create 24 dirs each with 2 files (48 total)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1231.14,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 24); do mkdir /tmp/vfs_scenario_mnt/443_31625_5614/T$d; touch /tmp/vfs_scenario_mnt/443_31625_5614/T$d/a /tmp/vfs_scenario_mnt/443_31625_5614/T$d/b; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/443_31625_5614/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "444",
+      "description": "Create 8 dirs with files using python script",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1168.77,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys,os; [os.makedirs(sys.argv[1]+f\"/d{i}\") or [open(f\"{sys.argv[1]}/d{i}/f{j}\",\"w\").close() for j in range(6)] for i in range(8)]\\' /tmp/vfs_scenario_mnt/444_31625_7000'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/444_31625_7000/ -type d -mindepth 1 | wc -l) -eq 8' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "445",
+      "description": "Create 16 dirs each with 3 files using for loops",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1280.66,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 16); do mkdir /tmp/vfs_scenario_mnt/445_31625_8329/v$d; for f in x y z; do touch /tmp/vfs_scenario_mnt/445_31625_8329/v$d/$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/445_31625_8329/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "446",
+      "description": "Create 32 dirs with sequential names",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1181.83,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 01 32); do mkdir /tmp/vfs_scenario_mnt/446_31625_9773/K$d; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/446_31625_9773 == 32' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "447",
+      "description": "Create mixed: 16 dirs and 16 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1172.08,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq -w 1 16); do mkdir /tmp/vfs_scenario_mnt/447_31625_11118/d$i; touch /tmp/vfs_scenario_mnt/447_31625_11118/f$i; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/447_31625_11118 == 32' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "448",
+      "description": "Create 5 dirs each with 8 files = 40 files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1238.15,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in 1 2 3 4 5; do mkdir /tmp/vfs_scenario_mnt/448_31625_12453/e$d; for f in $(seq 1 8); do touch /tmp/vfs_scenario_mnt/448_31625_12453/e$d/$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/448_31625_12453/ -type f | wc -l) -eq 40' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "449",
+      "description": "Create 32 dirs with mixed patterns",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1192.9,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 32); do mkdir /tmp/vfs_scenario_mnt/449_31625_13845/P$d; done'",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/449_31625_13845 == 32' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "450",
+      "description": "Create 12 dirs with 4 files each (48 files)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1248.85,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in $(seq -w 1 12); do mkdir /tmp/vfs_scenario_mnt/450_31625_15200/y$d; for f in a b c d; do touch /tmp/vfs_scenario_mnt/450_31625_15200/y$d/$f; done; done'",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/450_31625_15200/ -type f | wc -l) -eq 48' -> True (kind=shell_match)"
+      ]
+    }
+  ],
+  "partial": false
+}
