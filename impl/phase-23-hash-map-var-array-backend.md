@@ -24,21 +24,23 @@ The result: hash_map implementation shrinks from ~250 LOC to ~80 LOC, with simpl
 
 ## Design
 
-### Fixed capacity — the "very large array"
+### Configurable capacity and granularity
 
-For the typical use case (dedup in `dirchain_list_all`), the capacity must cover realistic directory sizes. The VSCode directory has 6500 unique children; `childNodeId` is uint32_t (up to 4B).
+Two log2-based parameters, both fit in a small integer:
 
-Options:
+- **`scale`** (range 1..32): capacity = `2^scale` slots. Default 20 = 1M slots.
+- **`granularity`** (range 1..16): chunk_size = `2^granularity` entries per chunk. Default 8 = 256 entries/chunk.
 
-| Capacity | Slots | Max memory (24B/slot) | Notes |
-|---|---|---|---|
-| 2^16 | 65,536 | 1.5 MB | Covers most directories |
-| 2^20 | 1,048,576 | 24 MB | Comfortable for any directory |
-| 2^24 | 16,777,216 | 384 MB | "Very large"; covers NTFS limits |
+Trade-offs:
 
-Phase 23 picks **2^20 = 1,048,576** as the default. The var_array's sparse allocation means memory used is `O(N × entry_size)`, not `O(capacity × entry_size)`. For 6500 entries, only ~26 chunks at chunk_size=256 → ~800KB.
+- **Higher scale** → more capacity, more memory in worst case. Scale 32 = 4B slots = 96GB worst case.
+- **Lower scale** → less capacity, less memory. Scale 16 = 65K slots.
+- **Higher granularity** → fewer tree levels (less CAS promotion), but larger chunks waste memory in sparse workloads.
+- **Lower granularity** → deeper tree (more CAS), but tighter memory in sparse workloads.
 
-The capacity is configurable per hash_map via `hash_map_new_cap(K, V, capacity)` (already exists in Phase 21's API). The default `hash_map_new(K, V)` picks 2^20.
+Defaults chosen for the "very large sparse" use case: scale=20 (1M slots) + granularity=8 (256/chunk). With 6500 typical entries: ~26 chunks used, ~150KB. Sparse-friendly.
+
+For dense workloads (500K+ entries), bump granularity to 12 or 14 to reduce tree depth. For ultra-sparse (thousands of entries in huge capacity), lower granularity is fine.
 
 ### Data structure — slim
 
@@ -165,11 +167,16 @@ With Phase 22's sparse var_array, `count` is the high-water mark of set operatio
 
 ### API
 
-No change. Same as Phase 21:
+Same external API as Phase 21:
 
 ```c
 HashMap(K, V) hash_map_new(K, V);
-HashMap(K, V) hash_map_new_cap(K, V, int64_t initial_capacity);
+/* Defaults: scale=20 (1M slots), granularity=8 (256/chunk) */
+
+HashMap(K, V) hash_map_new_cap(K, V, int scale, int granularity);
+/* scale: 1..32, capacity = 2^scale
+   granularity: 1..16, chunk_size = 2^granularity */
+
 void hash_map_free(HashMap(K, V) map);
 int  hash_map_put(HashMap(K, V) map, K key, V value);
 V*   hash_map_get(HashMap(K, V) map, K key);
@@ -177,6 +184,10 @@ int  hash_map_contains(HashMap(K, V) map, K key);
 int  hash_map_delete(HashMap(K, V) map, K key);
 int64_t hash_map_size(HashMap(K, V) map);
 ```
+
+**API change from Phase 21**: `hash_map_new_cap(K, V, initial_capacity)` (linear capacity) is replaced by `hash_map_new_cap(K, V, scale, granularity)` (log2 parameters). Both encode the same information; the new form is cleaner for power-of-2 semantics.
+
+No other API changes. The deleted-old-capacity API had only one caller (`test_hash_map.c`) which is updated.
 
 ## Files
 
@@ -209,8 +220,8 @@ Phase 23 target: ~80-100 LOC.
 
 - [ ] `hash_map.c` rewritten using `var_array_set` for put/delete-tombstone.
 - [ ] No `hash_map_grow` function (no resize).
-- [ ] Fixed capacity: `hash_map_new` uses 2^20, `hash_map_new_cap` accepts arbitrary power of 2.
-- [ ] All 45,942 existing hash_map tests pass unchanged.
+- [ ] Capacity and granularity configurable via `hash_map_new_cap(scale, granularity)`. Defaults: scale=20, granularity=8.
+- [ ] All 45,942 existing hash_map tests pass unchanged (after API rename `initial_capacity` → `scale, granularity`).
 - [ ] All 10 unit test suites pass.
 - [ ] LOC of `hash_map.c` ≤ 120 (excluding comments).
 
@@ -232,5 +243,7 @@ Phase 23 target: ~80-100 LOC.
 
 1. Update `src/hash_map.c` to use `var_array_set` directly.
 2. Remove `hash_map_grow` and the manual grow coordination.
-3. Run all existing hash_map tests — must still pass (semantic compatibility).
-4. Run all 10 unit test suites — no regression.
+3. Update `hash_map_new_cap` API to take `(scale, granularity)` instead of `initial_capacity`.
+4. Update `test_hash_map.c` for the API rename.
+5. Run all existing hash_map tests — must still pass (semantic compatibility).
+6. Run all 10 unit test suites — no regression.
