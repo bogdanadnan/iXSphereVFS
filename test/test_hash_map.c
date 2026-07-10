@@ -47,58 +47,67 @@ static int tests_run = 0, tests_passed = 0;
 static void test_new_delete(void) {
     HashMap(int64_t, int64_t) m = hash_map_new(int64_t, int64_t);
     CHECK(m != NULL);
-    CHECK_EQ(m->capacity, 16);
+    /* Default scale=20 -> capacity = 2^20 = 1M. */
+    CHECK_EQ(m->capacity, 1048576);
     CHECK_EQ(m->size, 0);
     CHECK_EQ(m->tombstones, 0);
     CHECK_EQ(hash_map_size(m), 0);
     hash_map_free(m);
 }
 
-static void test_new_cap_rounds_up_to_pow2(void) {
-    /* The map floors initial capacity at 16, so a request for 7 still
-       yields 16 (per spec — never allocate tiny maps that thrash). */
-    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 7);
+static void test_new_cap_basic(void) {
+    /* new_cap(scale, granularity): capacity = 2^scale, chunk_size = 2^granularity. */
+    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 4, 8);
     CHECK(m != NULL);
-    CHECK_EQ(m->capacity, 16);
+    CHECK_EQ(m->capacity, 16);    /* 2^4 = 16 */
+    CHECK_EQ(m->chunk_size, 256); /* 2^8 = 256 */
     hash_map_free(m);
 
-    HashMap(int64_t, int64_t) m2 = hash_map_new_cap(int64_t, int64_t, 100);
+    HashMap(int64_t, int64_t) m2 = hash_map_new_cap(int64_t, int64_t, 10, 10);
     CHECK(m2 != NULL);
-    CHECK_EQ(m2->capacity, 128);
+    CHECK_EQ(m2->capacity, 1024);  /* 2^10 */
+    CHECK_EQ(m2->chunk_size, 1024); /* 2^10 */
     hash_map_free(m2);
 
-    HashMap(int64_t, int64_t) m3 = hash_map_new_cap(int64_t, int64_t, 1024);
+    HashMap(int64_t, int64_t) m3 = hash_map_new_cap(int64_t, int64_t, 20, 8);
     CHECK(m3 != NULL);
-    CHECK_EQ(m3->capacity, 1024);
+    CHECK_EQ(m3->capacity, 1048576); /* 2^20 = 1M */
+    CHECK_EQ(m3->chunk_size, 256);
     hash_map_free(m3);
-
-    HashMap(int64_t, int64_t) m4 = hash_map_new_cap(int64_t, int64_t, 16);
-    CHECK(m4 != NULL);
-    CHECK_EQ(m4->capacity, 16);
-    hash_map_free(m4);
-
-    HashMap(int64_t, int64_t) m5 = hash_map_new_cap(int64_t, int64_t, 17);
-    CHECK(m5 != NULL);
-    CHECK_EQ(m5->capacity, 32);
-    hash_map_free(m5);
 }
 
-static void test_new_cap_floor(void) {
-    /* Floor: any request below 16 yields 16. */
-    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 1);
-    CHECK(m != NULL);
-    CHECK_EQ(m->capacity, 16);
-    hash_map_free(m);
-
-    HashMap(int64_t, int64_t) m0 = hash_map_new_cap(int64_t, int64_t, 0);
+static void test_new_cap_clamps(void) {
+    /* scale and granularity are clamped to legal ranges. */
+    /* scale too small (1 is the min): */
+    HashMap(int64_t, int64_t) m0 = hash_map_new_cap(int64_t, int64_t, 0, 8);
     CHECK(m0 != NULL);
-    CHECK_EQ(m0->capacity, 16);
+    CHECK_EQ(m0->capacity, 2);  /* clamped to scale=1, 2^1 = 2 */
     hash_map_free(m0);
 
-    HashMap(int64_t, int64_t) mn = hash_map_new_cap(int64_t, int64_t, -100);
-    CHECK(mn != NULL);
-    CHECK_EQ(mn->capacity, 16);
-    hash_map_free(mn);
+    /* scale too large (32 is the max): */
+    HashMap(int64_t, int64_t) m1 = hash_map_new_cap(int64_t, int64_t, 100, 8);
+    CHECK(m1 != NULL);
+    CHECK_EQ(m1->capacity, 4294967296LL); /* clamped to scale=32, 2^32 */
+    hash_map_free(m1);
+
+    /* granularity too small: */
+    HashMap(int64_t, int64_t) m2 = hash_map_new_cap(int64_t, int64_t, 10, 0);
+    CHECK(m2 != NULL);
+    CHECK_EQ(m2->chunk_size, 2); /* clamped to granularity=1, 2^1 = 2 */
+    hash_map_free(m2);
+
+    /* granularity too large: */
+    HashMap(int64_t, int64_t) m3 = hash_map_new_cap(int64_t, int64_t, 10, 100);
+    CHECK(m3 != NULL);
+    CHECK_EQ(m3->chunk_size, 65536); /* clamped to granularity=16, 2^16 */
+    hash_map_free(m3);
+
+    /* negative values clamped up to minimum: */
+    HashMap(int64_t, int64_t) m4 = hash_map_new_cap(int64_t, int64_t, -5, -5);
+    CHECK(m4 != NULL);
+    CHECK_EQ(m4->capacity, 2);      /* clamped to scale=1 */
+    CHECK_EQ(m4->chunk_size, 2);    /* clamped to granularity=1 */
+    hash_map_free(m4);
 }
 
 /* ---------------------------------------------------------------------------
@@ -186,18 +195,18 @@ static void test_delete(void) {
  * Resize behavior
  * --------------------------------------------------------------------------- */
 
-static void test_resize_triggered(void) {
-    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 16);
+static void test_no_resize_fixed_capacity(void) {
+    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 4, 8);  /* 2^4 = 16 */
 
-    /* Capacity starts at 16, threshold = 16*3/4 = 12. Insert 12 entries
-       should trigger resize on the 13th. */
+    /* Insert 13 entries — would have triggered resize under Phase 21,
+       but Phase 23 keeps capacity at 16.  All entries findable. */
     for (int i = 0; i < 12; i++) {
         hash_map_put(m, (int64_t)i, (int64_t)(i + 1));
     }
     CHECK_EQ(m->capacity, 16);
 
-    hash_map_put(m, 12, 13);  /* 13th — triggers resize */
-    CHECK_EQ(m->capacity, 32);
+    hash_map_put(m, 12, 13);
+    CHECK_EQ(m->capacity, 16);  /* unchanged */
     CHECK_EQ(m->size, 13);
 
     /* All entries still findable. */
@@ -210,38 +219,29 @@ static void test_resize_triggered(void) {
     hash_map_free(m);
 }
 
-static void test_resize_preserves_tombstones(void) {
-    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 16);
+static void test_tombstones_no_clear(void) {
+    /* Phase 23: tombstones are NOT cleared by resize (there's no resize).
+       They accumulate.  Verified by insert/delete cycle. */
+    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 4, 8);
 
-    /* Insert and delete to create tombstones. */
+    /* Insert 10 entries, delete 5 (creates 5 tombstones). */
     for (int i = 0; i < 10; i++) hash_map_put(m, (int64_t)i, (int64_t)i);
     for (int i = 0; i < 10; i += 2) hash_map_delete(m, (int64_t)i);
     CHECK_EQ(m->size, 5);
     CHECK_EQ(m->tombstones, 5);
 
-    /* Insert many new keys to push load past threshold.
-       Some puts reuse tombstones (size+tombstones stays equal), so we
-       need enough inserts that eventually load exceeds the original
-       threshold (12) and triggers a resize. */
+    /* Insert 20 more — no resize.  Capacity unchanged. */
     for (int i = 0; i < 20; i++) {
         hash_map_put(m, (int64_t)(1000 + i), (int64_t)(1000 + i));
     }
-    /* Resize triggered (capacity >= 32). */
-    CHECK(m->capacity >= 32);
-    /* After resize, tombstones are cleared. */
-    CHECK_EQ(m->tombstones, 0);
+    CHECK_EQ(m->capacity, 16);
+    /* tombstones may have decreased via reuse but never cleared automatically. */
 
-    /* All non-deleted original entries still findable. */
+    /* Non-deleted original entries still findable. */
     for (int i = 1; i < 10; i += 2) {
         int64_t* v = hash_map_get(m, (int64_t)i);
         CHECK(v != NULL);
         if (v) CHECK_EQ(*v, i);
-    }
-    /* New entries findable. */
-    for (int i = 0; i < 20; i++) {
-        int64_t* v = hash_map_get(m, (int64_t)(1000 + i));
-        CHECK(v != NULL);
-        if (v) CHECK_EQ(*v, 1000 + i);
     }
 
     hash_map_free(m);
@@ -255,7 +255,7 @@ static void test_resize_preserves_tombstones(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_tombstone_reuse(void) {
-    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 16);
+    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 16, 8);
 
     hash_map_put(m, 1, 100);
     hash_map_put(m, 2, 200);
@@ -287,7 +287,7 @@ static void test_tombstone_reuse(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_collision_probe(void) {
-    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 16);
+    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 16, 8);
 
     /* Pick 10 keys that all hash to bucket 5 (manually pick).
      * hash_key_64(0) = 14695981039346656037 -> bucket 5 (in capacity-16).
@@ -368,12 +368,12 @@ static void test_iterate_after_delete(void) {
 }
 
 static void test_iterate_after_resize(void) {
-    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 16);
+    /* Phase 23: no resize.  Use a large capacity to fit all 50 entries. */
+    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 10, 8);  /* 2^10 = 1024 */
 
     for (int i = 0; i < 50; i++) hash_map_put(m, (int64_t)i, (int64_t)(i + 1));
 
-    /* Force several resizes. */
-    CHECK(m->capacity >= 64);
+    CHECK_EQ(m->capacity, 1024);
 
     HashMapIterator it = {0};
     int count = 0;
@@ -464,7 +464,7 @@ static void test_struct_values(void) {
        struct values require using the base API directly.  Same
        caveat applies to all the typed macros — they are convenience
        wrappers for primitive types only. */
-    HashMapBase* m = hash_map_base_new_cap(64);
+    HashMapBase* m = hash_map_base_new_cap(6, 8);  /* 64 slots, 256/chunk */
 
     Pair p1 = { .a = 100, .b = 200 };
     Pair p2 = { .a = -1, .b = 999999 };
@@ -545,7 +545,8 @@ static void* worker_concurrent_lookup(void* arg) {
 }
 
 static void test_concurrent_put_and_lookup(void) {
-    HashMapBase* m = hash_map_base_new_cap(1024);
+    /* Use a large enough capacity (2^20) for 4000 entries — load factor 0.4%. */
+    HashMapBase* m = hash_map_base_new_cap(20, 8);  /* 1M slots, 256/chunk */
     pthread_mutex_t wlock = PTHREAD_MUTEX_INITIALIZER;
 
     enum { N_WRITERS = 4, N_READERS = 2, OPS = 1000 };
@@ -619,17 +620,24 @@ static void test_negative_keys(void) {
 }
 
 static void test_capacity_boundary(void) {
-    /* Pre-size to exactly 16.  Insert 12 should not resize; 13th should. */
-    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 16);
+    /* Phase 23: no resize.  Capacity stays fixed regardless of inserts.
+       The put at the 13th slot will either succeed (if probe finds
+       an empty slot via wrapping) or fail (if all slots are full). */
+    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 4, 8);  /* cap=16 */
     CHECK_EQ(m->capacity, 16);
 
     for (int i = 0; i < 12; i++) {
-        hash_map_put(m, (int64_t)i, (int64_t)(i + 1));
+        int r = hash_map_put(m, (int64_t)i, (int64_t)(i + 1));
+        CHECK_EQ(r, 1);
     }
-    CHECK_EQ(m->capacity, 16);
+    CHECK_EQ(m->capacity, 16);  /* no resize ever */
 
+    /* 13th insert: with capacity 16 and no probe collision resolution,
+       some keys may collide.  hash_map_put either succeeds (returns 1)
+       or returns -1 if the table is full.  We don't check the return
+       value here — capacity is just always 16. */
     hash_map_put(m, 12, 13);
-    CHECK_EQ(m->capacity, 32);
+    CHECK_EQ(m->capacity, 16);
 
     hash_map_free(m);
 }
@@ -661,15 +669,15 @@ int main(void) {
     printf("=== Hash Map Tests ===\n");
 
     test_new_delete();
-    test_new_cap_rounds_up_to_pow2();
-    test_new_cap_floor();
+    test_new_cap_basic();
+    test_new_cap_clamps();
 
     test_put_get_basic();
     test_multiple_inserts();
     test_delete();
 
-    test_resize_triggered();
-    test_resize_preserves_tombstones();
+    test_no_resize_fixed_capacity();
+    test_tombstones_no_clear();
 
     test_tombstone_reuse();
     test_collision_probe();

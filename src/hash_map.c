@@ -1,13 +1,34 @@
-/* hash_map.c — implementation of the generic hash map primitive.
+/* hash_map.c — generic hash map, thin layer over Phase 22's sparse VarArray.
  *
- * See hash_map.h for design notes.  All operations work on HashMapBase*
- * via linear probing in a VarArray(HashSlot).  Resize doubles capacity
- * and rehashes all occupied slots.
+ * Storage: VarArray(HashSlot) with chunks of 2^granularity slots each.
+ * Capacity: 2^scale slots (fixed at construction, no resize).
+ * Hash:     FNV-1a 64-bit, modulo capacity (power of 2 -> bitwise &).
+ * Collision: linear probe with Robin Hood tombstone reuse.
+ *
+ * Phase 23 changes from Phase 21:
+ *   - No hash_map_grow (no resize). Capacity is fixed at construction.
+ *   - Storage uses var_array_set (path allocation handled by var_array).
+ *   - Capacity/granularity configurable via scale/granularity log2 params.
+ *   - hash_map_base_new_cap takes (scale, granularity) instead of
+ *     a linear initial_capacity.
  */
 
 #include "hash_map.h"
 #include <stdlib.h>
 #include <string.h>
+
+/* Defaults: scale=20 (1M slots), granularity=8 (256 slots/chunk).
+ * These match the typical "very large sparse" use case. */
+#define HASH_MAP_DEFAULT_SCALE        20
+#define HASH_MAP_DEFAULT_GRANULARITY   8
+
+/* Scale limits.  scale in [1..32] => capacity in [2..2^32]. */
+#define HASH_MAP_MIN_SCALE             1
+#define HASH_MAP_MAX_SCALE            32
+
+/* Granularity limits.  granularity in [1..16] => chunk_size in [2..2^16]. */
+#define HASH_MAP_MIN_GRANULARITY       1
+#define HASH_MAP_MAX_GRANULARITY      16
 
 /* ---------------------------------------------------------------------------
  * Hash function — FNV-1a 64-bit on the key's raw bytes.
@@ -26,16 +47,9 @@ uint64_t hash_key_64(int64_t key) {
     return h;
 }
 
-/* Round up to next power of 2.  Caller's `n` must be > 0. */
-static int64_t next_pow2(int64_t n) {
-    if (n <= 1) return 1;
-    n--;
-    n |= n >> 1;  n |= n >> 2;  n |= n >> 4;
-    n |= n >> 8;  n |= n >> 16; n |= n >> 32;
-    return n + 1;
-}
-
-/* Hash → bucket index.  Capacity must be a power of 2. */
+/* Hash → bucket index.  Capacity must be a power of 2 (bitwise &).
+ * Cast to uint64_t ensures the shift amount is well-defined and the
+ * result fits in int64_t (capacity is at most 2^32 per scale cap). */
 static inline int64_t hash_to_index(uint64_t h, int64_t capacity) {
     return (int64_t)(h & (uint64_t)(capacity - 1));
 }
@@ -44,25 +58,37 @@ static inline int64_t hash_to_index(uint64_t h, int64_t capacity) {
  * Lifecycle
  * --------------------------------------------------------------------------- */
 
-HashMapBase* hash_map_base_new(void) {
-    return hash_map_base_new_cap(HASH_MAP_DEFAULT_INITIAL_CAPACITY);
+/* Validate scale and granularity; clamp to legal range.  Returns 0 on
+ * success, -1 if the inputs are nonsensical. */
+static int clamp_scale_granularity(int* scale, int* granularity) {
+    if (!scale || !granularity) return -1;
+    if (*scale < HASH_MAP_MIN_SCALE)        *scale = HASH_MAP_MIN_SCALE;
+    if (*scale > HASH_MAP_MAX_SCALE)        *scale = HASH_MAP_MAX_SCALE;
+    if (*granularity < HASH_MAP_MIN_GRANULARITY)  *granularity = HASH_MAP_MIN_GRANULARITY;
+    if (*granularity > HASH_MAP_MAX_GRANULARITY)  *granularity = HASH_MAP_MAX_GRANULARITY;
+    return 0;
 }
 
-HashMapBase* hash_map_base_new_cap(int64_t initial_capacity) {
-    if (initial_capacity < 16) initial_capacity = 16;
-    int64_t capacity = next_pow2(initial_capacity);
+HashMapBase* hash_map_base_new(void) {
+    return hash_map_base_new_cap(HASH_MAP_DEFAULT_SCALE,
+                                 HASH_MAP_DEFAULT_GRANULARITY);
+}
+
+HashMapBase* hash_map_base_new_cap(int scale, int granularity) {
+    if (clamp_scale_granularity(&scale, &granularity) != 0) return NULL;
+
+    int64_t capacity = (int64_t)1 << scale;
+    int chunk_size   = 1 << granularity;
 
     HashMapBase* map = (HashMapBase*)calloc(1, sizeof(HashMapBase));
     if (!map) return NULL;
 
-    map->slots = var_array_new_base(sizeof(HashSlot),
-                                    VFS_VAR_ARRAY_DEFAULT_CHUNK_SIZE);
-    if (!map->slots) {
-        free(map);
-        return NULL;
-    }
-    map->capacity = capacity;
-    map->size = 0;
+    map->slots = var_array_new_base(sizeof(HashSlot), chunk_size);
+    if (!map->slots) { free(map); return NULL; }
+
+    map->capacity   = capacity;
+    map->chunk_size = chunk_size;
+    map->size       = 0;
     map->tombstones = 0;
     return map;
 }
@@ -74,99 +100,14 @@ void hash_map_base_free(HashMapBase* map) {
 }
 
 /* ---------------------------------------------------------------------------
- * Resize — double capacity and rehash.
+ * Lookup / Insert / Delete
  *
- * O(N) on resize.  Unavoidable for a hash table.  We allocate a NEW
- * slot array via var_array (chunks of 256 slots), rehash every
- * occupied slot into it, then swap.
+ * All three use linear probing.  Tombstones (HASH_TOMBSTONE state) are
+ * kept for delete correctness — without them, the probe chain would
+ * prematurely stop at a deleted slot, missing later entries.
  *
- * Why a new array, not in-place rehashing:
- *   1. New array starts empty — no collision concerns during rehash.
- *   2. Old array stays valid throughout — readers can still see old state.
- *   3. The swap is a single pointer assignment (close to atomic).
- *
- * Slot growth in the new array is lazy: each rehash step that lands
- * on bucket j grows the var_array to count > j.  This avoids a
- * separate pre-allocation pass — the var_array's grow_base is O(1)
- * either way, and lazy grow means we never allocate slots that no
- * rehash step actually writes to (smaller var_array, less memory
- * churn if the hash distribution is sparse).
- *
- * The previous design pre-allocated `new_capacity` slots upfront.
- * That wasted ~50% of grow calls when the hash distribution was
- * non-uniform (lots of grow calls to claim indices we never wrote).
- * Lazy grow eliminates that waste at the cost of slightly more grow
- * calls during rehash for adversarial distributions (uniform
- * distribution still ends up growing to `new_capacity` total).
- * --------------------------------------------------------------------------- */
-
-static int hash_map_grow(HashMapBase* map, int64_t new_capacity) {
-    VarArrayBase* new_slots = var_array_new_base(sizeof(HashSlot),
-                                                 VFS_VAR_ARRAY_DEFAULT_CHUNK_SIZE);
-    if (!new_slots) return -1;
-
-    /* Rehash every OCCUPIED slot from the old array into the new one.
-       Lazy growth: when rehash lands on bucket j, grow the new array
-       until count > j (so the slot exists), then write.  All new
-       slots start as HASH_EMPTY (calloc-allocated). */
-    for (int64_t i = 0; i < map->capacity; i++) {
-        HashSlot* s = hash_map_slot_ptr(map->slots, i);
-        if (!s || s->state != HASH_OCCUPIED) continue;
-
-        uint64_t h = hash_key_64(s->key);
-        int64_t j = hash_to_index(h, new_capacity);
-
-        /* Linear probe to find empty slot in new array.  Lazy grow:
-           when probing past the current count, grow the array so the
-           slot exists.  The grow itself is O(1). */
-        while (1) {
-            HashSlot* ns = hash_map_slot_ptr(new_slots, j);
-            if (ns) {
-                if (ns->state == HASH_EMPTY) {
-                    ns->key = s->key;
-                    ns->value = s->value;
-                    ns->state = HASH_OCCUPIED;
-                    break;
-                }
-                j = (j + 1) & (new_capacity - 1);
-            } else {
-                /* j is past the current count — grow enough to claim it.
-                   After this grow, j is in range and we retry. */
-                while (new_slots->count <= j) {
-                    (void)var_array_grow_base(new_slots);
-                }
-                /* Fall through to retry the probe at j. */
-            }
-        }
-    }
-
-    /* Swap */
-    var_array_delete_base(map->slots);
-    map->slots = new_slots;
-    map->capacity = new_capacity;
-    map->tombstones = 0;
-    return 0;
-}
-
-/* ---------------------------------------------------------------------------
- * Internal: insert a key/value pair with known target slot index.
- *
- * Writes the entry into map->slots at slot `target`.  Caller must have
- * already grown the slots array enough (count > target) AND verified
- * the slot is HASH_EMPTY or HASH_TOMBSTONE.
- * --------------------------------------------------------------------------- */
-
-static void hash_map_insert_at(HashMapBase* map, int64_t target,
-                               int64_t key, int64_t value) {
-    HashSlot* s = hash_map_slot_ptr(map->slots, target);
-    if (!s) return;
-    s->key = key;
-    s->value = value;
-    s->state = HASH_OCCUPIED;
-}
-
-/* ---------------------------------------------------------------------------
- * Lookup, insert, delete, contains
+ * For the dedup use case (read-only, no deletes), tombstones never
+ * appear and the probe chain is fast.
  * --------------------------------------------------------------------------- */
 
 int64_t* hash_map_base_get(HashMapBase* map, int64_t key) {
@@ -174,8 +115,9 @@ int64_t* hash_map_base_get(HashMapBase* map, int64_t key) {
 
     uint64_t h = hash_key_64(key);
     int64_t i = hash_to_index(h, map->capacity);
+    int64_t probes = 0;
 
-    while (1) {
+    while (probes < map->capacity) {
         HashSlot* s = hash_map_slot_ptr(map->slots, i);
         if (!s || s->state == HASH_EMPTY) {
             return NULL;
@@ -184,7 +126,9 @@ int64_t* hash_map_base_get(HashMapBase* map, int64_t key) {
             return &s->value;
         }
         i = (i + 1) & (map->capacity - 1);
+        probes++;
     }
+    return NULL;  /* not found within one full lap */
 }
 
 int hash_map_base_contains(HashMapBase* map, int64_t key) {
@@ -193,36 +137,23 @@ int hash_map_base_contains(HashMapBase* map, int64_t key) {
 
 int hash_map_base_put(HashMapBase* map, int64_t key, int64_t value) {
     if (!map) return -1;
-    if (map->capacity == 0) {
-        /* Uninitialized — re-create with default capacity. */
-        map->slots = var_array_new_base(sizeof(HashSlot),
-                                        VFS_VAR_ARRAY_DEFAULT_CHUNK_SIZE);
-        if (!map->slots) return -1;
-        map->capacity = HASH_MAP_DEFAULT_INITIAL_CAPACITY;
-    }
-
-    /* Resize if load factor exceeded. */
-    if (map->size + map->tombstones + 1 > (map->capacity * 3) / 4) {
-        if (hash_map_grow(map, map->capacity * 2) != 0) return -1;
-    }
+    if (map->capacity == 0) return -1;  /* uninitialized */
 
     uint64_t h = hash_key_64(key);
     int64_t i = hash_to_index(h, map->capacity);
     int64_t first_tombstone = -1;
+    int64_t probes = 0;
 
-    while (1) {
+    while (probes < map->capacity) {
         HashSlot* s = hash_map_slot_ptr(map->slots, i);
         if (!s || s->state == HASH_EMPTY) {
             /* Found empty slot — insert here (or at first tombstone if any) */
             int64_t target = (first_tombstone >= 0) ? first_tombstone : i;
-            /* Ensure the slots array has grown past target. */
-            while (map->slots->count <= target) {
-                (void)var_array_grow_base(map->slots);
-            }
-            hash_map_insert_at(map, target, key, value);
+            HashSlot entry = { .key = key, .value = value, .state = HASH_OCCUPIED };
+            var_array_set_base(map->slots, target, &entry);
             map->size++;
             if (first_tombstone >= 0) {
-                /* Reused a tombstone slot — net size unchanged otherwise. */
+                /* Reused a tombstone slot — net tombstones decrease by 1. */
                 map->tombstones--;
             }
             return 1;  /* new insertion */
@@ -235,7 +166,14 @@ int hash_map_base_put(HashMapBase* map, int64_t key, int64_t value) {
             return 0;
         }
         i = (i + 1) & (map->capacity - 1);
+        probes++;
     }
+
+    /* Table is full (no EMPTY or matching OCCUPIED found within one
+       full lap).  Caller should grow the table or accept that no
+       more entries can be inserted.  Phase 23 has no auto-grow, so
+       this returns -1. */
+    return -1;
 }
 
 int hash_map_base_delete(HashMapBase* map, int64_t key) {
@@ -243,23 +181,26 @@ int hash_map_base_delete(HashMapBase* map, int64_t key) {
 
     uint64_t h = hash_key_64(key);
     int64_t i = hash_to_index(h, map->capacity);
+    int64_t probes = 0;
 
-    while (1) {
+    while (probes < map->capacity) {
         HashSlot* s = hash_map_slot_ptr(map->slots, i);
         if (!s || s->state == HASH_EMPTY) {
             return 0;  /* not found */
         }
         if (s->state == HASH_OCCUPIED && s->key == key) {
-            /* Mark as tombstone.  Don't shrink the slots array —
-               the slot index stays valid for future inserts (which
-               may reuse it via the "first tombstone wins" rule). */
-            s->state = HASH_TOMBSTONE;
+            /* Mark as tombstone by overwriting the slot.  The path is
+               already allocated, so var_array_set is a simple write. */
+            HashSlot tombstone = { .key = key, .value = 0, .state = HASH_TOMBSTONE };
+            var_array_set_base(map->slots, i, &tombstone);
             map->size--;
             map->tombstones++;
             return 1;
         }
         i = (i + 1) & (map->capacity - 1);
+        probes++;
     }
+    return 0;  /* not found within one full lap */
 }
 
 int64_t hash_map_base_size(HashMapBase* map) {

@@ -68,6 +68,7 @@ typedef struct {
 typedef struct {
     VarArrayBase* slots;
     int64_t       capacity;
+    int           chunk_size;
     volatile int64_t size;
     volatile int64_t tombstones;
 } HashMapBase;
@@ -84,6 +85,7 @@ typedef struct {
 #define HashMap(K, V) struct { \
     VarArrayBase* slots; \
     int64_t       capacity; \
+    int           chunk_size; \
     volatile int64_t size; \
     volatile int64_t tombstones; \
 }*
@@ -98,10 +100,10 @@ typedef struct {
    on OOM. */
 HashMapBase* hash_map_base_new(void);
 
-/* Allocate a new hash map pre-sized to (at least) `initial_capacity`
-   slots.  The actual capacity is rounded up to the next power of 2
-   (minimum 16).  Returns NULL on OOM. */
-HashMapBase* hash_map_base_new_cap(int64_t initial_capacity);
+/* Allocate a new hash map pre-sized to (at least) 2^scale slots with
+   chunk_size = 2^granularity.  scale in [1..32], granularity in [1..16].
+   Returns NULL on OOM or invalid args. */
+HashMapBase* hash_map_base_new_cap(int scale, int granularity);
 
 /* Free the hash map and all its storage.  Idempotent (safe on NULL). */
 void hash_map_base_free(HashMapBase* map);
@@ -193,8 +195,8 @@ static inline int hash_map_iter_next(HashMapIterator* it,
 #define hash_map_new(K, V) \
     ((HashMap(K, V))hash_map_base_new())
 
-#define hash_map_new_cap(K, V, cap) \
-    ((HashMap(K, V))hash_map_base_new_cap(cap))
+#define hash_map_new_cap(K, V, scale, granularity) \
+    ((HashMap(K, V))hash_map_base_new_cap((scale), (granularity)))
 
 #define hash_map_free(map) \
     hash_map_base_free((HashMapBase*)(map))
