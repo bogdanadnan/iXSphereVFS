@@ -2,7 +2,9 @@
 
 ## Goal
 
-Replace the fixed-size dedup arrays in `dirchain_list` (and the equivalent logic in `dentry_cache_build`) with a heap-backed, unbounded VarArray. The 1024-entry hard cap disappears, the ~36KB stack frame shrinks to ~256B, and the dedup algorithm simplifies to "first-hit-wins" based on the chain-ordering invariant.
+Replace the fixed-size dedup array in `dirchain_list` with a heap-backed, unbounded VarArray. The 1024-entry hard cap disappears, the ~36KB stack frame shrinks to ~256B, and the dedup algorithm simplifies to "first-hit-wins" based on the chain-ordering invariant.
+
+This phase **also deletes the dead `dentry_cache` infrastructure** that was planned but never wired up — see the "Dead code removal" section.
 
 ## Background
 
@@ -17,17 +19,6 @@ int64_t best_eff_epoch[1024];
 int     best_name_set[1024];
 int64_t best_namePtr[1024];
 ```
-
-The current `dentry_cache_build` (`src/dentry_cache.c:6-114`) tracks **4 parallel arrays of size 1024** (no namePtr — the function does a second chain walk to look up names):
-
-```c
-int64_t best_child[1024];
-int64_t best_childPtr[1024];
-int64_t best_effective_epoch[1024];
-int     best_name_set[1024];
-```
-
-Both have a 1024-entry cap. Both walk the chain to dedup by childNodeId. The dedup loop in both:
 
 ```c
 for (i = 0; i < best_count; i++) {
@@ -45,10 +36,26 @@ if (found >= 0) {
 ## Problems with the current code
 
 1. **Hard cap.** `while (walk_vp != 0 && best_count < DENTRY_CACHE_MAX)` — directories with >1024 unique children are silently truncated.
-2. **Stack blowup.** `dirchain_list`: 5 × 8KB = ~36KB on stack per call. `dentry_cache_build`: 4 × 8KB + 4 × 4KB = ~36KB. Recursive GC and deep traversal can overflow.
+2. **Stack blowup.** `dirchain_list`: 5 × 8KB = ~36KB on stack per call. Recursive GC and deep traversal can overflow.
 3. **Unnecessary epoch comparison.** Because the chain is descending, the first applicable hit for a childNodeId is by definition the highest-epoch applicable record. The `eff_epoch > best_eff_epoch[found]` branch is defensive code that never fires.
-4. **Dead code.** `dentry_cache_build` is **never called** anywhere in the codebase (verified by grep). It's an unimplemented hook. The invalidation calls in `tree.c` reference `ctx->readdir_cache` (a `DentryCache` field) but nothing populates it. We must decide: wire it up, or delete the dead code.
-5. **Second chain walk in `dentry_cache_build`.** Lines 84-107 do a full second walk of the chain to look up the name string for each entry. This is O(N) per entry, so the total is O(N²) for the second pass. We can eliminate it by tracking `namePtr` in the first pass.
+
+## Dead code removal
+
+The codebase has dead-code infrastructure around `dentry_cache`:
+
+- `src/dentry_cache.h` and `src/dentry_cache.c` declare/define `DentryEntry`, `DentryCache`, `DENTRY_CACHE_MAX`, `dentry_cache_build`, `dentry_cache_is_valid`, `dentry_cache_invalidate`.
+- `include/ixsphere/vfs_internal.h` declares `DentryCache readdir_cache` as a field on `TreeContext`.
+- `src/tree.c` calls `dentry_cache_invalidate(&ctx->readdir_cache)` 6 times (at every create/delete/rename/rmdir).
+- **No code calls `dentry_cache_build`.** The cache is invalidated on every mutation but never populated. The struct is allocated on every `TreeContext` (280KB) and never used.
+
+This phase deletes all of it:
+- Removes `src/dentry_cache.h` and `src/dentry_cache.c`.
+- Removes the `#include "dentry_cache.h"` from `vfs_internal.h`.
+- Removes the `readdir_cache` field from `TreeContext`.
+- Removes all 6 `dentry_cache_invalidate` calls from `tree.c`.
+- Removes `src/dentry_cache.c` from `CMakeLists.txt`.
+
+`DENTRY_CACHE_MAX` is removed entirely. The cap that was 1024 in the dedup array goes away (replaced by VarArray, no upper bound).
 
 ## Read rule (verified correct)
 
@@ -191,100 +198,18 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
 }
 ```
 
-The linear scan for "already seen" is **O(N²)** total. For typical directories (<100 children) this is <10K ops and runs in microseconds. The dentry cache amortizes the cost after the first readdir. This is **the same complexity as the current code** — no regression. A future phase could add a hash table for O(N) lookup.
-
-### Updated algorithm for `dentry_cache_build`
-
-Two changes vs the current implementation:
-1. Replace the 4 parallel arrays with a VarArray of `DirchainDedupEntry` (drops the 1024 cap).
-2. **Track `namePtr` in the first pass** (eliminates the second chain walk — saves O(N²) for the second pass).
-
-```c
-int dentry_cache_build(Pool* pool, MapperTable* mapper_table,
-                       int64_t root_vp, int64_t epoch, DentryCache* arr) {
-    /* ... resolve dir_slot, read_epoch, headPtr ... */
-
-    arr->last_headPtr_page = VFS_VPTR_PAGE(headPtr);
-    arr->count = 0;
-    int64_t read_epoch = mapper_table_resolve(mapper_table, epoch);
-
-    VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
-
-    int64_t walk_vp = headPtr;
-    while (walk_vp != 0) {
-        /* ... read ce_child, ce_epoch, ce_childPtr, ce_namePtr, ce_next ... */
-        /* ... compute eff_epoch, apply read rule ... */
-
-        /* Linear scan for "already seen" (O(N²) total, same as before) */
-        int found = 0;
-        for (int i = 0; i < dedup->count; i++) {
-            DirchainDedupEntry* e = var_array_lookup(dedup, i);
-            if (e && e->childNodeId == (int64_t)ce_child) { found = 1; break; }
-        }
-        if (found) { walk_vp = ce_next; continue; }
-
-        DirchainDedupEntry entry = {
-            .childNodeId = (int64_t)ce_child,
-            .childPtr    = ce_childPtr,
-            .name_set    = (ce_namePtr != 0),
-            .namePtr     = ce_namePtr,
-        };
-        (void)var_array_append(dedup, entry);
-        walk_vp = ce_next;
-    }
-
-    /* Populate DentryCache from dedup.  No second chain walk — namePtr
-       is already in the dedup entry.  arr->count < DENTRY_CACHE_MAX
-       remains as a sanity check (the in-memory cache is fixed-size; the
-       dedup is unbounded, so if a directory has more than 1024 entries
-       the cache will only hold the first 1024). */
-    for (int i = 0; i < dedup->count && arr->count < DENTRY_CACHE_MAX; i++) {
-        DirchainDedupEntry* e = var_array_lookup(dedup, i);
-        if (!e || !e->name_set) continue;
-
-        DentryEntry* out = &arr->entries[arr->count++];
-        out->childNodeId = e->childNodeId;
-        out->childPtr = e->childPtr;
-        out->isDir = false;
-        out->name[0] = '\0';
-
-        uint8_t* child_slot = pool_resolve_ro(pool, e->childPtr);
-        if (child_slot) {
-            int16_t type = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE,
-                                     pool->sb->page_size);
-            out->isDir = (type == (int16_t)NODE_TYPE_DIR);
-        }
-        if (e->namePtr != 0)
-            nodes_read_name(pool, e->namePtr, out->name,
-                            (int)sizeof(out->name));
-    }
-
-    var_array_delete(dedup);
-    arr->valid = true;
-    return VFS_OK;
-}
-```
-
-### Dead code decision
-
-`dentry_cache_build` is currently dead code — declared, defined, but never called. Only the invalidation hook (`dentry_cache_invalidate`) is wired up. The `DentryCache readdir_cache` field on `TreeContext` is invalidated by every directory mutation but never populated.
-
-This phase keeps the dead code (option 3: defer wiring). Rationale:
-
-- The cap removal is the user-visible win and is independent of whether `dentry_cache_build` is called.
-- Wiring up the cache requires more design decisions (per-directory vs single shared cache, what happens when headPtr changes, when to invalidate beyond the headPtr-page check). These are out of scope for this phase.
-- The struct layout is small (~280KB on TreeContext) and removing it is a separate refactor.
-
-A follow-up phase could wire up the cache. For now, we make `dentry_cache_build` correct and bounded only by `DentryCache.entries[DENTRY_CACHE_MAX]` (the in-memory cache size, not the dedup VarArray's unbounded capacity).
+The linear scan for "already seen" is **O(N²)** total. For typical directories (<100 children) this is <10K ops and runs in microseconds. A future phase could add a hash table for O(N) lookup.
 
 ## Files
 
 | File | Change |
 |------|--------|
-| `src/tree.h` | Declare `DirchainDedupEntry` struct (shared between `tree.c` and `dentry_cache.c`). |
-| `src/tree.c` | `dirchain_list`: replace 5 parallel arrays with `VarArray(DirchainDedupEntry)`, drop `eff_epoch` tracking, use typed `var_array_new`/`var_array_append`/`var_array_lookup`/`var_array_delete` macros. |
-| `src/dentry_cache.c` | `dentry_cache_build`: replace 4 parallel arrays with `VarArray(DirchainDedupEntry)`, **track `namePtr` in first pass** to eliminate 2nd chain walk. |
-| `src/dentry_cache.h` | `DENTRY_CACHE_MAX` keeps its role as the in-memory `DentryCache.entries` cap (sanity check). |
+| `src/tree.h` | Declare `DirchainDedupEntry` struct. |
+| `src/tree.c` | `dirchain_list`: replace 5 parallel arrays with `VarArray(DirchainDedupEntry)`, drop `eff_epoch` tracking, use typed `var_array_new`/`var_array_append`/`var_array_lookup`/`var_array_delete` macros. Remove all 6 `dentry_cache_invalidate` calls. |
+| `src/dentry_cache.h` | **Delete entire file.** |
+| `src/dentry_cache.c` | **Delete entire file.** |
+| `include/ixsphere/vfs_internal.h` | Remove `#include "dentry_cache.h"`. Remove `DentryCache readdir_cache` field from `TreeContext`. |
+| `CMakeLists.txt` | Remove `src/dentry_cache.c` from the source list. |
 
 ## Performance budget
 
@@ -295,8 +220,9 @@ A follow-up phase could wire up the cache. For now, we make `dentry_cache_build`
 | Stack frame of `dirchain_list` | ~36KB | ~256B |
 | Per-call malloc | 0 | 1 (8KB per 256 entries) |
 | Per-call free | 0 | 1 |
+| `TreeContext` size | ~280KB (DentryCache field) | 0 (field removed) |
 
-For N=6500 (the bench_ditto extraction): N² = 42M ops, ~0.4s. The dentry cache amortizes this after the first readdir, so subsequent reads are O(1). This is comparable to the current code's performance for N≤1024.
+For N=6500 (the bench_ditto extraction): N² = 42M ops, ~0.4s. This is comparable to the current code's performance for N≤1024. The dedup is per-call with no caching — repeated readdirs of the same directory each do the full chain walk. If profiling shows this is a bottleneck, a future phase can introduce a per-directory cache.
 
 ## Concurrency
 
@@ -306,36 +232,42 @@ If we want per-thread reuse later (to avoid the malloc/free per readdir), we can
 
 ## API surface
 
-No new public API. Internal change to dedup storage. `DentryCache` is removed (option 2) or kept but with different population code (option 1).
+No new public API. Internal change to dedup storage. `DentryCache`, `DentryEntry`, `dentry_cache_build`, `dentry_cache_is_valid`, `dentry_cache_invalidate`, and `DENTRY_CACHE_MAX` are all **removed**.
 
 ## Acceptance
 
 - [ ] `dirchain_list` no longer truncates at 1024 children.
-- [ ] `dentry_cache_build` no longer truncates at 1024 children (or is deleted entirely).
-- [ ] Stack frame of `dirchain_list` reduced from ~36KB to ~256B (just the VarArray handle).
+- [ ] `dentry_cache.h` and `dentry_cache.c` deleted.
+- [ ] All `dentry_cache_invalidate` calls removed from `tree.c`.
+- [ ] `readdir_cache` field removed from `TreeContext`.
+- [ ] `DENTRY_CACHE_MAX` no longer exists.
+- [ ] `src/dentry_cache.c` removed from `CMakeLists.txt`.
+- [ ] Stack frame of `dirchain_list` reduced from ~36KB to ~256B.
 - [ ] `DirchainDedupEntry` struct has 4 fields (no `eff_epoch`).
-- [ ] `DENTRY_CACHE_MAX` removed from `dentry_cache.h` (or repurposed).
-- [ ] All 144+ epoch tests still pass (the new tests we added for read-rule verification).
+- [ ] All 144+ epoch tests still pass.
 - [ ] `test_tree`, `test_crash`, `test_fuzz`, `test_gc`, `test_mapper`, `test_nodes`, `test_pool`, `test_storage`, `test_var_array` all pass.
-- [ ] 500 FUSE test scenarios: no regression (same 72 fails, same 428 passes as before — the FUSE 64-cap and other issues are out of scope here).
-- [ ] `bench_ditto.py` baseline numbers don't degrade (we expect they improve or stay the same since the 1024 cap is what was silently truncating).
+- [ ] 500 FUSE test scenarios: no regression.
+- [ ] `bench_ditto.py` baseline numbers don't degrade.
 
 ## Out of scope (explicit non-goals)
 
 1. **FUSE 64-cap** in `fuse_vfs.c:297-298`. This is a separate bottleneck for the 500-scenario test failures and the bench_ditto missing-files bug. The 1024-cap removal here doesn't fix the 64-cap.
-2. **Hash-based "seen" set** for O(N) instead of O(N²). For typical directories (<100 children) the O(N²) is fine. The dentry cache amortizes the cost. A future phase could add a hash table if profiling shows O(N²) is a real bottleneck.
+2. **Hash-based "seen" set** for O(N) instead of O(N²). For typical directories (<100 children) the O(N²) is fine. A future phase could add a hash table if profiling shows O(N²) is a real bottleneck.
 3. **Per-thread scratch VarArray** for allocation reuse. Per-call malloc is simple and correct. A future phase could optimize if needed.
 4. **Read rule changes.** The current implementation is correct. Verified by the existing read-rule tests.
-5. **`dentry_cache_build` cache wiring.** Per the dead-code decision, we delete the cache entirely. A future phase could reintroduce it with cleaner semantics.
+5. **Re-introducing a directory readdir cache.** The deleted `dentry_cache` infrastructure could be brought back later with cleaner semantics (per-directory cache, better invalidation strategy). Out of scope for this phase.
 
 ## Implementation order
 
 1. Declare `DirchainDedupEntry` in `src/tree.h`.
 2. Update `dirchain_list` in `src/tree.c` to use the new struct + VarArray (typed macros).
-3. Update `dentry_cache_build` in `src/dentry_cache.c` to use the new struct + VarArray + namePtr tracking (eliminates the 2nd chain walk).
-4. Build and run all unit tests. Verify 144/144 epoch, 958/958 tree, etc.
-5. Re-run `bench_ditto.py` to verify the 5412 only-in-host count doesn't regress (and ideally improves).
-6. Re-run 500-scenario FUSE tests to verify no regression.
+3. Remove all 6 `dentry_cache_invalidate` calls from `tree.c`.
+4. Remove `#include "dentry_cache.h"` and the `readdir_cache` field from `include/ixsphere/vfs_internal.h`.
+5. Delete `src/dentry_cache.h` and `src/dentry_cache.c`.
+6. Remove `src/dentry_cache.c` from `CMakeLists.txt`.
+7. Build and run all unit tests. Verify 144/144 epoch, 958/958 tree, etc.
+8. Re-run `bench_ditto.py` to verify the 5412 only-in-host count doesn't regress.
+9. Re-run 500-scenario FUSE tests to verify no regression.
 
 ## Risks
 
