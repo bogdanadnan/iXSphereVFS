@@ -28,7 +28,6 @@ add_library(ixsphere_vfs STATIC
     src/epoch.c
     src/tree.c
     src/page_array.c
-    src/dentry_cache.c
     src/mapper.c
     src/gc.c
     src/gc_map.c
@@ -36,7 +35,7 @@ add_library(ixsphere_vfs STATIC
 )
 
 set_source_files_properties(src/var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -fno-strict-aliasing")
-set_source_files_properties(src/tree.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING")
+set_source_files_properties(src/tree.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING -Wno-incompatible-pointer-types")
 set_source_files_properties(src/nodes.c PROPERTIES COMPILE_FLAGS "-DVFS_NAME_HASH_TESTING")
 
 target_include_directories(ixsphere_vfs PUBLIC

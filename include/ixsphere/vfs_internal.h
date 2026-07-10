@@ -5,7 +5,6 @@
 #include "storage.h"
 #include "pool.h"
 #include "page_array.h"
-#include "dentry_cache.h"
 #include "mapper.h"
 
 typedef struct SegmentArray SegmentArray;
@@ -40,9 +39,6 @@ typedef struct {
 
     /* In-memory mapper table snapshot for query-heavy workloads */
     MapperTable mapper_table;
-
-    /* Readdir cache — one directory at a time, zeroed to valid=false */
-    DentryCache readdir_cache;
 
     /* Last error code — set by operations, reset to VFS_OK on success */
     vfs_error_t last_error;

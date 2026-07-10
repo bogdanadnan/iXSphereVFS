@@ -1,6 +1,7 @@
 /* Phase 5: Tree Operations — Bootstrap, Init, Superblock I/O */
 #include "tree.h"
 #include "page_array.h"
+#include "var_array.h"
 #include "gc.h"
 #include <stdlib.h>
 #include <string.h>
@@ -764,7 +765,6 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
                   ctx->page_size);
     }
 
-    dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
     return file_vp;
 }
@@ -929,7 +929,6 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                   ctx->page_size);
     }
 
-    dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
     return dir_vp;
 }
@@ -997,7 +996,6 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                   ctx->page_size);
     }
 
-    dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)found_childId, epoch);
     return VFS_OK;
 }
@@ -1191,7 +1189,6 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                   ctx->page_size);
     }
 
-    dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)found_childId, epoch);
     return VFS_OK;
 }
@@ -1199,6 +1196,15 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 /* ---------------------------------------------------------------------------
  * dirchain_list — walk DirContent chain, collect non-tombstone entries
  * at epoch via read-rule dedup by childNodeId, fill vfs_dirent_t array.
+ *
+ * Phase 19: dedup state is a heap-backed VarArray (DirchainDedupEntry),
+ * unbounded.  Replaces the 5 parallel fixed-size arrays (DENTRY_CACHE_MAX)
+ * that previously truncated directories at 1024 unique children.
+ *
+ * Algorithm: chain is descending by epoch (prepend ordering).  First
+ * applicable hit per childNodeId is by definition the highest-epoch
+ * applicable record, so the dedup scans for "already seen" only — no
+ * epoch comparison is needed.
  * --------------------------------------------------------------------------- */
 
 int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
@@ -1213,16 +1219,15 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
     int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
 
-    /* Temporary per-child tracking arrays (max entries == max output) */
-    int64_t best_child[DENTRY_CACHE_MAX];
-    int64_t best_childPtr[DENTRY_CACHE_MAX];
-    int64_t best_eff_epoch[DENTRY_CACHE_MAX];
-    int     best_name_set[DENTRY_CACHE_MAX];
-    int64_t best_namePtr[DENTRY_CACHE_MAX];   /* cached name VirtualPtr */
-    int best_count = 0;
+    /* Per-call dedup: heap-backed, unbounded.  Allocated once per
+       readdir, freed before return.  The cleanup is at the single
+       return point at the end of this function — see the goto cleanup
+       pattern if you add early returns. */
+    VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
+    if (!dedup) return VFS_ERR_IO;
 
     int64_t walk_vp = headPtr;
-    while (walk_vp != 0 && best_count < DENTRY_CACHE_MAX) {
+    while (walk_vp != 0) {
         uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
         if (!dc_slot) break;
         uint32_t ce_child, ce_epoch;
@@ -1238,52 +1243,56 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
                       (eff_epoch < read_epoch && eff_epoch % 2 == 0);
         if (!applies) { walk_vp = ce_next; continue; }
 
-        /* Find or insert in tracking arrays */
-        int found = -1;
-        for (int i = 0; i < best_count; i++) {
-            if (best_child[i] == (int64_t)ce_child) { found = i; break; }
+        /* Linear scan for "already seen" — O(N²) total.  Same
+           complexity as the old fixed-array code, just without the
+           1024 cap.  For typical directories (<100 children) this is
+           <10K ops and runs in microseconds. */
+        int found = 0;
+        for (int i = 0; i < dedup->count; i++) {
+            DirchainDedupEntry* e = var_array_lookup(dedup, i);
+            if (e && e->childNodeId == (int64_t)ce_child) { found = 1; break; }
         }
-        if (found >= 0) {
-            if (eff_epoch > best_eff_epoch[found]) {
-                best_eff_epoch[found] = eff_epoch;
-                best_childPtr[found] = ce_childPtr;
-                best_name_set[found] = (ce_namePtr != 0);
-                best_namePtr[found] = ce_namePtr;
-            }
-        } else {
-            best_child[best_count] = (int64_t)ce_child;
-            best_childPtr[best_count] = ce_childPtr;
-            best_eff_epoch[best_count] = eff_epoch;
-            best_name_set[best_count] = (ce_namePtr != 0);
-            best_namePtr[best_count] = ce_namePtr;
-            best_count++;
-        }
+        if (found) { walk_vp = ce_next; continue; }
+
+        DirchainDedupEntry entry = {
+            .childNodeId = (int64_t)ce_child,
+            .childPtr    = ce_childPtr,
+            .name_set    = (ce_namePtr != 0),
+            .namePtr     = ce_namePtr,
+        };
+        (void)var_array_append(dedup, entry);
         walk_vp = ce_next;
     }
 
-    /* Build output from tracking arrays, skipping tombstones */
+    /* Build output, skipping tombstones.  Limit by `max` (FUSE-side cap
+       is 64; the dedup is unbounded so the loop respects `max`). */
     int written = 0;
-    for (int i = 0; i < best_count && written < max; i++) {
-        if (!best_name_set[i]) continue;
-        entries[written].vp     = best_childPtr[i];
-        entries[written].nodeId = best_child[i];
+    for (int i = 0; i < dedup->count && written < max; i++) {
+        DirchainDedupEntry* e = var_array_lookup(dedup, i);
+        if (!e || !e->name_set) continue;
+
+        entries[written].vp     = e->childPtr;
+        entries[written].nodeId = e->childNodeId;
         entries[written].name[0] = '\0';
         entries[written].isDir = false;
 
         /* Determine isDir by reading child's type field */
-        uint8_t* child_slot = pool_resolve_ro(&ctx->pool, best_childPtr[i]);
+        uint8_t* child_slot = pool_resolve_ro(&ctx->pool, e->childPtr);
         if (child_slot) {
-            int16_t ctype = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size);
+            int16_t ctype = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE,
+                                       ctx->page_size);
             entries[written].isDir = (ctype == (int16_t)NODE_TYPE_DIR);
         }
 
         /* Read name from cached namePtr (collected in first pass) */
-        if (best_namePtr[i] != 0)
-            nodes_read_name(&ctx->pool, best_namePtr[i],
+        if (e->namePtr != 0)
+            nodes_read_name(&ctx->pool, e->namePtr,
                             entries[written].name,
                             (int)sizeof(entries[written].name));
         written++;
     }
+
+    var_array_delete(dedup);
     return written;
 }
 
@@ -1391,7 +1400,6 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                       ctx->page_size);
         }
 
-        dentry_cache_invalidate(&ctx->readdir_cache);
         vfs_unlock(vfs, (int64_t)rn_childId, epoch);
         return VFS_OK;
     }
@@ -1467,7 +1475,6 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
     }
     } /* cross_dir */
 
-    dentry_cache_invalidate(&ctx->readdir_cache);
     vfs_unlock(vfs, (int64_t)rn_childId, epoch);
     return VFS_OK;
 }
