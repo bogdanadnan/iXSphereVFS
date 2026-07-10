@@ -301,7 +301,7 @@ int vfs_node_type(vfs_t* vfs, int64_t vp) {
 }
 
 /* ---------------------------------------------------------------------------
- * vfs_readdir_alloc — heap-allocated variant of vfs_readdir.
+ * vfs_readdir — list directory contents.
  *
  * Walks the DirContent chain exactly once and produces a vfs_dirent_t[]
  * sized to the actual entry count (no cap, no doubling, no caller
@@ -312,15 +312,15 @@ int vfs_node_type(vfs_t* vfs, int64_t vp) {
  * On error returns negative error code and sets them to NULL / 0.
  * --------------------------------------------------------------------------- */
 
-int vfs_readdir_alloc(vfs_t* vfs, int64_t dir,
-                      vfs_dirent_t** out_entries, int* out_count,
-                      int64_t epoch) {
+int vfs_readdir(vfs_t* vfs, int64_t dir,
+                vfs_dirent_t** out_entries, int* out_count,
+                int64_t epoch) {
     if (!vfs || !vfs->ctx || !out_entries || !out_count) return VFS_ERR_IO;
-    return dirchain_list_all(vfs->ctx, dir, epoch, out_entries, out_count);
+    return dirchain_list(vfs->ctx, dir, epoch, out_entries, out_count);
 }
 
 /* ---------------------------------------------------------------------------
- * vfs_free_dirents — free a buffer returned by vfs_readdir_alloc.
+ * vfs_free_dirents — free a buffer returned by vfs_readdir.
  *
  * Wrapper around free() so the call site reads self-documentingly
  * (vfs_free_dirents vs plain free) and so future changes (e.g.,

@@ -57,7 +57,7 @@ typedef struct {
      * Readdir cache — small LRU of full directory listings.
      *
      * Each entry holds the complete vfs_dirent_t[] for one directory,
-     * populated by vfs_readdir_alloc (one chain walk).  readdir
+     * populated by vfs_readdir (one chain walk).  readdir
      * callbacks serve entries from this cache using the FUSE cursor
      * protocol (offset = position within the listing), avoiding
      * repeated chain walks for large directories.

@@ -47,14 +47,19 @@ static int crash_wait_ok(int status) {
 
 /* Find a file by name in root directory via readdir. Returns VirtualPtr or -1. */
 static int64_t find_file(vfs_t* vfs, const char* name) {
-    vfs_dirent_t entries[64];
-    int n = vfs_readdir(vfs, vfs->ctx->rootNodeOffset, entries, 64, 0);
-    if (n < 0) return -1;
+    vfs_dirent_t* entries = NULL;
+    int n = 0;
+    int rc = vfs_readdir(vfs, vfs->ctx->rootNodeOffset, &entries, &n, 0);
+    if (rc != VFS_OK) { vfs_free_dirents(entries); return -1; }
+    int64_t result = -1;
     for (int i = 0; i < n; i++) {
-        if (strcmp(entries[i].name, name) == 0 && !entries[i].isDir)
-            return entries[i].vp;
+        if (strcmp(entries[i].name, name) == 0 && !entries[i].isDir) {
+            result = entries[i].vp;
+            break;
+        }
     }
-    return -1;
+    vfs_free_dirents(entries);
+    return result;
 }
 
 /* ---------------------------------------------------------------------------
@@ -162,9 +167,11 @@ static int scenario_dir_ops(void) {
         int64_t fvp = vfs_create(vfs, dir_vp, "inner.txt", 0);
         if (fvp <= 0) { vfs_unmount(vfs); return -1; }
 
-        vfs_dirent_t ents[8];
-        int n = vfs_readdir(vfs, dir_vp, ents, 8, 0);
-        if (n < 1) { vfs_unmount(vfs); return -1; }
+        vfs_dirent_t* ents = NULL;
+        int n = 0;
+        int rc = vfs_readdir(vfs, dir_vp, &ents, &n, 0);
+        if (rc != VFS_OK || n < 1) { vfs_free_dirents(ents); vfs_unmount(vfs); return -1; }
+        vfs_free_dirents(ents);
 
         if (vfs_delete(vfs, dir_vp, "inner.txt", 0) != VFS_OK) { vfs_unmount(vfs); return -1; }
         if (vfs_rmdir(vfs, root, "subdir", 0) != VFS_OK) { vfs_unmount(vfs); return -1; }
@@ -661,14 +668,16 @@ static int scenario_gc_before_swap(void) {
         }
 
         /* Verify root is readable */
-        vfs_dirent_t ents[16];
-        int n = vfs_readdir(vfs, vfs->ctx->rootNodeOffset, ents, 16, 0);
-        if (n < 0) {
+        vfs_dirent_t* ents = NULL;
+        int n = 0;
+        int rc = vfs_readdir(vfs, vfs->ctx->rootNodeOffset, &ents, &n, 0);
+        if (rc != VFS_OK) {
             fprintf(stderr, "  FAIL iter %d: readdir failed (GC corruption)\n", i);
             vfs_unmount(vfs);
             return -1;
         }
         (void)ents; (void)n;
+        vfs_free_dirents(ents);
 
         vfs_unmount(vfs);
     }
@@ -732,9 +741,10 @@ static int scenario_gc_after_swap(void) {
         }
 
         /* Verify root is readable and files survive */
-        vfs_dirent_t ents[16];
-        int n = vfs_readdir(vfs, vfs->ctx->rootNodeOffset, ents, 16, 0);
-        if (n < 0) {
+        vfs_dirent_t* ents = NULL;
+        int n = 0;
+        int rc = vfs_readdir(vfs, vfs->ctx->rootNodeOffset, &ents, &n, 0);
+        if (rc != VFS_OK) {
             fprintf(stderr, "  FAIL iter %d: readdir failed (GC corruption)\n", i);
             vfs_unmount(vfs);
             return -1;
@@ -751,9 +761,11 @@ static int scenario_gc_after_swap(void) {
                     "  FAIL iter %d: GC file state wrong (a=%d b=%d)\n",
                     i, found_a, found_b);
             vfs_unmount(vfs);
+            vfs_free_dirents(ents);
             return -1;
         }
 
+        vfs_free_dirents(ents);
         vfs_unmount(vfs);
     }
     return 0;
@@ -987,9 +999,10 @@ static int scenario_flush_power_loss(void) {
 
         /* Verify all 3 files exist with correct data */
         int found[3] = {0, 0, 0};
-        vfs_dirent_t ents[16];
-        int n = vfs_readdir(vfs, vfs->ctx->rootNodeOffset, ents, 16, 0);
-        if (n < 0) {
+        vfs_dirent_t* ents = NULL;
+        int n = 0;
+        int rc = vfs_readdir(vfs, vfs->ctx->rootNodeOffset, &ents, &n, 0);
+        if (rc != VFS_OK) {
             fprintf(stderr, "  FAIL iter %d: readdir failed\n", i);
             vfs_unmount(vfs);
             return -1;
@@ -1007,6 +1020,7 @@ static int scenario_flush_power_loss(void) {
                 }
             }
         }
+        vfs_free_dirents(ents);
         vfs_unmount(vfs);
 
         if (!found[0] || !found[1] || !found[2]) {

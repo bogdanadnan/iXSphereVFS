@@ -154,9 +154,10 @@ static void fuzz_corrupt(const char* path, Rand* r) {
 static void fuzz_verify_dir(vfs_t* vfs, int64_t dir_vp, int depth,
                              int* files_read, int* errors) {
     if (depth > 8) return;  /* safety limit */
-    vfs_dirent_t ents[64];
-    int n = vfs_readdir(vfs, dir_vp, ents, 64, 0);
-    if (n < 0) { (*errors)++; return; }
+    vfs_dirent_t* ents = NULL;
+    int n = 0;
+    int rc = vfs_readdir(vfs, dir_vp, &ents, &n, 0);
+    if (rc != VFS_OK) { (*errors)++; return; }
 
     for (int i = 0; i < n; i++) {
         if (ents[i].isDir) {
@@ -181,6 +182,7 @@ static void fuzz_verify_dir(vfs_t* vfs, int64_t dir_vp, int depth,
             }
         }
     }
+    vfs_free_dirents(ents);
 }
 
 static int fuzz_verify(vfs_t* vfs) {
@@ -258,12 +260,14 @@ int main(int argc, char** argv) {
         int64_t root = vfs->ctx->rootNodeOffset;
 
         /* Seed fuzz state with pre-populated files */
-        vfs_dirent_t seed_ents[16];
-        int seed_n = vfs_readdir(vfs, root, seed_ents, 16, 0);
+        vfs_dirent_t* seed_ents = NULL;
+        int seed_n = 0;
+        int seed_rc = vfs_readdir(vfs, root, &seed_ents, &seed_n, 0);
         for (int se = 0; se < seed_n && st.count < FUZZ_MAX_OPEN; se++) {
             fuzz_state_add(&st, seed_ents[se].vp,
                            seed_ents[se].name, (int)seed_ents[se].isDir);
         }
+        vfs_free_dirents(seed_ents);
 
         int nops = rand_int(&r, FUZZ_OPS_PER_ITER) + 1;
         for (int op = 0; op < nops; op++) {
@@ -355,8 +359,10 @@ int main(int argc, char** argv) {
 
             case 7: /* readdir on root */
                 {
-                    vfs_dirent_t ents[32];
-                    vfs_readdir(vfs, root, ents, 32, 0);
+                    vfs_dirent_t* ents = NULL;
+                    int n = 0;
+                    vfs_readdir(vfs, root, &ents, &n, 0);
+                    vfs_free_dirents(ents);
                     ops_total++;
                 }
                 break;

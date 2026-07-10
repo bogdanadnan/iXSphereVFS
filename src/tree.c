@@ -1193,13 +1193,20 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     return VFS_OK;
 }
 
+
+
 /* ---------------------------------------------------------------------------
  * dirchain_list — walk DirContent chain, collect non-tombstone entries
- * at epoch via read-rule dedup by childNodeId, fill vfs_dirent_t array.
+ * at epoch via read-rule dedup by childNodeId.  Allocates a vfs_dirent_t[]
+ * of exact size needed; caller frees with free() or vfs_free_dirents().
  *
  * Phase 19: dedup state is a heap-backed VarArray (DirchainDedupEntry),
  * unbounded.  Replaces the 5 parallel fixed-size arrays (DENTRY_CACHE_MAX)
  * that previously truncated directories at 1024 unique children.
+ *
+ * Phase 24: this is the only readdir API (replaces both the old
+ * caller-buffer dirchain_list and dirchain_list_all).  No cap, no
+ * caller-buffer guess, no doubling.
  *
  * Algorithm: chain is descending by epoch (prepend ordering).  First
  * applicable hit per childNodeId is by definition the highest-epoch
@@ -1208,107 +1215,6 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
  * --------------------------------------------------------------------------- */
 
 int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
-                  vfs_dirent_t* entries, int max) {
-    if (!ctx || !entries || max <= 0) return VFS_ERR_IO;
-
-    uint8_t* dir_slot = pool_resolve_ro(&ctx->pool, dir_vp);
-    if (!dir_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
-        return VFS_ERR_NOTDIR;
-
-    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
-    int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
-
-    /* Per-call dedup: heap-backed, unbounded.  Allocated once per
-       readdir, freed before return.  The cleanup is at the single
-       return point at the end of this function — see the goto cleanup
-       pattern if you add early returns. */
-    VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
-    if (!dedup) return VFS_ERR_IO;
-
-    int64_t walk_vp = headPtr;
-    while (walk_vp != 0) {
-        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
-        if (!dc_slot) break;
-        uint32_t ce_child, ce_epoch;
-        int64_t ce_childPtr, ce_namePtr, ce_next;
-        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next, ctx->page_size);
-
-        int64_t eff_epoch = (int64_t)ce_epoch;
-        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
-            eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
-
-        int applies = (eff_epoch == read_epoch) ||
-                      (eff_epoch < read_epoch && eff_epoch % 2 == 0);
-        if (!applies) { walk_vp = ce_next; continue; }
-
-        /* Linear scan for "already seen" — O(N²) total.  Same
-           complexity as the old fixed-array code, just without the
-           1024 cap.  For typical directories (<100 children) this is
-           <10K ops and runs in microseconds. */
-        int found = 0;
-        for (int i = 0; i < dedup->count; i++) {
-            DirchainDedupEntry* e = var_array_lookup(dedup, i);
-            if (e && e->childNodeId == (int64_t)ce_child) { found = 1; break; }
-        }
-        if (found) { walk_vp = ce_next; continue; }
-
-        DirchainDedupEntry entry = {
-            .childNodeId = (int64_t)ce_child,
-            .childPtr    = ce_childPtr,
-            .name_set    = (ce_namePtr != 0),
-            .namePtr     = ce_namePtr,
-        };
-        (void)var_array_append(dedup, entry);
-        walk_vp = ce_next;
-    }
-
-    /* Build output, skipping tombstones.  Limit by `max` (FUSE-side cap
-       is 64; the dedup is unbounded so the loop respects `max`). */
-    int written = 0;
-    for (int i = 0; i < dedup->count && written < max; i++) {
-        DirchainDedupEntry* e = var_array_lookup(dedup, i);
-        if (!e || !e->name_set) continue;
-
-        entries[written].vp     = e->childPtr;
-        entries[written].nodeId = e->childNodeId;
-        entries[written].name[0] = '\0';
-        entries[written].isDir = false;
-
-        /* Determine isDir by reading child's type field */
-        uint8_t* child_slot = pool_resolve_ro(&ctx->pool, e->childPtr);
-        if (child_slot) {
-            int16_t ctype = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE,
-                                       ctx->page_size);
-            entries[written].isDir = (ctype == (int16_t)NODE_TYPE_DIR);
-        }
-
-        /* Read name from cached namePtr (collected in first pass) */
-        if (e->namePtr != 0)
-            nodes_read_name(&ctx->pool, e->namePtr,
-                            entries[written].name,
-                            (int)sizeof(entries[written].name));
-        written++;
-    }
-
-    var_array_delete(dedup);
-    return written;
-}
-
-/* ---------------------------------------------------------------------------
- * dirchain_list_all — like dirchain_list but with VFS-allocated output.
- *
- * Walks the chain exactly once, builds the dedup VarArray (same as
- * dirchain_list), then allocates a vfs_dirent_t[] of the exact size
- * needed (non-tombstone entries) and populates it.
- *
- * This is the call site used by the FUSE dir cache: it wants the
- * complete directory listing in one shot, no caller-buffer guess, no
- * doubling retries.
- * --------------------------------------------------------------------------- */
-
-int dirchain_list_all(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
                       vfs_dirent_t** out_entries, int* out_count) {
     if (!ctx || !out_entries || !out_count) return VFS_ERR_IO;
     *out_entries = NULL;
@@ -1322,8 +1228,7 @@ int dirchain_list_all(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
     int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
 
-    /* Walk chain once into a per-call dedup VarArray.  Same dedup
-       algorithm as dirchain_list (first-hit-wins). */
+    /* Walk chain once into a per-call dedup VarArray (first-hit-wins). */
     VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
     if (!dedup) return VFS_ERR_IO;
 
@@ -1415,22 +1320,6 @@ int dirchain_list_all(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     *out_entries = out;
     *out_count = written;
     return VFS_OK;
-}
-
-int vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
-                int max, int64_t epoch) {
-    if (!vfs || !vfs->ctx || !entries || max <= 0) return VFS_ERR_IO;
-    TreeContext* ctx = vfs->ctx;
-
-    int n = dirchain_list(ctx, dir, epoch, entries, max);
-    if (n < 0) {
-        if (n == VFS_ERR_NOTFOUND) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
-        if (n == VFS_ERR_NOTDIR)   { vfs->ctx->last_error = VFS_ERR_NOTDIR;   return VFS_ERR_NOTDIR; }
-        vfs->ctx->last_error = VFS_ERR_IO;
-        return VFS_ERR_IO;
-    }
-    (void)vfs;  /* unused except for error reporting through dirchain_list */
-    return n;
 }
 
 int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,

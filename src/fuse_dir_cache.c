@@ -139,7 +139,7 @@ static FusedirCacheSlot* acquire_slot(FusedirCache* cache) {
 }
 
 /* Build a cache slot.  Acquires a free slot (evicting LRU if full),
-   populates path_hash/fh/dir_vp, and calls vfs_readdir_alloc to fill
+   populates path_hash/fh/dir_vp, and calls vfs_readdir to fill
    in the entries.  Returns the slot on success, NULL on error.  Caller
    holds the lock. */
 static FusedirCacheSlot* build_slot(FusedirCache* cache,
@@ -155,7 +155,7 @@ static FusedirCacheSlot* build_slot(FusedirCache* cache,
 
     vfs_dirent_t* entries = NULL;
     int count = 0;
-    int rc = vfs_readdir_alloc(vfs, dir_vp, &entries, &count, epoch);
+    int rc = vfs_readdir(vfs, dir_vp, &entries, &count, epoch);
     if (rc != VFS_OK) {
         slot->path_hash = 0;
         slot->fh = 0;

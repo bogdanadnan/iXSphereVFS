@@ -139,20 +139,15 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
 /* Remove an empty directory. */
 int     vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch);
 
-/* List directory contents.  Returns the number of entries written (up to max),
-   or a negative error code. */
-int     vfs_readdir(vfs_t* vfs, int64_t dir, vfs_dirent_t* entries,
-                    int max, int64_t epoch);
+/* List directory contents into a heap-allocated buffer of exact size.
+   No cap.  Walks the chain exactly once.  Caller must free the result
+   with vfs_free_dirents().  Returns VFS_OK on success, negative error
+   code on failure.  Phase 24: this is the only readdir API. */
+int     vfs_readdir(vfs_t* vfs, int64_t dir,
+                    vfs_dirent_t** out_entries, int* out_count,
+                    int64_t epoch);
 
-/* List directory contents with VFS-allocated buffer.  Walks the chain
-   exactly once and allocates a buffer of exact size (no cap, no
-   doubling).  Caller must free with vfs_free_dirents().  Returns
-   VFS_OK on success, negative error code on failure. */
-int     vfs_readdir_alloc(vfs_t* vfs, int64_t dir,
-                           vfs_dirent_t** out_entries, int* out_count,
-                           int64_t epoch);
-
-/* Free a buffer returned by vfs_readdir_alloc.  Safe on NULL. */
+/* Free a buffer returned by vfs_readdir.  Safe on NULL. */
 void    vfs_free_dirents(vfs_dirent_t* entries);
 
 /* Truncate or extend a file to `new_size` bytes at `epoch`.

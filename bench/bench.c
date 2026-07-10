@@ -735,9 +735,11 @@ static int bench_dir(vfs_t* vfs, int count, int threads, const char* path) {
         ok += created;
 
         /* readdir */
-        vfs_dirent_t ents[16];
-        int n = vfs_readdir(vfs, dir_vp, ents, 16, 0);
-        if (n == created) ok++;
+        vfs_dirent_t* ents = NULL;
+        int n = 0;
+        int rc_dir = vfs_readdir(vfs, dir_vp, &ents, &n, 0);
+        if (rc_dir == VFS_OK && n == created) ok++;
+        vfs_free_dirents(ents);
 
         /* delete files */
         for (int j = 0; j < 5; j++) {
@@ -923,12 +925,14 @@ static int bench_seqread(vfs_t* vfs, int count, int threads, const char* path,
     root_vp = vfs->ctx->rootNodeOffset;
     int64_t file_vp = 0;
     {
-        vfs_dirent_t dirents[16];
-        int nd = vfs_readdir(vfs, root_vp, dirents, 16, 0);
+        vfs_dirent_t* dirents = NULL;
+        int nd = 0;
+        int rc_dir = vfs_readdir(vfs, root_vp, &dirents, &nd, 0);
         for (int di = 0; di < nd && file_vp <= 0; di++) {
             if (strcmp(dirents[di].name, "seqfile.dat") == 0)
                 file_vp = dirents[di].vp;
         }
+        vfs_free_dirents(dirents);
     }
     if (file_vp <= 0) { vfs_unmount(vfs); return 0; }
 

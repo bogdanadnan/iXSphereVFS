@@ -261,24 +261,33 @@ static void test_rename_across_snapshots(void) {
 
     /* Helper: assert readdir at epoch returns exactly `name` and only that. */
     {
-        vfs_dirent_t ents[16];
+        vfs_dirent_t* ents = NULL;
         int n;
+        int rc;
 
-        n = vfs_readdir(vfs, root_vp, ents, 16, 0);
+        rc = vfs_readdir(vfs, root_vp, &ents, &n, 0);
+        CHECK_EQ(rc, VFS_OK);
         CHECK_EQ(n, 1);
         if (n == 1) CHECK_EQ(strcmp(ents[0].name, "test.txt"), 0);
+        vfs_free_dirents(ents);
 
-        n = vfs_readdir(vfs, root_vp, ents, 16, 1);
+        rc = vfs_readdir(vfs, root_vp, &ents, &n, 1);
+        CHECK_EQ(rc, VFS_OK);
         CHECK_EQ(n, 1);
         if (n == 1) CHECK_EQ(strcmp(ents[0].name, "test2.txt"), 0);
+        vfs_free_dirents(ents);
 
-        n = vfs_readdir(vfs, root_vp, ents, 16, 2);
+        rc = vfs_readdir(vfs, root_vp, &ents, &n, 2);
+        CHECK_EQ(rc, VFS_OK);
         CHECK_EQ(n, 1);
         if (n == 1) CHECK_EQ(strcmp(ents[0].name, "test3.txt"), 0);
+        vfs_free_dirents(ents);
 
-        n = vfs_readdir(vfs, root_vp, ents, 16, 3);
+        rc = vfs_readdir(vfs, root_vp, &ents, &n, 3);
+        CHECK_EQ(rc, VFS_OK);
         CHECK_EQ(n, 1);
         if (n == 1) CHECK_EQ(strcmp(ents[0].name, "test4.txt"), 0);
+        vfs_free_dirents(ents);
     }
 
     epoch_teardown(vfs);
@@ -352,8 +361,10 @@ static void test_rename_across_folders_snapshots(void) {
     /* Helper: assert readdir at (dir, epoch) returns exactly the given
        entries (in any order).  Empty dir is signaled by num==0. */
     #define EXPECT_DIR(dir, epoch_val, num, ...) do { \
-        vfs_dirent_t ents[16]; \
-        int _n = vfs_readdir(vfs, (dir), ents, 16, (epoch_val)); \
+        vfs_dirent_t* ents = NULL; \
+        int _n = 0; \
+        int _rc = vfs_readdir(vfs, (dir), &ents, &_n, (epoch_val)); \
+        CHECK_EQ(_rc, VFS_OK); \
         CHECK_EQ(_n, (num)); \
         const char* _expected[] = { __VA_ARGS__ }; \
         for (int _i = 0; _i < _n; _i++) { \
@@ -363,6 +374,7 @@ static void test_rename_across_folders_snapshots(void) {
             } \
             CHECK(_found); \
         } \
+        vfs_free_dirents(ents); \
     } while (0)
 
     /* ep0: test.txt in epoch0/, others empty */
@@ -545,11 +557,14 @@ static void test_mapper_integration(void) {
     CHECK_EQ(vfs_file_size(vfs, file_vp, 1), 4);
 
     /* (c) vfs_readdir at epoch 1 should show the file with correct name */
-    vfs_dirent_t de[8];
-    int nr = vfs_readdir(vfs, root_vp, de, 8, 1);
+    vfs_dirent_t* de = NULL;
+    int nr = 0;
+    int rc_d = vfs_readdir(vfs, root_vp, &de, &nr, 1);
+    CHECK_EQ(rc_d, VFS_OK);
     CHECK_EQ(nr, 1);
     CHECK(!de[0].isDir);
     CHECK(strcmp(de[0].name, "mt.txt") == 0);
+    vfs_free_dirents(de);
 
     /* Now test soft-delete: take another snapshot (epoch 3) and soft-delete it.
        After commit, currentEpoch = 2.  vfs_snapshot → epoch 3, currentEpoch→4.
@@ -580,18 +595,26 @@ static void test_mapper_integration(void) {
        the epoch-5 FileSize is skipped (same read-rule logic). */
     /* vfs_readdir at epoch 5: read_epoch = 4.  The epoch-0 DirContent
        entry applies (0 < 4 and even), so the file is still visible. */
-    int nr5 = vfs_readdir(vfs, root_vp, de, 8, 5);
+    int nr5 = 0;
+    vfs_dirent_t* de2 = NULL;
+    int rc5 = vfs_readdir(vfs, root_vp, &de2, &nr5, 5);
+    CHECK_EQ(rc5, VFS_OK);
     CHECK_EQ(nr5, 1);
+    vfs_free_dirents(de2);
 
     /* Original epoch 0 still works */
     CHECK(vfs_open(vfs, root_vp, "mt.txt", 0) > 0);
     CHECK_EQ(vfs_file_size(vfs, file_vp, 0), 4);
 
     /* readdir at epoch 0 still shows the file */
-    nr = vfs_readdir(vfs, root_vp, de, 8, 0);
-    CHECK_EQ(nr, 1);
-    CHECK(!de[0].isDir);
-    CHECK(strcmp(de[0].name, "mt.txt") == 0);
+    vfs_dirent_t* de3 = NULL;
+    int nr_epoch0 = 0;
+    int rc0 = vfs_readdir(vfs, root_vp, &de3, &nr_epoch0, 0);
+    CHECK_EQ(rc0, VFS_OK);
+    CHECK_EQ(nr_epoch0, 1);
+    CHECK(!de3[0].isDir);
+    CHECK(strcmp(de3[0].name, "mt.txt") == 0);
+    vfs_free_dirents(de3);
 
     epoch_teardown(vfs);
 }

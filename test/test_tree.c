@@ -869,9 +869,12 @@ static void test_readdir_empty(void) {
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
 
-    vfs_dirent_t entries[16];
-    int n = vfs_readdir(vfs, root_vp, entries, 16, 0);
+    vfs_dirent_t* entries = NULL;
+    int n = 0;
+    int rc = vfs_readdir(vfs, root_vp, &entries, &n, 0);
+    CHECK_EQ(rc, VFS_OK);
     CHECK_EQ(n, 0);
+    vfs_free_dirents(entries);
 
     vfs_unmount(vfs);
 }
@@ -889,8 +892,10 @@ static void test_readdir_with_files(void) {
     CHECK(vfs_create(vfs, root_vp, "b.txt", 0) > 0);
     CHECK(vfs_create(vfs, root_vp, "c.txt", 0) > 0);
 
-    vfs_dirent_t entries[16];
-    int n = vfs_readdir(vfs, root_vp, entries, 16, 0);
+    vfs_dirent_t* entries = NULL;
+    int n = 0;
+    int rc = vfs_readdir(vfs, root_vp, &entries, &n, 0);
+    CHECK_EQ(rc, VFS_OK);
     CHECK_EQ(n, 3);
 
     int found_a = 0, found_b = 0, found_c = 0;
@@ -903,6 +908,7 @@ static void test_readdir_with_files(void) {
     CHECK(found_a);
     CHECK(found_b);
     CHECK(found_c);
+    vfs_free_dirents(entries);
 
     vfs_unmount(vfs);
 }
@@ -919,8 +925,10 @@ static void test_readdir_with_dirs(void) {
     CHECK(vfs_mkdir(vfs, root_vp, "sub", 0) > 0);
     CHECK(vfs_create(vfs, root_vp, "f.txt", 0) > 0);
 
-    vfs_dirent_t entries[16];
-    int n = vfs_readdir(vfs, root_vp, entries, 16, 0);
+    vfs_dirent_t* entries = NULL;
+    int n = 0;
+    int rc = vfs_readdir(vfs, root_vp, &entries, &n, 0);
+    CHECK_EQ(rc, VFS_OK);
     CHECK_EQ(n, 2);
 
     int found_sub = 0, found_f = 0;
@@ -936,6 +944,7 @@ static void test_readdir_with_dirs(void) {
     }
     CHECK(found_sub);
     CHECK(found_f);
+    vfs_free_dirents(entries);
 
     vfs_unmount(vfs);
 }
@@ -959,16 +968,23 @@ static void test_readdir_tombstone(void) {
     CHECK_EQ(vfs_delete(vfs, root_vp, "y.txt", 2), VFS_OK);
 
     /* readdir at epoch 2 should show only x.txt and z.txt */
-    vfs_dirent_t entries[16];
-    int n2 = vfs_readdir(vfs, root_vp, entries, 16, 2);
+    vfs_dirent_t* entries = NULL;
+    int n2 = 0;
+    int rc2 = vfs_readdir(vfs, root_vp, &entries, &n2, 2);
+    CHECK_EQ(rc2, VFS_OK);
     CHECK_EQ(n2, 2);
     for (int i = 0; i < n2; i++) {
         CHECK(strcmp(entries[i].name, "y.txt") != 0);
     }
+    vfs_free_dirents(entries);
 
     /* readdir at epoch 0 should show all 3 files */
-    int n0 = vfs_readdir(vfs, root_vp, entries, 16, 0);
+    entries = NULL;
+    int n0 = 0;
+    int rc0 = vfs_readdir(vfs, root_vp, &entries, &n0, 0);
+    CHECK_EQ(rc0, VFS_OK);
     CHECK_EQ(n0, 3);
+    vfs_free_dirents(entries);
 
     vfs_unmount(vfs);
 }
@@ -1255,8 +1271,10 @@ static void test_dirchain_list_basic(void) {
     CHECK(vfs_create(vfs, root_vp, "b.txt", 0) > 0);
     CHECK(vfs_mkdir(vfs, root_vp, "sub", 0) > 0);
 
-    vfs_dirent_t entries[16];
-    int n = dirchain_list(ctx, root_vp, 0, entries, 16);
+    vfs_dirent_t* entries = NULL;
+    int n = 0;
+    int rc = dirchain_list(ctx, root_vp, 0, &entries, &n);
+    CHECK_EQ(rc, VFS_OK);
     CHECK_EQ(n, 3);
 
     int found_a = 0, found_b = 0, found_sub = 0;
@@ -1268,6 +1286,7 @@ static void test_dirchain_list_basic(void) {
     CHECK(found_a);
     CHECK(found_b);
     CHECK(found_sub);
+    vfs_free_dirents(entries);
 
     vfs_unmount(vfs);
 }
@@ -1285,14 +1304,21 @@ static void test_dirchain_list_tombstone(void) {
     vfs_snapshot(vfs);
     CHECK_EQ(vfs_delete(vfs, root_vp, "y.txt", 2), VFS_OK);
 
-    vfs_dirent_t entries[16];
-    int n = dirchain_list(ctx, root_vp, 2, entries, 16);
+    vfs_dirent_t* entries = NULL;
+    int n = 0;
+    int rc = dirchain_list(ctx, root_vp, 2, &entries, &n);
+    CHECK_EQ(rc, VFS_OK);
     CHECK_EQ(n, 2);
     for (int i = 0; i < n; i++)
         CHECK(strcmp(entries[i].name, "y.txt") != 0);
+    vfs_free_dirents(entries);
 
-    n = dirchain_list(ctx, root_vp, 0, entries, 16);
+    entries = NULL;
+    n = 0;
+    rc = dirchain_list(ctx, root_vp, 0, &entries, &n);
+    CHECK_EQ(rc, VFS_OK);
     CHECK_EQ(n, 3);
+    vfs_free_dirents(entries);
 
     vfs_unmount(vfs);
 }

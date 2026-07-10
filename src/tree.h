@@ -158,21 +158,20 @@ typedef struct {
 
 /* Walk a directory's DirContent chain and list non-tombstone entries at a
  * given epoch (read-rule dedup by childNodeId).  Fills the entries[] array
- * (up to max entries) with childNodeId, name, and isDir.  Returns the number
- * of entries written, or a negative error code. */
-int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
-                  vfs_dirent_t* entries, int max);
-
-/* Walk a directory's DirContent chain ONCE and produce a heap-allocated
- * vfs_dirent_t[] sized to the actual entry count.  No cap, no doubling,
- * no caller-buffer guess.  Caller must free the returned array with
- * free() (or via vfs_free_dirents() in vfs.h).  Returns VFS_OK on
- * success; on error, *out_entries and *out_count are set to NULL/0.
+ * Walks a directory's DirContent chain ONCE and produces a
+ * heap-allocated vfs_dirent_t[] sized to the actual entry count.
+ * No cap, no caller-buffer guess.  Caller must free the returned
+ * array with free() (or via vfs_free_dirents() in vfs.h).  Returns
+ * VFS_OK on success; on error, *out_entries and *out_count are set
+ * to NULL/0.
+ *
+ * Phase 24: this is the only directory-listing API.  The old
+ * caller-buffer dirchain_list is gone.
  *
  * Used by FUSE-side caching where the directory contents must be
  * retrieved in full to support cursor-based readdir with offset. */
-int dirchain_list_all(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
-                      vfs_dirent_t** out_entries, int* out_count);
+int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
+                  vfs_dirent_t** out_entries, int* out_count);
 
 /* ---------------------------------------------------------------------------
  * Version chain lookup

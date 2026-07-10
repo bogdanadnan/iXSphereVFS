@@ -10,13 +10,15 @@ static int g_dirs_visited = 0;
 static int g_files_seen = 0;
 
 static int do_readdir(vfs_t* vfs, int64_t dir, int depth, const char* path) {
-    vfs_dirent_t ents[256];
-    int n = vfs_readdir(vfs, dir, ents, 256, 0);
-    if (n < 0) {
+    vfs_dirent_t* ents = NULL;
+    int n = 0;
+    int rc = vfs_readdir(vfs, dir, &ents, &n, 0);
+    if (rc != VFS_OK) {
         fprintf(stderr, "  %*s[ERR] vfs_readdir(%s) = %d, last_error=%d\n",
-                depth * 2, "", path, n, vfs_last_error(vfs));
+                depth * 2, "", path, rc, vfs_last_error(vfs));
         g_errors++;
-        return n;
+        vfs_free_dirents(ents);
+        return rc;
     }
     fprintf(stderr, "  %*s[%s] vfs_readdir returned %d entries\n",
             depth * 2, "", path, n);
@@ -38,6 +40,7 @@ static int do_readdir(vfs_t* vfs, int64_t dir, int depth, const char* path) {
                     depth * 2, "", ents[i].name, (long long)ents[i].vp);
         }
     }
+    vfs_free_dirents(ents);
     return n;
 }
 

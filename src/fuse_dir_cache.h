@@ -1,14 +1,14 @@
 /* fuse_dir_cache.h — small FUSE-side directory listing cache
  *
  * Phase 20 prep: caches the full directory listing (as returned by
- * vfs_readdir_alloc) so that cursor-based readdir can serve large
+ * vfs_readdir) so that cursor-based readdir can serve large
  * directories without re-walking the chain for every FUSE callback.
  *
  * The cache is keyed by path hash (FNV-1a 64-bit) and stores up to
  * N slots in an LRU ring.  Each slot holds:
  *   - path_hash    : cache key
  *   - dir_vp       : resolved directory VirtualPtr (for verification)
- *   - entries      : heap-allocated vfs_dirent_t[] from vfs_readdir_alloc
+ *   - entries      : heap-allocated vfs_dirent_t[] from vfs_readdir
  *   - count        : number of valid entries
  *   - last_used    : monotonic counter for LRU eviction
  *
@@ -64,7 +64,7 @@ void fusedir_cache_destroy(FusedirCache* cache);
 /* Look up a directory by path.  If found and dir_vp matches the
    resolved directory, returns the cached entries (caller may read
    them without holding the lock).  If not found or dir_vp mismatches,
-   rebuilds via vfs_readdir_alloc, evicting an LRU slot if needed.
+   rebuilds via vfs_readdir, evicting an LRU slot if needed.
    Returns VFS_OK on success; on error *out_entries = NULL,
    *out_count = 0.  The returned buffer is owned by the cache; do not
    free. */
