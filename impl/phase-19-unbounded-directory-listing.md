@@ -87,26 +87,108 @@ typedef struct {
 
 Layout: 4 fields, 32 bytes. 256 entries per VarArray chunk = 8KB chunk. Same as the existing `vfs_dirent_t` size (280 bytes / 64 entries ≈ 4.4 bytes per entry; 32 bytes per dedup entry is much smaller).
 
+### VarArray usage
+
+The codebase pattern is to use the typed macros, not the base functions:
+
+```c
+#include "var_array.h"
+
+VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
+
+DirchainDedupEntry e = { .childNodeId = ce_child, .childPtr = ce_childPtr,
+                          .name_set = (ce_namePtr != 0), .namePtr = ce_namePtr };
+int idx = var_array_append(dedup, e);
+
+DirchainDedupEntry* found = var_array_lookup(dedup, idx);
+if (found) printf("child=%lld namePtr=%lld\n",
+                  (long long)found->childNodeId, (long long)found->namePtr);
+
+// Update in place (not used in our algorithm — append-only)
+e.name_set = 0;
+var_array_update(dedup, idx, e);
+
+var_array_delete(dedup);
+```
+
+The macros wrap the base functions (`var_array_new_base`, `var_array_grow_base`, `var_array_resolve_base`, `var_array_delete_base`) with type safety. They use GCC's statement-expression extension (`({ ... })`) for in-line composition.
+
 ### New algorithm for `dirchain_list`
 
-```
-walk chain head-to-tail (descending epoch):
-    read ce_child, ce_epoch, ce_childPtr, ce_namePtr, ce_next
-    eff_epoch = mapper_table_resolve(ce_epoch)   # with traversalApply
-    if !read_rule_applies(eff_epoch, read_epoch):
-        continue
-    linear scan dedup[] for childNodeId == ce_child
-    if found:
-        continue   # already have a higher-epoch applicable record
-    var_array_append(dedup, DirchainDedupEntry{ce_child, ce_childPtr, namePtr!=0, namePtr})
-    # No eff_epoch tracking. Chain order guarantees correctness.
+```c
+int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
+                  vfs_dirent_t* entries, int max) {
+    /* ... resolve dir_slot, read_epoch, headPtr ... */
 
-output (limited by `max`):
-    for entry in dedup:
-        if !entry.name_set: continue   # skip tombstones
-        entries[written++] = populate_vfs_dirent(entry)
-    var_array_delete(dedup)
-    return written
+    /* Per-call dedup: heap-backed, unbounded. */
+    VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
+
+    int64_t walk_vp = headPtr;
+    while (walk_vp != 0) {
+        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
+        if (!dc_slot) break;
+        uint32_t ce_child, ce_epoch;
+        int64_t ce_childPtr, ce_namePtr, ce_next;
+        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                              &ce_namePtr, &ce_next, ctx->page_size);
+
+        int64_t eff_epoch = (int64_t)ce_epoch;
+        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
+            eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
+
+        int applies = (eff_epoch == read_epoch) ||
+                      (eff_epoch < read_epoch && eff_epoch % 2 == 0);
+        if (!applies) { walk_vp = ce_next; continue; }
+
+        /* Linear scan for "already seen" — O(N) per scan, O(N²) total.
+           The dedup array's count field is read on every iteration; the
+           var_array append is reflected there by var_array_append's
+           grow_base call. */
+        int found = 0;
+        for (int i = 0; i < dedup->count; i++) {
+            DirchainDedupEntry* e = var_array_lookup(dedup, i);
+            if (e && e->childNodeId == (int64_t)ce_child) { found = 1; break; }
+        }
+        if (found) { walk_vp = ce_next; continue; }
+
+        DirchainDedupEntry entry = {
+            .childNodeId = (int64_t)ce_child,
+            .childPtr    = ce_childPtr,
+            .name_set    = (ce_namePtr != 0),
+            .namePtr     = ce_namePtr,
+        };
+        (void)var_array_append(dedup, entry);
+        walk_vp = ce_next;
+    }
+
+    /* Build output, skipping tombstones.  Limit by `max` (FUSE-side cap
+       is 64; full dedup may be larger). */
+    int written = 0;
+    for (int i = 0; i < dedup->count && written < max; i++) {
+        DirchainDedupEntry* e = var_array_lookup(dedup, i);
+        if (!e || !e->name_set) continue;
+
+        entries[written].vp     = e->childPtr;
+        entries[written].nodeId = e->childNodeId;
+        entries[written].name[0] = '\0';
+        entries[written].isDir = false;
+
+        uint8_t* child_slot = pool_resolve_ro(&ctx->pool, e->childPtr);
+        if (child_slot) {
+            int16_t ctype = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE,
+                                       ctx->page_size);
+            entries[written].isDir = (ctype == (int16_t)NODE_TYPE_DIR);
+        }
+        if (e->namePtr != 0)
+            nodes_read_name(&ctx->pool, e->namePtr,
+                            entries[written].name,
+                            (int)sizeof(entries[written].name));
+        written++;
+    }
+
+    var_array_delete(dedup);
+    return written;
+}
 ```
 
 The linear scan for "already seen" is **O(N²)** total. For typical directories (<100 children) this is <10K ops and runs in microseconds. The dentry cache amortizes the cost after the first readdir. This is **the same complexity as the current code** — no regression. A future phase could add a hash table for O(N) lookup.
@@ -116,51 +198,93 @@ The linear scan for "already seen" is **O(N²)** total. For typical directories 
 Two changes vs the current implementation:
 1. Replace the 4 parallel arrays with a VarArray of `DirchainDedupEntry` (drops the 1024 cap).
 2. **Track `namePtr` in the first pass** (eliminates the second chain walk — saves O(N²) for the second pass).
-3. Track `eff_epoch` only enough to match the highest-epoch record (for the second-pass name lookup). With chain order, this is just the first applicable hit per childNodeId — same logic as `dirchain_list`.
 
+```c
+int dentry_cache_build(Pool* pool, MapperTable* mapper_table,
+                       int64_t root_vp, int64_t epoch, DentryCache* arr) {
+    /* ... resolve dir_slot, read_epoch, headPtr ... */
+
+    arr->last_headPtr_page = VFS_VPTR_PAGE(headPtr);
+    arr->count = 0;
+    int64_t read_epoch = mapper_table_resolve(mapper_table, epoch);
+
+    VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
+
+    int64_t walk_vp = headPtr;
+    while (walk_vp != 0) {
+        /* ... read ce_child, ce_epoch, ce_childPtr, ce_namePtr, ce_next ... */
+        /* ... compute eff_epoch, apply read rule ... */
+
+        /* Linear scan for "already seen" (O(N²) total, same as before) */
+        int found = 0;
+        for (int i = 0; i < dedup->count; i++) {
+            DirchainDedupEntry* e = var_array_lookup(dedup, i);
+            if (e && e->childNodeId == (int64_t)ce_child) { found = 1; break; }
+        }
+        if (found) { walk_vp = ce_next; continue; }
+
+        DirchainDedupEntry entry = {
+            .childNodeId = (int64_t)ce_child,
+            .childPtr    = ce_childPtr,
+            .name_set    = (ce_namePtr != 0),
+            .namePtr     = ce_namePtr,
+        };
+        (void)var_array_append(dedup, entry);
+        walk_vp = ce_next;
+    }
+
+    /* Populate DentryCache from dedup.  No second chain walk — namePtr
+       is already in the dedup entry.  arr->count < DENTRY_CACHE_MAX
+       remains as a sanity check (the in-memory cache is fixed-size; the
+       dedup is unbounded, so if a directory has more than 1024 entries
+       the cache will only hold the first 1024). */
+    for (int i = 0; i < dedup->count && arr->count < DENTRY_CACHE_MAX; i++) {
+        DirchainDedupEntry* e = var_array_lookup(dedup, i);
+        if (!e || !e->name_set) continue;
+
+        DentryEntry* out = &arr->entries[arr->count++];
+        out->childNodeId = e->childNodeId;
+        out->childPtr = e->childPtr;
+        out->isDir = false;
+        out->name[0] = '\0';
+
+        uint8_t* child_slot = pool_resolve_ro(pool, e->childPtr);
+        if (child_slot) {
+            int16_t type = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE,
+                                     pool->sb->page_size);
+            out->isDir = (type == (int16_t)NODE_TYPE_DIR);
+        }
+        if (e->namePtr != 0)
+            nodes_read_name(pool, e->namePtr, out->name,
+                            (int)sizeof(out->name));
+    }
+
+    var_array_delete(dedup);
+    arr->valid = true;
+    return VFS_OK;
+}
 ```
-walk chain head-to-tail:
-    read ce_child, ce_epoch, ce_childPtr, ce_namePtr, ce_next
-    eff_epoch = mapper_table_resolve(ce_epoch)
-    if !read_rule_applies(eff_epoch, read_epoch): continue
-    linear scan dedup[] for childNodeId == ce_child
-    if found: continue
-    var_array_append(dedup, {ce_child, ce_childPtr, namePtr!=0, ce_namePtr})
-
-populate DentryCache from dedup (limit DENTRY_CACHE_MAX remains as a sanity check, not a hard cap):
-    for entry in dedup:
-        if !entry.name_set: continue
-        DentryEntry* out = &arr->entries[arr->count++]
-        out->childNodeId = entry.childNodeId
-        out->childPtr = entry.childPtr
-        nodes_read_name(&ctx->pool, entry.namePtr, out->name, sizeof(out->name))
-        # Determine isDir by reading child's type field
-```
-
-`DentryCache` itself stays as-is (it's the in-memory array that lives across readdir calls for the same directory). The change is in the population function. The 1024 cap on `DentryCache.entries` becomes a sanity check (`arr->count < DENTRY_CACHE_MAX` becomes `< 1024 * 1024` or is removed entirely).
 
 ### Dead code decision
 
-`dentry_cache_build` is currently dead code. Three options:
+`dentry_cache_build` is currently dead code — declared, defined, but never called. Only the invalidation hook (`dentry_cache_invalidate`) is wired up. The `DentryCache readdir_cache` field on `TreeContext` is invalidated by every directory mutation but never populated.
 
-1. **Wire it up** — call it from `dirchain_list` (or the FUSE callback) to actually use the cache. Risk: a second chain walk, but with namePtr tracked the per-entry cost is just one `pool_resolve_ro`. Could speed up repeated readdirs.
-2. **Delete it** — remove the dead code, simplify the codebase. The first-readdir cost goes back to a fresh chain walk each time, but the cap is removed anyway.
-3. **Wire it up later** — phase 19 fixes the cap but doesn't wire the cache. A follow-up phase adds the cache hook.
+This phase keeps the dead code (option 3: defer wiring). Rationale:
 
-**Recommendation: option 2 (delete).** The cache adds complexity, the dentry_cache struct lives on `TreeContext` (single shared cache, not per-directory), so it's not even clear how it would be useful. The cap removal is the main user-visible benefit. If we want caching later, a follow-up phase can introduce it cleanly.
+- The cap removal is the user-visible win and is independent of whether `dentry_cache_build` is called.
+- Wiring up the cache requires more design decisions (per-directory vs single shared cache, what happens when headPtr changes, when to invalidate beyond the headPtr-page check). These are out of scope for this phase.
+- The struct layout is small (~280KB on TreeContext) and removing it is a separate refactor.
 
-If the user prefers option 1, the implementation is straightforward: add a call to `dentry_cache_build` in `dirchain_list` (under the right conditions) and use `dentry_cache_is_valid` to short-circuit. This is a separate concern from the cap removal.
+A follow-up phase could wire up the cache. For now, we make `dentry_cache_build` correct and bounded only by `DentryCache.entries[DENTRY_CACHE_MAX]` (the in-memory cache size, not the dedup VarArray's unbounded capacity).
 
 ## Files
 
 | File | Change |
 |------|--------|
 | `src/tree.h` | Declare `DirchainDedupEntry` struct (shared between `tree.c` and `dentry_cache.c`). |
-| `src/tree.c` | `dirchain_list`: replace 5 parallel arrays with `VarArray(DirchainDedupEntry)`, drop `eff_epoch` tracking, var_array allocated per-call, freed before return. |
-| `src/dentry_cache.c` | `dentry_cache_build`: replace 4 parallel arrays with `VarArray(DirchainDedupEntry)`, track `namePtr` to eliminate 2nd chain walk, drop `eff_epoch` tracking. |
-| `src/dentry_cache.h` | Remove or repurpose `DENTRY_CACHE_MAX`. If we delete the dead code entirely, also remove `DentryCache` and `DentryEntry` and the `readdir_cache` field on `TreeContext`. **Decision: option 2 — delete the dead code.** |
-| `include/ixsphere/vfs_internal.h` | If option 2: remove `DentryCache readdir_cache` from `TreeContext`. |
-| `src/tree.c` | Remove all `dentry_cache_invalidate(&ctx->readdir_cache)` calls. |
+| `src/tree.c` | `dirchain_list`: replace 5 parallel arrays with `VarArray(DirchainDedupEntry)`, drop `eff_epoch` tracking, use typed `var_array_new`/`var_array_append`/`var_array_lookup`/`var_array_delete` macros. |
+| `src/dentry_cache.c` | `dentry_cache_build`: replace 4 parallel arrays with `VarArray(DirchainDedupEntry)`, **track `namePtr` in first pass** to eliminate 2nd chain walk. |
+| `src/dentry_cache.h` | `DENTRY_CACHE_MAX` keeps its role as the in-memory `DentryCache.entries` cap (sanity check). |
 
 ## Performance budget
 
@@ -207,15 +331,16 @@ No new public API. Internal change to dedup storage. `DentryCache` is removed (o
 ## Implementation order
 
 1. Declare `DirchainDedupEntry` in `src/tree.h`.
-2. Update `dirchain_list` in `src/tree.c` to use the new struct + VarArray.
-3. Update `dentry_cache_build` in `src/dentry_cache.c` to use the new struct + VarArray + namePtr tracking.
+2. Update `dirchain_list` in `src/tree.c` to use the new struct + VarArray (typed macros).
+3. Update `dentry_cache_build` in `src/dentry_cache.c` to use the new struct + VarArray + namePtr tracking (eliminates the 2nd chain walk).
 4. Build and run all unit tests. Verify 144/144 epoch, 958/958 tree, etc.
-5. Delete the dead `dentry_cache` code (option 2) — this includes `DentryCache`, `DentryEntry`, the `readdir_cache` field, the invalidate calls, and the `dentry_cache.{h,c}` files.
-6. Re-run `bench_ditto.py` to verify the 5412 only-in-host count doesn't regress (and ideally improves).
-7. Re-run 500-scenario FUSE tests to verify no regression.
+5. Re-run `bench_ditto.py` to verify the 5412 only-in-host count doesn't regress (and ideally improves).
+6. Re-run 500-scenario FUSE tests to verify no regression.
 
 ## Risks
 
-- **Memory leaks.** The new code does `var_array_new_base` at function entry and `var_array_delete_base` before return. If a return is added later that bypasses the cleanup, we leak. Add a comment at the entry and entry-point checks.
-- **Per-call malloc overhead.** For a benchmark that does many readdirs, the malloc adds up. For the FUSE readdir path (called once per ls), the overhead is negligible.
+- **Memory leaks.** The new code does `var_array_new(DirchainDedupEntry)` at function entry and `var_array_delete(dedup)` before return. If a return is added later that bypasses the cleanup, we leak. To minimize risk, structure the function so the dedup var_array is created early (after input validation) and freed in a single cleanup path at the end. A `goto cleanup` pattern is idiomatic for this.
+- **Per-call malloc overhead.** For a benchmark that does many readdirs, the malloc adds up. For the FUSE readdir path (called once per ls), the overhead is negligible. A future phase could add per-thread scratch space.
 - **Dropping `eff_epoch` from dedup output.** This is a code-correctness change, not a perf change. The existing tests must pass to verify. If any test fails, we know the simplification is wrong.
+- **`var_array_lookup` may return NULL.** The lookup macro returns NULL if the slot was never written (count > idx) or if the resolve_base walks an empty slot. In our algorithm, we always append-then-lookup, so the slot is always written. But the macro's NULL return is defensive — we should check for NULL to avoid crashes from missed CAS races during grow.
+- **`var_array_append` returns the index, not the entry pointer.** If we need both, we use `var_array_lookup(dedup, idx)` to get the pointer. We don't store the pointer from `var_array_append` because the macro doesn't return one.
