@@ -1,0 +1,704 @@
+{
+  "batch": "batch_07.json",
+  "total": 50,
+  "pass": 13,
+  "fail": 37,
+  "total_seconds": 82.27,
+  "results": [
+    {
+      "id": "301",
+      "description": "Sequential 2-thread parallel creates (Python)",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 16",
+      "elapsed_ms": 1439.9,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): [open(f\"{sys.argv[1]}/t{i}_f{j}\",\"w\").close() for j in range(8)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/301_9543_71610'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): [open(f\"{sys.argv[1]}/t{i}_f{j}\",\"w\").close() for j in range(8)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() fo",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/301_9543_71610 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/301_9543_71610 == 16' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "302",
+      "description": "Sequential 4-thread parallel creates (smaller batch each)",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 16",
+      "elapsed_ms": 1396.66,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): [open(f\"{sys.argv[1]}/t{i}_f{j}\",\"w\").close() for j in range(4)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/302_9543_73225'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): [open(f\"{sys.argv[1]}/t{i}_f{j}\",\"w\").close() for j in range(4)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() fo",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/302_9543_73225 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/302_9543_73225 == 16' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "303",
+      "description": "Sequential 8 threads, 1 file each",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 8",
+      "elapsed_ms": 1447.49,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): open(f\"{sys.argv[1]}/t{i}\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/303_9543_74838'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): open(f\"{sys.argv[1]}/t{i}\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/303_9543_74838 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/303_9543_74838 == 8' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "304",
+      "description": "Sequential 2 threads, 10 files each",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 20",
+      "elapsed_ms": 1411.7,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): [open(f\"{sys.argv[1]}/t{i}_f{j}\",\"w\").close() for j in range(10)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/304_9543_76467'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): [open(f\"{sys.argv[1]}/t{i}_f{j}\",\"w\").close() for j in range(10)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() f",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/304_9543_76467 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/304_9543_76467 == 20' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "305",
+      "description": "Sequential 4 threads, 12 files each",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 48",
+      "elapsed_ms": 1358.8,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): [open(f\"{sys.argv[1]}/t{i}_f{j}\",\"w\").close() for j in range(12)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/305_9543_78051'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): [open(f\"{sys.argv[1]}/t{i}_f{j}\",\"w\").close() for j in range(12)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() f",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/305_9543_78051 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/305_9543_78051 == 48' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "306",
+      "description": "Concurrent reads of same file (16 threads)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1436.28,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/306_9543_79584/shared'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(_): f=open(sys.argv[1],\"rb\"); d=f.read(); f.close(); import hashlib; print(hashlib.md5(d).hexdigest()[:8]); ts=[threading.Thread(target=w,args=(i,)) for i in range(16)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/306_9543_79584/shared'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(_): f=open(sys.argv[1],\"rb\"); d=f.read(); f.close(); import hashlib; print(hashlib.md5(d).hexdigest()[:8]); ts=[threading.Thread(target=w,args=(",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/306_9543_79584/shared == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "307",
+      "description": "Concurrent reads of different files",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1422.21,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 8); do cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/307_9543_81198/c$i; done'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): f=open(f\"{sys.argv[1]}/c{i}\",\"rb\"); d=f.read(); f.close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(1,9)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/307_9543_81198'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): f=open(f\"{sys.argv[1]}/c{i}\",\"rb\"); d=f.read(); f.close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(1,9)]; [t.start() for t i",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/307_9543_81198 == 8' -> True (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "308",
+      "description": "Concurrent mkdir by 4 threads",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 4",
+      "elapsed_ms": 1376.64,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): import os; os.makedirs(f\"{sys.argv[1]}/d{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/308_9543_82792'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): import os; os.makedirs(f\"{sys.argv[1]}/d{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/308_9543_82792 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/308_9543_82792 == 4' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "309",
+      "description": "Concurrent writes to same file (last-writer-wins)",
+      "passed": false,
+      "error": "verify failed: match test \"$(cat {vfs}/concurrent)\" = 'thread0' || test \"$(cat {vfs}/concurrent)\" = 'thread1' || test \"$(cat {vfs}/concurrent)\" = 'thread2' || test \"$(cat {vfs}/concurrent)\" = 'thread3'",
+      "elapsed_ms": 1419.83,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): open(sys.argv[1],\"w\").write(f\"thread{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/309_9543_84343/concurrent'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): open(sys.argv[1],\"w\").write(f\"thread{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() f",
+        "VERIFY: 'match test \"$(cat /tmp/vfs_scenario_mnt/309_9543_84343/concurrent)\" = \\'thread0\\' || test \"$(cat /tmp/vfs_scenario_mnt/309_9543_84343/concurrent)\" = \\'thread1\\' || test \"$(cat /tmp/vfs_scenario_mnt/309_9543_84343/concurrent)\" = \\'thread2\\' || test \"$(cat /tmp/vfs_scenario_mnt/309_9543_84343/concurrent)\" = \\'thread3\\'' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "310",
+      "description": "Concurrent appends to same file (atomic-ish)",
+      "passed": false,
+      "error": "verify failed: match test -n \"$(cat {vfs}/append)\"",
+      "elapsed_ms": 1359.87,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): open(sys.argv[1],\"a\").write(f\"x{i}\\\\n\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/310_9543_85940/append'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): open(sys.argv[1],\"a\").write(f\"x{i}\\n\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for ",
+        "VERIFY: 'match test -n \"$(cat /tmp/vfs_scenario_mnt/310_9543_85940/append)\"' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "311",
+      "description": "Concurrent creates + reads mixed",
+      "passed": false,
+      "error": "verify failed: match test $(ls {vfs}/ | wc -l) -ge 10",
+      "elapsed_ms": 1388.81,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os,time; def writer(i): [open(f\"{sys.argv[1]}/w{i}_f{j}\",\"w\").close() for j in range(5)]; def reader(_): [open(os.path.join(sys.argv[1], f),\"r\").close() for f in os.listdir(sys.argv[1])]; ts=[]; [ts.append(threading.Thread(target=writer,args=(i,))) for i in range(2)]; [ts.append(threading.Thread(target=reader,args=(i,))) for i in range(2)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/311_9543_87477'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os,time; def writer(i): [open(f\"{sys.argv[1]}/w{i}_f{j}\",\"w\").close() for j in range(5)]; def reader(_): [open(os.path.join(sys.argv[1], f),\"r\").close(",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/311_9543_87477/ | wc -l) -ge 10' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "312",
+      "description": "Concurrent deletes by 4 threads",
+      "passed": false,
+      "error": "verify failed: match test $(ls {vfs}/ | wc -l) -eq 0",
+      "elapsed_ms": 1455.73,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 16); do touch /tmp/vfs_scenario_mnt/312_9543_89042/del$i; done'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): [os.remove(f\"{sys.argv[1]}/del{i*4+j}\") for j in range(1,5)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/312_9543_89042'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): [os.remove(f\"{sys.argv[1]}/del{i*4+j}\") for j in range(1,5)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/312_9543_89042/ | wc -l) -eq 0' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "313",
+      "description": "2 threads each creating nested dirs",
+      "passed": false,
+      "error": "verify failed: isdir {vfs}/t0/sub",
+      "elapsed_ms": 1400.01,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/t{i}/sub\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/313_9543_90675'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/t{i}/sub\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() for t in ts]; [t.join() f",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/313_9543_90675/t0/sub' -> False (kind=isdir)"
+      ]
+    },
+    {
+      "id": "314",
+      "description": "Concurrent reads after writes (sequential)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1286.67,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='echo data > /tmp/vfs_scenario_mnt/314_9543_92356/seq1'",
+        "SETUP: rc=0 cmd='echo data > /tmp/vfs_scenario_mnt/314_9543_92356/seq2'",
+        "SETUP: rc=0 cmd='cat /tmp/vfs_scenario_mnt/314_9543_92356/seq1 /tmp/vfs_scenario_mnt/314_9543_92356/seq2'",
+        "  stdout: data\ndata",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/314_9543_92356/seq1' -> True (kind=exists)",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/314_9543_92356/seq2' -> True (kind=exists)"
+      ]
+    },
+    {
+      "id": "315",
+      "description": "Concurrent writes to different files (no contention)",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 8",
+      "elapsed_ms": 1393.2,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): open(f\"{sys.argv[1]}/f{i}\",\"w\").write(f\"content{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/315_9543_93820'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): open(f\"{sys.argv[1]}/f{i}\",\"w\").write(f\"content{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; ",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/315_9543_93820 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/315_9543_93820 == 8' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "316",
+      "description": "Many parallel reads on same file",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1439.59,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"x\"*100000)\\' /tmp/vfs_scenario_mnt/316_9543_95390/readtest'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(_): open(sys.argv[1],\"rb\").read(); ts=[threading.Thread(target=w,args=(i,)) for i in range(32)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/316_9543_95390/readtest'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(_): open(sys.argv[1],\"rb\").read(); ts=[threading.Thread(target=w,args=(i,)) for i in range(32)]; [t.start() for t in ts]; [t.join() for t in ts]",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/316_9543_95390/readtest == 100000' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "317",
+      "description": "Concurrent mkdir of same name (one wins, others fail)",
+      "passed": false,
+      "error": "verify failed: isdir {vfs}/contend",
+      "elapsed_ms": 1371.2,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(_): os.makedirs(f\"{sys.argv[1]}/contend\", exist_ok=True); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/317_9543_97004'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(_): os.makedirs(f\"{sys.argv[1]}/contend\", exist_ok=True); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/317_9543_97004/contend' -> False (kind=isdir)"
+      ]
+    },
+    {
+      "id": "318",
+      "description": "Concurrent cp of same file to different dests",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 8",
+      "elapsed_ms": 1401.9,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): import shutil; shutil.copy(sys.argv[1], f\"{sys.argv[2]}/c{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/318_9543_98553'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): import shutil; shutil.copy(sys.argv[1], f\"{sys.argv[2]}/c{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for ",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/318_9543_98553 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/318_9543_98553 == 8' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "319",
+      "description": "Concurrent write/read same file (sequential then parallel read)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1443.17,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"Y\"*50000)\\' /tmp/vfs_scenario_mnt/319_9543_130/rw'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(_): open(sys.argv[1],\"rb\").read(); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/319_9543_130/rw'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(_): open(sys.argv[1],\"rb\").read(); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\n",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/319_9543_130/rw == 50000' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "320",
+      "description": "Sequential thread group doing dir operations",
+      "passed": false,
+      "error": "verify failed: match test $(ls {vfs}/ | wc -l) -eq 6",
+      "elapsed_ms": 1403.69,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/d{i}\"); open(f\"{sys.argv[1]}/d{i}/file\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(6)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/320_9543_1855'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/d{i}\"); open(f\"{sys.argv[1]}/d{i}/file\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/320_9543_1855/ | wc -l) -eq 6' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "321",
+      "description": "2 threads, each does cp -R small tree",
+      "passed": false,
+      "error": "verify failed: exists {vfs}/dst0/A/x",
+      "elapsed_ms": 1417.88,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/321_9543_3436/src0/A /tmp/vfs_scenario_mnt/321_9543_3436/src1/A'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/321_9543_3436/src0/A/x /tmp/vfs_scenario_mnt/321_9543_3436/src1/A/y'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,shutil; def w(i): shutil.copytree(f\"{sys.argv[1]}/src{i}\", f\"{sys.argv[1]}/dst{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/321_9543_3436'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,shutil; def w(i): shutil.copytree(f\"{sys.argv[1]}/src{i}\", f\"{sys.argv[1]}/dst{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.st",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/321_9543_3436/dst0/A/x' -> False (kind=exists)"
+      ]
+    },
+    {
+      "id": "322",
+      "description": "4 threads, mix of creates and deletes",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1446.36,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 12); do touch /tmp/vfs_scenario_mnt/322_9543_5037/m$i; done'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): [open(f\"{sys.argv[1]}/new{i}_{j}\",\"w\").close() for j in range(3)]; def d(_): [os.remove(f\"{sys.argv[1]}/m{j}\") for j in range(1,4)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)] + [threading.Thread(target=d,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/322_9543_5037'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): [open(f\"{sys.argv[1]}/new{i}_{j}\",\"w\").close() for j in range(3)]; def d(_): [os.remove(f\"{sys.argv[1]}/m{j}\") for j in range(1,4)]; ts=[",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/322_9543_5037/ | wc -l) -ge 1' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "323",
+      "description": "Concurrent reads with different offsets (sequential file)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1439.39,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(bytes(range(256))*100)\\' /tmp/vfs_scenario_mnt/323_9543_6660/bytes'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(off): f=open(sys.argv[1],\"rb\"); f.seek(off); print(f.read(1)); ts=[threading.Thread(target=w,args=(off,)) for off in [0,1000,5000,10000,50000,100000]]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/323_9543_6660/bytes'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(off): f=open(sys.argv[1],\"rb\"); f.seek(off); print(f.read(1)); ts=[threading.Thread(target=w,args=(off,)) for off in [0,1000,5000,10000,50000,10",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/323_9543_6660/bytes == 25600' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "324",
+      "description": "Concurrent mv (same src to different dst)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1399.47,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/324_9543_8276/srccc'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): os.rename(f\"{sys.argv[1]}/srccc\", f\"{sys.argv[1]}/dst{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/324_9543_8276'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): os.rename(f\"{sys.argv[1]}/srccc\", f\"{sys.argv[1]}/dst{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/324_9543_8276/ | wc -l) -eq 1' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "325",
+      "description": "Concurrent writes to many files (independent)",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 16",
+      "elapsed_ms": 1412.85,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): open(f\"{sys.argv[1]}/indep{i}\",\"wb\").write(bytes([i%256])*1000); ts=[threading.Thread(target=w,args=(i,)) for i in range(16)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/325_9543_9855'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): open(f\"{sys.argv[1]}/indep{i}\",\"wb\").write(bytes([i%256])*1000); ts=[threading.Thread(target=w,args=(i,)) for i in range(16)]; [t.start() fo",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/325_9543_9855 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/325_9543_9855 == 16' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "326",
+      "description": "Concurrent deep nested mkdir",
+      "passed": false,
+      "error": "verify failed: match test $(find {vfs}/ -type d -mindepth 3 | wc -l) -ge 4",
+      "elapsed_ms": 1454.01,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/d{i}/a/b/c\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/326_9543_11448'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/d{i}/a/b/c\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join()",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/326_9543_11448/ -type d -mindepth 3 | wc -l) -ge 4' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "327",
+      "description": "Concurrent reads on many small files",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 16",
+      "elapsed_ms": 1565.18,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): open(f\"{sys.argv[1]}/rf{i}\",\"wb\").write(str(i).encode()); ts=[threading.Thread(target=w,args=(i,)) for i in range(16)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/327_9543_13080'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): open(f\"{sys.argv[1]}/rf{i}\",\"wb\").write(str(i).encode()); ts=[threading.Thread(target=w,args=(i,)) for i in range(16)]; [t.start() for t in ",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): open(f\"{sys.argv[1]}/rf{i}\",\"rb\").read(); ts=[threading.Thread(target=w,args=(i,)) for i in range(16)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/327_9543_13080'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): open(f\"{sys.argv[1]}/rf{i}\",\"rb\").read(); ts=[threading.Thread(target=w,args=(i,)) for i in range(16)]; [t.start() for t in ts]; [t.join() f",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/327_9543_13080 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/327_9543_13080 == 16' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "328",
+      "description": "Concurrent 2-thread mkdir chain",
+      "passed": false,
+      "error": "verify failed: isdir {vfs}/top0/mid/bot",
+      "elapsed_ms": 1412.66,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/top{i}/mid/bot\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/328_9543_14828'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/top{i}/mid/bot\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() for t in ts]; [t.jo",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/328_9543_14828/top0/mid/bot' -> False (kind=isdir)"
+      ]
+    },
+    {
+      "id": "329",
+      "description": "Concurrent 4 threads creating files in same dir",
+      "passed": false,
+      "error": "verify failed: match test $(ls {vfs}/sharedir/ | wc -l) -eq 16",
+      "elapsed_ms": 1441.04,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/329_9543_16420/sharedir'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): [open(f\"{sys.argv[1]}/sharedir/t{i}_f{j}\",\"w\").close() for j in range(4)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/329_9543_16420'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): [open(f\"{sys.argv[1]}/sharedir/t{i}_f{j}\",\"w\").close() for j in range(4)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.s",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/329_9543_16420/sharedir/ | wc -l) -eq 16' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "330",
+      "description": "Concurrent reads after concurrent writes",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 8",
+      "elapsed_ms": 1424.18,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): [open(f\"{sys.argv[1]}/f{i}\",\"wb\").write(bytes([i])*100) for _ in [1]]; ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]; def r(i): open(f\"{sys.argv[1]}/f{i}\",\"rb\").read(); ts2=[threading.Thread(target=r,args=(i,)) for i in range(8)]; [t.start() for t2 in ts2]; [t.join() for t2 in ts2]\\' /tmp/vfs_scenario_mnt/330_9543_18045'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): [open(f\"{sys.argv[1]}/f{i}\",\"wb\").write(bytes([i])*100) for _ in [1]]; ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/330_9543_18045 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/330_9543_18045 == 8' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "331",
+      "description": "Concurrent 2 threads, sequential operations each",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 6",
+      "elapsed_ms": 1453.78,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): open(f\"{sys.argv[1]}/s{i}_a\",\"w\").close(); open(f\"{sys.argv[1]}/s{i}_b\",\"w\").close(); open(f\"{sys.argv[1]}/s{i}_c\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/331_9543_19648'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): open(f\"{sys.argv[1]}/s{i}_a\",\"w\").close(); open(f\"{sys.argv[1]}/s{i}_b\",\"w\").close(); open(f\"{sys.argv[1]}/s{i}_c\",\"w\").close(); ts=[threadi",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/331_9543_19648 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/331_9543_19648 == 6' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "332",
+      "description": "Concurrent writes + reads of same content",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 4",
+      "elapsed_ms": 1453.58,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; data=b\"shared_data\"*100; def w(i): open(f\"{sys.argv[1]}/shared{i}\",\"wb\").write(data); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/332_9543_21282'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; data=b\"shared_data\"*100; def w(i): open(f\"{sys.argv[1]}/shared{i}\",\"wb\").write(data); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/332_9543_21282 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/332_9543_21282 == 4' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "333",
+      "description": "Concurrent 2 threads, each create different subdirs",
+      "passed": false,
+      "error": "verify failed: isdir {vfs}/s0/inner0",
+      "elapsed_ms": 1518.5,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/s{i}/inner{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/333_9543_22917'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/s{i}/inner{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(2)]; [t.start() for t in ts]; [t.joi",
+        "VERIFY: 'isdir /tmp/vfs_scenario_mnt/333_9543_22917/s0/inner0' -> False (kind=isdir)"
+      ]
+    },
+    {
+      "id": "334",
+      "description": "Sequential: write to file then concurrent reads",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1572.85,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"R\"*10000)\\' /tmp/vfs_scenario_mnt/334_9543_24621/after_write'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(_): open(sys.argv[1],\"rb\").read(); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/334_9543_24621/after_write'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(_): open(sys.argv[1],\"rb\").read(); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\n",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/334_9543_24621/after_write == 10000' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "335",
+      "description": "Concurrent thread rename chain",
+      "passed": false,
+      "error": "verify failed: match test $(ls {vfs}/ | grep -c post) -eq 4",
+      "elapsed_ms": 1551.03,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 4); do touch /tmp/vfs_scenario_mnt/335_9543_26395/pre$i; done'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): os.rename(f\"{sys.argv[1]}/pre{i}\", f\"{sys.argv[1]}/post{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(1,5)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/335_9543_26395'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): os.rename(f\"{sys.argv[1]}/pre{i}\", f\"{sys.argv[1]}/post{i}\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(1,5)]; [t.start() f",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/335_9543_26395/ | grep -c post) -eq 4' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "336",
+      "description": "Concurrent file creation by 8 threads (8 each)",
+      "passed": false,
+      "error": "verify failed: match test $(ls {vfs}/ | wc -l) -eq 64",
+      "elapsed_ms": 1512.87,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): [open(f\"{sys.argv[1]}/t{i}_f{j}\",\"w\").close() for j in range(8)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/336_9543_28130'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): [open(f\"{sys.argv[1]}/t{i}_f{j}\",\"w\").close() for j in range(8)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() fo",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/336_9543_28130/ | wc -l) -eq 64' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "337",
+      "description": "Concurrent rm by 4 threads (each removes different files)",
+      "passed": false,
+      "error": "verify failed: match test $(ls {vfs}/ | wc -l) -eq 0",
+      "elapsed_ms": 1615.23,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 16); do touch /tmp/vfs_scenario_mnt/337_9543_29830/rm$i; done'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): [os.remove(f\"{sys.argv[1]}/rm{i*4+j}\") for j in range(1,5)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/337_9543_29830'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): [os.remove(f\"{sys.argv[1]}/rm{i*4+j}\") for j in range(1,5)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for ",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/337_9543_29830/ | wc -l) -eq 0' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "338",
+      "description": "Concurrent writes, large files",
+      "passed": false,
+      "error": "verify failed: match test $(ls {vfs}/ | wc -l) -eq 4",
+      "elapsed_ms": 1474.42,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): open(f\"{sys.argv[1]}/big{i}\",\"wb\").write(b\"\\\\0\"*1048576); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/338_9543_31640'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): open(f\"{sys.argv[1]}/big{i}\",\"wb\").write(b\"\\0\"*1048576); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/338_9543_31640/ | wc -l) -eq 4' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "339",
+      "description": "Concurrent mv chain (A\u2192B\u2192C)",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1536.01,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/339_9543_33303/x'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(_): os.rename(f\"{sys.argv[1]}/x\", f\"{sys.argv[1]}/y\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(3)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/339_9543_33303'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(_): os.rename(f\"{sys.argv[1]}/x\", f\"{sys.argv[1]}/y\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(3)]; [t.start() for t in ts]; ",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/339_9543_33303/ | wc -l) -eq 1' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "340",
+      "description": "Concurrent reads verify all return same MD5",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1464.59,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='cp /Users/bogdanadnan/Downloads/181854127_Plata_GhiseulRo.pdf /tmp/vfs_scenario_mnt/340_9543_35023/md5file'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,hashlib; results=[]; def w(_): f=open(sys.argv[1],\"rb\"); results.append(hashlib.md5(f.read()).hexdigest()); f.close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(16)]; [t.start() for t in ts]; [t.join() for t in ts]; print(set(results).__len__())\\' /tmp/vfs_scenario_mnt/340_9543_35023/md5file'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,hashlib; results=[]; def w(_): f=open(sys.argv[1],\"rb\"); results.append(hashlib.md5(f.read()).hexdigest()); f.close(); ts=[threading.Thread(target=w,ar",
+        "VERIFY: 'md5 /tmp/vfs_scenario_mnt/340_9543_35023/md5file == src_pdf_small' -> True (kind=md5_specific)"
+      ]
+    },
+    {
+      "id": "341",
+      "description": "Concurrent writes in different subdirs",
+      "passed": false,
+      "error": "verify failed: count {vfs}/sub1 == 4",
+      "elapsed_ms": 1508.88,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir /tmp/vfs_scenario_mnt/341_9543_36679/sub1 /tmp/vfs_scenario_mnt/341_9543_36679/sub2'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): open(f\"{sys.argv[1]}/sub{(i%2)+1}/f{i}\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/341_9543_36679'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): open(f\"{sys.argv[1]}/sub{(i%2)+1}/f{i}\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; ",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/341_9543_36679/sub1 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/341_9543_36679/sub1 == 4' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "342",
+      "description": "Concurrent cp + rm pattern",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1522.84,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 8); do touch /tmp/vfs_scenario_mnt/342_9543_38376/orig$i; done'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os,shutil; def cp(i): shutil.copy(f\"{sys.argv[1]}/orig{i}\", f\"{sys.argv[1]}/copy{i}\"); def rm(_): [os.remove(f\"{sys.argv[1]}/orig{j}\") for j in range(1,9)]; ts=[threading.Thread(target=cp,args=(i,)) for i in range(1,9)] + [threading.Thread(target=rm,args=(1,))]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/342_9543_38376'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os,shutil; def cp(i): shutil.copy(f\"{sys.argv[1]}/orig{i}\", f\"{sys.argv[1]}/copy{i}\"); def rm(_): [os.remove(f\"{sys.argv[1]}/orig{j}\") for j in range(1",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/342_9543_38376/ | wc -l) -eq 8' -> True (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "343",
+      "description": "Concurrent reads on cp -R created tree",
+      "passed": false,
+      "error": "verify failed: exists {vfs}/tree_copy/tree/A/B/file",
+      "elapsed_ms": 1573.84,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='mkdir -p /tmp/vfs_scenario_mnt/343_9543_40083/tree/A/B'",
+        "SETUP: rc=0 cmd='touch /tmp/vfs_scenario_mnt/343_9543_40083/tree/A/B/file'",
+        "SETUP: rc=0 cmd='cp -R /tmp/vfs_scenario_mnt/343_9543_40083/tree /tmp/vfs_scenario_mnt/343_9543_40083/tree_copy/'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(_): open(f\"{sys.argv[1]}/tree_copy/tree/A/B/file\",\"rb\").read(); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/343_9543_40083'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(_): open(f\"{sys.argv[1]}/tree_copy/tree/A/B/file\",\"rb\").read(); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in",
+        "VERIFY: 'exists /tmp/vfs_scenario_mnt/343_9543_40083/tree_copy/tree/A/B/file' -> False (kind=exists)"
+      ]
+    },
+    {
+      "id": "344",
+      "description": "Concurrent thread batch of mixed ops",
+      "passed": false,
+      "error": "verify failed: match test $(ls {vfs}/ | wc -l) -eq 12",
+      "elapsed_ms": 1492.79,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): open(f\"{sys.argv[1]}/op{i}_a\",\"w\").close(); os.makedirs(f\"{sys.argv[1]}/op{i}_dir\"); ts=[threading.Thread(target=w,args=(i,)) for i in range(6)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/344_9543_41841'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): open(f\"{sys.argv[1]}/op{i}_a\",\"w\").close(); os.makedirs(f\"{sys.argv[1]}/op{i}_dir\"); ts=[threading.Thread(target=w,args=(i,)) for i in ra",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/344_9543_41841/ | wc -l) -eq 12' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "345",
+      "description": "Concurrent reads after burst write",
+      "passed": true,
+      "error": null,
+      "elapsed_ms": 1587.84,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='python3 -c \\'import sys; open(sys.argv[1],\"wb\").write(b\"Z\"*1000000)\\' /tmp/vfs_scenario_mnt/345_9543_43525/burst'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(_): f=open(sys.argv[1],\"rb\"); f.read(1000); f.close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(10)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/345_9543_43525/burst'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(_): f=open(sys.argv[1],\"rb\"); f.read(1000); f.close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(10)]; [t.start() for t in ts]; [t",
+        "VERIFY: 'size /tmp/vfs_scenario_mnt/345_9543_43525/burst == 1000000' -> True (kind=size_eq)"
+      ]
+    },
+    {
+      "id": "346",
+      "description": "Concurrent bulk rm of 32 files",
+      "passed": false,
+      "error": "verify failed: match test $(ls {vfs}/ | wc -l) -eq 0",
+      "elapsed_ms": 1617.0,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for i in $(seq 1 32); do touch /tmp/vfs_scenario_mnt/346_9543_45297/br$i; done'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): [os.remove(f\"{sys.argv[1]}/br{i*8+j}\") for j in range(1,9)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/346_9543_45297'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): [os.remove(f\"{sys.argv[1]}/br{i*8+j}\") for j in range(1,9)]; ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for ",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/346_9543_45297/ | wc -l) -eq 0' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "347",
+      "description": "Concurrent ops spanning 4 different mount subdirs",
+      "passed": false,
+      "error": "verify failed: match test $(find {vfs}/ -name x | wc -l) -eq 4",
+      "elapsed_ms": 1538.75,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=0 cmd='for d in a b c d; do mkdir /tmp/vfs_scenario_mnt/347_9543_47098/$d; done'",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(i): open(f\"{sys.argv[1]}/{{\"abcd\"[i]}}/x\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/347_9543_47098'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(i): open(f\"{sys.argv[1]}/{{\"abcd\"[i]}}/x\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/347_9543_47098/ -name x | wc -l) -eq 4' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "348",
+      "description": "Concurrent write+sync+read pattern",
+      "passed": false,
+      "error": "verify failed: count {vfs} == 8",
+      "elapsed_ms": 1503.89,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): f=open(f\"{sys.argv[1]}/sync{i}\",\"wb\"); f.write(b\"S\"*1000); f.flush(); os.fsync(f.fileno()); f.close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(8)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/348_9543_48823'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): f=open(f\"{sys.argv[1]}/sync{i}\",\"wb\"); f.write(b\"S\"*1000); f.flush(); os.fsync(f.fileno()); f.close(); ts=[threading.Thread(target=w,args",
+        "  count_eq debug: /tmp/vfs_scenario_mnt/348_9543_48823 has 0 non-dot entries: []",
+        "VERIFY: 'count /tmp/vfs_scenario_mnt/348_9543_48823 == 8' -> False (kind=count_eq)"
+      ]
+    },
+    {
+      "id": "349",
+      "description": "Concurrent: many short-lived threads doing single ops",
+      "passed": false,
+      "error": "verify failed: match test $(ls {vfs}/ | wc -l) -eq 50",
+      "elapsed_ms": 1498.55,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading; def w(_): open(f\"{sys.argv[1]}/short_{threading.current_thread().ident}\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(50)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/349_9543_50513'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading; def w(_): open(f\"{sys.argv[1]}/short_{threading.current_thread().ident}\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(50)]; [",
+        "VERIFY: 'match test $(ls /tmp/vfs_scenario_mnt/349_9543_50513/ | wc -l) -eq 50' -> False (kind=shell_match)"
+      ]
+    },
+    {
+      "id": "350",
+      "description": "Concurrent tree: each thread makes own sub-tree",
+      "passed": false,
+      "error": "verify failed: match test $(find {vfs}/ -type f | wc -l) -eq 8",
+      "elapsed_ms": 1496.6,
+      "log_tail": [
+        "warn: FUSE session not confirmed ready within 0.8s; continuing anyway",
+        "SETUP: rc=1 cmd='python3 -c \\'import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/t{i}/sub/deeper\"); open(f\"{sys.argv[1]}/t{i}/sub/file\",\"w\").close(); open(f\"{sys.argv[1]}/t{i}/sub/deeper/inner\",\"w\").close(); ts=[threading.Thread(target=w,args=(i,)) for i in range(4)]; [t.start() for t in ts]; [t.join() for t in ts]\\' /tmp/vfs_scenario_mnt/350_9543_52199'",
+        "  stderr: File \"<string>\", line 1\n    import sys,threading,os; def w(i): os.makedirs(f\"{sys.argv[1]}/t{i}/sub/deeper\"); open(f\"{sys.argv[1]}/t{i}/sub/file\",\"w\").close(); open(f\"{sys.argv[1]}/t{i}/sub/deeper/inn",
+        "VERIFY: 'match test $(find /tmp/vfs_scenario_mnt/350_9543_52199/ -type f | wc -l) -eq 8' -> False (kind=shell_match)"
+      ]
+    }
+  ],
+  "partial": false
+}
