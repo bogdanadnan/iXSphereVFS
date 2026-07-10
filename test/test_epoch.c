@@ -149,6 +149,64 @@ static void test_epoch_lifecycle(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Write to a snapshot (odd epoch) and verify read-rule resolves correctly.
+ * This exercises the case where the chain contains odd-epoch records
+ * (snapshot writes), per SPEC §7.2.  Without proper read-rule, the
+ * future-epoch records at the head of the chain would shadow the
+ * correct historical state.
+ * --------------------------------------------------------------------------- */
+
+static void test_snapshot_write_readrule(void) {
+    vfs_t* vfs = epoch_setup();
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = get_root_vp(vfs);
+    test_set_epoch_writable(-1);  /* use real epoch validation */
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "snapwrite.txt", 0);
+    CHECK(file_vp > 0);
+    CHECK_EQ(vfs_write(vfs, file_vp, "v0   ", 0, 4, 0), 4);
+
+    /* Snapshot → odd epoch 1, currentEpoch becomes 2 */
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK_EQ(snap, 1);
+    CHECK_EQ(ctx->currentEpoch, 2);
+
+    /* Write to the snapshot (odd epoch 1) — exercises odd-epoch
+       chain records + write-rule bypass. */
+    CHECK_EQ(vfs_write(vfs, file_vp, "v1   ", 0, 4, 1), 4);
+
+    /* Write to the live head (even epoch 2). */
+    CHECK_EQ(vfs_write(vfs, file_vp, "v2   ", 0, 4, 2), 4);
+
+    /* Read at epoch 0 → "v0   " (commited base) */
+    char rbuf[16];
+    memset(rbuf, 0, sizeof(rbuf));
+    CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 0), 4);
+    CHECK_EQ(strncmp(rbuf, "v0   ", 4), 0);
+
+    /* Read at epoch 1 (snapshot, no mapping) → "v1   " (snapshot's write).
+       The chain head is the live-head write (ep2) — read-rule must skip
+       the future-epoch record and find the snapshot's record. */
+    memset(rbuf, 0, sizeof(rbuf));
+    CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 1), 4);
+    CHECK_EQ(strncmp(rbuf, "v1   ", 4), 0);
+
+    /* Read at epoch 2 (live head) → "v2   " */
+    memset(rbuf, 0, sizeof(rbuf));
+    CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 2), 4);
+    CHECK_EQ(strncmp(rbuf, "v2   ", 4), 0);
+
+    /* Read at a future epoch (3) — chain head's ep2 doesn't match, ep2 < 3
+       and even, applies. Returns live-head write. */
+    memset(rbuf, 0, sizeof(rbuf));
+    CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 4, 3), 4);
+    CHECK_EQ(strncmp(rbuf, "v2   ", 4), 0);
+
+    epoch_teardown(vfs);
+}
+
+/* ---------------------------------------------------------------------------
  * Snapshot → write → delete snapshot (soft-delete) test
  * --------------------------------------------------------------------------- */
 
@@ -343,6 +401,7 @@ int main(void) {
     test_snapshot_basic();
     test_epoch_writable();
     test_epoch_lifecycle();
+    test_snapshot_write_readrule();
     test_snapshot_soft_delete();
     test_epoch_invalid();
 
