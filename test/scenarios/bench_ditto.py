@@ -57,47 +57,27 @@ def md5_tree(root: Path) -> dict:
 
 
 def mount(vfs_file: Path, mount_point: Path) -> subprocess.Popen:
-    mount_point.mkdir(parents=True, exist_ok=True)
-    if vfs_file.exists():
-        vfs_file.unlink()
-    out_fd = open("/tmp/vfs_fuse_stdout.log", "wb")
-    err_fd = open("/tmp/vfs_fuse_stderr.log", "wb")
-    proc = subprocess.Popen(
-        [VFS_FUSE, str(vfs_file), str(mount_point)],
-        stdout=out_fd, stderr=err_fd,
-    )
-    out_fd.close()
-    err_fd.close()
-    for _ in range(50):
-        time.sleep(0.1)
-        try:
-            os.stat(mount_point)
-            return proc
-        except OSError:
-            continue
-    proc.kill()
-    raise RuntimeError(f"mount did not appear: {mount_point}")
+    """Mount vfs_fuse and synchronously wait for the kernel helper to be ready.
+
+    Uses the sync mount helper from run_scenario_batch (poll mount(8)
+    instead of os.stat, which doesn't detect the kernel helper warm-up).
+    This is critical: macFUSE on macOS takes ~500ms to wire up the FUSE
+    callback path.  Calling `cp` before the helper is ready causes the
+    write to be silently dropped at the syscall layer.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent))
+    import run_scenario_batch
+    return run_scenario_batch.mount(vfs_file, mount_point)
 
 
 def unmount(mount_point: Path, proc: subprocess.Popen) -> None:
-    try:
-        subprocess.run(["diskutil", "unmount", str(mount_point)],
-                       capture_output=True, timeout=15)
-    except Exception:
-        pass
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=2)
-            except Exception:
-                pass
-    time.sleep(0.5)
+    """Synchronously unmount and wait for the kernel helper to release
+    the mount (poll mount(8) until the entry disappears)."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent))
+    import run_scenario_batch
+    run_scenario_batch.unmount(mount_point, proc)
 
 
 def timed(label: str, fn) -> tuple:
