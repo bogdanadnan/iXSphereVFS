@@ -277,6 +277,21 @@ void fusedir_cache_invalidate_fh(FusedirCache* cache, int64_t fh) {
     pthread_mutex_unlock(&cache->lock);
 }
 
+/* Invalidate by dir_vp.  Most reliable because it matches regardless
+   of how the directory was referenced (full path, FUSE-relative path,
+   or fi->fh).  Iterates all slots — 32 entries is cheap. */
+void fusedir_cache_invalidate_vp(FusedirCache* cache, int64_t vp) {
+    if (!cache || vp <= 0) return;
+    pthread_mutex_lock(&cache->lock);
+    for (int i = 0; i < FUSEDIR_CACHE_SIZE; i++) {
+        if (cache->slots[i].dir_vp == vp && cache->slots[i].entries) {
+            clear_slot(&cache->slots[i]);
+            break;  /* dir_vp is unique */
+        }
+    }
+    pthread_mutex_unlock(&cache->lock);
+}
+
 /* Invalidate all cache entries whose path starts with the given
    prefix.  Without storing the original path, the only correct action
    is a full flush.  Acceptable given the 32-slot cap. */

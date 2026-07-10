@@ -40,36 +40,6 @@ static int fv_log_enabled(const char* what) {
 } while (0)
 
 /* ---------------------------------------------------------------------------
- * Readdir cache invalidation helpers
- *
- * The cache holds the full listing of each directory as last seen by
- * readdir.  When the directory is mutated (create/mkdir/unlink/rmdir/
- * rename), the cache entry must be invalidated so the next readdir
- * rebuilds from scratch.
- *
- * For invalidation we invalidate the PARENT path (the directory whose
- * contents changed).  For rename/move we invalidate both source and
- * destination parent paths.  Since the cache is path-keyed and we don't
- * know the dir_vp of the parent easily from here, we use the path
- * directly.
- * --------------------------------------------------------------------------- */
-
-static void invalidate_path(fuse_vfs_state_t* state, const char* path) {
-    if (state && path) {
-        fusedir_cache_invalidate_path(&state->dir_cache, path);
-    }
-}
-
-/* For root path "/", invalidate the whole cache (any cached "/" entry
-   is the root listing; if a mutation hit root, every other cached
-   path could be affected). */
-static void invalidate_root_safe(fuse_vfs_state_t* state) {
-    if (state) {
-        fusedir_cache_invalidate_path(&state->dir_cache, "/");
-    }
-}
-
-/* ---------------------------------------------------------------------------
  * FUSE option parsing keys — custom keys for -o epoch=, -o page_size=,
  * -o readonly.  allow_other is handled by libfuse's built-in parser.
  * --------------------------------------------------------------------------- */
@@ -523,13 +493,11 @@ int fuse_vfs_create(const char* path, mode_t mode,
                               vfs_current_epoch(state->vfs));
     if (vp <= 0) { free(path_copy); return vfs_error_to_errno(vfs_last_error(state->vfs)); }
 
-    /* Invalidate the readdir cache for the parent directory.  A new
-       entry just appeared in its listing. */
-    if (last_slash && last_slash != path_copy) {
-        invalidate_path(state, path_copy);
-    } else {
-        invalidate_root_safe(state);
-    }
+    /* Invalidate the readdir cache for the parent directory.  We have
+       parent_vp from resolve_full_path above, which is the most
+       reliable cache key (matches regardless of how the directory was
+       previously referenced). */
+    if (parent_vp > 0) fusedir_cache_invalidate_vp(&state->dir_cache, parent_vp);
     free(path_copy);
 
     /* Acquire lock on the newly created file */
@@ -562,13 +530,9 @@ int fuse_vfs_unlink(const char* path) {
 
     int ret = vfs_delete(state->vfs, parent_vp, name,
                         vfs_current_epoch(state->vfs));
-    if (ret == VFS_OK) {
+    if (ret == VFS_OK && parent_vp > 0) {
         /* Invalidate the readdir cache for the parent directory. */
-        if (last_slash && last_slash != path_copy) {
-            invalidate_path(state, path_copy);
-        } else {
-            invalidate_root_safe(state);
-        }
+        fusedir_cache_invalidate_vp(&state->dir_cache, parent_vp);
     }
     free(path_copy);
     return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
@@ -596,13 +560,9 @@ int fuse_vfs_mkdir(const char* path, mode_t mode) {
 
     int64_t vp = vfs_mkdir(state->vfs, parent_vp, name,
                              vfs_current_epoch(state->vfs));
-    if (vp > 0) {
+    if (vp > 0 && parent_vp > 0) {
         /* Invalidate the readdir cache for the parent directory. */
-        if (last_slash && last_slash != path_copy) {
-            invalidate_path(state, path_copy);
-        } else {
-            invalidate_root_safe(state);
-        }
+        fusedir_cache_invalidate_vp(&state->dir_cache, parent_vp);
     }
     free(path_copy);
     return (vp > 0) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
@@ -629,13 +589,9 @@ int fuse_vfs_rmdir(const char* path) {
 
     int ret = vfs_rmdir(state->vfs, parent_vp, name,
                         vfs_current_epoch(state->vfs));
-    if (ret == VFS_OK) {
+    if (ret == VFS_OK && parent_vp > 0) {
         /* Invalidate the readdir cache for the parent directory. */
-        if (last_slash && last_slash != path_copy) {
-            invalidate_path(state, path_copy);
-        } else {
-            invalidate_root_safe(state);
-        }
+        fusedir_cache_invalidate_vp(&state->dir_cache, parent_vp);
     }
     free(path_copy);
     return (ret == VFS_OK) ? 0 : vfs_error_to_errno(vfs_last_error(state->vfs));
@@ -676,16 +632,10 @@ int fuse_vfs_rename(const char* from, const char* to, unsigned int flags) {
     if (ret == VFS_OK) {
         /* Invalidate the readdir cache for both source and destination
            parent directories.  The rename changed entries in both. */
-        if (from_slash == from_copy) {
-            invalidate_root_safe(state);
-        } else {
-            invalidate_path(state, from_copy);
-        }
-        if (to_slash == to_copy) {
-            invalidate_root_safe(state);
-        } else {
-            invalidate_path(state, to_copy);
-        }
+        if (src_parent > 0)
+            fusedir_cache_invalidate_vp(&state->dir_cache, src_parent);
+        if (dst_parent > 0)
+            fusedir_cache_invalidate_vp(&state->dir_cache, dst_parent);
     }
     free(from_copy);
     free(to_copy);

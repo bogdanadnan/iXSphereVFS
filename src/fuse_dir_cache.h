@@ -102,6 +102,12 @@ void fusedir_cache_invalidate_path(FusedirCache* cache, const char* path);
    callers don't need this (LRU evicts eventually). */
 void fusedir_cache_invalidate_fh(FusedirCache* cache, int64_t fh);
 
+/* Invalidate by resolved directory VirtualPtr (the most reliable
+   signal).  Called from create/mkdir/unlink/rmdir/rename where we
+   have the parent_vp from resolve_full_path but not a canonical
+   path matching what FUSE sees. */
+void fusedir_cache_invalidate_vp(FusedirCache* cache, int64_t vp);
+
 /* Invalidate all cache entries whose path starts with the given
    prefix.  Called when a rename/move changes a parent path.  The
    prefix should end with '/' for directory invalidation (so "/foo"
