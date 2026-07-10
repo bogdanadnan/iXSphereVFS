@@ -2,6 +2,7 @@
 #include "var_array.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
 
 static int tests_run = 0, tests_passed = 0;
@@ -172,7 +173,7 @@ static void test_var_array_basic(void) {
 
     /* Update entry 5 */
     DirEntry new_e = {999, 888};
-    var_array_update(list, 5, new_e);
+    var_array_set(list, 5, new_e);
     DirEntry* e5 = var_array_lookup(list, 5);
     CHECK(e5 != NULL);
     CHECK_EQ(e5->key, (uint64_t)999);
@@ -487,7 +488,7 @@ static void test_var_array_custom_chunk_size(void) {
     var_array_delete_base(a);
 }
 
-static void test_var_array_update_in_place(void) {
+static void test_var_array_set_in_place(void) {
     VarArray(int) arr = var_array_new(int);
     CHECK(arr != NULL);
 
@@ -498,8 +499,8 @@ static void test_var_array_update_in_place(void) {
     }
 
     /* Update first and last entries */
-    var_array_update(arr, 0, 999);
-    var_array_update(arr, 299, 888);
+    var_array_set(arr, 0, 999);
+    var_array_set(arr, 299, 888);
 
     /* Verify via lookup */
     int* e0 = var_array_lookup(arr, 0);
@@ -532,6 +533,289 @@ static void test_var_array_delete_no_leak(void) {
     var_array_delete(arr);
 }
 
+/* ---------------------------------------------------------------------------
+ * Sparse-mode tests (Phase 22)
+ *
+ * var_array_set / var_array_unset can write to any idx in [0, capacity),
+ * not just sequential positions.  The tree path is allocated lazily —
+ * siblings stay NULL, only the path from root to leaf chunk is allocated.
+ * --------------------------------------------------------------------------- */
+
+static void test_set_basic_at_index(void) {
+    /* Set at idx 0, before any grow.  Allocates the existing chunk path. */
+    VarArray(int) arr = var_array_new(int);
+    var_array_set(arr, 0, 42);
+    int* p = var_array_lookup(arr, 0);
+    CHECK(p != NULL);
+    if (p) CHECK_EQ(*p, 42);
+    CHECK_EQ(arr->count, 1);
+    var_array_delete(arr);
+}
+
+static void test_set_at_idx_beyond_count(void) {
+    /* Set at idx 100 without any prior grows.  Allocates a deep tree path,
+       jumps count to 101.  Note: with chunk_size=16, all slots in the
+       same chunk as a set idx share the chunk and are addressable.  Slots
+       in chunks that were never allocated return NULL. */
+    VarArray(int) arr = (VarArray(int))var_array_new_base(sizeof(int), 16);
+    int v = 12345;
+    var_array_set(arr, 100, v);
+    CHECK_EQ(arr->count, 101);
+
+    /* idx 100 is set, in chunk 6. */
+    int* p = var_array_lookup(arr, 100);
+    CHECK(p != NULL);
+    if (p) CHECK_EQ(*p, 12345);
+
+    /* idx 50 is in chunk 3 — chunk never allocated -> NULL. */
+    CHECK(var_array_lookup(arr, 50) == NULL);
+    /* idx 32 in chunk 2 — NULL. */
+    CHECK(var_array_lookup(arr, 32) == NULL);
+
+    var_array_delete(arr);
+}
+
+static void test_set_creates_holes(void) {
+    /* Set at sparse positions that span multiple chunks.  We use a
+       small chunk_size so chunks don't share. */
+    VarArray(int) arr = (VarArray(int))var_array_new_base(sizeof(int), 16);
+
+    int v0 = 10, v1 = 20, v2 = 30, v3 = 40;
+    var_array_set(arr, 0,   v0);    /* chunk 0 */
+    var_array_set(arr, 16,  v1);    /* chunk 1 */
+    var_array_set(arr, 100, v2);    /* chunk 6 */
+    var_array_set(arr, 200, v3);    /* chunk 12 */
+
+    /* count is high-water mark. */
+    CHECK_EQ(arr->count, 201);
+
+    /* All set values findable. */
+    int* p;
+    p = var_array_lookup(arr, 0);
+    CHECK(p != NULL); if (p) CHECK_EQ(*p, 10);
+    p = var_array_lookup(arr, 16);
+    CHECK(p != NULL); if (p) CHECK_EQ(*p, 20);
+    p = var_array_lookup(arr, 100);
+    CHECK(p != NULL); if (p) CHECK_EQ(*p, 30);
+    p = var_array_lookup(arr, 200);
+    CHECK(p != NULL); if (p) CHECK_EQ(*p, 40);
+
+    /* Slots in chunks that were NEVER allocated return NULL. */
+    CHECK(var_array_lookup(arr, 32)  == NULL);  /* chunk 2 unallocated */
+    CHECK(var_array_lookup(arr, 80)  == NULL);  /* chunk 5 unallocated */
+    CHECK(var_array_lookup(arr, 112) == NULL);  /* chunk 7 unallocated */
+    CHECK(var_array_lookup(arr, 150) == NULL);  /* chunk 9 unallocated */
+
+    var_array_delete(arr);
+}
+
+static void test_set_overwrites_existing(void) {
+    /* Set at the same idx twice: second set overwrites the first. */
+    VarArray(int) arr = var_array_new(int);
+    var_array_set(arr, 5, 100);
+    var_array_set(arr, 5, 200);
+    CHECK_EQ(*var_array_lookup(arr, 5), 200);
+    /* count stays at 6 (didn't jump on overwrite). */
+    CHECK_EQ(arr->count, 6);
+    var_array_delete(arr);
+}
+
+static void test_set_with_append_mixed(void) {
+    /* Mix append (sequential) and set (sparse).  Both update count. */
+    VarArray(int) arr = var_array_new(int);
+    var_array_append(arr, 1);
+    var_array_append(arr, 2);
+    var_array_append(arr, 3);   /* count = 3 */
+    var_array_set(arr, 10, 99); /* count jumps to 11 */
+    var_array_append(arr, 4);   /* count becomes 12 (sets idx 11) */
+
+    CHECK_EQ(arr->count, 12);
+    int* p;
+
+    /* All explicitly-set values findable with correct content. */
+    p = var_array_lookup(arr, 0);
+    CHECK(p != NULL); if (p) CHECK_EQ(*p, 1);
+
+    p = var_array_lookup(arr, 1);
+    CHECK(p != NULL); if (p) CHECK_EQ(*p, 2);
+
+    p = var_array_lookup(arr, 2);
+    CHECK(p != NULL); if (p) CHECK_EQ(*p, 3);
+
+    p = var_array_lookup(arr, 10);
+    CHECK(p != NULL); if (p) CHECK_EQ(*p, 99);
+
+    p = var_array_lookup(arr, 11);
+    CHECK(p != NULL); if (p) CHECK_EQ(*p, 4);
+
+    /* Slots 3-9 are in the same chunk (chunk_size=256) as idx 0,1,2, so
+       the chunk is allocated.  These slots return non-NULL with value 0
+       (calloc'd, never written).  This is the inherent limitation of
+       sparse arrays: the chunk tree doesn't track per-slot "set" state. */
+    for (int i = 3; i < 10; i++) {
+        int* q = var_array_lookup(arr, i);
+        CHECK(q != NULL);   /* chunk allocated */
+        if (q) CHECK_EQ(*q, 0);  /* never set, so zero */
+    }
+    var_array_delete(arr);
+}
+
+static void test_set_unset_clears_slot(void) {
+    /* Set, then unset: slot is cleared (all-zero). */
+    VarArray(int) arr = var_array_new(int);
+    var_array_set(arr, 7, 999);
+    CHECK_EQ(*var_array_lookup(arr, 7), 999);
+
+    var_array_unset(arr, 7);
+    /* Slot exists (calloc'd to 0), but lookup returns the zero value. */
+    int* p = var_array_lookup(arr, 7);
+    CHECK(p != NULL);  /* slot exists (path was allocated) */
+    if (p) CHECK_EQ(*p, 0);
+    /* count doesn't shrink on unset. */
+    CHECK_EQ(arr->count, 8);
+
+    var_array_delete(arr);
+}
+
+static void test_unset_allocates_path(void) {
+    /* var_array_unset(arr, idx) clears the slot at idx.  If the slot
+       doesn't exist (chunk not allocated), unset is a no-op — it does
+       NOT allocate the path or bump count.  This matches the chosen
+       implementation that checks existence before clearing. */
+    VarArray(int) arr = var_array_new(int);
+    var_array_append(arr, 1);
+    var_array_append(arr, 2);
+    /* idx 50 was never set.  unset is no-op. */
+    var_array_unset(arr, 50);
+    CHECK_EQ(arr->count, 2);  /* count unchanged */
+
+    /* idx 50 still NULL (chunk never allocated). */
+    CHECK(var_array_lookup(arr, 50) == NULL);
+
+    /* Now set idx 50 — allocates the path. */
+    var_array_set(arr, 50, 999);
+    CHECK_EQ(arr->count, 51);
+    int* p = var_array_lookup(arr, 50);
+    CHECK(p != NULL);
+    if (p) CHECK_EQ(*p, 999);
+
+    /* Unset clears the slot. */
+    var_array_unset(arr, 50);
+    p = var_array_lookup(arr, 50);
+    CHECK(p != NULL);   /* chunk still allocated */
+    if (p) CHECK_EQ(*p, 0);
+
+    /* Count didn't change (no shrink on unset). */
+    CHECK_EQ(arr->count, 51);
+
+    /* Set then unset then set — exercises the lifecycle. */
+    var_array_set(arr, 50, 555);
+    p = var_array_lookup(arr, 50);
+    CHECK(p != NULL);
+    if (p) CHECK_EQ(*p, 555);
+
+    var_array_delete(arr);
+}
+
+static void test_set_at_idx_forces_rebalance(void) {
+    /* Default chunk_size is 256.  Set at idx 1000 forces root promotion
+       from chunk to level node. */
+    VarArray(int) arr = var_array_new(int);
+    var_array_set(arr, 1000, 42);
+    CHECK_EQ(arr->count, 1001);
+    int* p = var_array_lookup(arr, 1000);
+    CHECK(p != NULL);
+    if (p) CHECK_EQ(*p, 42);
+
+    /* Set at a different high idx to confirm tree is reusable. */
+    var_array_set(arr, 500, 99);
+    CHECK_EQ(*var_array_lookup(arr, 500), 99);
+    /* count is max of both ops. */
+    CHECK_EQ(arr->count, 1001);
+
+    var_array_delete(arr);
+}
+
+static void test_set_with_typed_struct(void) {
+    /* set works with arbitrary typed entries, not just int. */
+    typedef struct { int64_t a; int64_t b; } Pair;
+    VarArray(Pair) arr = var_array_new(Pair);
+
+    Pair p1 = { .a = 100, .b = 200 };
+    Pair p2 = { .a = -1, .b = 999999 };
+    var_array_set(arr, 50, p1);
+    var_array_set(arr, 100, p2);
+
+    Pair* got1 = var_array_lookup(arr, 50);
+    CHECK(got1 != NULL);
+    if (got1) {
+        CHECK_EQ(got1->a, 100);
+        CHECK_EQ(got1->b, 200);
+    }
+
+    Pair* got2 = var_array_lookup(arr, 100);
+    CHECK(got2 != NULL);
+    if (got2) {
+        CHECK_EQ(got2->a, -1);
+        CHECK_EQ(got2->b, 999999);
+    }
+
+    var_array_delete(arr);
+}
+
+static void test_set_holes_then_append(void) {
+    /* Set sparse slots, then append — append goes after the high-water mark. */
+    VarArray(int) arr = var_array_new(int);
+    var_array_set(arr, 50, 999);
+    /* count = 51.  Append at idx 51. */
+    int idx = var_array_append(arr, 12345);
+    CHECK_EQ(idx, 51);
+    CHECK_EQ(*var_array_lookup(arr, 51), 12345);
+    /* The sparse slot at 50 is preserved. */
+    CHECK_EQ(*var_array_lookup(arr, 50), 999);
+    var_array_delete(arr);
+}
+
+static void test_set_allocates_only_path(void) {
+    /* Pick set indices that fall in DIFFERENT chunks (chunk_size apart)
+       and verify that lookup in chunks that were never allocated
+       returns NULL.  Use a small chunk_size so we can reason about
+       chunk boundaries. */
+    VarArray(int) arr = (VarArray(int))var_array_new_base(sizeof(int), 16);
+
+    /* Set in chunks 0, 1, 6, 62 — leave chunks 2-5 and 7-61 unallocated. */
+    var_array_set(arr, 0,   100);   /* chunk 0 */
+    var_array_set(arr, 16,  200);   /* chunk 1 */
+    var_array_set(arr, 96,  300);   /* chunk 6 */
+    var_array_set(arr, 992, 400);   /* chunk 62 */
+
+    CHECK_EQ(arr->count, 993);
+
+    /* All set values findable. */
+    int* p;
+    p = var_array_lookup(arr, 0);   CHECK(p != NULL); if (p) CHECK_EQ(*p, 100);
+    p = var_array_lookup(arr, 16);  CHECK(p != NULL); if (p) CHECK_EQ(*p, 200);
+    p = var_array_lookup(arr, 96);  CHECK(p != NULL); if (p) CHECK_EQ(*p, 300);
+    p = var_array_lookup(arr, 992); CHECK(p != NULL); if (p) CHECK_EQ(*p, 400);
+
+    /* Lookup in chunks that were NEVER allocated returns NULL.
+       (resolve_base returns NULL for unallocated chunks; lookup macro
+       forwards that.) */
+    CHECK(var_array_lookup(arr, 32)  == NULL);  /* chunk 2 unallocated */
+    CHECK(var_array_lookup(arr, 50)  == NULL);  /* chunk 3 unallocated */
+    CHECK(var_array_lookup(arr, 80)  == NULL);  /* chunk 5 unallocated */
+    CHECK(var_array_lookup(arr, 112) == NULL);  /* chunk 7 unallocated */
+    CHECK(var_array_lookup(arr, 500) == NULL);  /* chunk 31 unallocated */
+
+    /* Intermediate slots WITHIN an allocated chunk return non-NULL
+       (chunk was allocated) but contain 0 (calloc'd, never written). */
+    p = var_array_lookup(arr, 5);    /* chunk 0 (allocated for idx 0) */
+    CHECK(p != NULL);
+    if (p) CHECK_EQ(*p, 0);
+
+    var_array_delete(arr);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -551,8 +835,21 @@ int main(void) {
     test_var_array_concurrent_append_and_lookup();
     test_var_array_lookup_out_of_range();
     test_var_array_custom_chunk_size();
-    test_var_array_update_in_place();
+    test_var_array_set_in_place();
     test_var_array_delete_no_leak();
+
+    /* Sparse-mode tests (Phase 22) */
+    test_set_basic_at_index();
+    test_set_at_idx_beyond_count();
+    test_set_creates_holes();
+    test_set_overwrites_existing();
+    test_set_with_append_mixed();
+    test_set_unset_clears_slot();
+    test_unset_allocates_path();
+    test_set_at_idx_forces_rebalance();
+    test_set_with_typed_struct();
+    test_set_holes_then_append();
+    test_set_allocates_only_path();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

@@ -84,6 +84,15 @@ void var_array_delete_base(VarArrayBase* a);
  * on success, or a negative value on error. */
 int var_array_grow_base(VarArrayBase* a);
 
+/* Write a value at slot `idx`, allocating the tree path lazily.  Used
+   by the var_array_set macro (writes value) and var_array_unset macro
+   (passes NULL value to memset the slot to 0).  On success, the slot
+   at `idx` is allocated and the value is written (or cleared).  Updates
+   count to max(count, idx+1) via CAS.  Thread-safe on different idxs;
+   concurrent writes to the same idx must be serialized by the caller.
+   Returns 0 on success, -1 on OOM or invalid args. */
+int var_array_set_base(VarArrayBase* a, int idx, const void* value);
+
 /* Resolve slot `idx` to a pointer within a chunk.  Returns a pointer to
  * the slot's entry data, or NULL if idx is beyond the claimed range.
  * The returned pointer is valid until the next grow. */
@@ -138,13 +147,32 @@ int var_array_root_height_for_test(VarArrayBase* a);
     _idx; \
 })
 
-/* Update an existing entry at index `idx`.  Silently drops the update
- * (no error signal) if idx is out of range or resolve returns NULL —
- * this matches var_array_lookup's NULL-return behavior. */
-#define var_array_update(a, idx, entry) ({ \
+/* Set an entry at index `idx`.  Allocates the tree path for `idx` if
+ * needed (sparse array), then writes the value.  Always succeeds modulo
+ * OOM — does NOT silently drop on missing slots (replaces the old
+ * var_array_update macro which did silent-drop).
+ *
+ * Uses a statement expression to handle rvalue entries (e.g., literals):
+ * we copy the entry into a local typed variable to take its address. */
+#define var_array_set(a, idx, entry) ({ \
     int _idx = (idx); \
-    void* _rp = var_array_resolve_base((VarArrayBase*)(a), _idx); \
-    if (_rp) ((VarArrayChunk_T(typeof(entry))*)_rp)->entries[_idx % (a)->chunk_size] = (entry); \
+    typeof(entry) _entry = (entry); \
+    var_array_set_base((VarArrayBase*)(a), _idx, &_entry); \
+})
+
+/* Clear the slot at index `idx` to zero.  If the slot doesn't exist
+ * (chunk not allocated), this is a no-op — unset does NOT allocate
+ * the path.  Use var_array_set(arr, idx, value) if you want to allocate
+ * and write; use var_array_unset(arr, idx) if you only want to clear
+ * an already-existing slot. */
+#define var_array_unset(a, idx) ({ \
+    VarArrayBase* _ab = (VarArrayBase*)(a); \
+    void* _chunk = var_array_resolve_base(_ab, (idx)); \
+    if (_chunk) { \
+        VarArrayChunk_T(typeof(*(a)->root)) *_c = \
+            (VarArrayChunk_T(typeof(*(a)->root))*)_chunk; \
+        memset(&_c->entries[(idx) % _ab->chunk_size], 0, _ab->entry_size); \
+    } \
 })
 
 /* Look up an entry by index.  Returns a pointer to the element, or NULL

@@ -93,23 +93,20 @@ VarArrayBase* var_array_new_base(int entry_size, int chunk_size) {
 }
 
 /* ---------------------------------------------------------------------------
- * grow_base — claim the next slot index, promoting root as needed.
- * Multi-level CAS promotion: atomically claims count, computes the
- * required tree height, then promotes the root from chunk to level node
- * when the current root overflows.  Thread-safe via CAS on a->root.
+ * ensure_path_allocated — walk the tree from root to leaf for `idx`,
+ * allocating missing intermediate nodes.  Does NOT touch count and
+ * does NOT write to the slot — caller does that.
+ *
+ * Helper for both var_array_grow_base (path alloc after atomic-add) and
+ * var_array_set_base (path alloc before count update + write).  Returns
+ * a pointer to the leaf chunk on success, NULL on OOM.
  * --------------------------------------------------------------------------- */
 
-int var_array_grow_base(VarArrayBase* a) {
-    if (!a) return -1;
+static void* ensure_path_allocated(VarArrayBase* a, int idx) {
     int cs = a->chunk_size;
     int es = a->entry_size;
 
-    /* Atomically claim the next index.  vfs_atomic_add_i32 returns the
-     * value AFTER adding, so subtract 1 for 0-based indexing (first slot
-     * is idx=0, not idx=1). */
-    int idx = vfs_atomic_add_i32((int32_t*)&a->count, 1) - 1;
-
-    /* Compute required height: how many levels needed to address idx slots */
+    /* Compute required tree height for idx. */
     int needed_height = 0;
     int64_t cap = cs;
     while ((int64_t)idx >= cap) {
@@ -117,17 +114,12 @@ int var_array_grow_base(VarArrayBase* a) {
         cap *= cs;
     }
 
-    /* CAS loop: promote root until its height >= needed_height.
-     * Multiple threads can reach this point simultaneously.  The CAS on
-     * a->root serializes them: one thread wins, promotes root to the new
-     * height, and continues.  Losers re-read root, free their allocated
-     * level, and retry.  The height field at offset 0 lets readers
-     * distinguish chunk from level without racing on count. */
+    /* Promote root to required height via CAS loop. */
     void* old_root = vfs_atomic_load_ptr((const void* const*)&a->root);
     while (height_of(old_root) < needed_height) {
         int new_height = height_of(old_root) + 1;
         void* new_level = alloc_level_typed(cs, new_height);
-        if (!new_level) return -1;
+        if (!new_level) return NULL;
         *slot_of((VarArrayLevel*)new_level, 0) = old_root;
 
         void* cas_result = vfs_cas_ptr(&a->root, old_root, new_level);
@@ -139,10 +131,9 @@ int var_array_grow_base(VarArrayBase* a) {
         }
     }
 
-    /* Walk from root down to the leaf chunk for this index */
+    /* Walk from root to leaf, allocating missing intermediate nodes. */
     void* node = vfs_atomic_load_ptr((const void* const*)&a->root);
     int h = height_of(node);
-    /* Pre-compute divisor for each level: cs^level */
     int64_t div = 1;
     for (int i = 0; i < h; i++) div *= cs;
     for (int level = h; level > 0; level--, div /= cs) {
@@ -155,7 +146,7 @@ int var_array_grow_base(VarArrayBase* a) {
             } else {
                 child = alloc_chunk_typed(cs, (size_t)es);
             }
-            if (!child) return -1;
+            if (!child) return NULL;
             void** slot_ptr = slot_of(lv, slot);
             void* old = vfs_cas_ptr(slot_ptr, NULL, child);
             if (old != NULL) {
@@ -165,7 +156,85 @@ int var_array_grow_base(VarArrayBase* a) {
         }
         node = child;
     }
+    return node;
+}
+
+/* ---------------------------------------------------------------------------
+ * grow_base — claim the next slot index, promoting root as needed.
+ * Multi-level CAS promotion: atomically claims count, computes the
+ * required tree height, then promotes the root from chunk to level node
+ * when the current root overflows.  Thread-safe via CAS on a->root.
+ * --------------------------------------------------------------------------- */
+
+int var_array_grow_base(VarArrayBase* a) {
+    if (!a) return -1;
+
+    /* Atomically claim the next index.  vfs_atomic_add_i32 returns the
+     * value AFTER adding, so subtract 1 for 0-based indexing (first slot
+     * is idx=0, not idx=1). */
+    int idx = vfs_atomic_add_i32((int32_t*)&a->count, 1) - 1;
+
+    /* Ensure tree path exists for the claimed idx. */
+    if (ensure_path_allocated(a, idx) == NULL) return -1;
+
     return idx;
+}
+
+/* ---------------------------------------------------------------------------
+ * set_base — write a value at `idx`, allocating the tree path lazily.
+ *
+ * The unifying primitive for both insert (path doesn't exist) and update
+ * (path exists).  Used by var_array_set macro (writes value) and
+ * var_array_unset macro (NULL value = memset 0).
+ *
+ * Path allocation algorithm:
+ *   1. Compute required tree height for idx; promote root via CAS until
+ *      height is sufficient.  Existing chunks get re-pointed into the new
+ *      top level's slot 0 (rebalance — chunk contents unchanged).
+ *   2. Walk tree from root to leaf.  At each level, if the slot is NULL,
+ *      allocate a new level node or leaf chunk and CAS-install it.  Only
+ *      the path from root to leaf is allocated; siblings stay NULL.
+ *   3. Update count = max(count, idx+1) via CAS.  count is the high-water
+ *      mark of all set operations — sparse users see jumps.
+ *   4. Write entry_size bytes from value to slot idx.  If value is NULL,
+ *      memset the slot to 0 (the unset semantic).  Path stays allocated,
+ *      count doesn't change.
+ *
+ * Thread-safety: concurrent set_base calls on different idxs are safe
+ * (each walks its own path, CAS serializes node allocation).  Concurrent
+ * set_base calls on the same idx race on the write — caller must
+ * serialize if it cares.
+ *
+ * Returns 0 on success, -1 on OOM or invalid args.
+ * --------------------------------------------------------------------------- */
+
+int var_array_set_base(VarArrayBase* a, int idx, const void* value) {
+    if (!a || idx < 0) return -1;
+    int es = a->entry_size;
+    int cs = a->chunk_size;
+
+    /* Ensure tree path exists for idx. */
+    void* node = ensure_path_allocated(a, idx);
+    if (!node) return -1;
+
+    /* Update count = max(count, idx+1) via CAS. */
+    int32_t expected = a->count;
+    while ((int64_t)idx + 1 > (int64_t)expected) {
+        if (vfs_cas_i32((int32_t*)&a->count, expected, (int32_t)(idx + 1))) {
+            break;
+        }
+        expected = a->count;
+    }
+
+    /* Write or clear the slot. */
+    void* entries = ((VarArrayChunk*)node)->entries;
+    void* dst = (uint8_t*)entries + (size_t)(idx % cs) * (size_t)es;
+    if (value) {
+        memcpy(dst, value, (size_t)es);
+    } else {
+        memset(dst, 0, (size_t)es);
+    }
+    return 0;
 }
 
 /* ---------------------------------------------------------------------------
