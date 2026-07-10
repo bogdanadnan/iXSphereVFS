@@ -285,6 +285,127 @@ static void test_rename_across_snapshots(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Rename across folders and snapshots — exercises cross-folder moves
+ * (parent changes) plus tombstone handling.
+ *
+ * Sequence:
+ *   ep0:   create folders epoch0..epoch3, create epoch0/test.txt
+ *   ep0→1: snapshot A
+ *   ep1:   move epoch0/test.txt → epoch1/test1.txt   (in snapshot A)
+ *   ep1→2: live head bumps to 2
+ *   ep2:   move epoch0/test.txt → epoch2/test3.txt   (in head, sees original)
+ *   ep2→3: snapshot B
+ *   ep3:   move epoch2/test3.txt → epoch3/test4.txt  (in snapshot B)
+ *
+ * Expected per-epoch folder contents (each row is one subfolder's readdir):
+ *   ep0:  epoch0/{test.txt}     epoch1/{}  epoch2/{}  epoch3/{}
+ *   ep1:  epoch0/{}              epoch1/{test1.txt}  epoch2/{}  epoch3/{}
+ *   ep2:  epoch0/{}              epoch1/{test1.txt}  epoch2/{test3.txt}  epoch3/{}
+ *   ep3:  epoch0/{}              epoch1/{test1.txt}  epoch2/{}  epoch3/{test4.txt}
+ *
+ * This exercises the read rule for cross-folder renames (parent
+ * changes, both source and destination touched) plus tombstones (the
+ * moved file must not appear in the source folder at the relevant
+ * epoch).  Chains are descending, so each folder has its own chain
+ * with a mix of create/move-in/move-out records.
+ * --------------------------------------------------------------------------- */
+
+static void test_rename_across_folders_snapshots(void) {
+    vfs_t* vfs = epoch_setup();
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = get_root_vp(vfs);
+    test_set_epoch_writable(-1);  /* use real epoch validation */
+
+    /* ep0: create 4 subdirectories + test.txt in epoch0 */
+    int64_t dir_e0 = vfs_mkdir(vfs, root_vp, "epoch0", 0);
+    int64_t dir_e1 = vfs_mkdir(vfs, root_vp, "epoch1", 0);
+    int64_t dir_e2 = vfs_mkdir(vfs, root_vp, "epoch2", 0);
+    int64_t dir_e3 = vfs_mkdir(vfs, root_vp, "epoch3", 0);
+    CHECK(dir_e0 > 0); CHECK(dir_e1 > 0);
+    CHECK(dir_e2 > 0); CHECK(dir_e3 > 0);
+    int64_t file_vp = vfs_create(vfs, dir_e0, "test.txt", 0);
+    CHECK(file_vp > 0);
+    CHECK_EQ(ctx->currentEpoch, 0);
+
+    /* Snapshot A → ep1, currentEpoch becomes 2 */
+    int64_t snapA = vfs_snapshot(vfs);
+    CHECK_EQ(snapA, 1);
+    CHECK_EQ(ctx->currentEpoch, 2);
+
+    /* ep1: in snapshot A, move epoch0/test.txt → epoch1/test1.txt */
+    CHECK_EQ(vfs_rename(vfs, dir_e0, "test.txt", dir_e1, "test1.txt", 1), VFS_OK);
+
+    /* ep2: in head, move epoch0/test.txt → epoch2/test3.txt
+       (head's view still has the original at epoch0/test.txt, since
+       snapshot A's move is hidden from the head) */
+    CHECK_EQ(vfs_rename(vfs, dir_e0, "test.txt", dir_e2, "test3.txt", 2), VFS_OK);
+
+    /* Snapshot B → ep3, currentEpoch becomes 4 */
+    int64_t snapB = vfs_snapshot(vfs);
+    CHECK_EQ(snapB, 3);
+    CHECK_EQ(ctx->currentEpoch, 4);
+
+    /* ep3: in snapshot B, move epoch2/test3.txt → epoch3/test4.txt */
+    CHECK_EQ(vfs_rename(vfs, dir_e2, "test3.txt", dir_e3, "test4.txt", 3), VFS_OK);
+
+    /* Helper: assert readdir at (dir, epoch) returns exactly the given
+       entries (in any order).  Empty dir is signaled by num==0. */
+    #define EXPECT_DIR(dir, epoch_val, num, ...) do { \
+        vfs_dirent_t ents[16]; \
+        int _n = vfs_readdir(vfs, (dir), ents, 16, (epoch_val)); \
+        CHECK_EQ(_n, (num)); \
+        const char* _expected[] = { __VA_ARGS__ }; \
+        for (int _i = 0; _i < _n; _i++) { \
+            int _found = 0; \
+            for (int _j = 0; _j < (num); _j++) { \
+                if (strcmp(ents[_i].name, _expected[_j]) == 0) { _found = 1; break; } \
+            } \
+            CHECK(_found); \
+        } \
+    } while (0)
+
+    /* ep0: test.txt in epoch0/, others empty */
+    EXPECT_DIR(dir_e0, 0, 1, "test.txt");
+    EXPECT_DIR(dir_e1, 0, 0);
+    EXPECT_DIR(dir_e2, 0, 0);
+    EXPECT_DIR(dir_e3, 0, 0);
+
+    /* ep1: snapshot A's move.  epoch0/ has the file (tombstone from
+       ep1's move is a child-level entry, not a parent-level one) — but
+       the chain has a higher-epoch tombstone that should win. */
+    EXPECT_DIR(dir_e0, 1, 0);   /* moved away */
+    EXPECT_DIR(dir_e1, 1, 1, "test1.txt");
+    EXPECT_DIR(dir_e2, 1, 0);
+    EXPECT_DIR(dir_e3, 1, 0);
+
+    /* ep2: head's own move.  epoch0/ has a higher-epoch tombstone from
+       the head, which beats any lower-epoch record.  epoch1/ is empty
+       in the head's view — the head is its own epoch and does NOT
+       inherit snapshot A's writes.  Per SPEC §6: "Even epochs = live
+       head, odd epochs = snapshots."  The head is just another epoch,
+       not a synthesized view of all snapshots. */
+    EXPECT_DIR(dir_e0, 2, 0);   /* moved away by head */
+    EXPECT_DIR(dir_e1, 2, 0);   /* head's view: empty (no ep0 create, no ep1 write) */
+    EXPECT_DIR(dir_e2, 2, 1, "test3.txt");  /* head moved it here */
+    EXPECT_DIR(dir_e3, 2, 0);
+
+    /* ep3: snapshot B's move.  head's epoch2/test3.txt is hidden
+       from snapshot B (case 6: skip future-epoch).  Snapshot A's
+       epoch1/test1.txt is a past-odd record from snapshot B's view,
+       so it's also skipped (case 8).  Each epoch has exactly one
+       version of the test file. */
+    EXPECT_DIR(dir_e0, 3, 0);
+    EXPECT_DIR(dir_e1, 3, 0);   /* past-odd (ep1), skipped at ep3 */
+    EXPECT_DIR(dir_e2, 3, 0);   /* snapshot B moved it away */
+    EXPECT_DIR(dir_e3, 3, 1, "test4.txt");
+
+    #undef EXPECT_DIR
+
+    epoch_teardown(vfs);
+}
+
+/* ---------------------------------------------------------------------------
  * Snapshot → write → delete snapshot (soft-delete) test
  * --------------------------------------------------------------------------- */
 
@@ -481,6 +602,7 @@ int main(void) {
     test_epoch_lifecycle();
     test_snapshot_write_readrule();
     test_rename_across_snapshots();
+    test_rename_across_folders_snapshots();
     test_snapshot_soft_delete();
     test_epoch_invalid();
 
