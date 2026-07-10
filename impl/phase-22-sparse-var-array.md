@@ -53,6 +53,14 @@ This single primitive does both insert (when path doesn't exist) and update (whe
 
 `var_array_set` always succeeds (modulo OOM). It allocates the path if the slot doesn't exist, then writes the value. For existing slots, it's an overwrite.
 
+**Unset** (zero out a slot, allocate path if needed):
+```c
+#define var_array_unset(a, idx) \
+    var_array_set_base((VarArrayBase*)(a), (idx), NULL)
+```
+
+Passing NULL to `set_base` triggers a memset-to-zero instead of memcpy. The slot becomes "empty" (state=0 bytes). Path stays allocated, count doesn't shrink. No-op if idx is out of range or unallocated.
+
 **Unchanged**:
 ```c
 #define var_array_append(a, entry) ({ \
@@ -104,13 +112,13 @@ When `set_base(idx, value)` is called:
    - If the slot is NULL, allocate a new level node (or leaf chunk) and CAS-install it.
    - **Sibling slots stay NULL** — only the path is allocated.
 
-   Example: 3-level array (chunks of 256 → 16M total slots), set index 100:
-   - Level 2 has 16 children (chunks 0-15).
-   - Index 100 → level 2 slot 0 (chunks 0-255), level 1 chunk for indices 0-255.
-   - If level 2 slot 0 is NULL: allocate level-1 chunk for indices 0-255, set slot 100 inside.
-   - **All other level-2 slots (1-15) remain NULL**.
-
 4. **Update `count`** to `max(count, idx+1)` (CAS).
+
+5. **Write the value** to the slot:
+   - If `value != NULL`: `memcpy(dst, value, entry_size)` — normal write.
+   - If `value == NULL`: `memset(dst, 0, entry_size)` — clear/zero the slot.
+
+   The NULL case is the "unset" semantic: zero out the slot's bytes. Path stays allocated, count doesn't change (high-water mark only grows).
 
 ### `count` semantics
 
@@ -152,7 +160,7 @@ For new sparse users (calling `set_base(idx, value)` with `idx > old_count`): `c
 ## Out of scope
 
 - **Hash_map simplification**: phase 23 will use `var_array_set` to eliminate the manual grow coordination in `hash_map_grow` rehash and `hash_map_base_put` insert path.
-- **`var_array_unset_base`**: zeroing out a slot. Defer until a use case appears.
+- **`var_array_unset_base`**: deferred. `var_array_set(arr, idx, NULL)` (or the `var_array_unset` macro) handles this case via the same primitive — no separate `_base` function needed.
 - **Compaction**: freeing tree nodes when all slots in a chunk become empty. Var_array never shrinks today. Defer.
 - **Migration of existing dense users**: none needed. Dense users get the same behavior.
 
