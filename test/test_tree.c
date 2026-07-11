@@ -326,9 +326,38 @@ static void test_create_after_delete(void) {
     int64_t r2 = vfs_create(vfs, root_vp, "recreate.txt", 0);
     CHECK(r2 > 0);
 
-    /* The new file should be visible at epoch 0 */
+    /* The new file should be visible at epoch 0, with the NEW childPtr
+       (not the old tombstoned one).  Bug fix: dirchain_find_child
+       previously returned the old childPtr when it should have
+       returned the new one. */
     int64_t found = vfs_open(vfs, root_vp, "recreate.txt", 0);
     CHECK(found > 0);
+    CHECK_EQ(found, r2);  /* must equal the new file's VP, not r1 */
+
+    vfs_unmount(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * Phase 25 bug fix 2: double-delete is idempotent (returns NOTFOUND
+ * after the first delete succeeds, rather than corrupting state by
+ * adding a second tombstone).
+ * --------------------------------------------------------------------------- */
+
+static void test_double_delete(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    int64_t r1 = vfs_create(vfs, root_vp, "del.txt", 0);
+    CHECK(r1 > 0);
+
+    /* First delete succeeds */
+    int rd1 = vfs_delete(vfs, root_vp, "del.txt", 0);
+    CHECK_EQ(rd1, VFS_OK);
+
+    /* Second delete returns NOTFOUND (file is already gone) */
+    int rd2 = vfs_delete(vfs, root_vp, "del.txt", 0);
+    CHECK_EQ(rd2, VFS_ERR_NOTFOUND);
 
     vfs_unmount(vfs);
 }
@@ -2145,6 +2174,7 @@ int main(void) {
     test_open_file();
     test_create_duplicate();
     test_create_after_delete();
+    test_double_delete();
     test_delete_epoch_isolation();
     test_file_stat();
     test_stat_not_file();

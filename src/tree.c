@@ -1939,17 +1939,20 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                         best_name_match = 1;
                     }
                 } else {
-                    /* Tombstone (namePtr==0).  Mirror chain walk: update
-                       best_* so a higher-epoch tombstone suppresses
-                       lower-epoch live entries for the same child.
-                       Do NOT set best_name_match — the tombstone itself
-                       is not a name match. */
+                    /* Tombstone (namePtr==0).  Track this childNodeId as
+                       tombstoned so we can skip any later live entry
+                       for the SAME childNodeId.  We update best_child
+                       (for dedup) but NOT best_childPtr — the tombstone
+                       doesn't have a live childPtr to return, and
+                       setting it would shadow a previously-seen live
+                       entry's childPtr. */
                     if ((int64_t)ce_child != best_child ||
                         eff_epoch > best_eff_epoch) {
                         best_child     = (int64_t)ce_child;
-                        best_childPtr  = ce_childPtr;
+                        /* Deliberately do NOT update best_childPtr */
                         best_eff_epoch = eff_epoch;
                         best_raw_epoch = (int64_t)ce_epoch;
+                        /* Do NOT set best_name_match */
                     }
                 }
                 linkVP = nextLinkVP;
@@ -1993,38 +1996,53 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                       (eff_epoch < read_epoch && eff_epoch % 2 == 0);
         if (!applies) { walk_vp = ce_next; continue; }
 
-        if ((int64_t)ce_child == best_child && best_name_match &&
-            eff_epoch <= best_eff_epoch)
+        /* Skip if same childId as the latest tracked entry and at
+           same-or-lower epoch.  This suppresses tombstones and lower
+           entries for the same file. */
+        if ((int64_t)ce_child == best_child && eff_epoch <= best_eff_epoch)
             { walk_vp = ce_next; continue; }
 
-        if (eff_epoch > best_eff_epoch || (int64_t)ce_child != best_child ||
-            (ce_namePtr != 0 && best_name_match == 0 && eff_epoch > best_eff_epoch)) {
-            if (ce_namePtr != 0) {
-                /* Hash fast-reject: skip strcmp if hashes don't match */
-                uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
-                if (entry_hash != target_hash) {
+        if (ce_namePtr != 0) {
+            /* Hash fast-reject: skip strcmp if hashes don't match */
+            uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
+            if (entry_hash != target_hash) {
 #ifdef VFS_NAME_HASH_TESTING
                 s_hash_rejects++;
 #endif
-                walk_vp = ce_next; continue; }
-                char entry_name[256];
-                int nl = nodes_read_name(&ctx->pool, ce_namePtr,
-                                          entry_name, (int)sizeof(entry_name));
-                if (nl > 0 && strcmp(entry_name, name) == 0) {
+                walk_vp = ce_next; continue;
+            }
+            char entry_name[256];
+            int nl = nodes_read_name(&ctx->pool, ce_namePtr,
+                                      entry_name, (int)sizeof(entry_name));
+            if (nl > 0 && strcmp(entry_name, name) == 0) {
+                /* Name match.  Track as best, but only if no tombstone
+                   for this childNodeId has been seen at a higher or
+                   equal epoch.  We detect that by checking whether
+                   best_child == ce_child AND best_eff_epoch >= eff_epoch
+                   (which would mean a tombstone for the same child was
+                   already tracked).  The skip check above already
+                   handles ce_child == best_child && eff_epoch <= best_eff_epoch.
+                   If we reach here, either ce_child != best_child OR
+                   eff_epoch > best_eff_epoch. */
+                if ((int64_t)ce_child != best_child || eff_epoch > best_eff_epoch) {
                     best_child    = (int64_t)ce_child;
                     best_childPtr = ce_childPtr;
                     best_eff_epoch = eff_epoch;
                     best_raw_epoch = (int64_t)ce_epoch;
                     best_name_match = 1;
                 }
-            } else {
-                if ((int64_t)ce_child != best_child && best_name_match == 0) {
-                    best_child    = (int64_t)ce_child;
-                    best_childPtr = ce_childPtr;
-                    best_eff_epoch = eff_epoch;
-                    best_raw_epoch = (int64_t)ce_epoch;
-                    best_name_match = 0;
-                }
+            }
+        } else {
+            /* Tombstone.  Track it so a live entry for the same
+               childNodeId later in the chain is suppressed.  Don't
+               touch best_childPtr — the tombstone doesn't have a
+               live childPtr. */
+            if ((int64_t)ce_child != best_child ||
+                eff_epoch > best_eff_epoch) {
+                best_child    = (int64_t)ce_child;
+                best_eff_epoch = eff_epoch;
+                best_raw_epoch = (int64_t)ce_epoch;
+                /* Don't update best_childPtr or best_name_match */
             }
         }
         walk_vp = ce_next;
