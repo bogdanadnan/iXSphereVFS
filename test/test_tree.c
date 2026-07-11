@@ -299,6 +299,41 @@ static void test_create_duplicate(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Phase 25 bug fix: delete then re-create at the same epoch with the
+ * same name should succeed.  Previously vfs_create did a naive
+ * `ce_epoch == epoch && ce_namePtr != 0` check which saw the original
+ * create's DirContent (live, namePtr != 0) and returned VFS_ERR_EXISTS
+ * even after a delete tombstone was added.  Now vfs_create uses
+ * dirchain_find_child which properly applies the read-rule and
+ * tombstones.
+ * --------------------------------------------------------------------------- */
+
+static void test_create_after_delete(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    /* Create file at epoch 0 */
+    int64_t r1 = vfs_create(vfs, root_vp, "recreate.txt", 0);
+    CHECK(r1 > 0);
+
+    /* Delete at epoch 0 */
+    int rd = vfs_delete(vfs, root_vp, "recreate.txt", 0);
+    CHECK_EQ(rd, VFS_OK);
+
+    /* Re-create at epoch 0 with the same name — should succeed
+       (bug fix: previously returned VFS_ERR_EXISTS) */
+    int64_t r2 = vfs_create(vfs, root_vp, "recreate.txt", 0);
+    CHECK(r2 > 0);
+
+    /* The new file should be visible at epoch 0 */
+    int64_t found = vfs_open(vfs, root_vp, "recreate.txt", 0);
+    CHECK(found > 0);
+
+    vfs_unmount(vfs);
+}
+
+/* ---------------------------------------------------------------------------
  * Epoch isolation test: delete at epoch 2, verify epoch 0 still sees file
  * --------------------------------------------------------------------------- */
 
@@ -2109,6 +2144,7 @@ int main(void) {
     test_delete_file();
     test_open_file();
     test_create_duplicate();
+    test_create_after_delete();
     test_delete_epoch_isolation();
     test_file_stat();
     test_stat_not_file();

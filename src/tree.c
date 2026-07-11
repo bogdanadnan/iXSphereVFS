@@ -650,84 +650,30 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
         return VFS_ERR_NOTDIR;
         }
 
-    /* Check for name collision — tree lookup first, chain walk as safety net. */
-    int64_t indexRoot = vfs_rd8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR,
-                                   ctx->page_size);
-    uint64_t target_hash = name_hash_compute(name, (int)strlen(name));
+    /* Check for name collision via dirchain_find_child (Phase 25 bug fix).
+       The old manual check `ce_epoch == epoch && ce_namePtr != 0` did not
+       consider the read-rule: a higher-epoch tombstone in the chain should
+       suppress a lower-epoch live entry.  When we delete a file and
+       re-create it with the same name at the same epoch, the old check
+       saw the original create's DirContent (live, namePtr != 0) and
+       returned VFS_ERR_EXISTS even though the file was actually deleted.
 
-    if (indexRoot != 0) {
-        /* Tree exists — walk to leaf and scan DirContentLinks */
-        int64_t leafVP = dircontentindex_lookup(&ctx->pool, indexRoot,
-                                                target_hash, ctx->page_size);
-        if (leafVP != 0) {
-            int64_t linkVP = leafVP;
-            while (linkVP != 0) {
-                uint8_t* linkSlot = pool_resolve_rw(&ctx->pool, linkVP);
-                if (!linkSlot) break;
-                int64_t dcVP, nextLinkVP;
-                nodes_read_dircontentlink(linkSlot, &dcVP, &nextLinkVP,
-                                          ctx->page_size);
-
-                uint8_t* dc_slot = pool_resolve_rw(&ctx->pool, dcVP);
-                if (!dc_slot) { linkVP = nextLinkVP; continue; }
-
-                uint32_t ce_child, ce_epoch;
-                int64_t ce_childPtr, ce_namePtr, ce_next;
-                nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch,
-                                      &ce_childPtr, &ce_namePtr, &ce_next,
-                                      ctx->page_size);
-                (void)ce_child; (void)ce_childPtr; (void)ce_next;
-
-                if (ce_epoch == (uint32_t)epoch && ce_namePtr != 0) {
-                    uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
-                    if (entry_hash == target_hash) {
-                        char entry_name[256];
-                        int name_len = nodes_read_name(&ctx->pool, ce_namePtr,
-                                                        entry_name, (int)sizeof(entry_name));
-                        if (name_len > 0 && strcmp(entry_name, name) == 0) {
-                            vfs->ctx->last_error = VFS_ERR_EXISTS;
-                            return VFS_ERR_EXISTS;
-                        }
-                    }
-                }
-                linkVP = nextLinkVP;
-            }
-        }
-    }
-
-    /* Chain walk — always runs as safety net.  Catches entries not yet
-       in the tree (pre-Phase-18 files, race windows during lazy builds,
-       or orphan chain entries).  When the tree is present and complete,
-       this is a quick negative-pass: the tree already confirmed no match. */
+       dirchain_find_child properly applies the read-rule + tombstones,
+       so a re-create at the same name after a delete is allowed. */
     {
-        int64_t headPtr = vfs_rd8_s(parent_slot, DIRNODE_OFF_HEADPTR,
-                                     ctx->page_size);
-        int64_t walk_vp = headPtr;
-        while (walk_vp != 0) {
-            uint8_t* dc_slot = pool_resolve_rw(&ctx->pool, walk_vp);
-            if (!dc_slot) break;
-            uint32_t ce_child, ce_epoch;
-            int64_t ce_childPtr, ce_namePtr, ce_next;
-            nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                                  &ce_namePtr, &ce_next, ctx->page_size);
-            (void)ce_child; (void)ce_childPtr;
-            if (ce_epoch == (uint32_t)epoch && ce_namePtr != 0) {
-                uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
-                if (entry_hash != target_hash) {
-#ifdef VFS_NAME_HASH_TESTING
-                s_hash_rejects++;
-#endif
-                walk_vp = ce_next; continue; }
-                char entry_name[256];
-                int name_len = nodes_read_name(&ctx->pool, ce_namePtr,
-                                                entry_name, (int)sizeof(entry_name));
-                if (name_len > 0 && strcmp(entry_name, name) == 0) {
-                    vfs->ctx->last_error = VFS_ERR_EXISTS;
-                    return VFS_ERR_EXISTS;
-                }
-            }
-            walk_vp = ce_next;
+        int64_t existing_child = 0;
+        uint32_t existing_nodeId = 0;
+        int rr = dirchain_find_child(ctx, parent, name, epoch,
+                                     &existing_child, &existing_nodeId, NULL);
+        if (rr == VFS_OK) {
+            vfs->ctx->last_error = VFS_ERR_EXISTS;
+            return VFS_ERR_EXISTS;
         }
+        if (rr != VFS_ERR_NOTFOUND && rr != VFS_ERR_NOTDIR) {
+            vfs->ctx->last_error = VFS_ERR_IO;
+            return VFS_ERR_IO;
+        }
+        /* NOTFOUND or NOTDIR (shouldn't happen for a file) -> proceed */
     }
 
     /* Atomically increment nextNodeId */
