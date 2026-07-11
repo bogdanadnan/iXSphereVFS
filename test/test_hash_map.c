@@ -47,9 +47,9 @@ static int tests_run = 0, tests_passed = 0;
 static void test_new_delete(void) {
     HashMap(int64_t, int64_t) m = hash_map_new(int64_t, int64_t);
     CHECK(m != NULL);
-    /* Default scale=16 -> capacity = 2^16 = 64K.  Tuned for ~10K
-       entries; see hash_map.c comment for benchmark details. */
-    CHECK_EQ(m->capacity, 65536);
+    /* Default scale=12 -> capacity = 2^12 = 4096.
+       Tuned for ~4K entries; see hash_map.c comment. */
+    CHECK_EQ(m->capacity, 4096);
     CHECK_EQ(m->size, 0);
     CHECK_EQ(m->tombstones, 0);
     CHECK_EQ(hash_map_size(m), 0);
@@ -404,7 +404,8 @@ static void test_iterate_empty(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_bulk_insert_delete(void) {
-    HashMap(int64_t, int64_t) m = hash_map_new(int64_t, int64_t);
+    /* 10K keys need a bigger capacity than the default (4096). */
+    HashMap(int64_t, int64_t) m = hash_map_new_cap(int64_t, int64_t, 16, 9);
 
     /* Insert 10K keys. */
     for (int i = 0; i < 10000; i++) {

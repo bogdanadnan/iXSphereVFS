@@ -1,0 +1,51 @@
+{
+  "label": "phase24e_scale12g8",
+  "source": "/Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip",
+  "source_size": 264161562,
+  "steps": [
+    {
+      "name": "mount",
+      "elapsed_ms": 246.6085589840077
+    },
+    {
+      "name": "copy_in",
+      "elapsed_ms": 1374.3729699635878,
+      "bytes": 264161562
+    },
+    {
+      "name": "ditto_unzip",
+      "elapsed_ms": 22779.224048019387
+    },
+    {
+      "name": "host_extract_ref",
+      "elapsed_ms": 5431.118605018128
+    },
+    {
+      "name": "md5_compare",
+      "elapsed_ms": 17486.977935943287,
+      "files_compared": 14395
+    }
+  ],
+  "validation": {
+    "common_files": 6563,
+    "only_in_vfs_count": 7832,
+    "only_in_host_count": 0,
+    "md5_mismatch_count": 0,
+    "md5_match": false
+  },
+  "timestamp": "2026-07-11T11:17:33",
+  "vfs_extract": {
+    "file_count": 14395,
+    "total_bytes": 864026225
+  },
+  "host_extract": {
+    "file_count": 6563,
+    "total_bytes": 831946353
+  },
+  "summary": {
+    "copy_in_ms": 1374.3729699635878,
+    "ditto_unzip_ms": 22779.224048019387,
+    "copy_throughput_mbps": 183.30111444772638,
+    "extracted_throughput_mbps": 36.173296234627145
+  }
+}
