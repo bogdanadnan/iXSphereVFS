@@ -28,8 +28,8 @@
  * saturate and put returns -1; callers should use hash_map_new_cap
  * explicitly with a higher scale in that case.
  */
-#define HASH_MAP_DEFAULT_SCALE        12
-#define HASH_MAP_DEFAULT_GRANULARITY   8
+#define HASH_MAP_DEFAULT_SCALE        16
+#define HASH_MAP_DEFAULT_GRANULARITY   9
 #define HASH_MAP_MIN_SCALE             1
 #define HASH_MAP_MAX_SCALE            32
 
