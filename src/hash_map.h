@@ -105,6 +105,13 @@ HashMapBase* hash_map_base_new(void);
    Returns NULL on OOM or invalid args. */
 HashMapBase* hash_map_base_new_cap(int scale, int granularity);
 
+/* Allocate a new hash map with (scale, granularity) chosen automatically
+   based on max_entries (an upper bound on the number of unique keys).
+   Uses Phase 25 sizing: 10% load factor + ceil(log2(N))-5 granularity.
+   This is the recommended constructor for typical workloads.  Returns
+   NULL on OOM. */
+HashMapBase* hash_map_base_new_for_max_entries(int64_t max_entries);
+
 /* Free the hash map and all its storage.  Idempotent (safe on NULL). */
 void hash_map_base_free(HashMapBase* map);
 
@@ -197,6 +204,9 @@ static inline int hash_map_iter_next(HashMapIterator* it,
 
 #define hash_map_new_cap(K, V, scale, granularity) \
     ((HashMap(K, V))hash_map_base_new_cap((scale), (granularity)))
+
+#define hash_map_new_for_max(K, V, max_entries) \
+    ((HashMap(K, V))hash_map_base_new_for_max_entries((int64_t)(max_entries)))
 
 #define hash_map_free(map) \
     hash_map_base_free((HashMapBase*)(map))

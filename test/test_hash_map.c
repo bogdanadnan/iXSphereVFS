@@ -664,6 +664,77 @@ static void test_get_returns_stable_pointer(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * test_new_for_max — verify hash_map_new_for_max computes the right
+ * (scale, granularity) for various max_entries values, and produces
+ * a working map.
+ * --------------------------------------------------------------------------- */
+
+static void test_new_for_max(void) {
+    /* Empty / very small */
+    {
+        HashMap(int64_t, int64_t) m = hash_map_new_for_max(int64_t, int64_t, 0);
+        CHECK(m != NULL);
+        CHECK_EQ(m->size, 0);
+        hash_map_free(m);
+    }
+
+    /* 1 entry: load <= 10% means capacity >= 10 -> scale >= 4 (16).
+       granularity = ceil(log2(1)) - 5 = 0 - 5 = -5, floored at 3. */
+    {
+        HashMap(int64_t, int64_t) m = hash_map_new_for_max(int64_t, int64_t, 1);
+        CHECK(m != NULL);
+        CHECK(m->capacity >= 10);
+        CHECK_EQ(m->chunk_size, 8);  /* 2^3 */
+        hash_map_free(m);
+    }
+
+    /* 1000 entries: capacity >= 10000 -> scale = 14 (16K).
+       granularity = ceil(log2(1000)) - 5 = 10 - 5 = 5 (chunk 32). */
+    {
+        HashMap(int64_t, int64_t) m = hash_map_new_for_max(int64_t, int64_t, 1000);
+        CHECK(m != NULL);
+        CHECK(m->capacity >= 10000);
+        CHECK_EQ(m->chunk_size, 32);  /* 2^5 */
+        hash_map_free(m);
+    }
+
+    /* 6500 entries: capacity >= 65000 -> scale = 16 (64K).
+       granularity = ceil(log2(6500)) - 5 = 13 - 5 = 8 (chunk 256). */
+    {
+        HashMap(int64_t, int64_t) m = hash_map_new_for_max(int64_t, int64_t, 6500);
+        CHECK(m != NULL);
+        CHECK_EQ(m->capacity, 65536);  /* 2^16 */
+        CHECK_EQ(m->chunk_size, 256);  /* 2^8 */
+        hash_map_free(m);
+    }
+
+    /* 50000 entries: capacity >= 500000 -> scale = 19 (524288).
+       granularity = ceil(log2(50000)) - 5 = 16 - 5 = 11 (chunk 2048). */
+    {
+        HashMap(int64_t, int64_t) m = hash_map_new_for_max(int64_t, int64_t, 50000);
+        CHECK(m != NULL);
+        CHECK_EQ(m->capacity, 524288);  /* 2^19 */
+        CHECK_EQ(m->chunk_size, 2048);  /* 2^11 */
+        hash_map_free(m);
+    }
+
+    /* Functional test: actually put and get */
+    {
+        HashMap(int64_t, int64_t) m = hash_map_new_for_max(int64_t, int64_t, 1000);
+        for (int i = 0; i < 1000; i++) {
+            CHECK_EQ(hash_map_put(m, (int64_t)i, (int64_t)(i * 7)), 1);
+        }
+        CHECK_EQ(m->size, 1000);
+        for (int i = 0; i < 1000; i++) {
+            int64_t* v = hash_map_get(m, (int64_t)i);
+            CHECK(v != NULL);
+            if (v) CHECK_EQ(*v, (int64_t)(i * 7));
+        }
+        hash_map_free(m);
+    }
+}
+
+/* ---------------------------------------------------------------------------
  * Main
  * --------------------------------------------------------------------------- */
 
@@ -673,6 +744,7 @@ int main(void) {
     test_new_delete();
     test_new_cap_basic();
     test_new_cap_clamps();
+    test_new_for_max();
 
     test_put_get_basic();
     test_multiple_inserts();

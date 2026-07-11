@@ -81,6 +81,50 @@ HashMapBase* hash_map_base_new(void) {
                                  HASH_MAP_DEFAULT_GRANULARITY);
 }
 
+/* hash_map_base_new_for_max_entries — convenience constructor that
+ * picks (scale, granularity) automatically based on the maximum
+ * expected number of unique entries.  Uses the Phase 25 formulas:
+ *
+ *   scale      = smallest power of 2 >= max_entries * 10
+ *                (gives a load factor of at most 10%)
+ *   granularity = ceil(log2(max_entries)) - 5, floor 3
+ *                (chunk_size chosen so chunk_size^2 >= capacity,
+ *                 packing the table into a single root chunk for
+ *                 typical sizes)
+ *
+ * For max_entries <= 1, uses scale=4 (capacity 16) and granularity=3
+ * (chunk 8) as a minimum.  Ceiling at scale=20 (capacity 1M).
+ *
+ * This keeps callers (e.g. dirchain_list) from having to know about
+ * the (scale, granularity) internals — they just pass the count.
+ */
+HashMapBase* hash_map_base_new_for_max_entries(int64_t max_entries) {
+    if (max_entries < 0) max_entries = 0;
+    int scale, granularity;
+
+    /* Capacity target = max_entries * 10 (10% load factor) */
+    uint64_t capTarget = (uint64_t)max_entries * 10u;
+    if (max_entries == 0) {
+        scale = 4;  /* default for empty dirs */
+    } else {
+        scale = 4;
+        while ((uint64_t)((uint64_t)1 << scale) < capTarget && scale < 20) scale++;
+    }
+
+    /* granularity = ceil(log2(max_entries)) - 5, floor 3 */
+    if (max_entries <= 1) {
+        granularity = 3;
+    } else {
+        granularity = 0;
+        uint64_t c = (uint64_t)max_entries - 1;  /* ceil(log2) */
+        while (c) { granularity++; c >>= 1; }
+        granularity -= 5;
+    }
+    if (granularity < 3) granularity = 3;
+
+    return hash_map_base_new_cap(scale, granularity);
+}
+
 HashMapBase* hash_map_base_new_cap(int scale, int granularity) {
     if (clamp_scale_granularity(&scale, &granularity) != 0) return NULL;
 
