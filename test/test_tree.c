@@ -363,6 +363,57 @@ static void test_double_delete(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Phase 25 bug fix 3: create + delete + create + delete at the same
+ * epoch with the same name.  Previously:
+ *   - First delete worked
+ *   - Re-create worked (after the vfs_create collision-check fix)
+ *   - Second delete wrote a tombstone for the WRONG childNodeId
+ *     (because dirchain_find_child's tombstone handling overrode
+ *     best_child with the OLD child's id, then returned the OLD
+ *     child's id as the lookup result).  The chain ended up with
+ *     two tombstones for different childIds, and re-create would
+ *     fail with EXISTS because the old tombstone's childPtr was
+ *     inconsistent with the new child's chain entry.
+ *
+ * Now: dirchain_find_child properly tracks tombstones separately
+ * from live entries via a tombstoned_childId flag, so the lookup
+ * returns the correct childId for the live entry even after a
+ * tombstone for a different (older) childId appears earlier in
+ * the chain.
+ * --------------------------------------------------------------------------- */
+
+static void test_double_create_delete(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    /* create -> delete -> create -> delete */
+    int64_t r1 = vfs_create(vfs, root_vp, "x.txt", 0);
+    CHECK(r1 > 0);
+    int rd1 = vfs_delete(vfs, root_vp, "x.txt", 0);
+    CHECK_EQ(rd1, VFS_OK);
+    int64_t r2 = vfs_create(vfs, root_vp, "x.txt", 0);
+    CHECK(r2 > 0);
+    int rd2 = vfs_delete(vfs, root_vp, "x.txt", 0);
+    CHECK_EQ(rd2, VFS_OK);
+
+    /* File should not exist */
+    int64_t found = vfs_open(vfs, root_vp, "x.txt", 0);
+    CHECK_EQ(found, VFS_ERR_NOTFOUND);
+
+    /* Re-create should succeed */
+    int64_t r3 = vfs_create(vfs, root_vp, "x.txt", 0);
+    CHECK(r3 > 0);
+
+    /* New file should be findable */
+    found = vfs_open(vfs, root_vp, "x.txt", 0);
+    CHECK(found > 0);
+    CHECK_EQ(found, r3);
+
+    vfs_unmount(vfs);
+}
+
+/* ---------------------------------------------------------------------------
  * Epoch isolation test: delete at epoch 2, verify epoch 0 still sees file
  * --------------------------------------------------------------------------- */
 
@@ -2175,6 +2226,7 @@ int main(void) {
     test_create_duplicate();
     test_create_after_delete();
     test_double_delete();
+    test_double_create_delete();
     test_delete_epoch_isolation();
     test_file_stat();
     test_stat_not_file();
