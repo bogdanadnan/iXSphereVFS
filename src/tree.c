@@ -1260,11 +1260,47 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
     int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
 
+    /* Read DirNode.childCount (Phase 25) to size the dedup hash_map.
+       Adaptive sizing targeting a load factor of at most 10%:
+         capacity >= childCount / 0.10 = childCount * 10
+         scale = smallest power of 2 >= (childCount * 10)
+         granularity = ceil(log2(childCount)) - 5, floor 3
+       For scale=16, childCount=6500 -> granularity=8 (chunk 256).
+       For scale=18, childCount=14395 -> granularity=9 (chunk 512).
+       Chunk_size^2 = 64K-4M which exceeds capacity for typical dirs.
+
+       Floor: scale >= 8, ceiling: scale = 20 (capacity 1M).
+       Granularity floor at 3 (chunk >= 8).  Granularity may exceed
+       scale for very small dirs but is clamped to a valid range. */
+    uint32_t childCount = (uint32_t)vfs_rd4_s(dir_slot,
+                                              DIRNODE_OFF_CHILDCOUNT,
+                                              ctx->page_size);
+    /* capacity target = childCount * 10 (10% load factor) */
+    uint64_t capTarget = (uint64_t)childCount * 10u;
+    int scale = 4;
+    if ((uint64_t)((uint64_t)1 << scale) < capTarget) {
+        uint64_t t = capTarget;
+        while ((uint64_t)((uint64_t)1 << scale) < t && scale < 20) scale++;
+    }
+    /* granularity = ceil(log2(childCount)) - 5, floor 3 */
+    int granularity;
+    if (childCount <= 1) {
+        granularity = 3;
+    } else {
+        granularity = 0;
+        uint32_t c = childCount - 1;  /* ceil(log2) */
+        while (c) { granularity++; c >>= 1; }
+        granularity -= 5;
+    }
+    if (granularity < 3) granularity = 3;  /* chunk >= 8 (minimum) */
+
     /* Walk chain once into a per-call dedup VarArray (first-hit-wins).
        A hash_map provides O(1) "already seen" check keyed by childNodeId,
-       indexed against the dedup var_array's append-order idx.  Phase 24. */
+       indexed against the dedup var_array's append-order idx.  Phase 24.
+       Sized per-directory via childCount (Phase 25). */
     VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
-    HashMap(int64_t, int64_t) seen = hash_map_new(int64_t, int64_t);
+    HashMap(int64_t, int64_t) seen = hash_map_new_cap(int64_t, int64_t,
+                                                       scale, granularity);
     if (!dedup || !seen) {
         var_array_delete(dedup);
         hash_map_free(seen);
