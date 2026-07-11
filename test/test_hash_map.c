@@ -47,8 +47,9 @@ static int tests_run = 0, tests_passed = 0;
 static void test_new_delete(void) {
     HashMap(int64_t, int64_t) m = hash_map_new(int64_t, int64_t);
     CHECK(m != NULL);
-    /* Default scale=20 -> capacity = 2^20 = 1M. */
-    CHECK_EQ(m->capacity, 1048576);
+    /* Default scale=16 -> capacity = 2^16 = 64K.  Tuned for ~10K
+       entries; see hash_map.c comment for benchmark details. */
+    CHECK_EQ(m->capacity, 65536);
     CHECK_EQ(m->size, 0);
     CHECK_EQ(m->tombstones, 0);
     CHECK_EQ(hash_map_size(m), 0);
