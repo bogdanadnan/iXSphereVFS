@@ -369,6 +369,8 @@ Splitting keeps the rename easy to review independently of the algorithmic chang
 
 ## Benchmark results (3 runs each)
 
+### Initial results (phase 24b defaults: scale=20, granularity=8)
+
 **PRE-HASH (linear scan)**:
 - copy_in: 1814ms avg
 - extract: 34232ms avg
@@ -377,13 +379,43 @@ Splitting keeps the rename easy to review independently of the algorithmic chang
 - copy_in: 2156ms avg (+18.8% slower)
 - extract: 37382ms avg (+9.2% slower)
 
-**Conclusion**: The hash_map dedup is asymptotically O(N) vs O(N²) but slower in
-practice for typical directory sizes (6500 files). The linear scan's
-memory-bandwidth-bound nature hits L1/L2 cache well; hash_map's
-constant-factor overhead (FNV-1a hash + modulo + probe) dominates.
+### After phase 24c tuning (defaults: scale=16, granularity=9)
 
-The O(N²) → O(N) win only kicks in at N >> 10K entries. For current
-workloads, linear scan is faster.
+**LINEAR SCAN**: extract=21209ms
+**HASH_MAP DEDUP**: extract=20481ms (**-3.4% faster**)
 
-**Decision**: phase-24b is reverted in commit. Hash_map primitive
-(Phase 23) remains for other uses.
+The phase-24c parameter tuning flipped the result:
+- Before tuning: hash_map was +9.2% slower (rejected)
+- After tuning: hash_map is -3.4% faster (viable)
+
+## Why the parameter change worked
+
+Phase-24c changed hash_map defaults from `scale=20, granularity=8` to
+`scale=16, granularity=9`. This:
+- Reduces capacity from 1M to 64K (better load factor for ~10K entries)
+- Increases chunk size from 256 to 512 (fewer chunks, fits in 1 level)
+- Reduces allocated nodes by 28x (3572 -> 129)
+- Speeds up full cycle by 12.6x (10.6ms -> 0.84ms in microbench)
+
+That translated to end-to-end wins because dirchain_list dedup runs
+~6500 times per VSCode-extract directory.
+
+## Current state
+
+phase-24b (hash_map dedup in dirchain_list) is **applied and enabled**,
+because phase-24c made hash_map viable for the typical dedup workload.
+
+phase-24a (single readdir API, drop caller-buffer variants) is also
+applied.  The combination delivers a small but consistent speedup
+on the ditto extraction benchmark.
+
+## Hash_map primitive (Phase 23)
+
+Hash_map remains a useful primitive for other use cases.  The phase-24c
+parameter tuning improved its standalone performance significantly.
+
+## Sources
+
+- `test/scenarios/bench_phase24b_compare/COMPARISON.md` — pre/post bench (with old defaults)
+- `test/scenarios/bench_phase24c/COMPARISON.md` — hash_map parameter sweep
+- `test/scenarios/bench_phase24d/COMPARISON.md` — final hash_map dedup bench (with new defaults)
