@@ -119,7 +119,7 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     nodes_write_dircontentindex(rootIndexSlot, 0, NODE_TYPE_INDEX_INTERNAL,
                                  0, 0, ctx->page_size);
 
-    nodes_write_dirnode(root_slot, 0, 0, rootIndexVP, ctx->page_size);
+    nodes_write_dirnode(root_slot, 0, 0, rootIndexVP, 0, ctx->page_size);
 
     /* Update superblock with root pointer */
     ctx->rootNodeOffset = root_vp;
@@ -596,6 +596,32 @@ void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
 }
 
 /* ---------------------------------------------------------------------------
+ * dirnode_increment_child_count — atomic increment of DirNode.childCount.
+ *
+ * Called after every successful DirContent insert (live entry OR
+ * tombstone — both are DirContent entries).  Provides an upper bound
+ * on unique children for sizing the dedup hash_map in dirchain_list.
+ *
+ * Thread-safe via vfs_atomic_add_i64.  Uses the raw uint32_t at
+ * offset 24 of the DirNode slot.  If dir_vp can't be resolved (rare,
+ * e.g. crash mid-mutation), the increment is silently skipped — the
+ * count is best-effort, not strict.
+ * --------------------------------------------------------------------------- */
+
+static void dirnode_increment_child_count(TreeContext* ctx, int64_t dir_vp) {
+    if (!ctx) return;
+    uint8_t* slot = pool_resolve_rw(&ctx->pool, dir_vp);
+    if (!slot) return;
+    /* Read-modify-write the 32-bit count at DIRNODE_OFF_CHILDCOUNT.
+       Use load/store (not atomic) — the slot is page-locked by the
+       caller (vfs_create/mkdir/delete/rmdir/rename hold the parent
+       lock for the duration of the mutation), so concurrent writers
+       to the same parent are serialized. */
+    int32_t cur = (int32_t)vfs_rd4_s(slot, DIRNODE_OFF_CHILDCOUNT, ctx->page_size);
+    vfs_wr4_s(slot, DIRNODE_OFF_CHILDCOUNT, cur + 1, ctx->page_size);
+}
+
+/* ---------------------------------------------------------------------------
  * vfs_create — create a file under a parent directory
  *
  * Returns the child's VirtualPtr on success (always > 0), or a negative
@@ -764,6 +790,8 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
            unless we explicitly write the slot. */
         vfs_wr8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
                   ctx->page_size);
+        /* Bump childCount: every DirContent insert counts, live or tombstone. */
+        dirnode_increment_child_count(ctx, parent);
     }
 
     vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
@@ -894,7 +922,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     nodes_write_dircontentindex(dirIndexSlot, 0, NODE_TYPE_INDEX_INTERNAL,
                                  0, 0, ctx->page_size);
 
-    nodes_write_dirnode(dir_slot, new_nodeId, 0, dirIndexVP, ctx->page_size);
+    nodes_write_dirnode(dir_slot, new_nodeId, 0, dirIndexVP, 0, ctx->page_size);
 
     int64_t name_vp;
     int name_slots = nodes_write_name(&ctx->pool, name, &name_vp);
@@ -928,6 +956,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                                dc_vp, ctx->page_size);
         vfs_wr8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
                   ctx->page_size);
+        dirnode_increment_child_count(ctx, parent);
     }
 
     vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
@@ -995,6 +1024,7 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                                dc_vp, ctx->page_size);
         vfs_wr8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
                   ctx->page_size);
+        dirnode_increment_child_count(ctx, parent);
     }
 
     vfs_unlock(vfs, (int64_t)found_childId, epoch);
@@ -1188,6 +1218,7 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                                dc_vp, ctx->page_size);
         vfs_wr8_s(parent_slot, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
                   ctx->page_size);
+        dirnode_increment_child_count(ctx, parent);
     }
 
     vfs_unlock(vfs, (int64_t)found_childId, epoch);
@@ -1422,6 +1453,8 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                                    matched_walk_vp, ctx->page_size);
             vfs_wr8_s(src_slot, DIRNODE_OFF_INDEXHEADPTR, srcIndex,
                       ctx->page_size);
+            /* new-name insert counts as a DirContent add. */
+            dirnode_increment_child_count(ctx, src_parent);
         }
 
         vfs_unlock(vfs, (int64_t)rn_childId, epoch);
@@ -1466,6 +1499,7 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                                dst_dc_vp, ctx->page_size);
         vfs_wr8_s(dst_slot, DIRNODE_OFF_INDEXHEADPTR, dstIndex,
                   ctx->page_size);
+        dirnode_increment_child_count(ctx, dst_parent);
     }
 
     /* Create tombstone at src (cross-directory only) */
@@ -1496,6 +1530,7 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                                src_dc_vp, ctx->page_size);
         vfs_wr8_s(src_slot, DIRNODE_OFF_INDEXHEADPTR, srcIndex,
                   ctx->page_size);
+        dirnode_increment_child_count(ctx, src_parent);
     }
     } /* cross_dir */
 

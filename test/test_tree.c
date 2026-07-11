@@ -2024,6 +2024,80 @@ static void test_rename_tree(void) {
     vfs_unmount(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * dirnode_childCount test — verify the field increments on each
+ * DirContent insert (live entry or tombstone).
+ * --------------------------------------------------------------------------- */
+
+static void test_dirnode_child_count(void) {
+    const char* path = "/tmp/test_childcount.vfs";
+    unlink(path);
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    /* Helper: read childCount from a DirNode slot. */
+    #define READ_COUNT(dir_vp) ({ \
+        uint8_t* _s = pool_resolve_ro(&ctx->pool, (dir_vp)); \
+        (uint32_t)(_s ? vfs_rd4_s(_s, DIRNODE_OFF_CHILDCOUNT, ctx->page_size) : 0xFFFFFFFFu); \
+    })
+
+    /* Initially 0 */
+    CHECK_EQ(READ_COUNT(root_vp), 0u);
+
+    /* Create 3 files -> count=3 */
+    int64_t a = vfs_create(vfs, root_vp, "a.txt", 0);
+    int64_t b = vfs_create(vfs, root_vp, "b.txt", 0);
+    int64_t c = vfs_create(vfs, root_vp, "c.txt", 0);
+    CHECK(a > 0); CHECK(b > 0); CHECK(c > 0);
+    CHECK_EQ(READ_COUNT(root_vp), 3u);
+
+    /* Delete a -> tombstone counts -> count=4 */
+    CHECK_EQ(vfs_delete(vfs, root_vp, "a.txt", 0), VFS_OK);
+    CHECK_EQ(READ_COUNT(root_vp), 4u);
+
+    /* Mkdir -> count=5 */
+    int64_t sub = vfs_mkdir(vfs, root_vp, "sub", 0);
+    CHECK(sub > 0);
+    CHECK_EQ(READ_COUNT(root_vp), 5u);
+
+    /* rmdir sub -> tombstone -> count=6 */
+    CHECK_EQ(vfs_rmdir(vfs, root_vp, "sub", 0), VFS_OK);
+    CHECK_EQ(READ_COUNT(root_vp), 6u);
+
+    /* Rename b.txt -> bb.txt: 1 insert -> count=7 */
+    CHECK_EQ(vfs_rename(vfs, root_vp, "b.txt", root_vp, "bb.txt", 0), VFS_OK);
+    CHECK_EQ(READ_COUNT(root_vp), 7u);
+
+    /* Rename bb.txt -> sub2.txt (cross-dir if we had one; same-dir here).
+       After rename bb.txt is gone, sub2.txt exists.  Same dir rename
+       is 1 insert.  Count=8. */
+    CHECK_EQ(vfs_rename(vfs, root_vp, "bb.txt", root_vp, "sub2.txt", 0), VFS_OK);
+    CHECK_EQ(READ_COUNT(root_vp), 8u);
+
+    /* Create another file -> count=9 */
+    int64_t d = vfs_create(vfs, root_vp, "d.txt", 0);
+    CHECK(d > 0);
+    CHECK_EQ(READ_COUNT(root_vp), 9u);
+
+    /* Subdirectory has its own count = 0 */
+    int64_t inner = vfs_mkdir(vfs, root_vp, "inner", 0);
+    CHECK(inner > 0);
+    CHECK_EQ(READ_COUNT(root_vp), 10u);  /* +1 for inner mk */
+    CHECK_EQ(READ_COUNT(inner), 0u);
+
+    /* Add to inner -> inner count = 1, root unchanged */
+    CHECK(vfs_create(vfs, inner, "x.txt", 0) > 0);
+    CHECK_EQ(READ_COUNT(root_vp), 10u);
+    CHECK_EQ(READ_COUNT(inner), 1u);
+
+    vfs_unmount(vfs);
+    unlink(path);
+
+    #undef READ_COUNT
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -2171,6 +2245,7 @@ int main(void) {
     test_vfs_create_open_many();
     test_delete_recreate_same_name();
     test_rename_tree();
+    test_dirnode_child_count();
 
     /* Clean up */
     unlink(test_path);

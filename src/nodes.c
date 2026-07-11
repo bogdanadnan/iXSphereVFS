@@ -32,20 +32,26 @@ uint64_t name_hash_compute(const char* name, int len) {
  * --------------------------------------------------------------------------- */
 
 void nodes_write_dirnode(uint8_t* slot, uint32_t nodeId, int64_t headPtr,
-                          int64_t indexHeadPtr, int64_t page_size) {
+                          int64_t indexHeadPtr, int32_t childCount,
+                          int64_t page_size) {
     vfs_wr2_s(slot, DIRNODE_OFF_TYPE, (int16_t)NODE_TYPE_DIR, page_size);
     vfs_wr2_s(slot, DIRNODE_OFF_RSVD, 0, page_size);
     vfs_wr4_s(slot, DIRNODE_OFF_NODEID, (int32_t)nodeId, page_size);
     vfs_wr8_s(slot, DIRNODE_OFF_HEADPTR, headPtr, page_size);
     vfs_wr8_s(slot, DIRNODE_OFF_INDEXHEADPTR, indexHeadPtr, page_size);
-    memset(slot + 24, 0, 8);
+    vfs_wr4_s(slot, DIRNODE_OFF_CHILDCOUNT, childCount, page_size);
+    vfs_wr4_s(slot, 28, 0, page_size);  /* reserved tail */
 }
 
 void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr,
-                         int64_t* indexHeadPtr, int64_t page_size) {
+                         int64_t* indexHeadPtr, int32_t* childCount,
+                         int64_t page_size) {
     *nodeId = (uint32_t)vfs_rd4_s(slot, DIRNODE_OFF_NODEID, page_size);
     *headPtr = vfs_rd8_s(slot, DIRNODE_OFF_HEADPTR, page_size);
     *indexHeadPtr = vfs_rd8_s(slot, DIRNODE_OFF_INDEXHEADPTR, page_size);
+    if (childCount) {
+        *childCount = (int32_t)vfs_rd4_s(slot, DIRNODE_OFF_CHILDCOUNT, page_size);
+    }
 }
 
 /* ---------------------------------------------------------------------------
