@@ -2,7 +2,6 @@
 #include "tree.h"
 #include "page_array.h"
 #include "var_array.h"
-#include "hash_map.h"
 #include "gc.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1229,16 +1228,9 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
     int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
 
-    /* Walk chain once into a per-call dedup VarArray (first-hit-wins).
-       A hash_map provides O(1) "already seen" check keyed by childNodeId,
-       indexed against the dedup var_array's append-order idx.  Phase 24. */
+    /* Walk chain once into a per-call dedup VarArray (first-hit-wins). */
     VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
-    HashMap(int64_t, int64_t) seen = hash_map_new(int64_t, int64_t);
-    if (!dedup || !seen) {
-        var_array_delete(dedup);
-        hash_map_free(seen);
-        return VFS_ERR_IO;
-    }
+    if (!dedup) return VFS_ERR_IO;
 
     int64_t walk_vp = headPtr;
     while (walk_vp != 0) {
@@ -1257,13 +1249,12 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
                       (eff_epoch < read_epoch && eff_epoch % 2 == 0);
         if (!applies) { walk_vp = ce_next; continue; }
 
-        /* O(1) "already seen" via hash_map.  Chain is descending by
-           epoch (prepend ordering), so first-hit-wins keeps the
-           highest-epoch record. */
-        if (hash_map_contains(seen, (int64_t)ce_child)) {
-            walk_vp = ce_next;
-            continue;
+        int found = 0;
+        for (int i = 0; i < dedup->count; i++) {
+            DirchainDedupEntry* e = var_array_lookup(dedup, i);
+            if (e && e->childNodeId == (int64_t)ce_child) { found = 1; break; }
         }
+        if (found) { walk_vp = ce_next; continue; }
 
         DirchainDedupEntry entry = {
             .childNodeId = (int64_t)ce_child,
@@ -1271,9 +1262,7 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
             .name_set    = (ce_namePtr != 0),
             .namePtr     = ce_namePtr,
         };
-        int64_t dedup_idx = dedup->count;
         (void)var_array_append(dedup, entry);
-        (void)hash_map_put(seen, (int64_t)ce_child, dedup_idx);
         walk_vp = ce_next;
     }
 
@@ -1283,7 +1272,6 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
        single pass over the dedup array. */
     int total_count = dedup->count;
     if (total_count == 0) {
-        hash_map_free(seen);
         var_array_delete(dedup);
         *out_entries = NULL;
         *out_count = 0;
@@ -1292,7 +1280,6 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
 
     vfs_dirent_t* out = (vfs_dirent_t*)malloc((size_t)total_count * sizeof(vfs_dirent_t));
     if (!out) {
-        hash_map_free(seen);
         var_array_delete(dedup);
         return VFS_ERR_IO;
     }
@@ -1321,7 +1308,6 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     }
 
     var_array_delete(dedup);
-    hash_map_free(seen);
 
     /* Shrink to exact size if we skipped some tombstones.  realloc
        with a smaller size may move the block; that's fine since the

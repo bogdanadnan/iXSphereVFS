@@ -366,3 +366,24 @@ Two commits:
 2. "phase-24b: hash_map for dirchain_list dedup (O(N²) → O(N))" — actual dedup optimization.
 
 Splitting keeps the rename easy to review independently of the algorithmic change.
+
+## Benchmark results (3 runs each)
+
+**PRE-HASH (linear scan)**:
+- copy_in: 1814ms avg
+- extract: 34232ms avg
+
+**POST-HASH (hash_map)**:
+- copy_in: 2156ms avg (+18.8% slower)
+- extract: 37382ms avg (+9.2% slower)
+
+**Conclusion**: The hash_map dedup is asymptotically O(N) vs O(N²) but slower in
+practice for typical directory sizes (6500 files). The linear scan's
+memory-bandwidth-bound nature hits L1/L2 cache well; hash_map's
+constant-factor overhead (FNV-1a hash + modulo + probe) dominates.
+
+The O(N²) → O(N) win only kicks in at N >> 10K entries. For current
+workloads, linear scan is faster.
+
+**Decision**: phase-24b is reverted in commit. Hash_map primitive
+(Phase 23) remains for other uses.

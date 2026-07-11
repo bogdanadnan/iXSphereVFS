@@ -1,28 +1,28 @@
 {
-  "label": "baseline",
+  "label": "prehash_run3",
   "source": "/Users/bogdanadnan/Downloads/VSCode-win32-x64-1.123.0.zip",
   "source_size": 264161562,
   "steps": [
     {
       "name": "mount",
-      "elapsed_ms": 387.7935929922387
+      "elapsed_ms": 347.48667798703536
     },
     {
       "name": "copy_in",
-      "elapsed_ms": 2524.9544789548963,
+      "elapsed_ms": 2074.3954430217855,
       "bytes": 264161562
     },
     {
       "name": "ditto_unzip",
-      "elapsed_ms": 40897.40419300506
+      "elapsed_ms": 36716.29959897837
     },
     {
       "name": "host_extract_ref",
-      "elapsed_ms": 9624.358666012995
+      "elapsed_ms": 8704.89706803346
     },
     {
       "name": "md5_compare",
-      "elapsed_ms": 25924.235812039115,
+      "elapsed_ms": 24513.71516403742,
       "files_compared": 14395
     }
   ],
@@ -33,7 +33,7 @@
     "md5_mismatch_count": 0,
     "md5_match": false
   },
-  "timestamp": "2026-07-10T23:46:27",
+  "timestamp": "2026-07-11T10:10:29",
   "vfs_extract": {
     "file_count": 14395,
     "total_bytes": 864026225
@@ -43,9 +43,9 @@
     "total_bytes": 831946353
   },
   "summary": {
-    "copy_in_ms": 2524.9544789548963,
-    "ditto_unzip_ms": 40897.40419300506,
-    "copy_throughput_mbps": 99.77371836241227,
-    "extracted_throughput_mbps": 20.147968697360053
+    "copy_in_ms": 2074.3954430217855,
+    "ditto_unzip_ms": 36716.29959897837,
+    "copy_throughput_mbps": 121.44458661853679,
+    "extracted_throughput_mbps": 22.442338375157927
   }
 }
