@@ -886,7 +886,15 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
     /* Atomically increment nextNodeId */
     uint32_t new_nodeId = (uint32_t)vfs_atomic_add_i32((int32_t*)&ctx->nextNodeId, 1);
     /* nextNodeId starts at 0, first add yields nodeId=1 */
+
+    /* W4: lock parent DirNode first (node lock), then new child (content_unit). */
+    if (vfs_lock(vfs, (int64_t)parent, epoch) != VFS_OK) {
+        vfs->ctx->last_error = VFS_ERR_IO;
+        pool_release(&ctx->pool, &parent_slot);
+        return VFS_ERR_IO;
+    }
     if (vfs_lock(vfs, (int64_t)new_nodeId, epoch) != VFS_OK) {
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_IO;
@@ -897,6 +905,7 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
 
     if (file_vp == VFS_VPTR_NULL) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_FULL;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_FULL;
@@ -905,6 +914,7 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
 
     if (file_slot.vptr == VFS_VPTR_NULL) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_IO;
@@ -918,6 +928,7 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
 
     if (name_slots == 0) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_IO;
@@ -928,6 +939,7 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
 
     if (dc_vp == VFS_VPTR_NULL) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_FULL;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_FULL;
@@ -936,22 +948,21 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
 
     if (dc_slot.vptr == VFS_VPTR_NULL) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_IO;
     }
 
-    /* CAS-prepend DirContent to parent's headPtr */
-    int64_t old_head;
-    do {
-        old_head = vfs_atomic_load_i64(
-            (const int64_t*)(parent_slot.bytes + DIRNODE_OFF_HEADPTR));
-
+    /* W4: simple store under parent node lock + new_nodeId content_unit lock. */
+    {
+        int64_t old_head = vfs_rd8_s(parent_slot.bytes,
+                                       DIRNODE_OFF_HEADPTR, ctx->page_size);
         nodes_write_dircontent(dc_slot.bytes, new_nodeId, (uint32_t)epoch,
                                file_vp, name_vp, old_head, ctx->page_size);
         vfs_mb_release();
-    } while (vfs_cas_i64((int64_t*)(parent_slot.bytes + DIRNODE_OFF_HEADPTR),
-                         old_head, dc_vp) != old_head);
+        vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_HEADPTR, dc_vp, ctx->page_size);
+    }
 
     /* Insert into the directory's radix tree index (Phase 18).
        The chain entry already exists — the tree is additive.  If the
@@ -978,6 +989,7 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
     pool_release(&ctx->pool, &dc_slot);
     pool_release(&ctx->pool, &parent_slot);
     vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+    vfs_unlock(vfs, (int64_t)parent, epoch);
     return file_vp;
 }
 
@@ -1102,7 +1114,14 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     uint32_t new_nodeId = (uint32_t)vfs_atomic_add_i32(
         (int32_t*)&ctx->nextNodeId, 1);
+    /* W4: lock parent first, then new child */
+    if (vfs_lock(vfs, (int64_t)parent, epoch) != VFS_OK) {
+        vfs->ctx->last_error = VFS_ERR_IO;
+        pool_release(&ctx->pool, &parent_slot);
+        return VFS_ERR_IO;
+    }
     if (vfs_lock(vfs, (int64_t)new_nodeId, epoch) != VFS_OK) {
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_IO;
@@ -1112,6 +1131,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     if (dir_vp == VFS_VPTR_NULL) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_FULL;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_FULL;
@@ -1120,6 +1140,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     if (dir_slot.vptr == VFS_VPTR_NULL) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_IO;
@@ -1130,6 +1151,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     int64_t dirIndexVP = pool_alloc(&ctx->pool);
     if (dirIndexVP == VFS_VPTR_NULL) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_FULL;
         pool_release(&ctx->pool, &dir_slot);
         pool_release(&ctx->pool, &parent_slot);
@@ -1138,6 +1160,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     pool_acquire(&ctx->pool, dirIndexVP, true, &dirIndexSlot);
     if (dirIndexSlot.vptr == VFS_VPTR_NULL) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &dir_slot);
         pool_release(&ctx->pool, &parent_slot);
@@ -1155,6 +1178,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     if (name_slots == 0) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_IO;
@@ -1164,6 +1188,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     if (dc_vp == VFS_VPTR_NULL) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_FULL;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_FULL;
@@ -1172,6 +1197,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     if (dc_slot.vptr == VFS_VPTR_NULL) {
         vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_IO;
@@ -1203,6 +1229,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     pool_release(&ctx->pool, &dc_slot);
     pool_release(&ctx->pool, &parent_slot);
     vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+    vfs_unlock(vfs, (int64_t)parent, epoch);
     return dir_vp;
 }
 
@@ -1258,18 +1285,16 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         return VFS_ERR_IO;
     }
 
-    /* CAS-prepend tombstone to parent's headPtr */
-    int64_t old_head;
-    do {
-        old_head = vfs_atomic_load_i64(
-            (const int64_t*)(parent_slot.bytes + DIRNODE_OFF_HEADPTR));
-
+    /* W4: simple store under content_unit lock (O1 — see spec). */
+    {
+        int64_t old_head = vfs_rd8_s(parent_slot.bytes,
+                                       DIRNODE_OFF_HEADPTR, ctx->page_size);
         /* Tombstone: namePtr=0 means deleted */
         nodes_write_dircontent(dc_slot.bytes, found_childId, (uint32_t)epoch,
                                found_childPtr, 0, old_head, ctx->page_size);
         vfs_mb_release();
-    } while (vfs_cas_i64((int64_t*)(parent_slot.bytes + DIRNODE_OFF_HEADPTR),
-                         old_head, dc_vp) != old_head);
+        vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_HEADPTR, dc_vp, ctx->page_size);
+    }
 
     /* Insert a tree link for the tombstone (Phase 18).  The tree leaf
        already has a link for the live entry at the same name hash; we
@@ -1499,15 +1524,15 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         return VFS_ERR_IO;
     }
 
-    int64_t old_head;
-    do {
-        old_head = vfs_atomic_load_i64(
-            (const int64_t*)(parent_slot.bytes + DIRNODE_OFF_HEADPTR));
+    /* W4: simple store under content_unit lock (O1). */
+    {
+        int64_t old_head = vfs_rd8_s(parent_slot.bytes,
+                                       DIRNODE_OFF_HEADPTR, ctx->page_size);
         nodes_write_dircontent(dc_slot.bytes, found_childId, (uint32_t)epoch,
                                found_childPtr, 0, old_head, ctx->page_size);
         vfs_mb_release();
-    } while (vfs_cas_i64((int64_t*)(parent_slot.bytes + DIRNODE_OFF_HEADPTR),
-                         old_head, dc_vp) != old_head);
+        vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_HEADPTR, dc_vp, ctx->page_size);
+    }
 
     /* Insert a tree link for the tombstone (Phase 18) — same pattern as
        vfs_delete.  The chain is source of truth, the tree is an additive
@@ -1753,7 +1778,40 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         return VFS_ERR_IO;
     }
 
+    /* W4: lock src_parent first, then dst_parent (lower VP first at
+     * same level), then the child (content_unit).  For same-dir rename
+     * src_parent == dst_parent so just one parent lock. */
+    if (src_parent < dst_parent || src_parent == dst_parent) {
+        if (vfs_lock(vfs, (int64_t)src_parent, epoch) != VFS_OK) {
+            pool_release(&ctx->pool, &dst_slot);
+            pool_release(&ctx->pool, &src_slot);
+            return VFS_ERR_IO;
+        }
+        if (src_parent != dst_parent) {
+            if (vfs_lock(vfs, (int64_t)dst_parent, epoch) != VFS_OK) {
+                vfs_unlock(vfs, (int64_t)src_parent, epoch);
+                pool_release(&ctx->pool, &dst_slot);
+                pool_release(&ctx->pool, &src_slot);
+                return VFS_ERR_IO;
+            }
+        }
+    } else {
+        if (vfs_lock(vfs, (int64_t)dst_parent, epoch) != VFS_OK) {
+            pool_release(&ctx->pool, &dst_slot);
+            pool_release(&ctx->pool, &src_slot);
+            return VFS_ERR_IO;
+        }
+        if (vfs_lock(vfs, (int64_t)src_parent, epoch) != VFS_OK) {
+            vfs_unlock(vfs, (int64_t)dst_parent, epoch);
+            pool_release(&ctx->pool, &dst_slot);
+            pool_release(&ctx->pool, &src_slot);
+            return VFS_ERR_IO;
+        }
+    }
     if (vfs_lock(vfs, (int64_t)rn_childId, epoch) != VFS_OK) {
+        vfs_unlock(vfs, (int64_t)src_parent, epoch);
+        if (src_parent != dst_parent)
+            vfs_unlock(vfs, (int64_t)dst_parent, epoch);
         pool_release(&ctx->pool, &dst_slot);
         pool_release(&ctx->pool, &src_slot);
         return VFS_ERR_IO;
@@ -1785,7 +1843,9 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
             if (cp == rn_childPtr && np != 0 && ce <= (uint32_t)epoch) {
                 matched_walk_vp = walk_vp;
                 vfs_mb_release();
-                vfs_atomic_store_i64((int64_t*)(dc.bytes + DIRCONTENT_OFF_NAMEPTR), new_name_vp);
+                /* W4: simple store under src_parent + child lock (held above). */
+                vfs_wr8_s(dc.bytes, DIRCONTENT_OFF_NAMEPTR, new_name_vp,
+                          ctx->page_size);
                 pool_release(&ctx->pool, &dc);
                 break;
             }
@@ -1822,7 +1882,12 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         vfs_unlock(vfs, (int64_t)rn_childId, epoch);
         pool_release(&ctx->pool, &dst_slot);
         pool_release(&ctx->pool, &src_slot);
+        vfs_unlock(vfs, (int64_t)src_parent, epoch);
+        if (src_parent != dst_parent) {
+            vfs_unlock(vfs, (int64_t)dst_parent, epoch);
+        }
         return VFS_OK;
+
     }
 
     /* Cross-directory rename: create new entry at dst, tombstone at src.
@@ -1837,7 +1902,12 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         vfs->ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &dst_slot);
         pool_release(&ctx->pool, &src_slot);
+        vfs_unlock(vfs, (int64_t)src_parent, epoch);
+        if (src_parent != dst_parent) {
+            vfs_unlock(vfs, (int64_t)dst_parent, epoch);
+        }
         return VFS_ERR_IO;
+
     }
 
     /* Allocate DirContent for dst */
@@ -1848,7 +1918,12 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         vfs->ctx->last_error = VFS_ERR_FULL;
         pool_release(&ctx->pool, &dst_slot);
         pool_release(&ctx->pool, &src_slot);
+        vfs_unlock(vfs, (int64_t)src_parent, epoch);
+        if (src_parent != dst_parent) {
+            vfs_unlock(vfs, (int64_t)dst_parent, epoch);
+        }
         return VFS_ERR_FULL;
+
     }
     PoolSlot dst_dc_slot;
     pool_acquire(&ctx->pool, dst_dc_vp, true, &dst_dc_slot);
@@ -1858,21 +1933,26 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         vfs->ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &dst_slot);
         pool_release(&ctx->pool, &src_slot);
+        vfs_unlock(vfs, (int64_t)src_parent, epoch);
+        if (src_parent != dst_parent) {
+            vfs_unlock(vfs, (int64_t)dst_parent, epoch);
+        }
         return VFS_ERR_IO;
+
     }
 
     /* CAS-prepend to dst_parent's headPtr */
-    int64_t dst_old_head;
-    do {
-        dst_old_head = vfs_atomic_load_i64(
-            (const int64_t*)(dst_slot.bytes + DIRNODE_OFF_HEADPTR));
+    /* W4: simple store under dst_parent + child lock (held above). */
+    {
+        int64_t dst_old_head = vfs_rd8_s(dst_slot.bytes, DIRNODE_OFF_HEADPTR,
+                                          ctx->page_size);
         nodes_write_dircontent(dst_dc_slot.bytes, rn_childId, (uint32_t)epoch,
                                rn_childPtr, dst_name_vp, dst_old_head,
                                ctx->page_size);
         vfs_mb_release();
-    } while (vfs_cas_i64((int64_t*)(dst_slot.bytes + DIRNODE_OFF_HEADPTR),
-                         dst_old_head, dst_dc_vp) != dst_old_head);
-    pool_release(&ctx->pool, &dst_dc_slot);  /* dst_dc_slot not used after CAS */
+        vfs_wr8_s(dst_slot.bytes, DIRNODE_OFF_HEADPTR, dst_dc_vp, ctx->page_size);
+    }
+    pool_release(&ctx->pool, &dst_dc_slot);  /* dst_dc_slot not used after */
 
     /* Tree insert for the dst entry (Phase 18) — additive index. */
     {
@@ -1907,15 +1987,16 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
             return VFS_ERR_IO;
         }
 
-        int64_t src_old_head;
-        do {
-            src_old_head = vfs_atomic_load_i64(
-                (const int64_t*)(src_slot.bytes + DIRNODE_OFF_HEADPTR));
+        /* W4: simple store under src_parent + child lock. */
+        {
+            int64_t src_old_head = vfs_rd8_s(src_slot.bytes, DIRNODE_OFF_HEADPTR,
+                                              ctx->page_size);
             nodes_write_dircontent(src_dc_slot.bytes, rn_childId, (uint32_t)epoch,
                                    rn_childPtr, 0, src_old_head, ctx->page_size);
             vfs_mb_release();
-        } while (vfs_cas_i64((int64_t*)(src_slot.bytes + DIRNODE_OFF_HEADPTR),
-                             src_old_head, src_dc_vp) != src_old_head);
+            vfs_wr8_s(src_slot.bytes, DIRNODE_OFF_HEADPTR, src_dc_vp,
+                      ctx->page_size);
+        }
         pool_release(&ctx->pool, &src_dc_slot);
 
         /* Tree insert for the src tombstone (Phase 18) — same pattern as
@@ -2044,9 +2125,8 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
         nodes_write_dircontentindex(rootSlot.bytes, 0, NODE_TYPE_INDEX_INTERNAL,
                                      0, 0, page_size);
         pool_release(pool, &rootSlot);
-        /* CAS-claim the root pointer (writes to the DirNode's cached
-           field or the caller's in-memory slot). */
-        vfs_cas_i64((int64_t*)indexRoot, 0, rootVP);
+        /* W4: simple store under parent node lock (held by caller). */
+        *indexRoot = rootVP;
     }
 
     int64_t nodeVP = *indexRoot;
@@ -2079,15 +2159,16 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
             pool_acquire(pool, linkVP, true, &linkSlot);
             if (linkSlot.vptr == VFS_VPTR_NULL) { pool_release(pool, &slot); return -1; }
 
-            int64_t oldHead;
-            do {
-                oldHead = vfs_atomic_load_i64(
-                    (const int64_t*)(slot.bytes + DIRCONTENTINDEX_OFF_LISTVP));
+            /* W4: simple store under parent node lock (held by caller). */
+            {
+                int64_t oldHead = vfs_rd8_s(slot.bytes,
+                                              DIRCONTENTINDEX_OFF_LISTVP,
+                                              page_size);
                 nodes_write_dircontentlink(linkSlot.bytes, dirContentVP,
                                            oldHead, page_size);
-            } while (vfs_cas_i64(
-                         (int64_t*)(slot.bytes + DIRCONTENTINDEX_OFF_LISTVP),
-                         oldHead, linkVP) != oldHead);
+                vfs_wr8_s(slot.bytes, DIRCONTENTINDEX_OFF_LISTVP, linkVP,
+                          page_size);
+            }
             pool_release(pool, &linkSlot);
             pool_release(pool, &slot);
             return 0;
@@ -2161,17 +2242,16 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
                 pool_acquire(pool, linkVP, true, &linkSlot);
                 if (linkSlot.vptr == VFS_VPTR_NULL) { pool_release(pool, &childSlot); pool_release(pool, &slot); return -1; }
 
-                int64_t oldHead;
-                do {
-                    oldHead = vfs_atomic_load_i64(
-                        (const int64_t*)(childSlot.bytes +
-                                         DIRCONTENTINDEX_OFF_LISTVP));
+                /* W4: simple store under parent node lock. */
+                {
+                    int64_t oldHead = vfs_rd8_s(childSlot.bytes,
+                                                  DIRCONTENTINDEX_OFF_LISTVP,
+                                                  page_size);
                     nodes_write_dircontentlink(linkSlot.bytes, dirContentVP,
                                                oldHead, page_size);
-                } while (vfs_cas_i64(
-                             (int64_t*)(childSlot.bytes +
-                                        DIRCONTENTINDEX_OFF_LISTVP),
-                             oldHead, linkVP) != oldHead);
+                    vfs_wr8_s(childSlot.bytes, DIRCONTENTINDEX_OFF_LISTVP,
+                              linkVP, page_size);
+                }
                 pool_release(pool, &linkSlot);
                 pool_release(pool, &childSlot);
                 pool_release(pool, &slot);
@@ -2198,17 +2278,18 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
         pool_acquire(pool, newChildVP, true, &newChildSlot);
         if (newChildSlot.vptr == VFS_VPTR_NULL) { pool_release(pool, &slot); return -1; }
 
-        int64_t oldHead;
-        do {
-            oldHead = vfs_atomic_load_i64(
-                (const int64_t*)(slot.bytes + DIRCONTENTINDEX_OFF_LISTVP));
+        /* W4: simple store under parent node lock. */
+        {
+            int64_t oldHead = vfs_rd8_s(slot.bytes,
+                                          DIRCONTENTINDEX_OFF_LISTVP,
+                                          page_size);
             nodes_write_dircontentindex(newChildSlot.bytes, (uint8_t)target,
                                          isLast ? NODE_TYPE_INDEX_LEAF
                                                 : NODE_TYPE_INDEX_INTERNAL,
                                          0, oldHead, page_size);
-        } while (vfs_cas_i64(
-                     (int64_t*)(slot.bytes + DIRCONTENTINDEX_OFF_LISTVP),
-                     oldHead, newChildVP) != oldHead);
+            vfs_wr8_s(slot.bytes, DIRCONTENTINDEX_OFF_LISTVP, newChildVP,
+                      page_size);
+        }
 
         if (isLast) {
             /* Just created a LEAF — insert the DirContentLink right
@@ -2221,14 +2302,12 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
             if (linkSlot.vptr == VFS_VPTR_NULL) { pool_release(pool, &newChildSlot); pool_release(pool, &slot); return -1; }
 
             nodes_write_dircontentlink(linkSlot.bytes, dirContentVP, 0, page_size);
-            /* LEAF's listVP starts at 0, so CAS-claim it directly */
-            int64_t old = vfs_cas_i64(
-                (int64_t*)(newChildSlot.bytes + DIRCONTENTINDEX_OFF_LISTVP),
-                0, linkVP);
-            if (old != 0) {
-                /* Another thread raced and inserted first — our slot
-                   is orphaned (harmless one-slot leak). */
-            }
+            /* W4: simple store under parent node lock.  The LEAF is
+             * freshly created (we just allocated newChildVP above and
+             * set listVP=0 in the write), so no other thread can have
+             * written it. */
+            vfs_wr8_s(newChildSlot.bytes, DIRCONTENTINDEX_OFF_LISTVP, linkVP,
+                      page_size);
             pool_release(pool, &linkSlot);
             pool_release(pool, &newChildSlot);
             pool_release(pool, &slot);
