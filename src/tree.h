@@ -74,10 +74,14 @@ int dirchain_test_get_hash_rejects(void);
  * file_vp  — VirtualPtr to the FileNode
  * logical_page — page index within the file (0-based)
  * epoch    — write epoch (used for segment growth decisions)
- * is_write — true if caller intends to write (future: lazy allocation + CAS retry)
+ * is_write — true if caller intends to write.  When true, the caller
+ *            MUST hold vfs_lock(vfs, file_vp, epoch) — the function
+ *            will additionally take per-ContentUnit and per-PageNode
+ *            locks as needed (per Phase 26 / W3 lock discipline) and
+ *            use simple store instead of CAS.
  * out      — caller-provided PoolSlot to receive the PageNode bytes
  */
-int tree_resolve_page(TreeContext* ctx, int64_t file_vp,
+int tree_resolve_page(vfs_t* vfs, int64_t file_vp,
                       int64_t logical_page, int64_t epoch, bool is_write,
                       PoolSlot* out);
 
@@ -87,10 +91,10 @@ int tree_resolve_page(TreeContext* ctx, int64_t file_vp,
    so subsequent writes persist; caller must call
    tree_resolve_page_compat_release() after writing.  See pool.h for
    the rationale. */
-extern uint8_t* tree_resolve_page_compat(TreeContext* ctx, int64_t file_vp,
+extern uint8_t* tree_resolve_page_compat(vfs_t* vfs, int64_t file_vp,
                                           int64_t logical_page, int64_t epoch,
                                           bool is_write);
-extern void tree_resolve_page_compat_release(TreeContext* ctx);
+extern void tree_resolve_page_compat_release(vfs_t* vfs);
 
 /* ---------------------------------------------------------------------------
  * Context accessors (inline helpers)

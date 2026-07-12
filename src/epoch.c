@@ -49,7 +49,8 @@ int64_t vfs_snapshot(vfs_t* vfs) {
  * during commit.  Returns 0 if no conflict, VFS_ERR_CONFLICT on first conflict.
  * --------------------------------------------------------------------------- */
 
-static int commit_scan_dir(TreeContext* ctx, int64_t dir_vp, uint32_t s_epoch) {
+static int commit_scan_dir(vfs_t* vfs, int64_t dir_vp, uint32_t s_epoch) {
+    TreeContext* ctx = vfs->ctx;
     /* Phase 25: by-value pool slot (read-only). */
     PoolSlot dir_slot = {0};
     pool_acquire(&ctx->pool, dir_vp, false, &dir_slot);
@@ -90,7 +91,7 @@ static int commit_scan_dir(TreeContext* ctx, int64_t dir_vp, uint32_t s_epoch) {
 
         if (child_type == (int16_t)NODE_TYPE_DIR) {
             /* Recurse into subdirectory */
-            int err = commit_scan_dir(ctx, dc_childPtr, s_epoch);
+            int err = commit_scan_dir(vfs, dc_childPtr, s_epoch);
             if (err != 0) return err;
 
         } else if (child_type == (int16_t)NODE_TYPE_FILE) {
@@ -117,7 +118,7 @@ static int commit_scan_dir(TreeContext* ctx, int64_t dir_vp, uint32_t s_epoch) {
             for (int64_t lp = 0; lp < num_pages; lp++) {
                 /* Phase 25: by-value pool slot (read-only). */
                 PoolSlot pn_slot = {0};
-                int rr_pn = tree_resolve_page(ctx, dc_childPtr, lp, 0, false, &pn_slot);
+                int rr_pn = tree_resolve_page(vfs, dc_childPtr, lp, 0, false, &pn_slot);
                 if (rr_pn != 0) break;
 
                 int64_t vp = vfs_atomic_load_i64(
@@ -170,7 +171,7 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
        its per-page VersionPage chains and flag a conflict if BOTH
        have a snapshot-epoch entry AND a higher live-epoch entry. */
     {
-        int err = commit_scan_dir(ctx, ctx->rootNodeOffset, s_epoch);
+        int err = commit_scan_dir(vfs, vfs->ctx->rootNodeOffset, s_epoch);
         if (err != 0) {
             vfs->ctx->last_error = err;
             return err;

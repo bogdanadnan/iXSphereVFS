@@ -204,11 +204,12 @@ int tree_init(TreeContext* ctx) {
  * later cache eviction cannot invalidate it.
  * --------------------------------------------------------------------------- */
 
-int tree_resolve_page(TreeContext* ctx, int64_t file_vp,
+int tree_resolve_page(vfs_t* vfs, int64_t file_vp,
                       int64_t logical_page, int64_t epoch, bool is_write,
                       PoolSlot* out) {
     (void)epoch;  /* not yet used — future: segment growth decisions */
-    if (!out) return -1;
+    if (!vfs || !vfs->ctx || !out) return -1;
+    TreeContext* ctx = vfs->ctx;
     out->vptr = VFS_VPTR_NULL;
     out->pinnedPage = 0;
     memset(out->bytes, 0, VFS_POOL_SLOT_SIZE);
@@ -216,6 +217,18 @@ int tree_resolve_page(TreeContext* ctx, int64_t file_vp,
     uint32_t seg_size = ctx->segment_size;
     int64_t segment_idx = logical_page / seg_size;
     int64_t page_in_segment = logical_page % seg_size;
+
+    /* Phase 26 / W3: lock discipline.
+     *
+     *   - Read path (is_write=false): no locks; the caller's vfs_t* is
+     *     used only for the ctx.
+     *   - Write path (is_write=true): the caller MUST hold
+     *     vfs_lock(vfs, file_vp, epoch).  This function additionally
+     *     takes per-FileContent and per-PageNode locks as needed (per
+     *     the spec's "Node > ContentUnit" hierarchy with "lower VP
+     *     first" same-level rule).  Simple store replaces the prior
+     *     CAS loops; the lock serializes the writers.
+     */
 
     /* Read FileNode to get headPtr (first FileContent) */
     PoolSlot file_slot = {0};
@@ -268,44 +281,46 @@ int tree_resolve_page(TreeContext* ctx, int64_t file_vp,
             if (fc_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &file_slot); return -1; }
             nodes_write_filecontent(fc_slot.bytes, page_root_vp, 0, ctx->page_size);
 
-            /* CAS-link into chain with release barrier */
-            vfs_mb_release();
+            /* W3: replace CAS-link with simple store under the file lock
+             * (held by the caller) and the prev_fc lock (acquired below
+             * for i>0).  No retry needed — the lock serializes writers. */
             if (i == 0) {
-                int64_t expected = 0;
-                int64_t desired = new_fc_vp;
-                int64_t old = vfs_cas_i64(
-                    (int64_t*)(file_slot.bytes + FILENODE_OFF_HEADPTR),
-                    expected, desired);
-                if (old != expected) {
-                    pool_release(&ctx->pool, &fc_slot);
-                    fc_vp = old;
-                    i--;  /* retry this segment */
-                    continue;
-                }
+                /* First segment: simple store into file's HEADPTR.
+                 * file lock held by caller; new_fc not yet in any chain
+                 * so no extra lock needed. */
+                vfs_mb_release();
+                vfs_wr8_s(file_slot.bytes, FILENODE_OFF_HEADPTR, new_fc_vp, ctx->page_size);
                 fc_vp = new_fc_vp;
             } else {
+                /* Subsequent segment: lock the prev FileContent first
+                 * (per-content_unit lock), then set its NEXTPTR. */
+                if (vfs_lock(vfs, prev_fc_vp, epoch) != VFS_OK) {
+                    pool_release(&ctx->pool, &fc_slot);
+                    pool_release(&ctx->pool, &file_slot);
+                    return -1;
+                }
                 PoolSlot prev_slot = {0};
                 pool_acquire(&ctx->pool, prev_fc_vp, true, &prev_slot);
-                if (prev_slot.vptr != VFS_VPTR_NULL) {
-                    int64_t expected = 0;
-                    int64_t desired = new_fc_vp;
-                    int64_t off = FILECONTENT_OFF_NEXTPTR;
-                    int64_t old = vfs_cas_i64(
-                        (int64_t*)(prev_slot.bytes + off), expected, desired);
-                    pool_release(&ctx->pool, &prev_slot);
-                    if (old != expected) {
-                        pool_release(&ctx->pool, &fc_slot);
-                        fc_vp = old;
-                        i--;  /* retry this segment */
-                        continue;
-                    }
-                } else {
-                    pool_release(&ctx->pool, &prev_slot);
+                if (prev_slot.vptr == VFS_VPTR_NULL) {
+                    vfs_unlock(vfs, prev_fc_vp, epoch);
+                    pool_release(&ctx->pool, &fc_slot);
+                    pool_release(&ctx->pool, &file_slot);
+                    return -1;
                 }
+                vfs_mb_release();
+                vfs_wr8_s(prev_slot.bytes, FILECONTENT_OFF_NEXTPTR, new_fc_vp, ctx->page_size);
+                pool_release(&ctx->pool, &prev_slot);
+                vfs_unlock(vfs, prev_fc_vp, epoch);
                 fc_vp = new_fc_vp;
             }
             if (i == segment_idx && is_write) {
-                vfs_atomic_add_i32((int32_t*)(fc_slot.bytes + FILECONTENT_OFF_PAGECOUNT), 1);
+                /* W3: pageCount update is now a simple write — we hold
+                 * the file lock and the new fc_slot is exclusive to us. */
+                uint32_t cur_count = (uint32_t)vfs_rd4_s(fc_slot.bytes,
+                                                        FILECONTENT_OFF_PAGECOUNT,
+                                                        ctx->page_size);
+                vfs_wr4_s(fc_slot.bytes, FILECONTENT_OFF_PAGECOUNT,
+                          cur_count + 1, ctx->page_size);
                 pool_release(&ctx->pool, &fc_slot);
                 result_vp = page_root_vp;
                 rc = 0;
@@ -411,30 +426,48 @@ int tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                     pool_release(&ctx->pool, &new_slot);
                     vfs_mb_release();
 
+                    /* W3: replace CAS with simple store under the file lock
+                     * (held by the caller) and the prev PageNode lock (if
+                     * prev_vp != 0).  No retry needed. */
                     if (prev_vp == 0) {
-                        int64_t old_root = vfs_cas_i64(
-                            (int64_t*)(fc_slot.bytes + FILECONTENT_OFF_ROOTPTR),
-                            pn_vp, new_pn_vp);
-                        if (old_root != pn_vp) {
-                            fc_page_root = old_root;
-                            goto retry_walk;
-                        }
+                        /* Insert at root of PageNode chain — set
+                         * FileContent.ROOTPTR.  fc_slot is pinned and the
+                         * file lock serializes writers, so simple store
+                         * is safe. */
+                        vfs_wr8_s(fc_slot.bytes, FILECONTENT_OFF_ROOTPTR,
+                                  new_pn_vp, ctx->page_size);
                     } else {
+                        /* Insert in the middle — lock the prev PageNode
+                         * (per-content_unit lock, lower VP first), then
+                         * set its NEXTPTR. */
+                        if (vfs_lock(vfs, prev_vp, epoch) != VFS_OK) {
+                            pool_release(&ctx->pool, &fc_slot);
+                            pool_release(&ctx->pool, &file_slot);
+                            return -1;
+                        }
                         PoolSlot prev_slot = {0};
                         pool_acquire(&ctx->pool, prev_vp, true, &prev_slot);
-                        if (prev_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &fc_slot); pool_release(&ctx->pool, &file_slot); return -1; }
-                        int64_t old_next = vfs_cas_i64(
-                            (int64_t*)(prev_slot.bytes + PAGENODE_OFF_NEXTPTR),
-                            pn_vp, new_pn_vp);
-                        pool_release(&ctx->pool, &prev_slot);
-                        if (old_next != pn_vp) {
-                            fc_page_root = vfs_rd8_s(fc_slot.bytes,
-                                FILECONTENT_OFF_ROOTPTR, ctx->page_size);
-                            goto retry_walk;
+                        if (prev_slot.vptr == VFS_VPTR_NULL) {
+                            vfs_unlock(vfs, prev_vp, epoch);
+                            pool_release(&ctx->pool, &fc_slot);
+                            pool_release(&ctx->pool, &file_slot);
+                            return -1;
                         }
+                        vfs_wr8_s(prev_slot.bytes, PAGENODE_OFF_NEXTPTR,
+                                  new_pn_vp, ctx->page_size);
+                        pool_release(&ctx->pool, &prev_slot);
+                        vfs_unlock(vfs, prev_vp, epoch);
                     }
                     result_vp = new_pn_vp;
-                    vfs_atomic_add_i32((int32_t*)(fc_slot.bytes + FILECONTENT_OFF_PAGECOUNT), 1);
+                    /* W3: pageCount update is a simple write — we hold
+                     * the file lock and the FileContent is exclusive. */
+                    {
+                        uint32_t cur_count = (uint32_t)vfs_rd4_s(fc_slot.bytes,
+                                                                FILECONTENT_OFF_PAGECOUNT,
+                                                                ctx->page_size);
+                        vfs_wr4_s(fc_slot.bytes, FILECONTENT_OFF_PAGECOUNT,
+                                  cur_count + 1, ctx->page_size);
+                    }
                     rc = 0;
                     goto done;
                 }
@@ -458,30 +491,41 @@ int tree_resolve_page(TreeContext* ctx, int64_t file_vp,
                 pool_release(&ctx->pool, &new_slot);
                 vfs_mb_release();
 
+                /* W3: replace CAS with simple store under file lock +
+                 * prev PageNode lock (if prev_vp != 0).  No retry. */
                 if (prev_vp == 0) {
-                    int64_t old_root = vfs_cas_i64(
-                        (int64_t*)(fc_slot.bytes + FILECONTENT_OFF_ROOTPTR),
-                        0, new_pn_vp);
-                    if (old_root != 0) {
-                        fc_page_root = old_root;
-                        goto retry_walk;
-                    }
+                    /* Empty PageNode chain — set FileContent.ROOTPTR. */
+                    vfs_wr8_s(fc_slot.bytes, FILECONTENT_OFF_ROOTPTR,
+                              new_pn_vp, ctx->page_size);
                 } else {
+                    /* Append at tail — lock prev PageNode, set NEXTPTR. */
+                    if (vfs_lock(vfs, prev_vp, epoch) != VFS_OK) {
+                        pool_release(&ctx->pool, &fc_slot);
+                        pool_release(&ctx->pool, &file_slot);
+                        return -1;
+                    }
                     PoolSlot tail_slot = {0};
                     pool_acquire(&ctx->pool, prev_vp, true, &tail_slot);
-                    if (tail_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &fc_slot); pool_release(&ctx->pool, &file_slot); return -1; }
-                    int64_t old_next = vfs_cas_i64(
-                        (int64_t*)(tail_slot.bytes + PAGENODE_OFF_NEXTPTR),
-                        0, new_pn_vp);
-                    pool_release(&ctx->pool, &tail_slot);
-                    if (old_next != 0) {
-                        fc_page_root = vfs_rd8_s(fc_slot.bytes,
-                            FILECONTENT_OFF_ROOTPTR, ctx->page_size);
-                        goto retry_walk;
+                    if (tail_slot.vptr == VFS_VPTR_NULL) {
+                        vfs_unlock(vfs, prev_vp, epoch);
+                        pool_release(&ctx->pool, &fc_slot);
+                        pool_release(&ctx->pool, &file_slot);
+                        return -1;
                     }
+                    vfs_wr8_s(tail_slot.bytes, PAGENODE_OFF_NEXTPTR,
+                              new_pn_vp, ctx->page_size);
+                    pool_release(&ctx->pool, &tail_slot);
+                    vfs_unlock(vfs, prev_vp, epoch);
                 }
                 result_vp = new_pn_vp;
-                vfs_atomic_add_i32((int32_t*)(fc_slot.bytes + FILECONTENT_OFF_PAGECOUNT), 1);
+                /* W3: pageCount simple write. */
+                {
+                    uint32_t cur_count = (uint32_t)vfs_rd4_s(fc_slot.bytes,
+                                                            FILECONTENT_OFF_PAGECOUNT,
+                                                            ctx->page_size);
+                    vfs_wr4_s(fc_slot.bytes, FILECONTENT_OFF_PAGECOUNT,
+                              cur_count + 1, ctx->page_size);
+                }
                 rc = 0;
                 goto done;
             }
@@ -593,20 +637,20 @@ int tree_resolve_page(TreeContext* ctx, int64_t file_vp,
 static __thread PoolSlot _tree_resolve_compat[VFS_TREE_COMPAT_SLOTS] = {{0}};
 static __thread int      _tree_resolve_compat_next = 0;
 
-uint8_t* tree_resolve_page_compat(TreeContext* ctx, int64_t file_vp,
+uint8_t* tree_resolve_page_compat(vfs_t* vfs, int64_t file_vp,
                                    int64_t logical_page, int64_t epoch,
                                    bool is_write) {
     PoolSlot* slot = &_tree_resolve_compat[_tree_resolve_compat_next];
     _tree_resolve_compat_next = (_tree_resolve_compat_next + 1) % VFS_TREE_COMPAT_SLOTS;
-    int rc = tree_resolve_page(ctx, file_vp, logical_page, epoch, is_write, slot);
+    int rc = tree_resolve_page(vfs, file_vp, logical_page, epoch, is_write, slot);
     if (rc != 0) return NULL;
     return slot->bytes;
 }
 
-void tree_resolve_page_compat_release(TreeContext* ctx) {
+void tree_resolve_page_compat_release(vfs_t* vfs) {
     /* No-op — the rotating slot is overwritten on the next call.  Kept
        for API symmetry. */
-    (void)ctx;
+    (void)vfs;
 }
 
 /* ---------------------------------------------------------------------------
@@ -2646,15 +2690,28 @@ int vfs_truncate(vfs_t* vfs, int64_t file, int64_t new_size, int64_t epoch) {
         return VFS_ERR_EPOCH;
     }
 
+    /* Phase 26 / W3: take the file lock for the duration of the
+     * FileSize chain mutation.  This serialises vfs_truncate with
+     * concurrent vfs_write (which also holds the file lock).  The
+     * file lock is released before we fall into the grow path
+     * (which calls vfs_write and re-acquires the lock there). */
+    if (vfs_lock(vfs, file, epoch) != VFS_OK) {
+        ctx->last_error = VFS_ERR_IO;
+        return VFS_ERR_IO;
+    }
+
     /* Phase 25: by-value pool slot, pinned because the shrink path
-       modifies the FileNode's SIZEPTR via CAS on the local copy. */
+       modifies the FileNode's SIZEPTR via simple store (W3) on the
+       local copy. */
     PoolSlot file_slot = {0};
     pool_acquire(&ctx->pool, file, true, &file_slot);
     if (file_slot.vptr == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, file, epoch);
         ctx->last_error = VFS_ERR_NOTFOUND;
         return VFS_ERR_NOTFOUND;
     }
     if (vfs_rd2_s(file_slot.bytes, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE) {
+        vfs_unlock(vfs, file, epoch);
         ctx->last_error = VFS_ERR_IO;
         pool_release(&ctx->pool, &file_slot);
         return VFS_ERR_IO;
@@ -2663,58 +2720,49 @@ int vfs_truncate(vfs_t* vfs, int64_t file, int64_t new_size, int64_t epoch) {
     int64_t cur_size = vfs_file_size(vfs, file, epoch);
     if (new_size == cur_size) {
         pool_release(&ctx->pool, &file_slot);
+        vfs_unlock(vfs, file, epoch);
         return VFS_OK;
     }
 
     if (new_size < cur_size) {
         /* Shrink — append a new FileSize entry at epoch with new_size.
-           Page reclamation is deferred to GC. */
-        while (1) {
-            int64_t old_sizePtr = vfs_atomic_load_i64(
-                (const int64_t*)(file_slot.bytes + FILENODE_OFF_SIZEPTR));
-            int64_t fs_vp = pool_alloc(&ctx->pool);
-            if (fs_vp == VFS_VPTR_NULL) {
-                ctx->last_error = VFS_ERR_NOMEM;
-                pool_release(&ctx->pool, &file_slot);
-                return VFS_ERR_NOMEM;
-            }
-            /* Phase 25: by-value pool slot for the new FileSize page. */
-            PoolSlot fs_slot = {0};
-            pool_acquire(&ctx->pool, fs_vp, true, &fs_slot);
-            if (fs_slot.vptr == VFS_VPTR_NULL) {
-                ctx->last_error = VFS_ERR_NOMEM;
-                pool_release(&ctx->pool, &file_slot);
-                return VFS_ERR_NOMEM;
-            }
-            nodes_write_filesize(fs_slot.bytes, (uint32_t)epoch, (int64_t)time(NULL),
-                                 new_size, old_sizePtr, ctx->page_size);
-            /* Release fs_slot so the writeback hits the cache before we
-               try to CAS-link the entry into file_slot.SIZEPTR. */
-            pool_release(&ctx->pool, &fs_slot);
-            vfs_mb_release();
-            /* Phase 25: CAS on the local file_slot copy.  vfs_truncate
-               does not take the file lock in either OLD or NEW code, so
-               concurrent truncates were already racy; the OLD CAS gave
-               best-effort cache-level atomicity.  With copy-out the CAS
-               is local-only (each thread has its own bytes[]) and the
-               cache writeback at release is last-writer-wins.  This is
-               the same shape as the vfs_write W5 fix; if a stronger
-               guarantee is needed, vfs_truncate should take the file
-               lock (out of scope for the C1 migration). */
-            int64_t cas_res = vfs_cas_i64(
-                (int64_t*)(file_slot.bytes + FILENODE_OFF_SIZEPTR),
-                old_sizePtr, fs_vp);
-            if (cas_res == old_sizePtr) break;
+           Page reclamation is deferred to GC.  W3: simple store under
+           the file lock (held above); no CAS retry. */
+        int64_t old_sizePtr = vfs_rd8_s(file_slot.bytes, FILENODE_OFF_SIZEPTR,
+                                        ctx->page_size);
+        int64_t fs_vp = pool_alloc(&ctx->pool);
+        if (fs_vp == VFS_VPTR_NULL) {
+            vfs_unlock(vfs, file, epoch);
+            ctx->last_error = VFS_ERR_NOMEM;
+            pool_release(&ctx->pool, &file_slot);
+            return VFS_ERR_NOMEM;
         }
+        PoolSlot fs_slot = {0};
+        pool_acquire(&ctx->pool, fs_vp, true, &fs_slot);
+        if (fs_slot.vptr == VFS_VPTR_NULL) {
+            vfs_unlock(vfs, file, epoch);
+            ctx->last_error = VFS_ERR_NOMEM;
+            pool_release(&ctx->pool, &file_slot);
+            return VFS_ERR_NOMEM;
+        }
+        nodes_write_filesize(fs_slot.bytes, (uint32_t)epoch, (int64_t)time(NULL),
+                             new_size, old_sizePtr, ctx->page_size);
+        pool_release(&ctx->pool, &fs_slot);
+        vfs_mb_release();
+        /* W3: simple store under the file lock.  No retry, no CAS. */
+        vfs_wr8_s(file_slot.bytes, FILENODE_OFF_SIZEPTR, fs_vp, ctx->page_size);
         ctx->last_error = VFS_OK;
         pool_release(&ctx->pool, &file_slot);
+        vfs_unlock(vfs, file, epoch);
         return VFS_OK;
     }
 
     /* Grow — write zeros from cur_size to new_size via vfs_write
        (which handles page allocation and FileSize updates internally).
-       Release our file_slot first; vfs_write acquires its own. */
+       Release our file_slot AND the file lock first; vfs_write acquires
+       its own. */
     pool_release(&ctx->pool, &file_slot);
+    vfs_unlock(vfs, file, epoch);
 
     /* Buffer size is one page (8 KiB) to keep stack usage low — FUSE
        worker threads on macOS have small stacks.  vfs_write handles
@@ -2814,7 +2862,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
            caller-provided PoolSlot.  pinPage=true so the eventual release
            writes the local back to the cache after our CAS. */
         PoolSlot pn_slot = {0};
-        int rr_pn = tree_resolve_page(ctx, file, p, epoch, true, &pn_slot);
+        int rr_pn = tree_resolve_page(vfs, file, p, epoch, true, &pn_slot);
         if (rr_pn != 0) { pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); return -1; }
 
         /* Compute intra-page offset and count */
@@ -2912,26 +2960,25 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
                                     version_root, ctx->page_size);
             pool_release(&ctx->pool, &vp_new_slot);
 
-            /* Release barrier then CAS on pn_slot.  Phase 25: CAS on the
-               local pn_slot.bytes (per-thread).  On success we release
-               pn_slot to write the new VERSIONROOT back to the cache.
-               On failure we DISABLE the pin and skip release, so the
-               stale local does not overwrite a newer VERSIONROOT that
-               another writer may have installed. */
+            /* W3: replace CAS with simple store under the PageNode lock
+             * (acquired below).  The file lock is already held by
+             * vfs_write, so the per-PageNode lock is the second-level
+             * serialisation.  No retry loop — the lock makes the
+             * VERSIONROOT update atomic w.r.t. other writers. */
             vfs_mb_release();
-            int64_t old_root = vfs_cas_i64(
-                (int64_t*)(pn_slot.bytes + PAGENODE_OFF_VERSIONROOT),
-                version_root, vp_new);
-            if (old_root == version_root) {
-                pool_release(&ctx->pool, &pn_slot);  /* write back vp_new */
-                break;  /* CAS succeeded — exit retry loop */
+            if (vfs_lock(vfs, pn_slot.vptr, epoch) != VFS_OK) {
+                /* Lock failed — release pn_slot (discard pin) and bail. */
+                pn_slot.pinnedPage = 0;
+                pool_release(&ctx->pool, &pn_slot);
+                pool_release(&ctx->pool, &file_slot);
+                vfs_unlock(vfs, file, epoch);
+                return -1;
             }
-            /* CAS failed — discard the local so we don't overwrite the
-               cache with our stale VERSIONROOT.  Re-acquire on next iter
-               picks up whatever another writer installed. */
-            pn_slot.pinnedPage = 0;
-            pool_release(&ctx->pool, &pn_slot);
-            /* Our orphaned data page and VersionPage will be reclaimed by GC. */
+            vfs_wr8_s(pn_slot.bytes, PAGENODE_OFF_VERSIONROOT, vp_new,
+                      ctx->page_size);
+            vfs_unlock(vfs, pn_slot.vptr, epoch);
+            pool_release(&ctx->pool, &pn_slot);  /* write back vp_new */
+            break;  /* lock-based store succeeded — exit retry loop */
         }
 
         src += page_count;
@@ -3027,7 +3074,7 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
         /* Phase 25: tree_resolve_page writes the PageNode into pn_slot
            (read-only, pinPage=false).  Local is independent of cache. */
         PoolSlot pn_slot = {0};
-        int rr_pn = tree_resolve_page(ctx, file, p, read_epoch, false, &pn_slot);
+        int rr_pn = tree_resolve_page(vfs, file, p, read_epoch, false, &pn_slot);
         if (rr_pn != 0) {
             /* Page doesn't exist → zero-fill this portion */
             int64_t page_offset = (p == first_page) ? offset % page_size : 0;
