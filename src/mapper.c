@@ -14,14 +14,17 @@ int mapper_insert(Mapper* m, uint32_t fromEpoch, uint32_t toEpoch,
     /* Walk the chain to enforce single-hop invariant */
     int64_t vp = *m->epochMapperPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve_ro(m->pool, vp);
-        if (!slot) return VFS_ERR_IO;
+        /* Phase 25: by-value pool slot (read-only). */
+        PoolSlot slot = {0};
+        pool_acquire(m->pool, vp, false, &slot);
+        if (slot.vptr == VFS_VPTR_NULL) return VFS_ERR_IO;
 
         uint32_t entry_from, entry_to;
         uint16_t entry_flags;
         int64_t entry_next;
-        nodes_read_mapperentry(slot, &entry_from, &entry_to,
+        nodes_read_mapperentry(slot.bytes, &entry_from, &entry_to,
                                &entry_flags, &entry_next, m->pool->sb->page_size);
+        pool_release(m->pool, &slot);
 
         /* Check if fromEpoch is already used as a source */
         if (entry_from == fromEpoch) return VFS_ERR_EXISTS;
@@ -39,16 +42,20 @@ int mapper_insert(Mapper* m, uint32_t fromEpoch, uint32_t toEpoch,
     int64_t new_vp = pool_alloc(m->pool);
     if (new_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
 
-    uint8_t* new_slot = pool_resolve_rw(m->pool, new_vp);
-    if (!new_slot) return VFS_ERR_IO;
+    /* Phase 25: by-value pool slot, pinned (we write the MapperEntry
+       content + release persists it to the cache). */
+    PoolSlot new_slot = {0};
+    pool_acquire(m->pool, new_vp, true, &new_slot);
+    if (new_slot.vptr == VFS_VPTR_NULL) return VFS_ERR_IO;
 
     /* CAS-prepend to chain head */
     int64_t old_head;
     do {
         old_head = vfs_atomic_load_i64(m->epochMapperPtr);
-        nodes_write_mapperentry(new_slot, fromEpoch, toEpoch, flags, old_head, m->pool->sb->page_size);
+        nodes_write_mapperentry(new_slot.bytes, fromEpoch, toEpoch, flags, old_head, m->pool->sb->page_size);
         vfs_mb_release();
     } while (vfs_cas_i64(m->epochMapperPtr, old_head, new_vp) != old_head);
+    pool_release(m->pool, &new_slot);
 
     return VFS_OK;
 }
@@ -59,14 +66,17 @@ int64_t mapper_resolve(Mapper* m, int64_t epoch) {
     uint32_t query = (uint32_t)epoch;
     int64_t vp = *m->epochMapperPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve_ro(m->pool, vp);
-        if (!slot) break;
+        /* Phase 25: by-value pool slot (read-only). */
+        PoolSlot slot = {0};
+        pool_acquire(m->pool, vp, false, &slot);
+        if (slot.vptr == VFS_VPTR_NULL) break;
 
         uint32_t entry_from, entry_to;
         uint16_t entry_flags;
         int64_t entry_next;
-        nodes_read_mapperentry(slot, &entry_from, &entry_to,
+        nodes_read_mapperentry(slot.bytes, &entry_from, &entry_to,
                                &entry_flags, &entry_next, m->pool->sb->page_size);
+        pool_release(m->pool, &slot);
         (void)entry_flags;
 
         if (entry_from == query) return (int64_t)entry_to;
@@ -82,14 +92,17 @@ bool mapper_traversal_apply(Mapper* m, int64_t epoch) {
     uint32_t query = (uint32_t)epoch;
     int64_t vp = *m->epochMapperPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve_ro(m->pool, vp);
-        if (!slot) break;
+        /* Phase 25: by-value pool slot (read-only). */
+        PoolSlot slot = {0};
+        pool_acquire(m->pool, vp, false, &slot);
+        if (slot.vptr == VFS_VPTR_NULL) break;
 
         uint32_t entry_from, entry_to;
         uint16_t entry_flags;
         int64_t entry_next;
-        nodes_read_mapperentry(slot, &entry_from, &entry_to,
+        nodes_read_mapperentry(slot.bytes, &entry_from, &entry_to,
                                &entry_flags, &entry_next, m->pool->sb->page_size);
+        pool_release(m->pool, &slot);
         (void)entry_to;
 
         if (entry_from == query) return (entry_flags & MAPPER_FLAG_TRAVERSAL_APPLY) != 0;
@@ -105,14 +118,17 @@ int mapper_validate(Mapper* m) {
     int count = 0;
     int64_t vp = *m->epochMapperPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve_ro(m->pool, vp);
-        if (!slot) return VFS_ERR_IO;
+        /* Phase 25: by-value pool slot (read-only). */
+        PoolSlot slot = {0};
+        pool_acquire(m->pool, vp, false, &slot);
+        if (slot.vptr == VFS_VPTR_NULL) return VFS_ERR_IO;
 
         uint32_t entry_from, entry_to;
         uint16_t entry_flags;
         int64_t entry_next;
-        nodes_read_mapperentry(slot, &entry_from, &entry_to,
+        nodes_read_mapperentry(slot.bytes, &entry_from, &entry_to,
                                &entry_flags, &entry_next, m->pool->sb->page_size);
+        pool_release(m->pool, &slot);
         (void)entry_from; (void)entry_to; (void)entry_flags;
 
         count++;
@@ -139,12 +155,15 @@ int mapper_table_init(MapperTable* tbl, Pool* pool, int64_t* epochMapperPtr) {
     if (epochMapperPtr) {
         int64_t vp = *epochMapperPtr;
         while (vp != 0) {
-            uint8_t* slot = pool_resolve_ro(pool, vp);
-            if (!slot) return VFS_ERR_IO;
+            /* Phase 25: by-value pool slot (read-only). */
+            PoolSlot slot = {0};
+            pool_acquire(pool, vp, false, &slot);
+            if (slot.vptr == VFS_VPTR_NULL) return VFS_ERR_IO;
             uint32_t fromE, toE;
             uint16_t flags;
             int64_t next;
-            nodes_read_mapperentry(slot, &fromE, &toE, &flags, &next, pool->sb->page_size);
+            nodes_read_mapperentry(slot.bytes, &fromE, &toE, &flags, &next, pool->sb->page_size);
+            pool_release(pool, &slot);
 
             /* Grow array if full */
             if (tbl->count >= tbl->capacity) {
@@ -252,14 +271,17 @@ int mapper_table_rebuild(MapperTable* tbl) {
     if (mapper_ptr) {
         int64_t vp = *mapper_ptr;
         while (vp != 0) {
-            uint8_t* slot = pool_resolve_ro(tbl->pool, vp);
-            if (!slot) return VFS_ERR_IO;
+            /* Phase 25: by-value pool slot (read-only). */
+            PoolSlot slot = {0};
+            pool_acquire(tbl->pool, vp, false, &slot);
+            if (slot.vptr == VFS_VPTR_NULL) return VFS_ERR_IO;
 
             uint32_t fromE, toE;
             uint16_t flags;
             int64_t next;
-            nodes_read_mapperentry(slot, &fromE, &toE, &flags, &next,
+            nodes_read_mapperentry(slot.bytes, &fromE, &toE, &flags, &next,
                                     tbl->pool->sb->page_size);
+            pool_release(tbl->pool, &slot);
 
             if (tbl->count >= tbl->capacity) {
                 int new_cap = tbl->capacity * 2;

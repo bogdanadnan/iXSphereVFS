@@ -185,18 +185,9 @@ int64_t pool_alloc(Pool* pool) {
     }
 }
 
-/* ---------------------------------------------------------------------------
- * pool_resolve (Workload 3.3)
- *
- * Resolve a VirtualPtr to a pointer into the page cache buffer.
- *
- * writable=0  — read-only, no dirty mark.
- * writable!=0 — mark the page dirty (FLUSH_PRIO_POOL) AFTER the cache
- *               layer returns the buffer, so any eviction racing the
- *               caller's subsequent write sees the page as dirty
- *               (cache_evict only drops clean entries).
- * --------------------------------------------------------------------------- */
-
+/* Phase 25: TEST-ONLY compat wrappers (see pool.h for rationale).
+   These return raw pointers into the cache (the OLD API shape) for
+   the test suite.  Production code uses the safe by-value API. */
 uint8_t* pool_resolve(Pool* pool, int64_t vptr, int writable) {
     if (vptr == VFS_VPTR_NULL) return NULL;
 
@@ -211,4 +202,79 @@ uint8_t* pool_resolve(Pool* pool, int64_t vptr, int writable) {
     }
 
     return payload + VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
+}
+
+/* ---------------------------------------------------------------------------
+ * pool_acquire / pool_release — Phase 25 (C1 fix) by-value pool API
+ *
+ * Copy 32 bytes from the pool page into a stack-local PoolSlot. The
+ * caller's working copy is never a pointer into the cache payload, so
+ * it cannot be invalidated by cache eviction. `pool_release` writes
+ * the bytes back (when pinned) and re-marks the page dirty.
+ *
+ * The pin state lives in the struct (slot->pinnedPage), not in the
+ * function signatures, so the lifecycle is self-documenting and a
+ * stray pool_release is a safe no-op rather than a write of stale
+ * data back to the page.
+ * --------------------------------------------------------------------------- */
+
+void pool_acquire(Pool* pool, int64_t vptr, bool pinPage, PoolSlot* out) {
+    if (!pool || !out) return;
+
+    out->vptr = vptr;
+    out->pinnedPage = 0;  /* default: not pinned; only set true after success */
+    memset(out->bytes, 0, VFS_POOL_SLOT_SIZE);
+
+    if (vptr == VFS_VPTR_NULL) {
+        /* Invalid virtual pointer — leave bytes zeroed, no pin. */
+        return;
+    }
+
+    int64_t page_index = VFS_VPTR_PAGE(vptr);
+    int     slot_index = VFS_VPTR_SLOT(vptr);
+    int     slot_offset = VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
+
+    uint8_t* payload = storage_read(pool->sb, page_index);
+    if (payload == NULL) {
+        /* Page not in cache and not on disk — leave bytes zeroed, no pin.
+           Caller's type/field checks will detect the invalid slot. */
+        return;
+    }
+
+    memcpy(out->bytes, payload + slot_offset, VFS_POOL_SLOT_SIZE);
+
+    if (pinPage) {
+        /* Pin: mark the cache page dirty so it can't be evicted for
+           the duration of the call. This is a perf optimization — the
+           C1 hazard is closed by the copy-out itself, not by this mark. */
+        cache_mark_dirty(&pool->sb->cache, page_index, FLUSH_PRIO_POOL);
+        out->pinnedPage = 1;
+    }
+}
+
+void pool_release(Pool* pool, PoolSlot* slot) {
+    if (!pool || !slot) return;
+
+    /* No-op if the slot wasn't pinned, or has already been released.
+       The struct's pin state is the source of truth — no caller flag
+       needed. */
+    if (slot->pinnedPage == 0) return;
+
+    /* The page was pinned at acquire, so it should be in cache. If
+       something exotic happened (e.g., cache reset), storage_read
+       may still miss — bail safely without writing back. */
+    int64_t page_index = VFS_VPTR_PAGE(slot->vptr);
+    int     slot_index = VFS_VPTR_SLOT(slot->vptr);
+    int     slot_offset = VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
+
+    uint8_t* payload = storage_read(pool->sb, page_index);
+    if (payload != NULL) {
+        memcpy(payload + slot_offset, slot->bytes, VFS_POOL_SLOT_SIZE);
+    }
+    /* Mark dirty regardless — keeps the page resident and ensures the
+       bytes are flushed on the next Flush(-1). Idempotent. */
+    cache_mark_dirty(&pool->sb->cache, page_index, FLUSH_PRIO_POOL);
+
+    /* Clear pin state so a stray second release is a safe no-op. */
+    slot->pinnedPage = 0;
 }

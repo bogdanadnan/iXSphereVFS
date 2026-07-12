@@ -570,7 +570,7 @@ static void test_resolve_page_growth(void) {
     CHECK(seg_size > 0);
 
     /* Resolve page 0 — should create first segment */
-    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0, true);
+    uint8_t* pn0 = tree_resolve_page_compat(ctx, file_vp, 0, 0, true);
     CHECK(pn0 != NULL);
 
     /* Verify it's a PageNode with versionRootPtr=0 (never written) */
@@ -578,20 +578,20 @@ static void test_resolve_page_growth(void) {
     CHECK_EQ((uint32_t)vfs_rd4_s(pn0, PAGENODE_OFF_PAGEINDEX, ctx->page_size), 0u);
 
     /* Resolve page 1 — should allocate a second PageNode */
-    uint8_t* pn1 = tree_resolve_page(ctx, file_vp, 1, 0, true);
+    uint8_t* pn1 = tree_resolve_page_compat(ctx, file_vp, 1, 0, true);
     CHECK(pn1 != NULL);
     CHECK_EQ(vfs_rd8(pn1, PAGENODE_OFF_VERSIONROOT), 0);
     CHECK_EQ((uint32_t)vfs_rd4_s(pn1, PAGENODE_OFF_PAGEINDEX, ctx->page_size), 1u);
 
     /* Resolve page at segment boundary — should create second segment */
-    uint8_t* pn_first_new = tree_resolve_page(ctx, file_vp, seg_size, 0, true);
+    uint8_t* pn_first_new = tree_resolve_page_compat(ctx, file_vp, seg_size, 0, true);
     CHECK(pn_first_new != NULL);
     CHECK_EQ(vfs_rd8(pn_first_new, PAGENODE_OFF_VERSIONROOT), 0);
     CHECK_EQ((uint32_t)vfs_rd4_s(pn_first_new, PAGENODE_OFF_PAGEINDEX, ctx->page_size), 0u);
 
     /* Resolve page 0 again — cache may have been invalidated by second segment.
        Just verify it still works. */
-    pn0 = tree_resolve_page(ctx, file_vp, 0, 0, false);
+    pn0 = tree_resolve_page_compat(ctx, file_vp, 0, 0, false);
     CHECK(pn0 != NULL);
 
     vfs_unmount(vfs);
@@ -728,7 +728,7 @@ static void test_write_in_place(void) {
     CHECK_EQ(ret, 4);
 
     /* Count VersionPages for page 0 after first write */
-    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0, false);
+    uint8_t* pn0 = tree_resolve_page_compat(ctx, file_vp, 0, 0, false);
     CHECK(pn0 != NULL);
     int64_t vp = vfs_atomic_load_i64((const int64_t*)(pn0 + PAGENODE_OFF_VERSIONROOT));
     int count_before = 0;
@@ -746,7 +746,7 @@ static void test_write_in_place(void) {
     CHECK_EQ(ret, 4);
 
     /* Count VersionPages again — should still be 1 (in-place) */
-    pn0 = tree_resolve_page(ctx, file_vp, 0, 0, false);
+    pn0 = tree_resolve_page_compat(ctx, file_vp, 0, 0, false);
     CHECK(pn0 != NULL);
     vp = vfs_atomic_load_i64((const int64_t*)(pn0 + PAGENODE_OFF_VERSIONROOT));
     int count_after = 0;
@@ -801,7 +801,7 @@ static void test_write_cow_epoch(void) {
     CHECK_EQ(strncmp(rbuf, "BBBB", 4), 0);
 
     /* VersionPage count should be 2 now (one per epoch) */
-    uint8_t* pn0 = tree_resolve_page(ctx, file_vp, 0, 0, false);
+    uint8_t* pn0 = tree_resolve_page_compat(ctx, file_vp, 0, 0, false);
     CHECK(pn0 != NULL);
     int64_t vp = vfs_atomic_load_i64((const int64_t*)(pn0 + PAGENODE_OFF_VERSIONROOT));
     int count = 0;
@@ -1453,7 +1453,7 @@ static void test_sparse_small_file(void) {
     CHECK_EQ(vfs_write(vfs, file_vp, wbuf, 0, (int64_t)sizeof(wbuf), 0), (int)sizeof(wbuf));
 
     /* Resolve page 0 — should return the existing PageNode */
-    uint8_t* pn_slot = tree_resolve_page(ctx, file_vp, 0, 0, true);
+    uint8_t* pn_slot = tree_resolve_page_compat(ctx, file_vp, 0, 0, true);
     CHECK(pn_slot != NULL);
 
     /* Assert page_index == 0 */
@@ -1494,13 +1494,13 @@ static void test_sparse_chain_mid_insert(void) {
     CHECK(file_vp > 0);
 
     /* Resolve page 5 first — allocates PageNode with idx=5 */
-    uint8_t* pn5 = tree_resolve_page(ctx, file_vp, 5, 0, true);
+    uint8_t* pn5 = tree_resolve_page_compat(ctx, file_vp, 5, 0, true);
     CHECK(pn5 != NULL);
     uint32_t idx5 = (uint32_t)vfs_rd4_s(pn5, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
     CHECK_EQ(idx5, 5u);
 
     /* Resolve page 2 — should insert at head (before idx=5) */
-    uint8_t* pn2 = tree_resolve_page(ctx, file_vp, 2, 0, true);
+    uint8_t* pn2 = tree_resolve_page_compat(ctx, file_vp, 2, 0, true);
     CHECK(pn2 != NULL);
     uint32_t idx2 = (uint32_t)vfs_rd4_s(pn2, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
     CHECK_EQ(idx2, 2u);
@@ -1542,13 +1542,13 @@ static void test_sparse_chain_tail_append(void) {
     CHECK(file_vp > 0);
 
     /* Resolve page 2 first */
-    uint8_t* pn2 = tree_resolve_page(ctx, file_vp, 2, 0, true);
+    uint8_t* pn2 = tree_resolve_page_compat(ctx, file_vp, 2, 0, true);
     CHECK(pn2 != NULL);
     uint32_t idx2 = (uint32_t)vfs_rd4_s(pn2, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
     CHECK_EQ(idx2, 2u);
 
     /* Resolve page 7 — should append at tail (after idx=2) */
-    uint8_t* pn7 = tree_resolve_page(ctx, file_vp, 7, 0, true);
+    uint8_t* pn7 = tree_resolve_page_compat(ctx, file_vp, 7, 0, true);
     CHECK(pn7 != NULL);
     uint32_t idx7 = (uint32_t)vfs_rd4_s(pn7, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
     CHECK_EQ(idx7, 7u);
@@ -1597,11 +1597,11 @@ static void test_sparse_threshold_cache(void) {
      * With sparse allocation, the cache may or may not trigger at exactly
      * 64 pages — the threshold behavior differs from the old dense model. */
     for (int i = 0; i < 64; i++) {
-        uint8_t* pn = tree_resolve_page(ctx, file_vp, (int64_t)i, 0, true);
+        uint8_t* pn = tree_resolve_page_compat(ctx, file_vp, (int64_t)i, 0, true);
         CHECK(pn != NULL);
     }
     /* Resolve page 64 — at least one cache build should have occurred */
-    uint8_t* pn = tree_resolve_page(ctx, file_vp, 64, 0, true);
+    uint8_t* pn = tree_resolve_page_compat(ctx, file_vp, 64, 0, true);
     CHECK(pn != NULL);
     int after_65 = tree_resolve_page_cache_builds_get() - baseline;
     CHECK(after_65 >= 1);  /* at least one build by now */
@@ -1620,7 +1620,7 @@ static void test_sparse_read_no_allocate(void) {
     CHECK(file_vp > 0);
 
     /* Read attempt on unwritten page — should return NULL, no allocation */
-    uint8_t* pn = tree_resolve_page(ctx, file_vp, 5, 0, false);
+    uint8_t* pn = tree_resolve_page_compat(ctx, file_vp, 5, 0, false);
     CHECK(pn == NULL);
 
     /* Assert no FileContent was allocated */
@@ -1630,7 +1630,7 @@ static void test_sparse_read_no_allocate(void) {
     CHECK_EQ(fc_vp, 0);
 
     /* Write to page 5 — should allocate exactly 1 PageNode */
-    pn = tree_resolve_page(ctx, file_vp, 5, 0, true);
+    pn = tree_resolve_page_compat(ctx, file_vp, 5, 0, true);
     CHECK(pn != NULL);
     uint32_t idx = (uint32_t)vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
     CHECK_EQ(idx, 5u);
@@ -1683,7 +1683,7 @@ static void test_sparse_gc_roundtrip(void) {
     ctx = vfs->ctx;
 
     /* Resolve page 0 */
-    uint8_t* pn = tree_resolve_page(ctx, file_vp, 0, 0, true);
+    uint8_t* pn = tree_resolve_page_compat(ctx, file_vp, 0, 0, true);
     CHECK(pn != NULL);
     uint32_t idx = (uint32_t)vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
     CHECK_EQ(idx, 0u);
@@ -1729,7 +1729,7 @@ static void test_sparse_cow_chain(void) {
     CHECK_EQ(strcmp(rbuf, "BBBB"), 0);
 
     /* Resolve page 0 — still has single PageNode with page_index==0 */
-    uint8_t* pn = tree_resolve_page(ctx, file_vp, 0, 0, false);
+    uint8_t* pn = tree_resolve_page_compat(ctx, file_vp, 0, 0, false);
     CHECK(pn != NULL);
     uint32_t idx = (uint32_t)vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
     CHECK_EQ(idx, 0u);
@@ -1755,8 +1755,8 @@ static void* conc_insert_thread(void* arg) {
     /* Signal ready and wait for the other thread */
     __sync_fetch_and_add(a->ready, 1);
     while (__sync_fetch_and_add(a->ready, 0) < 2) { /* spin */ }
-    uint8_t* pn = tree_resolve_page(a->vfs->ctx, a->file_vp,
-                                     a->page_idx, 0, true);
+    uint8_t* pn = tree_resolve_page_compat(a->vfs->ctx, a->file_vp,
+                                            a->page_idx, 0, true);
     if (pn) {
         uint32_t idx = (uint32_t)vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, a->vfs->ctx->page_size);
         a->success = (idx == (uint32_t)a->page_idx);
@@ -1774,7 +1774,7 @@ static void test_sparse_concurrent_insert(void) {
     CHECK(file_vp > 0);
 
     /* Phase 1: pre-resolve page 3 so the FileContent chain exists */
-    uint8_t* pn3 = tree_resolve_page(ctx, file_vp, 3, 0, true);
+    uint8_t* pn3 = tree_resolve_page_compat(ctx, file_vp, 3, 0, true);
     CHECK(pn3 != NULL);
     CHECK_EQ((uint32_t)vfs_rd4_s(pn3, PAGENODE_OFF_PAGEINDEX, ctx->page_size), 3u);
 

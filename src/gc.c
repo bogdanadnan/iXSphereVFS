@@ -236,9 +236,13 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                     LivePageSet* lps) {
     if (!ctx || !gc_map || !alloc || dir_vp == 0) return VFS_ERR_IO;
 
-    uint8_t* dir_slot = pool_resolve_ro(&ctx->pool, dir_vp);
-    if (!dir_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(dir_slot, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+    /* Phase 25: by-value pool slots (read-only paths, pinPage=false).
+       GC is a sequential walk — no slot is held across an allocation,
+       so the copy-out closes the C1 hazard without any pin. */
+    PoolSlot dir_slot = {0};
+    pool_acquire(&ctx->pool, dir_vp, false, &dir_slot);
+    if (dir_slot.vptr == VFS_VPTR_NULL) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2_s(dir_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
         return VFS_ERR_NOTDIR;
 
     /* Allocate destination for the DirNode entry */
@@ -249,25 +253,28 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     }
     int64_t new_dir_vp = VFS_VPTR_MAKE(VFS_VPTR_PAGE(alloc->cur_page_vp),
                                         alloc->cur_slot);
-    uint8_t* new_dir_slot = pool_resolve_ro(&ctx->pool, new_dir_vp);
-    if (!new_dir_slot) return VFS_ERR_IO;
+    PoolSlot new_dir_slot = {0};
+    pool_acquire(&ctx->pool, new_dir_vp, false, &new_dir_slot);
+    if (new_dir_slot.vptr == VFS_VPTR_NULL) return VFS_ERR_IO;
     alloc->cur_slot++;
 
     /* Copy the DirNode with remapping */
-    gc_copy_entry(gc_map, dir_vp, new_dir_vp, dir_slot, new_dir_slot, ctx->page_size);
+    gc_copy_entry(gc_map, dir_vp, new_dir_vp, dir_slot.bytes, new_dir_slot.bytes, ctx->page_size);
 
     /* Read the old headPtr and delegate DirContent chain walk to the
        dedicated function which applies full survival rules. */
-    int64_t headPtr = vfs_rd8_s(dir_slot, DIRNODE_OFF_HEADPTR, ctx->page_size);
+    int64_t headPtr = vfs_rd8_s(dir_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
+    pool_release(&ctx->pool, &dir_slot);
     int err = gc_walk_dircontent_chain(ctx, gc_map, alloc, headPtr, epoch, lps);
-    if (err != VFS_OK) return err;
+    if (err != VFS_OK) { pool_release(&ctx->pool, &new_dir_slot); return err; }
 
     /* Remap the new DirNode's headPtr from the old headPtr.
        gc_walk_dircontent_chain copies surviving entries and records their
        old→new VirtualPtr mappings in gc_map.  We look up the old headPtr
        to get the new headPtr for the first DirContent entry. */
     int64_t new_headPtr = gc_map_get(gc_map, headPtr);
-    vfs_wr8_s(new_dir_slot, DIRNODE_OFF_HEADPTR, new_headPtr, ctx->page_size);
+    vfs_wr8_s(new_dir_slot.bytes, DIRNODE_OFF_HEADPTR, new_headPtr, ctx->page_size);
+    pool_release(&ctx->pool, &new_dir_slot);
 
     return VFS_OK;
 }
@@ -283,9 +290,13 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     if (!ctx || !gc_map || !alloc || file_vp == 0) return VFS_ERR_IO;
     (void)epoch;
 
-    uint8_t* file_slot = pool_resolve_ro(&ctx->pool, file_vp);
-    if (!file_slot) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(file_slot, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE)
+    /* Phase 25: by-value pool slots (read-only, pinPage=false).  GC is
+       a sequential walk — no slot is held across an allocation, so the
+       copy-out closes the C1 hazard without any pin. */
+    PoolSlot file_slot = {0};
+    pool_acquire(&ctx->pool, file_vp, false, &file_slot);
+    if (file_slot.vptr == VFS_VPTR_NULL) return VFS_ERR_NOTFOUND;
+    if (vfs_rd2_s(file_slot.bytes, FILENODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_FILE)
         return VFS_ERR_IO;
 
     /* Local allocation helper */
@@ -301,17 +312,20 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     GC_NEXT_SLOT();
     int64_t new_file_vp = VFS_VPTR_MAKE(VFS_VPTR_PAGE(alloc->cur_page_vp),
                                          alloc->cur_slot);
-    uint8_t* new_file_slot = pool_resolve_ro(&ctx->pool, new_file_vp);
-    if (!new_file_slot) return VFS_ERR_IO;
+    PoolSlot new_file_slot = {0};
+    pool_acquire(&ctx->pool, new_file_vp, false, &new_file_slot);
+    if (new_file_slot.vptr == VFS_VPTR_NULL) return VFS_ERR_IO;
     alloc->cur_slot++;
 
     /* Copy the FileNode with remapping */
-    gc_copy_entry(gc_map, file_vp, new_file_vp, file_slot, new_file_slot, ctx->page_size);
+    gc_copy_entry(gc_map, file_vp, new_file_vp, file_slot.bytes, new_file_slot.bytes, ctx->page_size);
+    pool_release(&ctx->pool, &new_file_slot);
 
     /* Walk FileSize chain via gc_walk_filesize_chain — handles survival rules
        and returns the highest surviving file size for segment pruning. */
     int64_t highest_file_size = 0;
-    int64_t size_vp = vfs_rd8_s(file_slot, FILENODE_OFF_SIZEPTR, ctx->page_size);
+    int64_t size_vp = vfs_rd8_s(file_slot.bytes, FILENODE_OFF_SIZEPTR, ctx->page_size);
+    pool_release(&ctx->pool, &file_slot);
     int err_fs = gc_walk_filesize_chain(ctx, gc_map, alloc, size_vp, epoch,
                                          &highest_file_size);
     if (err_fs != VFS_OK) return err_fs;
@@ -319,11 +333,15 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     /* Walk FileContent chain.
        Skip segments whose page range is beyond the highest surviving
        file size bound (nothing above that size is reachable). */
-    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    int64_t fc_vp_walk = vfs_rd8_s(file_slot.bytes, FILENODE_OFF_HEADPTR, ctx->page_size);
+    /* file_slot is no longer needed — release now to shrink live set. */
+    pool_release(&ctx->pool, &file_slot);
+    int64_t fc_vp = fc_vp_walk;
     int64_t seg_idx = 0;
     while (fc_vp != 0) {
-        uint8_t* fc_slot = pool_resolve_ro(&ctx->pool, fc_vp);
-        if (!fc_slot) break;
+        PoolSlot fc_slot = {0};
+        pool_acquire(&ctx->pool, fc_vp, false, &fc_slot);
+        if (fc_slot.vptr == VFS_VPTR_NULL) break;
 
         /* Skip segments beyond the highest surviving file size.
          * NOTE: sparse segments are pruned identically to dense ones —
@@ -331,14 +349,16 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
          * not on PageNode density. */
         if (highest_file_size > 0 &&
             (seg_idx * (int64_t)ctx->segment_size * ctx->sb->page_size) >= highest_file_size) {
-            int64_t fc_next = vfs_rd8_s(fc_slot, FILECONTENT_OFF_NEXTPTR, ctx->page_size);
+            int64_t fc_next = vfs_rd8_s(fc_slot.bytes, FILECONTENT_OFF_NEXTPTR, ctx->page_size);
+            pool_release(&ctx->pool, &fc_slot);
             fc_vp = fc_next;
             seg_idx++;
             continue;
         }
 
-        int64_t fc_page_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
-        int64_t fc_next = vfs_rd8_s(fc_slot, FILECONTENT_OFF_NEXTPTR, ctx->page_size);
+        int64_t fc_page_root = vfs_rd8_s(fc_slot.bytes, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+        int64_t fc_next = vfs_rd8_s(fc_slot.bytes, FILECONTENT_OFF_NEXTPTR, ctx->page_size);
+        pool_release(&ctx->pool, &fc_slot);
 
         /* Walk PageNode chain within this FileContent segment.
          * nextPtr semantics are unchanged for sparse chains — the same
@@ -348,17 +368,21 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
 
         /* First pass: count live VersionPages to decide if segment survives */
         while (pn_vp != 0) {
-            uint8_t* pn_slot = pool_resolve_ro(&ctx->pool, pn_vp);
-            if (!pn_slot) break;
+            PoolSlot pn_slot = {0};
+            pool_acquire(&ctx->pool, pn_vp, false, &pn_slot);
+            if (pn_slot.vptr == VFS_VPTR_NULL) break;
 
-            int64_t vp_chain = vfs_rd8_s(pn_slot, PAGENODE_OFF_VERSIONROOT, ctx->page_size);
+            int64_t vp_chain = vfs_rd8_s(pn_slot.bytes, PAGENODE_OFF_VERSIONROOT, ctx->page_size);
+            int pn_seg_live = 0;
             while (vp_chain != 0) {
-                uint8_t* vp_slot = pool_resolve_ro(&ctx->pool, vp_chain);
-                if (!vp_slot) break;
+                PoolSlot vp_slot = {0};
+                pool_acquire(&ctx->pool, vp_chain, false, &vp_slot);
+                if (vp_slot.vptr == VFS_VPTR_NULL) break;
                 uint32_t vp_epoch;
                 int64_t vp_dataPage, vp_next;
-                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
+                nodes_read_versionpage(vp_slot.bytes, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
                 (void)vp_dataPage;
+                pool_release(&ctx->pool, &vp_slot);
 
                 int live = 1;
                 if (vp_epoch % 2 == 1) {
@@ -368,55 +392,62 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                         }
                     }
                 }
-                if (live) { segment_has_live = 1; break; }
+                if (live) { pn_seg_live = 1; break; }
                 vp_chain = vp_next;
             }
-            if (segment_has_live) break;
-            pn_vp = vfs_rd8_s(pn_slot, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+            if (pn_seg_live) {
+                segment_has_live = 1;
+                pool_release(&ctx->pool, &pn_slot);
+                break;
+            }
+            int64_t pn_next_loop = vfs_rd8_s(pn_slot.bytes, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+            pool_release(&ctx->pool, &pn_slot);
+            pn_vp = pn_next_loop;
         }
 
         if (!segment_has_live) { fc_vp = fc_next; seg_idx++; continue; }
 
-        /* Copy the FileContent segment */
+        /* Copy the FileContent segment.  Re-acquire fc_slot (already
+           released above after extracting fc_page_root/fc_next). */
         GC_NEXT_SLOT();
         int64_t new_fc_vp = VFS_VPTR_MAKE(
             VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-        uint8_t* new_fc_slot = pool_resolve_ro(&ctx->pool, new_fc_vp);
-        if (!new_fc_slot) return VFS_ERR_IO;
+        PoolSlot new_fc_slot = {0};
+        pool_acquire(&ctx->pool, new_fc_vp, false, &new_fc_slot);
+        if (new_fc_slot.vptr == VFS_VPTR_NULL) return VFS_ERR_IO;
         alloc->cur_slot++;
-        gc_copy_entry(gc_map, fc_vp, new_fc_vp, fc_slot, new_fc_slot, ctx->page_size);
+        /* Re-acquire fc_slot for the copy source.  Phase 25: gc_copy_entry
+           takes a raw pointer; we pass &slot.bytes. */
+        PoolSlot fc_slot_src = {0};
+        pool_acquire(&ctx->pool, fc_vp, false, &fc_slot_src);
+        if (fc_slot_src.vptr != VFS_VPTR_NULL) {
+            gc_copy_entry(gc_map, fc_vp, new_fc_vp, fc_slot_src.bytes, new_fc_slot.bytes, ctx->page_size);
+        }
+        pool_release(&ctx->pool, &fc_slot_src);
+        pool_release(&ctx->pool, &new_fc_slot);
 
-        /* Walk PageNode chain to copy live version pages.
-         * Sparse chains are walked identically — nextPtr pointers
-         * are followed in insertion order, independent of density.
-         *
-         * Sparse-chain notes:
-         * (a) Chains may be sparse — gaps in page_index are expected and
-         *     handled correctly by the nextPtr walk.
-         * (b) GC work is proportional to the number of allocated PageNodes,
-         *     not segment_size.  Empty (unwritten) pages have no PageNode.
-         * (c) page_index at offset 16 (uint32_t, range 0..segment_size-1)
-         *     is NOT remapped by gc_copy_entry — its value range cannot
-         *     collide with valid VirtualPtrs (min VirtualPtr = page 2 << 16
-         *     = 131072). */
+        /* Walk PageNode chain to copy live version pages. */
         pn_vp = fc_page_root;
         while (pn_vp != 0) {
-            uint8_t* pn_slot = pool_resolve_ro(&ctx->pool, pn_vp);
-            if (!pn_slot) break;
-            int64_t pn_next = vfs_rd8_s(pn_slot, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+            PoolSlot pn_slot = {0};
+            pool_acquire(&ctx->pool, pn_vp, false, &pn_slot);
+            if (pn_slot.vptr == VFS_VPTR_NULL) break;
+            int64_t pn_next = vfs_rd8_s(pn_slot.bytes, PAGENODE_OFF_NEXTPTR, ctx->page_size);
 
-            int64_t vp_chain = vfs_rd8_s(pn_slot, PAGENODE_OFF_VERSIONROOT, ctx->page_size);
+            int64_t vp_chain = vfs_rd8_s(pn_slot.bytes, PAGENODE_OFF_VERSIONROOT, ctx->page_size);
             int pn_has_live = 0;
 
             /* Check if any VersionPage in this PageNode survives */
             int64_t vp_walk = vp_chain;
             while (vp_walk != 0) {
-                uint8_t* vp_slot = pool_resolve_ro(&ctx->pool, vp_walk);
-                if (!vp_slot) break;
+                PoolSlot vp_slot = {0};
+                pool_acquire(&ctx->pool, vp_walk, false, &vp_slot);
+                if (vp_slot.vptr == VFS_VPTR_NULL) break;
                 uint32_t vp_epoch;
                 int64_t vp_dataPage, vp_next;
-                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
+                nodes_read_versionpage(vp_slot.bytes, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
                 (void)vp_dataPage;
+                pool_release(&ctx->pool, &vp_slot);
 
                 int live = 1;
                 if (vp_epoch % 2 == 1) {
@@ -429,25 +460,35 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                 if (live) { pn_has_live = 1; break; }
                 vp_walk = vp_next;
             }
+            pool_release(&ctx->pool, &pn_slot);
             if (!pn_has_live) { pn_vp = pn_next; continue; }
 
             /* Copy the PageNode */
             GC_NEXT_SLOT();
             int64_t new_pn_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_pn_slot = pool_resolve_ro(&ctx->pool, new_pn_vp);
-            if (!new_pn_slot) return VFS_ERR_IO;
+            PoolSlot new_pn_slot = {0};
+            pool_acquire(&ctx->pool, new_pn_vp, false, &new_pn_slot);
+            if (new_pn_slot.vptr == VFS_VPTR_NULL) return VFS_ERR_IO;
             alloc->cur_slot++;
-            gc_copy_entry(gc_map, pn_vp, new_pn_vp, pn_slot, new_pn_slot, ctx->page_size);
+            /* Re-acquire pn_slot for the copy source. */
+            PoolSlot pn_slot_src = {0};
+            pool_acquire(&ctx->pool, pn_vp, false, &pn_slot_src);
+            if (pn_slot_src.vptr != VFS_VPTR_NULL) {
+                gc_copy_entry(gc_map, pn_vp, new_pn_vp, pn_slot_src.bytes, new_pn_slot.bytes, ctx->page_size);
+            }
+            pool_release(&ctx->pool, &pn_slot_src);
+            pool_release(&ctx->pool, &new_pn_slot);
 
             /* Copy live VersionPages */
             vp_walk = vp_chain;
             while (vp_walk != 0) {
-                uint8_t* vp_slot = pool_resolve_ro(&ctx->pool, vp_walk);
-                if (!vp_slot) break;
+                PoolSlot vp_slot = {0};
+                pool_acquire(&ctx->pool, vp_walk, false, &vp_slot);
+                if (vp_slot.vptr == VFS_VPTR_NULL) break;
                 uint32_t vp_epoch;
                 int64_t vp_dataPage, vp_next;
-                nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
+                nodes_read_versionpage(vp_slot.bytes, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
 
                 int live = 1;
                 int64_t rewrite_epoch_vp = (int64_t)vp_epoch;
@@ -467,21 +508,30 @@ int gc_walk_filenode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                     GC_NEXT_SLOT();
                     int64_t new_vp_slot_vp = VFS_VPTR_MAKE(
                         VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-                    uint8_t* new_vp_slot = pool_resolve_ro(&ctx->pool, new_vp_slot_vp);
-                    if (!new_vp_slot) return VFS_ERR_IO;
+                    PoolSlot new_vp_slot = {0};
+                    pool_acquire(&ctx->pool, new_vp_slot_vp, false, &new_vp_slot);
+                    if (new_vp_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &vp_slot); return VFS_ERR_IO; }
                     alloc->cur_slot++;
                     gc_copy_entry(gc_map, vp_walk, new_vp_slot_vp,
-                                  vp_slot, new_vp_slot, ctx->page_size);
+                                  vp_slot.bytes, new_vp_slot.bytes, ctx->page_size);
+                    pool_release(&ctx->pool, &new_vp_slot);
 
                     if (lps && vp_dataPage > 0)
                         live_page_set_add(lps, vp_dataPage);
 
                     if (rewrite_epoch_vp != (int64_t)vp_epoch) {
-                        vfs_wr4_s(new_vp_slot, VERSIONPAGE_OFF_EPOCH,
-                                (uint32_t)rewrite_epoch_vp, ctx->page_size);
+                        /* Re-acquire new_vp_slot to apply the epoch rewrite. */
+                        PoolSlot new_vp_rewrite = {0};
+                        pool_acquire(&ctx->pool, new_vp_slot_vp, false, &new_vp_rewrite);
+                        if (new_vp_rewrite.vptr != VFS_VPTR_NULL) {
+                            vfs_wr4_s(new_vp_rewrite.bytes, VERSIONPAGE_OFF_EPOCH,
+                                    (uint32_t)rewrite_epoch_vp, ctx->page_size);
+                            pool_release(&ctx->pool, &new_vp_rewrite);
+                        }
                     }
                 }
 
+                pool_release(&ctx->pool, &vp_slot);
                 vp_walk = vp_next;
             }
 
@@ -516,12 +566,14 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
 
     int64_t vp_walk = version_root_vp;
     while (vp_walk != 0) {
-        uint8_t* vp_slot = pool_resolve_ro(&ctx->pool, vp_walk);
-        if (!vp_slot) break;
+        /* Phase 25: by-value pool slot (read-only). */
+        PoolSlot vp_slot = {0};
+        pool_acquire(&ctx->pool, vp_walk, false, &vp_slot);
+        if (vp_slot.vptr == VFS_VPTR_NULL) break;
 
         uint32_t vp_epoch;
         int64_t vp_dataPage, vp_next;
-        nodes_read_versionpage(vp_slot, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
+        nodes_read_versionpage(vp_slot.bytes, &vp_epoch, &vp_dataPage, &vp_next, ctx->page_size);
         (void)vp_dataPage;
 
         int live = 1;
@@ -545,11 +597,13 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
             GC_NEXT_SLOT();
             int64_t new_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_slot = pool_resolve_ro(&ctx->pool, new_vp);
-            if (!new_slot) return VFS_ERR_IO;
+            PoolSlot new_slot = {0};
+            pool_acquire(&ctx->pool, new_vp, false, &new_slot);
+            if (new_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &vp_slot); return VFS_ERR_IO; }
             alloc->cur_slot++;
 
-            gc_copy_entry(gc_map, vp_walk, new_vp, vp_slot, new_slot, ctx->page_size);
+            gc_copy_entry(gc_map, vp_walk, new_vp, vp_slot.bytes, new_slot.bytes, ctx->page_size);
+            pool_release(&ctx->pool, &vp_slot);
 
             /* Record the data page in the live set */
             if (lps && vp_dataPage > 0)
@@ -557,9 +611,12 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
 
             /* Update epoch field if rewritten */
             if (rewrite_epoch != (int64_t)vp_epoch) {
-                vfs_wr4_s(new_slot, VERSIONPAGE_OFF_EPOCH,
+                vfs_wr4_s(new_slot.bytes, VERSIONPAGE_OFF_EPOCH,
                         (uint32_t)rewrite_epoch, ctx->page_size);
             }
+            pool_release(&ctx->pool, &new_slot);
+        } else {
+            pool_release(&ctx->pool, &vp_slot);
         }
 
         vp_walk = vp_next;
@@ -597,14 +654,17 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
 
     int64_t walk_vp = head_content_vp;
     while (walk_vp != 0 && child_count < MAX_CHILDREN) {
-        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
-        if (!dc_slot) break;
+        /* Phase 25: by-value pool slot (read-only). */
+        PoolSlot dc_slot = {0};
+        pool_acquire(&ctx->pool, walk_vp, false, &dc_slot);
+        if (dc_slot.vptr == VFS_VPTR_NULL) break;
 
         uint32_t dc_child, dc_epoch;
         int64_t dc_childPtr, dc_namePtr, dc_next;
-        nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
+        nodes_read_dircontent(dc_slot.bytes, &dc_child, &dc_epoch, &dc_childPtr,
                               &dc_namePtr, &dc_next, ctx->page_size);
         (void)dc_childPtr;
+        pool_release(&ctx->pool, &dc_slot);
 
         int epoch_deleted = 0;
         if (dc_epoch % 2 == 1) {
@@ -649,12 +709,14 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
 
     walk_vp = head_content_vp;
     while (walk_vp != 0) {
-        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
-        if (!dc_slot) break;
+        /* Phase 25: by-value pool slot (read-only). */
+        PoolSlot dc_slot = {0};
+        pool_acquire(&ctx->pool, walk_vp, false, &dc_slot);
+        if (dc_slot.vptr == VFS_VPTR_NULL) break;
 
         uint32_t dc_child, dc_epoch;
         int64_t dc_childPtr, dc_namePtr, dc_next;
-        nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
+        nodes_read_dircontent(dc_slot.bytes, &dc_child, &dc_epoch, &dc_childPtr,
                               &dc_namePtr, &dc_next, ctx->page_size);
 
         int epoch_deleted = 0;
@@ -683,6 +745,7 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
             if (alloc->cur_slot >= alloc->slots_per_page) {
                 alloc->cur_page_vp = gc_allocate_new_pool_page(ctx, gc_map);
                 if (alloc->cur_page_vp == VFS_VPTR_NULL) {
+                    pool_release(&ctx->pool, &dc_slot);
                     free(child_has_kept);
                     return VFS_ERR_FULL;
                 }
@@ -690,13 +753,18 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
             }
             int64_t new_dc_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_dc_slot = pool_resolve_ro(&ctx->pool, new_dc_vp);
-            if (!new_dc_slot) { free(child_has_kept); return VFS_ERR_IO; }
+            PoolSlot new_dc_slot = {0};
+            pool_acquire(&ctx->pool, new_dc_vp, false, &new_dc_slot);
+            if (new_dc_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &dc_slot); free(child_has_kept); return VFS_ERR_IO; }
             alloc->cur_slot++;
 
-            gc_copy_entry(gc_map, walk_vp, new_dc_vp, dc_slot, new_dc_slot, ctx->page_size);
+            gc_copy_entry(gc_map, walk_vp, new_dc_vp, dc_slot.bytes, new_dc_slot.bytes, ctx->page_size);
+            pool_release(&ctx->pool, &new_dc_slot);
+            pool_release(&ctx->pool, &dc_slot);
 
             if (child_idx >= 0) child_has_kept[child_idx] = 1;
+        } else {
+            pool_release(&ctx->pool, &dc_slot);
         }
 
         walk_vp = dc_next;
@@ -705,13 +773,16 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
     /* Third pass: recursively walk child nodes for any surviving entry */
     walk_vp = head_content_vp;
     while (walk_vp != 0) {
-        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
-        if (!dc_slot) break;
+        /* Phase 25: by-value pool slot (read-only). */
+        PoolSlot dc_slot = {0};
+        pool_acquire(&ctx->pool, walk_vp, false, &dc_slot);
+        if (dc_slot.vptr == VFS_VPTR_NULL) break;
 
         uint32_t dc_child, dc_epoch;
         int64_t dc_childPtr, dc_namePtr, dc_next;
-        nodes_read_dircontent(dc_slot, &dc_child, &dc_epoch, &dc_childPtr,
+        nodes_read_dircontent(dc_slot.bytes, &dc_child, &dc_epoch, &dc_childPtr,
                               &dc_namePtr, &dc_next, ctx->page_size);
+        pool_release(&ctx->pool, &dc_slot);
 
         /* Check if this child has any kept entry */
         int cidx = -1;
@@ -721,9 +792,12 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
 
         if (cidx >= 0 && child_has_kept[cidx] && dc_namePtr != 0 && dc_childPtr != 0) {
             child_has_kept[cidx] = 0;  /* walk each child exactly once */
-            uint8_t* child_slot = pool_resolve_ro(&ctx->pool, dc_childPtr);
-            if (child_slot) {
-                int16_t ctype = vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size);
+            /* Phase 25: by-value pool slot (read-only) for child type. */
+            PoolSlot child_slot = {0};
+            pool_acquire(&ctx->pool, dc_childPtr, false, &child_slot);
+            if (child_slot.vptr != VFS_VPTR_NULL) {
+                int16_t ctype = vfs_rd2_s(child_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size);
+                pool_release(&ctx->pool, &child_slot);
                 if (ctype == (int16_t)NODE_TYPE_DIR) {
                     int err = gc_walk_dirnode(ctx, gc_map, alloc,
                                                dc_childPtr, epoch, lps);
@@ -733,6 +807,8 @@ int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
                                                 dc_childPtr, epoch, lps);
                     if (err != VFS_OK) { free(child_has_kept); return err; }
                 }
+            } else {
+                pool_release(&ctx->pool, &child_slot);
             }
         }
 
@@ -767,12 +843,14 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
     int64_t highest_file_size = 0;
 
     while (fs_vp != 0) {
-        uint8_t* fs_slot = pool_resolve_ro(&ctx->pool, fs_vp);
-        if (!fs_slot) break;
+        /* Phase 25: by-value pool slot (read-only). */
+        PoolSlot fs_slot = {0};
+        pool_acquire(&ctx->pool, fs_vp, false, &fs_slot);
+        if (fs_slot.vptr == VFS_VPTR_NULL) break;
 
         uint32_t fs_epoch;
         int64_t fs_modifiedAt, fs_fileSize, fs_next;
-        nodes_read_filesize(fs_slot, &fs_epoch, &fs_modifiedAt,
+        nodes_read_filesize(fs_slot.bytes, &fs_epoch, &fs_modifiedAt,
                             &fs_fileSize, &fs_next, ctx->page_size);
         (void)fs_modifiedAt;
 
@@ -797,20 +875,23 @@ int gc_walk_filesize_chain(TreeContext* ctx, GCMap* gc_map,
             GC_NEXT_SLOT();
             int64_t new_fs_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_fs_slot = pool_resolve_ro(&ctx->pool, new_fs_vp);
-            if (!new_fs_slot) return VFS_ERR_IO;
+            PoolSlot new_fs_slot = {0};
+            pool_acquire(&ctx->pool, new_fs_vp, false, &new_fs_slot);
+            if (new_fs_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &fs_slot); return VFS_ERR_IO; }
             alloc->cur_slot++;
 
-            gc_copy_entry(gc_map, fs_vp, new_fs_vp, fs_slot, new_fs_slot, ctx->page_size);
+            gc_copy_entry(gc_map, fs_vp, new_fs_vp, fs_slot.bytes, new_fs_slot.bytes, ctx->page_size);
 
             /* Update epoch field if rewritten */
             if (rewrite_epoch != (int64_t)fs_epoch) {
-                vfs_wr4_s(new_fs_slot, FILESIZE_OFF_EPOCH, (uint32_t)rewrite_epoch, ctx->page_size);
+                vfs_wr4_s(new_fs_slot.bytes, FILESIZE_OFF_EPOCH, (uint32_t)rewrite_epoch, ctx->page_size);
             }
 
             /* Track highest surviving file size */
             if (fs_fileSize > highest_file_size) highest_file_size = fs_fileSize;
+            pool_release(&ctx->pool, &new_fs_slot);
         }
+        pool_release(&ctx->pool, &fs_slot);
 
         fs_vp = fs_next;
     }
@@ -845,13 +926,15 @@ int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
        the FileNode walk (committed → REWRITE, soft-deleted → DROP). */
     int64_t vp = ctx->epochMapperPtr;
     while (vp != 0) {
-        uint8_t* slot = pool_resolve_ro(&ctx->pool, vp);
-        if (!slot) break;
+        /* Phase 25: by-value pool slot (read-only). */
+        PoolSlot slot = {0};
+        pool_acquire(&ctx->pool, vp, false, &slot);
+        if (slot.vptr == VFS_VPTR_NULL) break;
 
         uint32_t fromEpoch, toEpoch;
         uint16_t flags;
         int64_t next;
-        nodes_read_mapperentry(slot, &fromEpoch, &toEpoch, &flags, &next, ctx->page_size);
+        nodes_read_mapperentry(slot.bytes, &fromEpoch, &toEpoch, &flags, &next, ctx->page_size);
 
         int keep = 1;
         if (flags & MAPPER_FLAG_TRAVERSAL_APPLY) keep = 0;  /* committed */
@@ -861,12 +944,15 @@ int gc_rebuild_mapper(TreeContext* ctx, GCMap* gc_map,
             GC_NEXT_SLOT();
             int64_t new_vp = VFS_VPTR_MAKE(
                 VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot);
-            uint8_t* new_slot = pool_resolve_ro(&ctx->pool, new_vp);
-            if (!new_slot) return VFS_ERR_IO;
+            PoolSlot new_slot = {0};
+            pool_acquire(&ctx->pool, new_vp, false, &new_slot);
+            if (new_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &slot); return VFS_ERR_IO; }
             alloc->cur_slot++;
 
-            gc_copy_entry(gc_map, vp, new_vp, slot, new_slot, ctx->page_size);
+            gc_copy_entry(gc_map, vp, new_vp, slot.bytes, new_slot.bytes, ctx->page_size);
+            pool_release(&ctx->pool, &new_slot);
         }
+        pool_release(&ctx->pool, &slot);
 
         vp = next;
     }

@@ -66,15 +66,31 @@ int dirchain_test_get_hash_rejects(void);
  * Creates missing FileContent + PageNode entries on file growth.
  * Builds the in-memory VirtualPtr array on first access to a segment.
  *
- * Returns a pointer to the PageNode slot (via pool_resolve), or NULL on error.
+ * Phase 25: by-value copy-out.  Writes the 32-byte PageNode slot into
+ * *out.  Returns 0 on success, -1 on error or page-not-found.  The
+ * caller's PoolSlot is a stack-local copy independent of the cache,
+ * so a later cache eviction cannot invalidate it (closes the C1 hazard).
  *
  * file_vp  — VirtualPtr to the FileNode
  * logical_page — page index within the file (0-based)
  * epoch    — write epoch (used for segment growth decisions)
  * is_write — true if caller intends to write (future: lazy allocation + CAS retry)
+ * out      — caller-provided PoolSlot to receive the PageNode bytes
  */
-uint8_t* tree_resolve_page(TreeContext* ctx, int64_t file_vp,
-                           int64_t logical_page, int64_t epoch, bool is_write);
+int tree_resolve_page(TreeContext* ctx, int64_t file_vp,
+                      int64_t logical_page, int64_t epoch, bool is_write,
+                      PoolSlot* out);
+
+/* Phase 25: TEST-ONLY compatibility shim.  Returns a raw pointer to
+   a per-thread static PoolSlot's bytes.  NOT thread-safe; tests are
+   single-threaded.  Page is dirty-marked (pinned) when is_write=true
+   so subsequent writes persist; caller must call
+   tree_resolve_page_compat_release() after writing.  See pool.h for
+   the rationale. */
+extern uint8_t* tree_resolve_page_compat(TreeContext* ctx, int64_t file_vp,
+                                          int64_t logical_page, int64_t epoch,
+                                          bool is_write);
+extern void tree_resolve_page_compat_release(TreeContext* ctx);
 
 /* ---------------------------------------------------------------------------
  * Context accessors (inline helpers)

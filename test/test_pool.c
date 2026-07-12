@@ -441,17 +441,16 @@ void test_vptr_slot_encoding(void) {
     /* Both on same page */
     CHECK_EQ(VFS_VPTR_PAGE(vp_a), VFS_VPTR_PAGE(vp_b));
 
-    /* Resolve should return valid pointers */
-    uint8_t* ptr_a = pool_resolve_ro(&pool, vp_a);
-    CHECK(ptr_a != NULL);
-    uint8_t* ptr_b = pool_resolve_ro(&pool, vp_b);
-    CHECK(ptr_b != NULL);
-
-    /* Pointers should be different */
-    CHECK(ptr_a != ptr_b);
-
-    /* Distance between slots 0 and 254 should be 254 * 32 = 8128 bytes */
-    CHECK_EQ((int)(ptr_b - ptr_a), 254 * VFS_POOL_SLOT_SIZE);
+    /* Phase 25: by-value copy-out.  Each acquire returns a 32-byte
+       stack-local copy.  Verify vptr/page/slot fields are as expected
+       — the slot INDEX is what we still care about here. */
+    PoolSlot slot_a = {0}, slot_b = {0};
+    pool_acquire(&pool, vp_a, false, &slot_a);
+    pool_acquire(&pool, vp_b, false, &slot_b);
+    CHECK(slot_a.vptr != VFS_VPTR_NULL);
+    CHECK(slot_b.vptr != VFS_VPTR_NULL);
+    CHECK_EQ(VFS_VPTR_SLOT(slot_a.vptr), 0);
+    CHECK_EQ(VFS_VPTR_SLOT(slot_b.vptr), 254);
 
     storage_close(sb);
     cleanup(path);
@@ -480,23 +479,31 @@ void test_vptr_resolve_roundtrip(void) {
     CHECK_EQ(VFS_VPTR_PAGE(vp), 2);  /* pages 0,1 reserved, first pool page is 2 */
     CHECK_EQ(VFS_VPTR_SLOT(vp), 0);
 
-    /* Write a pattern into the resolved slot */
-    uint8_t* slot_ptr = pool_resolve_ro(&pool, vp);
-    CHECK(slot_ptr != NULL);
-    if (slot_ptr) {
-        memset(slot_ptr, 0xAB, VFS_POOL_SLOT_SIZE);
+    /* Write a pattern into the resolved slot.  Phase 25: the new API
+       returns a copy (not a pointer into the cache), so we acquire
+       RW, write, release to flush. */
+    PoolSlot slot = {0};
+    pool_acquire(&pool, vp, true, &slot);
+    CHECK(slot.vptr != VFS_VPTR_NULL);
+    if (slot.vptr != VFS_VPTR_NULL) {
+        memset(slot.bytes, 0xAB, VFS_POOL_SLOT_SIZE);
+    }
+    pool_release(&pool, &slot);
+
+    /* Resolve again — copy-out, so we get the same bytes but a
+       different stack-local pointer.  Compare bytes, not pointer. */
+    PoolSlot slot2 = {0};
+    pool_acquire(&pool, vp, false, &slot2);
+    CHECK(slot2.vptr != VFS_VPTR_NULL);
+    if (slot2.vptr != VFS_VPTR_NULL) {
+        CHECK_EQ(slot2.bytes[0], 0xAB);
+        CHECK_EQ(slot2.bytes[31], 0xAB);
     }
 
-    /* Resolve again — should return the same pointer (from cache) */
-    uint8_t* slot_ptr2 = pool_resolve_ro(&pool, vp);
-    CHECK(slot_ptr2 == slot_ptr);
-    if (slot_ptr2) {
-        CHECK_EQ(slot_ptr2[0], 0xAB);
-        CHECK_EQ(slot_ptr2[31], 0xAB);
-    }
-
-    /* Resolve VFS_VPTR_NULL → NULL */
-    CHECK(pool_resolve_ro(&pool, VFS_VPTR_NULL) == NULL);
+    /* Resolve VFS_VPTR_NULL → vptr=NULL */
+    PoolSlot slot_null = {0};
+    pool_acquire(&pool, VFS_VPTR_NULL, false, &slot_null);
+    CHECK(slot_null.vptr == VFS_VPTR_NULL);
 
     storage_close(sb);
     cleanup(path);
@@ -772,12 +779,14 @@ void test_pool_init_existing_file(void) {
         CHECK_EQ(VFS_VPTR_SLOT(vp), 5);  /* slot 5 (0-4 were allocated) */
         CHECK_EQ(VFS_VPTR_PAGE(vp), saved_page);
 
-        /* Verify the slot is usable */
-        uint8_t* slot = pool_resolve_ro(&pool, vp);
-        CHECK(slot != NULL);
-        if (slot) {
-            memset(slot, 0xCD, VFS_POOL_SLOT_SIZE);
+        /* Verify the slot is usable (Phase 25 by-value copy-out). */
+        PoolSlot slot = {0};
+        pool_acquire(&pool, vp, true, &slot);
+        CHECK(slot.vptr != VFS_VPTR_NULL);
+        if (slot.vptr != VFS_VPTR_NULL) {
+            memset(slot.bytes, 0xCD, VFS_POOL_SLOT_SIZE);
         }
+        pool_release(&pool, &slot);
 
         /* Another allocation should return slot 6 */
         int64_t vp2 = pool_alloc(&pool);

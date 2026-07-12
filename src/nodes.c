@@ -294,8 +294,11 @@ int nodes_write_name(Pool* pool, const char* utf8_name, int64_t* first_slot_vp) 
             *first_slot_vp = VFS_VPTR_NULL;
             return 0;
         }
-        uint8_t* slot_data = pool_resolve_rw(pool, vp);
-        if (!slot_data) {
+        /* Phase 25: by-value pool slot, pinned (we write the NameEntry
+           content + release persists it to the cache). */
+        PoolSlot slot_data = {0};
+        pool_acquire(pool, vp, true, &slot_data);
+        if (slot_data.vptr == VFS_VPTR_NULL) {
             *first_slot_vp = VFS_VPTR_NULL;
             return 0;
         }
@@ -316,7 +319,8 @@ int nodes_write_name(Pool* pool, const char* utf8_name, int64_t* first_slot_vp) 
                 chunk = NAMEENTRY_DATA_SIZE;
             memcpy(buf, utf8_name + offset, chunk);
         }
-        nodes_write_name_entry(slot_data, buf, next_vp, pool->sb->page_size);
+        nodes_write_name_entry(slot_data.bytes, buf, next_vp, pool->sb->page_size);
+        pool_release(pool, &slot_data);
 
         if (i == 0)
             *first_slot_vp = vp;
@@ -337,8 +341,11 @@ int nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_le
     int slot_idx = 0;
 
     while (vp != VFS_VPTR_NULL && total < max_len - 1) {
-        uint8_t* slot_data = pool_resolve_rw(pool, vp);
-        if (!slot_data) break;
+        /* Phase 25: by-value pool slot (read-only).  The name is a
+           stack-local copy; cache eviction doesn't affect the loop. */
+        PoolSlot slot_data = {0};
+        pool_acquire(pool, vp, false, &slot_data);
+        if (slot_data.vptr == VFS_VPTR_NULL) break;
 
         size_t data_off, data_len;
         if (slot_idx == 0) {
@@ -352,15 +359,17 @@ int nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_le
         }
 
         for (size_t i = 0; i < data_len && total < max_len - 1; i++) {
-            uint8_t byte = slot_data[data_off + i];
+            uint8_t byte = slot_data.bytes[data_off + i];
             if (byte == 0) {
                 out_buf[total] = '\0';
+                pool_release(pool, &slot_data);
                 return total;
             }
             out_buf[total++] = (char)byte;
         }
 
-        vp = vfs_rd8_s(slot_data, NAMEENTRY_OFF_NEXTPTR, pool->sb->page_size);
+        vp = vfs_rd8_s(slot_data.bytes, NAMEENTRY_OFF_NEXTPTR, pool->sb->page_size);
+        pool_release(pool, &slot_data);
         slot_idx++;
     }
 
@@ -370,10 +379,12 @@ int nodes_read_name(Pool* pool, int64_t first_slot_vp, char* out_buf, int max_le
 
 uint64_t nodes_read_name_hash(Pool* pool, int64_t namePtr) {
     if (namePtr == 0) return 0;
-    uint8_t* slot = pool_resolve_ro(pool, namePtr);
-    if (!slot) return 0;
+    /* Phase 25: by-value pool slot (read-only). */
+    PoolSlot slot = {0};
+    pool_acquire(pool, namePtr, false, &slot);
+    if (slot.vptr == VFS_VPTR_NULL) return 0;
     uint64_t h;
-    memcpy(&h, slot, 8);
+    memcpy(&h, slot.bytes, 8);
     return h;
 }
 
@@ -397,8 +408,10 @@ int nodes_write_name_with_hash(Pool* pool, const char* utf8_name, uint64_t hash,
     for (int i = slots_needed - 1; i >= 0; i--) {
         int64_t vp = pool_alloc(pool);
         if (vp == VFS_VPTR_NULL) { *first_slot_vp = VFS_VPTR_NULL; return 0; }
-        uint8_t* slot_data = pool_resolve_rw(pool, vp);
-        if (!slot_data) { *first_slot_vp = VFS_VPTR_NULL; return 0; }
+        /* Phase 25: by-value pool slot, pinned. */
+        PoolSlot slot_data = {0};
+        pool_acquire(pool, vp, true, &slot_data);
+        if (slot_data.vptr == VFS_VPTR_NULL) { *first_slot_vp = VFS_VPTR_NULL; return 0; }
         uint8_t buf[NAMEENTRY_DATA_SIZE] = {0};
         if (i == 0) {
             memcpy(buf, &hash, sizeof(hash));
@@ -412,7 +425,8 @@ int nodes_write_name_with_hash(Pool* pool, const char* utf8_name, uint64_t hash,
             if (chunk > NAMEENTRY_DATA_SIZE) chunk = NAMEENTRY_DATA_SIZE;
             memcpy(buf, utf8_name + offset, chunk);
         }
-        nodes_write_name_entry(slot_data, buf, next_vp, pool->sb->page_size);
+        nodes_write_name_entry(slot_data.bytes, buf, next_vp, pool->sb->page_size);
+        pool_release(pool, &slot_data);
         if (i == 0) *first_slot_vp = vp;
         next_vp = vp;
     }

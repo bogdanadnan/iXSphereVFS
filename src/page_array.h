@@ -30,12 +30,14 @@ typedef struct SegmentArray {
 int segment_array_build(Pool* pool, int64_t fc_pageRootPtr,
                         uint32_t segment_size, SegmentArray* arr);
 
-/* Resolve a page within the segment to its PageNode slot pointer.
+/* Resolve a page within the segment into a by-value PoolSlot.
  * The page_index must be < segment_size.
- * Returns a pointer into the page cache (via pool_resolve), or NULL
- * if the VirtualPtr is null or the page is not in cache. */
-uint8_t* segment_array_resolve(Pool* pool, SegmentArray* arr,
-                               uint32_t page_index);
+ * Writes the 32 bytes of the PageNode into *out.  Returns true on
+ * success (out->vptr != VFS_VPTR_NULL), false if the VirtualPtr is
+ * null or the page is not in cache.  Copy-out closes the C1 hazard —
+ * the slot is a stack-local copy independent of the page cache. */
+bool segment_array_resolve(Pool* pool, SegmentArray* arr,
+                           uint32_t page_index, PoolSlot* out);
 
 /* Free the vptr_array and reset the struct to zero-initialized state. */
 void segment_array_destroy(SegmentArray* arr);

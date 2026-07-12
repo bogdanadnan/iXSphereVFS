@@ -106,25 +106,61 @@ void pool_init(Pool* pool, StorageBackend* sb, int64_t* list_head);
 /* Allocate one 32-byte slot.  Returns VFS_VPTR_NULL on failure. */
 int64_t pool_alloc(Pool* pool);
 
-/* Resolve a VirtualPtr to a pointer into the page cache.
-   writable=0 is read-only (no cache_mark_dirty).
-   writable!=0 marks the cache page dirty (FLUSH_PRIO_POOL) so a
-   subsequent modification of the returned slot survives cache eviction.
-   The dirty mark happens before the pointer is returned to the caller,
-   so any eviction that runs after this call does not see the slot
-   pages as clean. */
+/* Phase 25: OLD pool_resolve / pool_resolve_ro / pool_resolve_rw
+   are KEPT as DEPRECATED wrappers for the test suite.  Production code
+   (src/) does NOT use these — it uses the by-value copy-out API
+   (pool_acquire + pool_release) exclusively.  The OLD API was a C1
+   hazard (raw pointer into cache, can be invalidated by eviction).
+   Future cleanup: migrate the test suite and remove these wrappers. */
 uint8_t* pool_resolve(Pool* pool, int64_t vptr, int writable);
-
-/* Read-only convenience wrapper — same semantics as old pool_resolve. */
 static inline uint8_t* pool_resolve_ro(Pool* pool, int64_t vptr) {
     return pool_resolve(pool, vptr, 0);
 }
-
-/* Read-write convenience wrapper — marks page dirty on resolve so any
-   write to the returned slot is guaranteed to be flushed. */
 static inline uint8_t* pool_resolve_rw(Pool* pool, int64_t vptr) {
     return pool_resolve(pool, vptr, 1);
 }
+
+/* ---------------------------------------------------------------------------
+ * PoolSlot — by-value 32-byte slot payload (Phase 25, C1 fix)
+ *
+ * A PoolSlot is a typed 32-byte buffer that the caller uses as a working
+ * copy of a pool entry. The pointer never escapes the pool API: `pool_acquire`
+ * copies 32 bytes from the cache page into `slot->bytes`; `pool_release`
+ * copies them back (if pinned) and marks the page dirty. Between acquire
+ * and release, the caller's working copy is a stack-local — it cannot be
+ * invalidated by cache eviction.
+ *
+ * `pinnedPage` carries the pin state set by `pool_acquire` (0 or 1).
+ * `pool_release` checks this field; if 0, it no-ops. This makes the
+ * lifecycle self-documenting and `pool_release` safe to call on any slot.
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    int64_t  vptr;          /* which slot this came from (set by acquire) */
+    int      pinnedPage;    /* 0 or 1; set by acquire, cleared by release */
+    uint8_t  bytes[VFS_POOL_SLOT_SIZE];  /* the slot payload */
+} PoolSlot;
+
+/* Copy 32 bytes from the pool page backing `vptr` into `*out`.
+   If `pinPage` is true, the underlying cache page is marked dirty
+   (pinned against eviction) for the duration of the call — this is
+   a perf optimization: it keeps the page resident in cache so the
+   later `pool_release` is a guaranteed in-cache write, not a
+   possible disk re-read. The pin state is recorded in
+   `out->pinnedPage` so `pool_release` can act on it.
+
+   On failure (vptr == 0 or storage_read returns NULL), `*out->bytes`
+   is zero-filled and `out->pinnedPage` is set to 0. The caller's
+   subsequent type/field checks detect the invalid slot. */
+void pool_acquire(Pool* pool, int64_t vptr, bool pinPage, PoolSlot* out);
+
+/* If `slot->pinnedPage` is set: copy 32 bytes from `slot->bytes`
+   back to the cache page (guaranteed in cache because acquire pinned
+   it), then mark the page dirty. After a successful write-back,
+   `slot->pinnedPage` is cleared to 0, so a stray second call is
+   a safe no-op. If `slot->pinnedPage` is 0 (slot wasn't pinned, or
+   has already been released): no-op. */
+void pool_release(Pool* pool, PoolSlot* slot);
 
 /* Add a pool page to the global list (CAS on poolListHead). */
 void pool_list_add(Pool* pool, int64_t page_index, uint8_t* payload);
