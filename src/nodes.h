@@ -183,19 +183,35 @@ void nodes_read_dircontent(const uint8_t* slot, uint32_t* childNodeId,
                            int64_t* namePtr, int64_t* nextPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
- * FileContent (32 bytes, 16 used, 16 reserved)
+ * FileContent (32 bytes) — Phase 26 / W1c: now matches the Anchor shape.
  *
  *   Offset  Size  Field
  *   ──────  ────  ─────
- *     0      8    pageRootPtr  (VirtualPtr — first PageNode in segment)
- *     8      8    nextPtr      (VirtualPtr — next FileContent, 0 = end)
- *    16      4    pageCount    (uint32 — number of PageNodes in this segment)
- *    20     12    reserved
+ *     0      2    type        (uint16 — ANCHOR_KIND_SEGMENT_FILE = 0x20)
+ *     2      2    flags       (uint16 reserved)
+ *     4      4    segmentId   (uint32 — unique per VFS instance)
+ *     8      8    pageRootPtr (VirtualPtr — first PageNode in segment)
+ *    16      8    nextPtr     (VirtualPtr — next FileContent, 0 = end)
+ *    24      4    pageCount   (uint32 — number of PageNodes in this segment)
+ *    28      4    reserved
+ *
+ * W1c: layout aligned with the unified Anchor struct (see ANCHOR_OFF_*
+ * macros).  pageRootPtr moved from offset 0 → 8, nextPtr from 8 → 16,
+ * pageCount from 16 → 24.  The legacy FILECONTENT_OFF_* macros below
+ * are kept as aliases for now to minimize churn at the call sites;
+ * they map to the new offsets.  The functions nodes_write_filecontent
+ * / nodes_read_filecontent now write/read the new layout (and zero the
+ * new type/flags/segmentId fields — call sites that need a real
+ * segmentId should use nodes_write_anchor directly with
+ * ANCHOR_KIND_SEGMENT_FILE).
  * --------------------------------------------------------------------------- */
 
-#define FILECONTENT_OFF_ROOTPTR     0
-#define FILECONTENT_OFF_NEXTPTR       8
-#define FILECONTENT_OFF_PAGECOUNT    16
+#define FILECONTENT_OFF_TYPE         0  /* was reserved; now ANCHOR_KIND_SEGMENT_FILE */
+#define FILECONTENT_OFF_FLAGS        2  /* was reserved; now 0 */
+#define FILECONTENT_OFF_SEGMENTID    4  /* new in W1c */
+#define FILECONTENT_OFF_ROOTPTR      8  /* was 0 */
+#define FILECONTENT_OFF_NEXTPTR     16  /* was 8 */
+#define FILECONTENT_OFF_PAGECOUNT   24  /* was 16 */
 
 void nodes_write_filecontent(uint8_t* slot, int64_t pageRootPtr, int64_t nextPtr, int64_t page_size);
 void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* nextPtr, int64_t page_size);

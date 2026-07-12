@@ -360,12 +360,16 @@ static void test_filecontent(void) {
     CHECK_EQ(VFS_VPTR_SLOT(pageRootPtr), 5);
     CHECK_EQ(nextPtr, 0);
 
-    /* Verify reserved bytes 16-31 are zero */
-    int all_zero = 1;
-    for (int i = 16; i < 32; i++) {
-        if (slot[i] != 0) { all_zero = 0; break; }
-    }
-    CHECK(all_zero);
+    /* W1c: the new type/flags/segmentId fields at the front (offsets 0-7)
+       should be initialized: type=ANCHOR_KIND_SEGMENT_FILE, flags=0,
+       segmentId=0 (this convenience wrapper doesn't allocate). */
+    CHECK_EQ(vfs_rd2(slot, FILECONTENT_OFF_TYPE), (int16_t)ANCHOR_KIND_SEGMENT_FILE);
+    CHECK_EQ(vfs_rd2(slot, FILECONTENT_OFF_FLAGS), 0);
+    CHECK_EQ(vfs_rd4(slot, FILECONTENT_OFF_SEGMENTID), 0u);
+
+    /* pageCount at the new offset 24 = 0, reserved tail at 28 = 0 */
+    CHECK_EQ(vfs_rd4(slot, FILECONTENT_OFF_PAGECOUNT), 0u);
+    CHECK_EQ(vfs_rd4(slot, 28), 0);
 }
 
 static void test_filecontent_chain(void) {

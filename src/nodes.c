@@ -148,14 +148,31 @@ void nodes_read_dircontent(const uint8_t* slot, uint32_t* childNodeId,
 }
 
 /* ---------------------------------------------------------------------------
- * FileContent (Workload 4.4)
+ * FileContent (Workload 4.4; Phase 26 / W1c: Anchor-aligned layout)
+ *
+ * The new layout matches the unified Anchor struct: type/flags/segmentId
+ * at the front (offsets 0-7), then pageRootPtr (8), nextPtr (16),
+ * pageCount (24).  See nodes.h for the full diagram.
+ *
+ * nodes_write_filecontent / nodes_read_filecontent keep the original
+ * 2-int-pointer signature (pageRootPtr + nextPtr) for source-compat
+ * with the dozens of call sites; they delegate to nodes_write_anchor
+ * / nodes_read_anchor internally with segmentId=0 and pageCount=0.
+ * Callers that need to set segmentId or pageCount should call
+ * nodes_write_anchor directly.
  * --------------------------------------------------------------------------- */
 
 void nodes_write_filecontent(uint8_t* slot, int64_t pageRootPtr, int64_t nextPtr,
                               int64_t page_size) {
-    vfs_wr8_s(slot, FILECONTENT_OFF_ROOTPTR, pageRootPtr, page_size);
-    vfs_wr8_s(slot, FILECONTENT_OFF_NEXTPTR, nextPtr, page_size);
-    memset(slot + 16, 0, 16);
+    /* Zero the type/flags/segmentId front (will be set by nodes_write_anchor
+       if kind/id are passed; here we keep the convenience wrapper). */
+    vfs_wr2_s(slot, FILECONTENT_OFF_TYPE,  (int16_t)ANCHOR_KIND_SEGMENT_FILE, page_size);
+    vfs_wr2_s(slot, FILECONTENT_OFF_FLAGS, 0, page_size);
+    vfs_wr4_s(slot, FILECONTENT_OFF_SEGMENTID, 0, page_size);
+    vfs_wr8_s(slot, FILECONTENT_OFF_ROOTPTR,  pageRootPtr, page_size);
+    vfs_wr8_s(slot, FILECONTENT_OFF_NEXTPTR,  nextPtr,     page_size);
+    vfs_wr4_s(slot, FILECONTENT_OFF_PAGECOUNT, 0,          page_size);
+    vfs_wr4_s(slot, 28, 0, page_size);  /* reserved tail */
 }
 
 void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* nextPtr,
