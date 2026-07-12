@@ -17,6 +17,12 @@
 # Mono auto generated files
 mono_crash.*
 
+# macOS metadata and resource forks (all subdirs, all variants)
+.DS_Store
+**/.DS_Store
+**/._.DS_Store
+._*
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/
