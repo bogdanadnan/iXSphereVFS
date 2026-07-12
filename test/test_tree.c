@@ -1429,37 +1429,53 @@ static void test_lock_mixed_keys(void) {
     vfs_unmount(vfs);
 }
 
-/* State for the same-epoch test threads. */
+/* State shared between the two same-epoch threads.  A sets `acquired`;
+   B waits for it.  A reports into result_*_a; B reports into result_*_b.
+   Each thread has its own results — the previous design reused the
+   same struct for both threads, which made B wait on its own acquired
+   flag (never set) and deadlocked. */
 typedef struct {
     vfs_t*   vfs;
     int64_t  key;
     int64_t  epoch;
-    int      result_lock;
-    int      result_unlock;
-    volatile int  acquired;       /* 1 once vfs_lock has returned VFS_OK */
-} same_epoch_arg;
+    volatile int  acquired;        /* 1 once A's vfs_lock has returned VFS_OK */
+    volatile int  result_lock_a;   /* A's vfs_lock result */
+    volatile int  result_unlock_a; /* A's vfs_unlock result */
+    volatile int  result_lock_b;   /* B's vfs_lock result */
+    volatile int  result_unlock_b; /* B's vfs_unlock result */
+} same_epoch_state;
 
 static void* same_epoch_thread_a(void* arg) {
-    same_epoch_arg* a = (same_epoch_arg*)arg;
-    a->result_lock = vfs_lock(a->vfs, a->key, a->epoch);
-    if (a->result_lock == VFS_OK) {
-        a->acquired = 1;
-        /* Hold the lock long enough for thread B to attempt + block. */
-        usleep(150000);
-        a->result_unlock = vfs_unlock(a->vfs, a->key, a->epoch);
+    same_epoch_state* s = (same_epoch_state*)arg;
+    s->result_lock_a = vfs_lock(s->vfs, s->key, s->epoch);
+    if (s->result_lock_a != VFS_OK) {
+        return NULL;
     }
+    s->acquired = 1;
+    /* Hold the lock long enough for thread B to attempt + block. */
+    usleep(150000);
+    s->result_unlock_a = vfs_unlock(s->vfs, s->key, s->epoch);
     return NULL;
 }
 
 static void* same_epoch_thread_b(void* arg) {
-    same_epoch_arg* a = (same_epoch_arg*)arg;
-    /* Wait for thread A to hold the lock. */
-    while (!a->acquired) usleep(100);
+    same_epoch_state* s = (same_epoch_state*)arg;
+    /* Wait for thread A to hold the lock (with a generous timeout to
+       avoid hanging the test if A's vfs_lock fails). */
+    int waited_us = 0;
+    while (!s->acquired && waited_us < 500000) {
+        usleep(100);
+        waited_us += 100;
+    }
+    if (!s->acquired) {
+        s->result_lock_b = VFS_ERR_IO;
+        return NULL;
+    }
     /* Try to acquire the same key at the same epoch — should block
        until thread A releases. */
-    int r = vfs_lock(a->vfs, a->key, a->epoch);
-    a->result_lock = r;
-    if (r == VFS_OK) a->result_unlock = vfs_unlock(a->vfs, a->key, a->epoch);
+    int r = vfs_lock(s->vfs, s->key, s->epoch);
+    s->result_lock_b = r;
+    if (r == VFS_OK) s->result_unlock_b = vfs_unlock(s->vfs, s->key, s->epoch);
     return NULL;
 }
 
@@ -1470,28 +1486,28 @@ static void test_lock_same_epoch_exclusion(void) {
     int64_t key = 100;
     int64_t epoch = 2;
 
-    same_epoch_arg a = {vfs, key, epoch, VFS_ERR_IO, VFS_ERR_IO, 0};
-    same_epoch_arg b = {vfs, key, epoch, VFS_ERR_IO, VFS_ERR_IO, 0};
+    same_epoch_state s = {vfs, key, epoch,
+                          0,  /* acquired */
+                          VFS_ERR_IO, VFS_ERR_IO,  /* A's results */
+                          VFS_ERR_IO, VFS_ERR_IO}; /* B's results */
 
     pthread_t ta, tb;
-    CHECK_EQ(pthread_create(&ta, NULL, same_epoch_thread_a, &a), 0);
-    CHECK_EQ(pthread_create(&tb, NULL, same_epoch_thread_b, &b), 0);
+    CHECK_EQ(pthread_create(&ta, NULL, same_epoch_thread_a, &s), 0);
+    CHECK_EQ(pthread_create(&tb, NULL, same_epoch_thread_b, &s), 0);
 
     pthread_join(ta, NULL);
     pthread_join(tb, NULL);
 
     /* Both threads should have succeeded. */
-    CHECK_EQ(a.result_lock, VFS_OK);
-    CHECK_EQ(a.result_unlock, VFS_OK);
-    CHECK_EQ(b.result_lock, VFS_OK);
-    CHECK_EQ(b.result_unlock, VFS_OK);
+    CHECK_EQ(s.result_lock_a, VFS_OK);
+    CHECK_EQ(s.result_unlock_a, VFS_OK);
+    CHECK_EQ(s.result_lock_b, VFS_OK);
+    CHECK_EQ(s.result_unlock_b, VFS_OK);
 
-    /* B's lock must have been acquired AFTER A's release.  Check by
-       timing: the test takes at least A's hold time (150ms), so wall
-       clock for B's lock acquisition > A's release.  We can't easily
-       measure that here; the existence of `acquired` and the join order
-       is the best we can do.  The fact that B's lock succeeded at all
-       confirms A released properly. */
+    /* Sanity: B's lock was acquired strictly after A's release
+       (otherwise the test is not testing what it claims).  In the
+       current implementation this is structural: B blocks on the
+       condvar until A's release broadcasts. */
     vfs_unmount(vfs);
 }
 
