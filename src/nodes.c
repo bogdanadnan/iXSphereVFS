@@ -123,28 +123,39 @@ int64_t nodes_read_filenode_ctime(const uint8_t* slot, int64_t page_size) {
 }
 
 /* ---------------------------------------------------------------------------
- * DirContent (Workload 4.3)
+ * DirContent (Workload 4.3; Phase 26 / W2: aligned to unified leaf layout)
+ *
+ * Layout is identical in shape to VersionPage / FileSize:
+ *   - epoch at offset 0 (read-rule compare key)
+ *   - childNodeId at offset 4 (the "kind_specific" field)
+ *   - childPtr at offset 8 (primary_ptr)
+ *   - namePtr at offset 16 (secondary_ptr; 0 = tombstone)
+ *   - nextPtr at offset 24
+ *
+ * vfs_chain_walk reads the chain via LEAF_OFF_* macros byte-identically
+ * for all three leaf types; dirchain_find_child still does its own
+ * name matching and tombstone tracking on top of the returned slot.
  * --------------------------------------------------------------------------- */
 
 void nodes_write_dircontent(uint8_t* slot, uint32_t childNodeId, uint32_t epoch,
                             int64_t childPtr, int64_t namePtr, int64_t nextPtr,
                             int64_t page_size) {
-    vfs_wr4_s(slot, DIRCONTENT_OFF_CHILDID, (int32_t)childNodeId, page_size);
-    vfs_wr4_s(slot, DIRCONTENT_OFF_EPOCH, (int32_t)epoch, page_size);
-    vfs_wr8_s(slot, DIRCONTENT_OFF_CHILDPTR, childPtr, page_size);
-    vfs_wr8_s(slot, DIRCONTENT_OFF_NAMEPTR, namePtr, page_size);
-    vfs_wr8_s(slot, DIRCONTENT_OFF_NEXTPTR, nextPtr, page_size);
+    vfs_wr4_s(slot, DIRCONTENT_OFF_EPOCH,   (int32_t)epoch,        page_size);
+    vfs_wr4_s(slot, DIRCONTENT_OFF_CHILDID, (int32_t)childNodeId,  page_size);
+    vfs_wr8_s(slot, DIRCONTENT_OFF_CHILDPTR, childPtr,             page_size);
+    vfs_wr8_s(slot, DIRCONTENT_OFF_NAMEPTR,  namePtr,              page_size);
+    vfs_wr8_s(slot, DIRCONTENT_OFF_NEXTPTR,  nextPtr,              page_size);
 }
 
 void nodes_read_dircontent(const uint8_t* slot, uint32_t* childNodeId,
                            uint32_t* epoch, int64_t* childPtr,
                            int64_t* namePtr, int64_t* nextPtr,
                            int64_t page_size) {
+    *epoch       = (uint32_t)vfs_rd4_s(slot, DIRCONTENT_OFF_EPOCH,   page_size);
     *childNodeId = (uint32_t)vfs_rd4_s(slot, DIRCONTENT_OFF_CHILDID, page_size);
-    *epoch       = (uint32_t)vfs_rd4_s(slot, DIRCONTENT_OFF_EPOCH, page_size);
-    *childPtr    = vfs_rd8_s(slot, DIRCONTENT_OFF_CHILDPTR, page_size);
-    *namePtr     = vfs_rd8_s(slot, DIRCONTENT_OFF_NAMEPTR, page_size);
-    *nextPtr     = vfs_rd8_s(slot, DIRCONTENT_OFF_NEXTPTR, page_size);
+    *childPtr    = vfs_rd8_s(slot, DIRCONTENT_OFF_CHILDPTR,          page_size);
+    *namePtr     = vfs_rd8_s(slot, DIRCONTENT_OFF_NAMEPTR,           page_size);
+    *nextPtr     = vfs_rd8_s(slot, DIRCONTENT_OFF_NEXTPTR,           page_size);
 }
 
 /* ---------------------------------------------------------------------------
@@ -246,44 +257,60 @@ void nodes_read_anchor(const uint8_t* slot, AnchorKind* kind, uint32_t* id,
  * VersionPage (Workload 4.6)
  * --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * VersionPage (Workload 4.6; Phase 26 / W2: aligned to unified leaf layout)
+ *
+ * nextPtr moved from offset 16 → 24 to match LEAF_OFF_NEXTPTR.  Adds
+ * 8 bytes of reserved "secondary" at offset 16 (was rsvd, now formally
+ * LEAF_OFF_SECONDARY).  vfs_chain_walk reads the chain byte-identically
+ * for all three leaf types via LEAF_OFF_*.
+ * --------------------------------------------------------------------------- */
+
 void nodes_write_versionpage(uint8_t* slot, uint32_t epoch, int64_t dataPage,
                              int64_t nextPtr, int64_t page_size) {
-    vfs_wr4_s(slot, VERSIONPAGE_OFF_EPOCH, (int32_t)epoch, page_size);
-    vfs_wr4_s(slot, VERSIONPAGE_OFF_RSVD, 0, page_size);
-    vfs_wr8_s(slot, VERSIONPAGE_OFF_DATAPAGE, dataPage, page_size);
-    vfs_wr8_s(slot, VERSIONPAGE_OFF_NEXTPTR, nextPtr, page_size);
-    memset(slot + 24, 0, 8);
+    vfs_wr4_s(slot, VERSIONPAGE_OFF_EPOCH,    (int32_t)epoch,    page_size);
+    vfs_wr4_s(slot, VERSIONPAGE_OFF_RSVD,     0,                 page_size);
+    vfs_wr8_s(slot, VERSIONPAGE_OFF_DATAPAGE, dataPage,          page_size);
+    vfs_wr8_s(slot, VERSIONPAGE_OFF_RSVD2,    0,                 page_size);
+    vfs_wr8_s(slot, VERSIONPAGE_OFF_NEXTPTR,  nextPtr,           page_size);
 }
 
 void nodes_read_versionpage(const uint8_t* slot, uint32_t* epoch,
                             int64_t* dataPage, int64_t* nextPtr,
                             int64_t page_size) {
-    *epoch    = (uint32_t)vfs_rd4_s(slot, VERSIONPAGE_OFF_EPOCH, page_size);
-    *dataPage = vfs_rd8_s(slot, VERSIONPAGE_OFF_DATAPAGE, page_size);
-    *nextPtr  = vfs_rd8_s(slot, VERSIONPAGE_OFF_NEXTPTR, page_size);
+    *epoch    = (uint32_t)vfs_rd4_s(slot, VERSIONPAGE_OFF_EPOCH,    page_size);
+    (void)vfs_rd4_s(slot, VERSIONPAGE_OFF_RSVD, page_size);  /* kind_specific — unused */
+    *dataPage = vfs_rd8_s(slot, VERSIONPAGE_OFF_DATAPAGE,            page_size);
+    (void)vfs_rd8_s(slot, VERSIONPAGE_OFF_RSVD2, page_size); /* secondary — unused */
+    *nextPtr  = vfs_rd8_s(slot, VERSIONPAGE_OFF_NEXTPTR,             page_size);
 }
 
 /* ---------------------------------------------------------------------------
- * FileSize (Workload 4.7)
+ * FileSize (Workload 4.7; Phase 26 / W2: aligned to unified leaf layout)
+ *
+ * Fields shifted: modifiedAt 4→8, fileSize 12→16, nextPtr 20→24.
+ * Adds 4 bytes of "kind_specific" reserved at offset 4.  vfs_chain_walk
+ * reads the chain byte-identically for all three leaf types.
  * --------------------------------------------------------------------------- */
 
 void nodes_write_filesize(uint8_t* slot, uint32_t epoch, int64_t modifiedAt,
                           int64_t fileSize, int64_t nextPtr,
                           int64_t page_size) {
-    vfs_wr4_s(slot, FILESIZE_OFF_EPOCH, (int32_t)epoch, page_size);
-    vfs_wr8_s(slot, FILESIZE_OFF_MODIFIEDAT, modifiedAt, page_size);
-    vfs_wr8_s(slot, FILESIZE_OFF_FILESIZE, fileSize, page_size);
-    vfs_wr8_s(slot, FILESIZE_OFF_NEXTPTR, nextPtr, page_size);
-    vfs_wr4_s(slot, 28, 0, page_size);
+    vfs_wr4_s(slot, FILESIZE_OFF_EPOCH,      (int32_t)epoch,    page_size);
+    vfs_wr4_s(slot, FILESIZE_OFF_RSVD,       0,                 page_size);
+    vfs_wr8_s(slot, FILESIZE_OFF_MODIFIEDAT, modifiedAt,        page_size);
+    vfs_wr8_s(slot, FILESIZE_OFF_FILESIZE,   fileSize,          page_size);
+    vfs_wr8_s(slot, FILESIZE_OFF_NEXTPTR,    nextPtr,           page_size);
 }
 
 void nodes_read_filesize(const uint8_t* slot, uint32_t* epoch,
                          int64_t* modifiedAt, int64_t* fileSize, int64_t* nextPtr,
                          int64_t page_size) {
-    *epoch      = (uint32_t)vfs_rd4_s(slot, FILESIZE_OFF_EPOCH, page_size);
-    *modifiedAt = vfs_rd8_s(slot, FILESIZE_OFF_MODIFIEDAT, page_size);
-    *fileSize   = vfs_rd8_s(slot, FILESIZE_OFF_FILESIZE, page_size);
-    *nextPtr    = vfs_rd8_s(slot, FILESIZE_OFF_NEXTPTR, page_size);
+    *epoch      = (uint32_t)vfs_rd4_s(slot, FILESIZE_OFF_EPOCH,    page_size);
+    (void)vfs_rd4_s(slot, FILESIZE_OFF_RSVD, page_size);  /* kind_specific — unused */
+    *modifiedAt = vfs_rd8_s(slot, FILESIZE_OFF_MODIFIEDAT,        page_size);
+    *fileSize   = vfs_rd8_s(slot, FILESIZE_OFF_FILESIZE,          page_size);
+    *nextPtr    = vfs_rd8_s(slot, FILESIZE_OFF_NEXTPTR,           page_size);
 }
 
 /* ---------------------------------------------------------------------------

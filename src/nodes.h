@@ -159,22 +159,29 @@ void nodes_read_filenode(const uint8_t* slot, uint32_t* nodeId,
 int64_t nodes_read_filenode_ctime(const uint8_t* slot, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
- * DirContent (32 bytes, fully packed)
+ * DirContent (32 bytes, fully packed) — Phase 26 / W2: aligned to the
+ * unified leaf layout (epoch at offset 0, childNodeId at offset 4 as
+ * the "kind_specific" field, primary=childPtr, secondary=namePtr,
+ * nextPtr at offset 24).  See LEAF_OFF_* below for the macros.
  *
  *   Offset  Size  Field
  *   ──────  ────  ─────
- *     0      4    childNodeId  (uint32)
- *     4      4    epoch        (uint32)
+ *     0      4    epoch        (uint32 — read-rule compare key)
+ *     4      4    childNodeId  (uint32 — the "kind_specific" field for
+ *                                  DirContent; in W5 it becomes
+ *                                  implicit via the per-ContentUnit
+ *                                  chain but for now it's stored here
+ *                                  to keep the flat chain working)
  *     8      8    childPtr     (VirtualPtr — DirNode or FileNode)
  *    16      8    namePtr      (VirtualPtr — first NameEntry; 0 = tombstone)
  *    24      8    nextPtr      (VirtualPtr — next DirContent, 0 = end)
  * --------------------------------------------------------------------------- */
 
-#define DIRCONTENT_OFF_CHILDID     0
-#define DIRCONTENT_OFF_EPOCH         4
-#define DIRCONTENT_OFF_CHILDPTR      8
-#define DIRCONTENT_OFF_NAMEPTR      16
-#define DIRCONTENT_OFF_NEXTPTR      24
+#define DIRCONTENT_OFF_EPOCH         0  /* was 4 — now matches LEAF_OFF_EPOCH */
+#define DIRCONTENT_OFF_CHILDID       4  /* was 0 — now matches LEAF_OFF_KIND_SPECIFIC */
+#define DIRCONTENT_OFF_CHILDPTR      8  /* was 8 — unchanged (LEAF_OFF_PRIMARY) */
+#define DIRCONTENT_OFF_NAMEPTR      16  /* was 16 — unchanged (LEAF_OFF_SECONDARY) */
+#define DIRCONTENT_OFF_NEXTPTR      24  /* was 24 — unchanged (LEAF_OFF_NEXTPTR) */
 
 void nodes_write_dircontent(uint8_t* slot, uint32_t childNodeId, uint32_t epoch,
                             int64_t childPtr, int64_t namePtr, int64_t nextPtr, int64_t page_size);
@@ -323,21 +330,54 @@ void nodes_read_anchor(const uint8_t* slot, AnchorKind* kind, uint32_t* id,
                        int64_t page_size);
 
 /* ---------------------------------------------------------------------------
- * VersionPage (32 bytes, 20 used, 12 reserved)
+ * Phase 26 / W2: Unified leaf layout macros.
+ *
+ * VersionPage, DirContent, and FileSize all share the same 32-byte
+ * per-epoch chain entry layout.  The chain walk (vfs_chain_walk) reads
+ * the chain byte-for-byte identically for all three; the per-leaf
+ * specialization is just in how the primary/secondary fields are
+ * interpreted (dataPage vs childPtr+namePtr vs modifiedAt+fileSize).
  *
  *   Offset  Size  Field
  *   ──────  ────  ─────
- *     0      4    epoch      (uint32)
- *     4      4    reserved
- *     8      8    dataPage   (int64 — logical page index of data page)
- *    16      8    nextPtr    (VirtualPtr — next older VersionPage, 0 = base)
- *    24      8    reserved
+ *     0      4    epoch         (uint32 — read-rule compare key)
+ *     4      4    kind_specific (uint32 — leaf-specific metadata; for
+ *                                 DirContent this is the childNodeId)
+ *     8      8    primary_ptr   (int64 — leaf-specific: VersionPage.dataPage,
+ *                                 DirContent.childPtr, FileSize.modifiedAt)
+ *    16      8    secondary_ptr (int64 — leaf-specific: unused / DirContent.namePtr /
+ *                                 FileSize.fileSize)
+ *    24      8    nextPtr       (VirtualPtr — next entry, 0 = end)
  * --------------------------------------------------------------------------- */
 
-#define VERSIONPAGE_OFF_EPOCH      0
-#define VERSIONPAGE_OFF_RSVD       4
-#define VERSIONPAGE_OFF_DATAPAGE   8
-#define VERSIONPAGE_OFF_NEXTPTR   16
+#define LEAF_OFF_EPOCH           0  /* uint32 — read-rule compare key */
+#define LEAF_OFF_KIND_SPECIFIC   4  /* uint32 — leaf-specific; childNodeId for DirContent */
+#define LEAF_OFF_PRIMARY         8  /* int64  — leaf-specific */
+#define LEAF_OFF_SECONDARY      16  /* int64  — leaf-specific */
+#define LEAF_OFF_NEXTPTR        24  /* int64  — VirtualPtr to next entry */
+
+/* ---------------------------------------------------------------------------
+ * VersionPage (32 bytes) — Phase 26 / W2: aligned to the unified leaf
+ * layout (epoch at offset 0, kind_specific reserved at 4, dataPage
+ * as primary at 8, secondary reserved at 16, nextPtr at 24).  See
+ * LEAF_OFF_* below.
+ *
+ *   Offset  Size  Field
+ *   ──────  ────  ─────
+ *     0      4    epoch       (uint32 — read-rule compare key)
+ *     4      4    reserved    (uint32 — kind_specific, leaf-specific
+ *                                 metadata if needed; unused for VersionPage)
+ *     8      8    dataPage    (int64 — logical page index of data page)
+ *    16      8    reserved    (int64 — secondary, leaf-specific; unused
+ *                                 for VersionPage)
+ *    24      8    nextPtr     (VirtualPtr — next older VersionPage, 0 = base)
+ * --------------------------------------------------------------------------- */
+
+#define VERSIONPAGE_OFF_EPOCH      0   /* matches LEAF_OFF_EPOCH */
+#define VERSIONPAGE_OFF_RSVD       4   /* matches LEAF_OFF_KIND_SPECIFIC */
+#define VERSIONPAGE_OFF_DATAPAGE   8   /* matches LEAF_OFF_PRIMARY */
+#define VERSIONPAGE_OFF_RSVD2     16   /* matches LEAF_OFF_SECONDARY */
+#define VERSIONPAGE_OFF_NEXTPTR   24   /* was 16 — now matches LEAF_OFF_NEXTPTR */
 
 void nodes_write_versionpage(uint8_t* slot, uint32_t epoch, int64_t dataPage,
                              int64_t nextPtr, int64_t page_size);
@@ -345,21 +385,24 @@ void nodes_read_versionpage(const uint8_t* slot, uint32_t* epoch,
                             int64_t* dataPage, int64_t* nextPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
- * FileSize (32 bytes, 24 used, 8 reserved)
+ * FileSize (32 bytes) — Phase 26 / W2: aligned to the unified leaf
+ * layout (epoch at offset 0, kind_specific reserved at 4, modifiedAt
+ * as primary at 8, fileSize as secondary at 16, nextPtr at 24).
  *
  *   Offset  Size  Field
  *   ──────  ────  ─────
- *     0      4    epoch       (uint32)
- *     4      8    modifiedAt  (int64 — Unix timestamp)
- *    12      8    fileSize    (int64 — file size in bytes)
- *    20      8    nextPtr     (VirtualPtr — next FileSize, 0 = end)
- *    28      4    reserved
+ *     0      4    epoch       (uint32 — read-rule compare key)
+ *     4      4    reserved    (uint32 — kind_specific; unused for FileSize)
+ *     8      8    modifiedAt  (int64 — Unix timestamp)
+ *    16      8    fileSize    (int64 — file size in bytes)
+ *    24      8    nextPtr     (VirtualPtr — next FileSize, 0 = end)
  * --------------------------------------------------------------------------- */
 
-#define FILESIZE_OFF_EPOCH       0
-#define FILESIZE_OFF_MODIFIEDAT  4
-#define FILESIZE_OFF_FILESIZE   12
-#define FILESIZE_OFF_NEXTPTR    20
+#define FILESIZE_OFF_EPOCH       0   /* matches LEAF_OFF_EPOCH */
+#define FILESIZE_OFF_RSVD        4   /* matches LEAF_OFF_KIND_SPECIFIC */
+#define FILESIZE_OFF_MODIFIEDAT  8   /* was 4 — now matches LEAF_OFF_PRIMARY */
+#define FILESIZE_OFF_FILESIZE   16   /* was 12 — now matches LEAF_OFF_SECONDARY */
+#define FILESIZE_OFF_NEXTPTR    24   /* was 20 — now matches LEAF_OFF_NEXTPTR */
 
 void nodes_write_filesize(uint8_t* slot, uint32_t epoch, int64_t modifiedAt,
                           int64_t fileSize, int64_t nextPtr, int64_t page_size);

@@ -591,9 +591,12 @@ static void test_versionpage(void) {
     CHECK_EQ(VFS_VPTR_PAGE(nextPtr), 5);
     CHECK_EQ(VFS_VPTR_SLOT(nextPtr), 1);
 
-    /* Verify reserved bytes 24-31 are zero */
+    /* W2: nextPtr now lives at offset 24 (was at 16).  Bytes 24-31
+       hold the nextPtr value (8 bytes) — the old "reserved" region
+       is gone.  Verify bytes 16-23 (the new "secondary" reserved
+       region) are zero. */
     int all_zero = 1;
-    for (int i = 24; i < 32; i++) {
+    for (int i = 16; i < 24; i++) {
         if (slot[i] != 0) { all_zero = 0; break; }
     }
     CHECK(all_zero);
@@ -645,8 +648,8 @@ static void test_filesize(void) {
     CHECK_EQ(fileSize, 500);
     CHECK_EQ(nextPtr, 0);
 
-    /* Verify reserved bytes 28-31 are zero */
-    CHECK_EQ(vfs_rd4(slot, 28), 0);
+    /* W2: fileSize now lives at offset 16 (was 12); nextPtr at 24 (was 20).
+       The old "reserved 28-31" is gone — the slot is fully packed. */
 }
 
 static void test_filesize_chain(void) {

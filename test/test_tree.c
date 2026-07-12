@@ -2339,6 +2339,166 @@ static void test_rename_tree(void) {
  * dedup hash_map in dirchain_list, which W5 removes entirely.
  * --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * Phase 26 / W2: dedicated read-rule test for vfs_chain_walk.
+ *
+ * Builds a chain of 3 VersionPage entries directly via the pool (no
+ * real VFS file needed — we test the walk in isolation), then
+ * verifies all 5 read-rule cases:
+ *
+ *   - exact-match-wins:     an entry at the query epoch
+ *   - odd-skip:             an odd epoch below the query (unrelated snap)
+ *   - committed-base:       an even epoch below the query
+ *   - future-skip:          an entry at an epoch above the query
+ *   - empty-chain:          chain_head == 0 returns WALK_NEED_GROW
+ *
+ * Also exercises the per-entry mapper remap: if the entry's stored
+ * epoch is in the mapper (e.g. 6 → 8), the effective epoch used for
+ * comparison is the resolved epoch, not the stored one.
+ * --------------------------------------------------------------------------- */
+
+static int64_t alloc_versionpage_slot(vfs_t* vfs, uint32_t stored_epoch,
+                                      int64_t dataPage, int64_t nextPtr) {
+    TreeContext* ctx = vfs->ctx;
+    int64_t vp = pool_alloc(&ctx->pool);
+    if (vp == VFS_VPTR_NULL) return VFS_VPTR_NULL;
+    PoolSlot slot = {0};
+    pool_acquire(&ctx->pool, vp, true, &slot);
+    if (slot.vptr == VFS_VPTR_NULL) return VFS_VPTR_NULL;
+    nodes_write_versionpage(slot.bytes, stored_epoch, dataPage, nextPtr,
+                            ctx->page_size);
+    pool_release(&ctx->pool, &slot);
+    return vp;
+}
+
+static void test_chain_walk_read_rule(void) {
+    const char* path = "/tmp/test_chain_walk.vfs";
+    unlink(path);
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+
+    /* Build a 3-entry VersionPage chain in HEAD → TAIL order.
+       Chain: [v4@E=4 dataPage=400] → [v2@E=2 dataPage=200] → [v1@E=0 dataPage=100]
+       (newest first, oldest last — chains are descending in epoch). */
+    int64_t v1 = alloc_versionpage_slot(vfs, 0, 100, 0);
+    int64_t v2 = alloc_versionpage_slot(vfs, 2, 200, v1);
+    int64_t v4 = alloc_versionpage_slot(vfs, 4, 400, v2);
+    CHECK(v4 != VFS_VPTR_NULL);
+
+    /* Case 1: exact-match-wins.  Query epoch=4.  Walk should return v4. */
+    {
+        PoolSlot leaf = {0};
+        WalkResult r = vfs_chain_walk(ctx, v4, 4, &leaf);
+        CHECK_EQ((int)r, (int)WALK_FOUND);
+        int64_t dp = vfs_rd8_s(leaf.bytes, VERSIONPAGE_OFF_DATAPAGE, ctx->page_size);
+        CHECK_EQ(dp, 400);
+    }
+
+    /* Case 2: committed-base.  Query epoch=3 (odd — no exact match).
+       First even below 3 is 2 → returns v2. */
+    {
+        PoolSlot leaf = {0};
+        WalkResult r = vfs_chain_walk(ctx, v4, 3, &leaf);
+        CHECK_EQ((int)r, (int)WALK_FOUND);
+        int64_t dp = vfs_rd8_s(leaf.bytes, VERSIONPAGE_OFF_DATAPAGE, ctx->page_size);
+        CHECK_EQ(dp, 200);
+    }
+
+    /* Case 3: future-skip.  Query epoch=10.  All entries are below 10,
+       but the highest even below 10 is 4 → returns v4. */
+    {
+        PoolSlot leaf = {0};
+        WalkResult r = vfs_chain_walk(ctx, v4, 10, &leaf);
+        CHECK_EQ((int)r, (int)WALK_FOUND);
+        int64_t dp = vfs_rd8_s(leaf.bytes, VERSIONPAGE_OFF_DATAPAGE, ctx->page_size);
+        CHECK_EQ(dp, 400);
+    }
+
+    /* Case 4: odd-skip — odd epoch below query.  Build a chain with
+       an odd entry between two evens.  Query epoch=5: first entry at
+       E=5 (exact), then odd@E=3 (skip), then even@E=2 (committed
+       base).  We want the exact-match case to win, not the even base. */
+    {
+        int64_t base_v0 = alloc_versionpage_slot(vfs, 0, 0, 0);
+        int64_t base_v2 = alloc_versionpage_slot(vfs, 2, 222, base_v0);
+        int64_t odd_v3  = alloc_versionpage_slot(vfs, 3, 333, base_v2);
+        int64_t top_v5  = alloc_versionpage_slot(vfs, 5, 555, odd_v3);
+
+        PoolSlot leaf = {0};
+        WalkResult r = vfs_chain_walk(ctx, top_v5, 5, &leaf);
+        CHECK_EQ((int)r, (int)WALK_FOUND);
+        int64_t dp = vfs_rd8_s(leaf.bytes, VERSIONPAGE_OFF_DATAPAGE, ctx->page_size);
+        CHECK_EQ(dp, 555);  /* exact match at v5, not the even@E=2 base */
+    }
+
+    /* Case 4b: odd-skip from below.  Query epoch=5 but no entry at 5.
+       First even below 5 is 2 (skipping the odd@3).  Returns the v2
+       entry (dataPage=222), not the odd@3 (333). */
+    {
+        int64_t base_v0 = alloc_versionpage_slot(vfs, 0, 0, 0);
+        int64_t base_v2 = alloc_versionpage_slot(vfs, 2, 222, base_v0);
+        int64_t odd_v3  = alloc_versionpage_slot(vfs, 3, 333, base_v2);
+        int64_t top_v4  = alloc_versionpage_slot(vfs, 4, 444, odd_v3);
+
+        PoolSlot leaf = {0};
+        WalkResult r = vfs_chain_walk(ctx, top_v4, 5, &leaf);
+        CHECK_EQ((int)r, (int)WALK_FOUND);
+        int64_t dp = vfs_rd8_s(leaf.bytes, VERSIONPAGE_OFF_DATAPAGE, ctx->page_size);
+        CHECK_EQ(dp, 444);  /* even@4 wins over odd@3 */
+    }
+
+    /* Case 5: empty chain (chain_head=0) returns WALK_NEED_GROW. */
+    {
+        PoolSlot leaf = {0};
+        WalkResult r = vfs_chain_walk(ctx, 0, 4, &leaf);
+        CHECK_EQ((int)r, (int)WALK_NEED_GROW);
+        CHECK_EQ(leaf.vptr, VFS_VPTR_NULL);
+    }
+
+    /* Case 6: per-entry mapper remap.  Add a mapper entry 4 → 8 (E=4
+       with traversal-apply flag, remaps to E=8).  Query epoch=8.
+       The walk should remap E=4 → E=8 (exact match) and return
+       dataPage=400, not dataPage=200 from the E=2 entry. */
+    {
+        /* Insert mapper: fromEpoch=4, toEpoch=8, flags=traversal_apply. */
+        int64_t mapper_vp = pool_alloc(&ctx->pool);
+        CHECK(mapper_vp != VFS_VPTR_NULL);
+        PoolSlot mapper_slot = {0};
+        pool_acquire(&ctx->pool, mapper_vp, true, &mapper_slot);
+        nodes_write_mapperentry(mapper_slot.bytes, 4, 8,
+                                MAPPER_FLAG_TRAVERSAL_APPLY, 0,
+                                ctx->page_size);
+        pool_release(&ctx->pool, &mapper_slot);
+
+        /* Re-point the superblock at this mapper entry. */
+        ctx->epochMapperPtr = mapper_vp;
+        /* Refresh the in-memory mapper table from the chain. */
+        mapper_table_init(&ctx->mapper_table, &ctx->pool, &ctx->epochMapperPtr);
+        int64_t mvp = ctx->epochMapperPtr;
+        while (mvp != 0) {
+            PoolSlot ms = {0};
+            pool_acquire(&ctx->pool, mvp, false, &ms);
+            uint32_t fromEp, toEp; uint16_t flags; int64_t mnext;
+            nodes_read_mapperentry(ms.bytes, &fromEp, &toEp, &flags, &mnext,
+                                  ctx->page_size);
+            mapper_table_insert(&ctx->mapper_table, (int64_t)fromEp,
+                                (int64_t)toEp, flags);
+            mvp = mnext;
+            pool_release(&ctx->pool, &ms);
+        }
+
+        PoolSlot leaf = {0};
+        WalkResult r = vfs_chain_walk(ctx, v4, 8, &leaf);
+        CHECK_EQ((int)r, (int)WALK_FOUND);
+        int64_t dp = vfs_rd8_s(leaf.bytes, VERSIONPAGE_OFF_DATAPAGE, ctx->page_size);
+        CHECK_EQ(dp, 400);  /* remapped v4 (stored E=4 → effective E=8) wins */
+    }
+
+    vfs_unmount(vfs);
+    unlink(path);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -2502,6 +2662,7 @@ int main(void) {
     test_vfs_create_open_many();
     test_delete_recreate_same_name();
     test_rename_tree();
+    test_chain_walk_read_rule();
 
     /* Clean up */
     unlink(test_path);

@@ -620,46 +620,14 @@ int64_t verchain_get(TreeContext* ctx, int64_t versionRootPtr,
                      int64_t read_epoch) {
     if (!ctx || versionRootPtr == 0) return -1;
 
-    int64_t vp = versionRootPtr;
+    /* Phase 26 / W2: thin wrapper over vfs_chain_walk.  The walk
+       returns the visible VersionPage slot; we extract dataPage
+       (the leaf's primary_ptr at LEAF_OFF_PRIMARY = offset 8). */
+    PoolSlot vp_slot = {0};
+    WalkResult r = vfs_chain_walk(ctx, versionRootPtr, read_epoch, &vp_slot);
+    if (r != WALK_FOUND) return -1;
 
-    while (vp != 0) {
-        /* Phase 25: by-value pool slot (read-only path, pinPage=false).
-           copy-out closes the C1 hazard; release is a no-op on un-pinned
-           slots. */
-        PoolSlot vp_slot = {0};
-        pool_acquire(&ctx->pool, vp, false, &vp_slot);
-        if (vp_slot.vptr == VFS_VPTR_NULL) break;
-
-        uint32_t vp_epoch;
-        int64_t vp_dataPage, vp_next;
-        nodes_read_versionpage(vp_slot.bytes, &vp_epoch, &vp_dataPage,
-                               &vp_next, ctx->page_size);
-
-        /* Compute effective epoch via mapper remapping */
-        int64_t effective_epoch = (int64_t)vp_epoch;
-        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)vp_epoch))
-            effective_epoch = mapper_table_resolve(&ctx->mapper_table,
-                                                    (int64_t)vp_epoch);
-
-        /* Exact match always wins */
-        if (effective_epoch == read_epoch) {
-            pool_release(&ctx->pool, &vp_slot);
-            return vp_dataPage;
-        }
-
-        /* Even epoch below read_epoch — chains are descending, so the
-           first even below read_epoch is the highest such epoch.  Use it
-           and stop. */
-        if (effective_epoch < read_epoch && effective_epoch % 2 == 0) {
-            pool_release(&ctx->pool, &vp_slot);
-            return vp_dataPage;
-        }
-
-        vp = vp_next;
-        pool_release(&ctx->pool, &vp_slot);
-    }
-
-    return -1;
+    return vfs_rd8_s(vp_slot.bytes, VERSIONPAGE_OFF_DATAPAGE, ctx->page_size);
 }
 
 /* ---------------------------------------------------------------------------
@@ -675,47 +643,20 @@ void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
     if (out_modifiedAt) *out_modifiedAt = 0;
     if (sizePtr == 0) return;
 
-    int64_t walk_vp = sizePtr;
+    /* Phase 26 / W2: thin wrapper over vfs_chain_walk.  The walk
+       returns the visible FileSize slot; we extract modifiedAt
+       (primary_ptr at offset 8) and fileSize (secondary_ptr at
+       offset 16). */
+    PoolSlot fs_slot = {0};
+    WalkResult r = vfs_chain_walk(ctx, sizePtr, read_epoch, &fs_slot);
+    if (r != WALK_FOUND) return;
 
-    while (walk_vp != 0) {
-        /* Phase 25: by-value pool slot (read-only path, pinPage=false). */
-        PoolSlot fs_slot = {0};
-        pool_acquire(&ctx->pool, walk_vp, false, &fs_slot);
-        if (fs_slot.vptr == VFS_VPTR_NULL) break;
-
-        uint32_t fs_epoch;
-        int64_t fs_modified, fs_size, fs_next;
-        nodes_read_filesize(fs_slot.bytes, &fs_epoch, &fs_modified, &fs_size,
-                            &fs_next, ctx->page_size);
-
-        /* Compute effective epoch via mapper remapping */
-        int64_t effective_epoch = (int64_t)fs_epoch;
-        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)fs_epoch))
-            effective_epoch = mapper_table_resolve(&ctx->mapper_table,
-                                                    (int64_t)fs_epoch);
-
-        /* Exact match at read_epoch — use it immediately */
-        if (effective_epoch == read_epoch) {
-            if (out_fileSize) *out_fileSize = fs_size;
-            if (out_modifiedAt) *out_modifiedAt = fs_modified;
-            pool_release(&ctx->pool, &fs_slot);
-            return;
-        }
-
-        /* Even epoch below read_epoch — chains are descending, so the
-           first even below read_epoch is the highest such epoch. */
-        if (effective_epoch < read_epoch && effective_epoch % 2 == 0) {
-            if (out_fileSize) *out_fileSize = fs_size;
-            if (out_modifiedAt) *out_modifiedAt = fs_modified;
-            pool_release(&ctx->pool, &fs_slot);
-            return;
-        }
-
-        walk_vp = fs_next;
-        pool_release(&ctx->pool, &fs_slot);
-    }
-
-    /* No match found — return 0/defaults set at top of function. */
+    if (out_modifiedAt) *out_modifiedAt = vfs_rd8_s(fs_slot.bytes,
+                                                    FILESIZE_OFF_MODIFIEDAT,
+                                                    ctx->page_size);
+    if (out_fileSize)   *out_fileSize   = vfs_rd8_s(fs_slot.bytes,
+                                                    FILESIZE_OFF_FILESIZE,
+                                                    ctx->page_size);
 }
 
 /* ---------------------------------------------------------------------------
@@ -737,6 +678,96 @@ void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
  *
  * W1b: childCount removed from DirNode.  Replaced with createdAt.
  * The per-ContentUnit chains introduced in W5 are dedup'd at the
+ * structure level (one chain per child, with tombstone filter via
+ * the read-rule), so the dedup hash_map and the count that sized
+ * it both go away.
+ * --------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------------
+ * Phase 26 / W2: vfs_chain_walk — unified per-leaf chain walker.
+ *
+ * Walks a per-leaf chain (VersionPage / DirContent / FileSize) applying
+ * the read-rule + mapper remap.  All three leaf types share the same
+ * 32-byte layout (epoch at LEAF_OFF_EPOCH=0, nextPtr at LEAF_OFF_NEXTPTR=24),
+ * so the walk is byte-identical for all three.
+ *
+ * Read-rule per entry (matches the existing verchain_get / sizechain_get
+ * logic, and the inlined dirchain_find_child logic):
+ *
+ *   1. Compute effective_epoch = mapper_table_resolve(stored_epoch)
+ *      if mapper_table_traversal_apply(stored_epoch) is true;
+ *      otherwise effective_epoch = stored_epoch.
+ *   2. If effective_epoch == read_epoch: exact match wins. Stop.
+ *   3. If effective_epoch < read_epoch AND even: committed base.
+ *      Stop (chains are descending, so first even below is highest).
+ *   4. Otherwise (odd-and-skip, or future-and-skip): continue walk.
+ *
+ * The mapper remap is per-entry (NOT post-walk): mapper_table_traversal_apply
+ * is keyed on the entry's stored epoch, so applying it after the walk
+ * would remap the wrong epoch.
+ *
+ * On WALK_FOUND, *out_leaf holds the visible entry's slot (a by-value
+ * copy-out from the pool; release is a no-op on un-pinned slots).
+ * On WALK_NOT_FOUND, *out_leaf is zeroed.
+ *
+ * Phase 25 safety: every pool_acquire here uses pinPage=false (read-only
+ * path).  This closes the C1 hazard — the caller's slot is independent
+ * of the cache.
+ * --------------------------------------------------------------------------- */
+
+WalkResult vfs_chain_walk(TreeContext* ctx,
+                          int64_t       chain_head,
+                          int64_t       read_epoch,
+                          PoolSlot*     out_leaf) {
+    if (!ctx || !out_leaf) return WALK_NOT_FOUND;
+    out_leaf->vptr = VFS_VPTR_NULL;
+    out_leaf->pinnedPage = 0;
+    memset(out_leaf->bytes, 0, VFS_POOL_SLOT_SIZE);
+
+    if (chain_head == 0) return WALK_NEED_GROW;
+
+    int64_t walk_vp = chain_head;
+    while (walk_vp != 0) {
+        /* Phase 25: by-value pool slot (read-only, pinPage=false). */
+        PoolSlot leaf_slot = {0};
+        pool_acquire(&ctx->pool, walk_vp, false, &leaf_slot);
+        if (leaf_slot.vptr == VFS_VPTR_NULL) return WALK_NOT_FOUND;
+
+        /* Read-rule per entry — all 3 leaf types share these offsets. */
+        uint32_t stored_epoch = (uint32_t)vfs_rd4_s(leaf_slot.bytes,
+                                                    LEAF_OFF_EPOCH,
+                                                    ctx->page_size);
+        int64_t next_vp = vfs_rd8_s(leaf_slot.bytes, LEAF_OFF_NEXTPTR,
+                                    ctx->page_size);
+
+        int64_t eff_epoch = (int64_t)stored_epoch;
+        if (mapper_table_traversal_apply(&ctx->mapper_table,
+                                         (int64_t)stored_epoch)) {
+            eff_epoch = mapper_table_resolve(&ctx->mapper_table,
+                                              (int64_t)stored_epoch);
+        }
+
+        /* Exact match at read_epoch — use it immediately. */
+        if (eff_epoch == read_epoch) {
+            *out_leaf = leaf_slot;  /* copy-out, no release needed */
+            return WALK_FOUND;
+        }
+
+        /* Even epoch below read_epoch — chains are descending, so the
+           first even below read_epoch is the highest such epoch. */
+        if (eff_epoch < read_epoch && (eff_epoch & 1) == 0) {
+            *out_leaf = leaf_slot;
+            return WALK_FOUND;
+        }
+
+        /* Odd-and-skip, or future-and-skip: continue walk. */
+        walk_vp = next_vp;
+        pool_release(&ctx->pool, &leaf_slot);
+    }
+    return WALK_NOT_FOUND;
+}
+
+/* ---------------------------------------------------------------------------
  * structure level (one chain per child, with tombstone filter via
  * the read-rule), so the dedup hash_map and the count that sized
  * it both go away.

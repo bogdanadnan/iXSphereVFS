@@ -204,6 +204,40 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
 int64_t verchain_get(TreeContext* ctx, int64_t versionRootPtr,
                      int64_t read_epoch);
 
+/* ---------------------------------------------------------------------------
+ * Phase 26 / W2: vfs_chain_walk — unified per-leaf chain walker.
+ *
+ * Walks a per-leaf chain (VersionPage, DirContent, or FileSize — all
+ * share the unified 32-byte layout: epoch at offset 0, nextPtr at 24)
+ * applying the read-rule with mapper remapping.  Steps 4-5 of the
+ * 6-step walk in §4.3 of the spec.  Steps 1-3 (find the right
+ * ContentUnit) are done by the caller (tree_resolve_page /
+ * dirchain_find_child); step 6 (leaf specialization) is also done
+ * by the caller.
+ *
+ * The visible entry's slot is copied into *out_leaf.  Returns:
+ *   WALK_FOUND         — visible entry returned in *out_leaf
+ *   WALK_NOT_FOUND     — chain exhausted without finding an applicable
+ *                         entry (caller should treat as "no data" /
+ *                         "not found")
+ *   WALK_NEED_GROW     — chain head was 0 (caller should grow and retry;
+ *                         only valid for file write path)
+ *
+ * read_epoch is the already-resolved query epoch (caller should call
+ * mapper_table_resolve before passing it).
+ * --------------------------------------------------------------------------- */
+
+typedef enum {
+    WALK_FOUND = 0,
+    WALK_NOT_FOUND = 1,
+    WALK_NEED_GROW = 2,
+} WalkResult;
+
+WalkResult vfs_chain_walk(TreeContext* ctx,
+                          int64_t       chain_head,
+                          int64_t       read_epoch,
+                          PoolSlot*     out_leaf);
+
 /* Walk a FileSize chain starting from sizePtr, apply the read-rule with
  * mapper remapping, and return the fileSize and modifiedAt at the visible
  * epoch.  If no entry applies, returns 0 for fileSize and 0 for modifiedAt.
