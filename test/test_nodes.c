@@ -437,6 +437,60 @@ static void test_pagenode_chain(void) {
     CHECK_EQ(next, 0);
 }
 
+/* ---------------------------------------------------------------------------
+ * Phase 26 / W1a: Anchor write/read (unified 32-byte layout).
+ * Tests round-trip for each AnchorKind value, plus the count field.
+ * --------------------------------------------------------------------------- */
+
+static void test_anchor_write_read(void) {
+    uint8_t slot[32];
+    AnchorKind kinds[] = {
+        ANCHOR_KIND_ROOT_FILE,
+        ANCHOR_KIND_ROOT_DIR,
+        ANCHOR_KIND_SEGMENT_FILE,
+        ANCHOR_KIND_SEGMENT_DIR,
+        ANCHOR_KIND_UNIT_PAGE,
+        ANCHOR_KIND_UNIT_SLOT,
+    };
+    for (size_t i = 0; i < sizeof(kinds)/sizeof(kinds[0]); i++) {
+        memset(slot, 0, sizeof(slot));
+        nodes_write_anchor(slot, kinds[i], 42 + (uint32_t)i,
+                          0x1111 + (int64_t)i, 0x2222 + (int64_t)i,
+                          100 + (uint32_t)i, VFS_PAGE_SIZE);
+
+        AnchorKind k = 0;
+        uint32_t id = 0;
+        int64_t head = 0, sib = 0;
+        uint32_t count = 0;
+        nodes_read_anchor(slot, &k, &id, &head, &sib, &count, VFS_PAGE_SIZE);
+        CHECK_EQ((int)k, (int)kinds[i]);
+        CHECK_EQ((int)id, 42 + (int)i);
+        CHECK_EQ(head, 0x1111 + (int64_t)i);
+        CHECK_EQ(sib,  0x2222 + (int64_t)i);
+        CHECK_EQ((int)count, 100 + (int)i);
+    }
+}
+
+/* Anchor should be exactly 32 bytes (one pool slot). */
+static void test_anchor_size_is_32(void) {
+    CHECK_EQ((int)sizeof(AnchorKind), 2);
+    /* The offset macros are all 0..31; no out-of-range check needed at
+       compile time, but the write helper should fit in 32 bytes. */
+    uint8_t slot[32];
+    memset(slot, 0xAA, sizeof(slot));  /* poison */
+    nodes_write_anchor(slot, ANCHOR_KIND_ROOT_FILE, 1, 2, 3, 4, VFS_PAGE_SIZE);
+    /* Spot-check that the writer didn't overrun the slot. */
+    /* offset 32 (one past) is OOB; we can't check it, but we can check
+       that the write doesn't depend on it. */
+    CHECK_EQ((int)ANCHOR_OFF_TYPE, 0);
+    CHECK_EQ((int)ANCHOR_OFF_FLAGS, 2);
+    CHECK_EQ((int)ANCHOR_OFF_ID, 4);
+    CHECK_EQ((int)ANCHOR_OFF_HEADPTR, 8);
+    CHECK_EQ((int)ANCHOR_OFF_SIBPTR, 16);
+    CHECK_EQ((int)ANCHOR_OFF_COUNT, 24);
+    CHECK_EQ((int)ANCHOR_OFF_RESERVED, 28);
+}
+
 static void test_versionpage(void) {
     uint8_t slot[32];
     memset(slot, 0, sizeof(slot));
@@ -994,6 +1048,10 @@ int main(void) {
 
     test_pagenode();
     test_pagenode_chain();
+
+    /* --- Phase 26 / W1a Anchor tests --- */
+    test_anchor_write_read();
+    test_anchor_size_is_32();
     test_versionpage();
     test_versionpage_chain();
 

@@ -185,6 +185,37 @@ void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr,
 }
 
 /* ---------------------------------------------------------------------------
+ * Phase 26 / W1a: Anchor write/read (unified 32-byte layout).
+ *
+ * Used for the new Segment and ContentUnit types. Field layout matches
+ * the ANCHOR_OFF_* macros. The existing FileNode/DirNode/FileContent/
+ * PageNode continue to use their type-specific helpers until W3-W4
+ * migrate them.
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_anchor(uint8_t* slot, AnchorKind kind, uint32_t id,
+                        int64_t headPtr, int64_t sibPtr, uint32_t count,
+                        int64_t page_size) {
+    vfs_wr2_s(slot, ANCHOR_OFF_TYPE, (int16_t)kind, page_size);
+    vfs_wr2_s(slot, ANCHOR_OFF_FLAGS, 0, page_size);
+    vfs_wr4_s(slot, ANCHOR_OFF_ID, (int32_t)id, page_size);
+    vfs_wr8_s(slot, ANCHOR_OFF_HEADPTR, headPtr, page_size);
+    vfs_wr8_s(slot, ANCHOR_OFF_SIBPTR, sibPtr, page_size);
+    vfs_wr4_s(slot, ANCHOR_OFF_COUNT, (int32_t)count, page_size);
+    vfs_wr4_s(slot, ANCHOR_OFF_RESERVED, 0, page_size);
+}
+
+void nodes_read_anchor(const uint8_t* slot, AnchorKind* kind, uint32_t* id,
+                       int64_t* headPtr, int64_t* sibPtr, uint32_t* count,
+                       int64_t page_size) {
+    *kind     = (AnchorKind)vfs_rd2_s(slot, ANCHOR_OFF_TYPE, page_size);
+    *id       = (uint32_t)vfs_rd4_s(slot, ANCHOR_OFF_ID, page_size);
+    *headPtr  = vfs_rd8_s(slot, ANCHOR_OFF_HEADPTR, page_size);
+    *sibPtr   = vfs_rd8_s(slot, ANCHOR_OFF_SIBPTR, page_size);
+    *count    = (uint32_t)vfs_rd4_s(slot, ANCHOR_OFF_COUNT, page_size);
+}
+
+/* ---------------------------------------------------------------------------
  * VersionPage (Workload 4.6)
  * --------------------------------------------------------------------------- */
 

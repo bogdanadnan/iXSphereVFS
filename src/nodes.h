@@ -5,6 +5,49 @@
 #include "page_buf.h"
 
 /* ---------------------------------------------------------------------------
+ * Phase 26 / W1: AnchorKind enum + unified Anchor layout.
+ *
+ * The Anchor is the canonical 32-byte layout used at all three
+ * non-leaf levels (Node, Segment, ContentUnit). It is identified
+ * by the `type` field at offset 0:
+ *
+ *   ROOT_FILE  / ROOT_DIR   — file/dir root (Node)
+ *   SEGMENT_FILE / SEGMENT_DIR — mid-level group of 64 Anchors
+ *   UNIT_PAGE / UNIT_SLOT  — per-content anchor (per-page or per-child)
+ *
+ * The legacy `NODE_TYPE_DIR` / `NODE_TYPE_FILE` (0x01 / 0x03)
+ * values are still used on disk for FileNode/DirNode (their layout
+ * matches the Anchor shape but with the original type values; W3+
+ * migrates to ROOT_FILE / ROOT_DIR). The new values 0x10+ are
+ * reserved for Segment and ContentUnit, allocated by future
+ * workloads.
+ * --------------------------------------------------------------------------- */
+
+#define ANCHOR_KIND_ROOT_FILE     0x10
+#define ANCHOR_KIND_ROOT_DIR      0x11
+#define ANCHOR_KIND_SEGMENT_FILE  0x20
+#define ANCHOR_KIND_SEGMENT_DIR   0x21
+#define ANCHOR_KIND_UNIT_PAGE     0x30
+#define ANCHOR_KIND_UNIT_SLOT     0x31
+
+typedef uint16_t AnchorKind;
+
+/* Number of Anchors per Segment.  Initial value matches the existing
+   `segment_size` in `storage.c:149`.  Made a macro so future
+   profiling can experiment with different values (per-type split
+   is a future option; see Open question #2 in the spec). */
+#define ANCHOR_UNITS_PER_SEGMENT 1024
+
+/* Anchor offset macros (offset 0..31 within the 32-byte slot). */
+#define ANCHOR_OFF_TYPE      0   /* uint16 AnchorKind */
+#define ANCHOR_OFF_FLAGS     2   /* uint16 reserved */
+#define ANCHOR_OFF_ID        4   /* uint32: nodeId/segmentId/pageIndex/slotId */
+#define ANCHOR_OFF_HEADPTR   8   /* int64  VirtualPtr */
+#define ANCHOR_OFF_SIBPTR   16   /* int64  VirtualPtr (sibling at same level) */
+#define ANCHOR_OFF_COUNT    24   /* uint32 (unit count for Segment; 0 otherwise) */
+#define ANCHOR_OFF_RESERVED 28   /* uint32 reserved */
+
+/* ---------------------------------------------------------------------------
  * Type discriminator constants (DirNode and FileNode only)
  * --------------------------------------------------------------------------- */
 
@@ -176,6 +219,22 @@ void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr
                           uint32_t page_index, int64_t page_size);
 void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr,
                          int64_t* nextPtr, uint32_t* page_index, int64_t page_size);
+
+/* ---------------------------------------------------------------------------
+ * Phase 26 / W1a: Anchor write/read helpers (additive).
+ *
+ * These helpers operate on the unified 32-byte Anchor layout. Used for
+ * the new Segment and ContentUnit types allocated in W1d; the existing
+ * FileNode/DirNode/FileContent/PageNode continue to use their
+ * type-specific helpers until W3-W4 migrate them.
+ * --------------------------------------------------------------------------- */
+
+void nodes_write_anchor(uint8_t* slot, AnchorKind kind, uint32_t id,
+                        int64_t headPtr, int64_t sibPtr, uint32_t count,
+                        int64_t page_size);
+void nodes_read_anchor(const uint8_t* slot, AnchorKind* kind, uint32_t* id,
+                       int64_t* headPtr, int64_t* sibPtr, uint32_t* count,
+                       int64_t page_size);
 
 /* ---------------------------------------------------------------------------
  * VersionPage (32 bytes, 20 used, 12 reserved)
