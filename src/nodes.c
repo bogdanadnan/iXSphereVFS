@@ -182,21 +182,32 @@ void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* 
 }
 
 /* ---------------------------------------------------------------------------
- * PageNode (Workload 4.5)
+ * PageNode (Workload 4.5; Phase 26 / W1d: Anchor-aligned layout)
+ *
+ * The new layout matches the unified Anchor struct: type/flags at the
+ * front (0-3), pageIndex at offset 4 (the Anchor `id` field), then
+ * versionRoot (8), nextPtr (16).  See nodes.h for the full diagram.
+ *
+ * nodes_write_pagenode / nodes_read_pagenode keep the original
+ * signature (versionRootPtr, nextPtr, page_index) for source-compat
+ * with the 20+ call sites; they delegate to the new offsets.
  * --------------------------------------------------------------------------- */
 
 void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr,
                            uint32_t page_index, int64_t page_size) {
-    vfs_wr8_s(slot, PAGENODE_OFF_VERSIONROOT, versionRootPtr, page_size);
-    vfs_wr8_s(slot, PAGENODE_OFF_NEXTPTR, nextPtr, page_size);
-    vfs_wr4_s(slot, PAGENODE_OFF_PAGEINDEX, (int32_t)page_index, page_size);
-    memset(slot + 20, 0, 12);
+    vfs_wr2_s(slot, PAGENODE_OFF_TYPE,  (int16_t)ANCHOR_KIND_UNIT_PAGE, page_size);
+    vfs_wr2_s(slot, PAGENODE_OFF_FLAGS, 0, page_size);
+    vfs_wr4_s(slot, PAGENODE_OFF_PAGEINDEX,   (int32_t)page_index,    page_size);
+    vfs_wr8_s(slot, PAGENODE_OFF_VERSIONROOT, versionRootPtr,          page_size);
+    vfs_wr8_s(slot, PAGENODE_OFF_NEXTPTR,     nextPtr,                 page_size);
+    vfs_wr4_s(slot, 24, 0, page_size);  /* reserved */
+    vfs_wr4_s(slot, 28, 0, page_size);  /* reserved */
 }
 
 void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr,
                          int64_t* nextPtr, uint32_t* page_index, int64_t page_size) {
     *versionRootPtr = vfs_rd8_s(slot, PAGENODE_OFF_VERSIONROOT, page_size);
-    *nextPtr        = vfs_rd8_s(slot, PAGENODE_OFF_NEXTPTR, page_size);
+    *nextPtr        = vfs_rd8_s(slot, PAGENODE_OFF_NEXTPTR,     page_size);
     if (page_index) *page_index = (uint32_t)vfs_rd4_s(slot, PAGENODE_OFF_PAGEINDEX, page_size);
 }
 

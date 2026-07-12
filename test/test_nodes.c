@@ -410,12 +410,16 @@ static void test_pagenode(void) {
     CHECK_EQ(VFS_VPTR_SLOT(next), 0);
     CHECK_EQ(pidx, 0u);
 
-    /* Verify reserved bytes 20-31 are zero */
-    int all_zero = 1;
-    for (int i = 20; i < 32; i++) {
-        if (slot[i] != 0) { all_zero = 0; break; }
-    }
-    CHECK(all_zero);
+    /* W1d: the new type/flags fields at offsets 0-3, and pageIndex at
+       offset 4 (the Anchor `id` field).  type=ANCHOR_KIND_UNIT_PAGE,
+       flags=0, pageIndex=0. */
+    CHECK_EQ(vfs_rd2(slot, PAGENODE_OFF_TYPE), (int16_t)ANCHOR_KIND_UNIT_PAGE);
+    CHECK_EQ(vfs_rd2(slot, PAGENODE_OFF_FLAGS), 0);
+    CHECK_EQ(vfs_rd4(slot, PAGENODE_OFF_PAGEINDEX), 0u);
+
+    /* Verify reserved bytes 24-31 are zero */
+    CHECK_EQ(vfs_rd4(slot, 24), 0);
+    CHECK_EQ(vfs_rd4(slot, 28), 0);
 }
 
 static void test_pagenode_chain(void) {

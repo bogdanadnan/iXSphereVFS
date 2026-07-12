@@ -217,20 +217,38 @@ void nodes_write_filecontent(uint8_t* slot, int64_t pageRootPtr, int64_t nextPtr
 void nodes_read_filecontent(const uint8_t* slot, int64_t* pageRootPtr, int64_t* nextPtr, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
- * PageNode (32 bytes, 20 used, 12 reserved)
+ * PageNode (32 bytes) — Phase 26 / W1d: now matches the Anchor shape.
+ * (Renamed conceptually to "ContentUnit" in W2; the struct/helpers keep
+ * the PageNode name for source-compat through W5.)
  *
  *   Offset  Size  Field
  *   ──────  ────  ─────
- *     0      8    versionRoot  (VirtualPtr — first VersionPage, 0 = unwritten)
- *     8      8    nextPtr      (VirtualPtr — next PageNode, 0 = end)
- *    16      4    pageIndex    (uint32 — logical page index within segment)
- *    20     12    reserved
+ *     0      2    type        (uint16 — ANCHOR_KIND_UNIT_PAGE = 0x30)
+ *     2      2    flags       (uint16 reserved)
+ *     4      4    pageIndex   (uint32 — logical page index within segment)
+ *     8      8    versionRoot (VirtualPtr — first VersionPage, 0 = unwritten)
+ *    16      8    nextPtr     (VirtualPtr — next PageNode, 0 = end)
+ *    24      4    reserved
+ *    28      4    reserved
+ *
+ * W1d: layout aligned with the unified Anchor struct.  pageIndex
+ * moved from offset 16 → 4 (the Anchor `id` field), versionRoot from
+ * 0 → 8 (Anchor `headPtr`), nextPtr from 8 → 16 (Anchor `sibPtr`).
+ * The legacy PAGENODE_OFF_* macros below are kept as aliases for now
+ * to minimize churn at the call sites; they map to the new offsets.
+ *
+ * Note: at the ContentUnit level, the `id` field stores the pageIndex
+ * (an integer that uniquely identifies the page within a segment).
+ * The dir-side equivalent (W1e) uses the same `id` field to store
+ * the slotId, giving a uniform 32-byte ContentUnit layout for both
+ * file and dir chains.
  * --------------------------------------------------------------------------- */
 
-#define PAGENODE_OFF_VERSIONROOT    0
-#define PAGENODE_OFF_NEXTPTR          8
-#define PAGENODE_OFF_PAGEINDEX       16
-#define PAGENODE_OFF_RESERVED2       20
+#define PAGENODE_OFF_TYPE         0  /* new in W1d; ANCHOR_KIND_UNIT_PAGE */
+#define PAGENODE_OFF_FLAGS        2  /* new in W1d; reserved */
+#define PAGENODE_OFF_PAGEINDEX    4  /* was 16 */
+#define PAGENODE_OFF_VERSIONROOT  8  /* was 0 */
+#define PAGENODE_OFF_NEXTPTR     16  /* was 8 */
 
 void nodes_write_pagenode(uint8_t* slot, int64_t versionRootPtr, int64_t nextPtr,
                           uint32_t page_index, int64_t page_size);
