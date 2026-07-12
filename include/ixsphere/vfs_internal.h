@@ -46,6 +46,7 @@ typedef struct {
 
 struct vfs_t {
     TreeContext* ctx;            /* heap-allocated tree context */
+    struct LockTable* lock_table; /* per-vfs_t lock table (Phase 26 / W0) */
 };
 
 #endif /* VFS_INTERNAL_H */

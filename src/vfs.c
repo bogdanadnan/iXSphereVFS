@@ -7,48 +7,102 @@
 #include <pthread.h>
 
 /* ---------------------------------------------------------------------------
- * Per-file locking subsystem
+ * Per-file locking subsystem (Phase 26 / W0)
  *
- * Hash table with fixed 256 buckets, chained linked list.
- * Each entry keyed by file nodeId only.  Global lock (epoch=0) is tracked
- * via a boolean flag; per-epoch locks use a counter.  A condition variable
- * coordinates global vs per-epoch: when global is held, per-epoch lockers
- * wait; when per-epoch locks are active, global lockers wait until they
- * drain.
+ * Per-vfs_t lock table (hash, 256 buckets, chained list).  Each entry
+ * keyed by an opaque int64_t (typically a VirtualPtr, but nodeId
+ * still works for legacy callers).  Global lock (epoch=0) is tracked
+ * via a flag; per-epoch locks are tracked per-epoch (small array of
+ * {epoch, count} pairs, max 64 distinct epochs per key).
+ *
+ * Semantics:
+ *   - global (epoch=0) is exclusive: drains all per-epoch holders.
+ *   - per-epoch (epoch!=0) is per-epoch-keyed: different-epoch
+ *     holders proceed in parallel; same-epoch second acquirer
+ *     blocks until the first releases.
+ *
+ * Lock contract:
+ *   - Key is an opaque int64_t (callers pick a stable identifier;
+ *     vfs_lock does not interpret the value).
+ *   - Per-epoch mode (epoch!=0) provides same-epoch exclusion
+ *     but allows different-epoch writes to proceed in parallel.
+ *   - Global mode (epoch==0) is fully exclusive.
  * --------------------------------------------------------------------------- */
 
 #define LOCK_BUCKETS 256
+#define MAX_PER_EPOCH_HOLDERS 64   /* max distinct epochs per key (sanity bound) */
 
 typedef struct FileLockState {
-    int64_t           nodeId;       /* file nodeId (lock key) */
+    int64_t           nodeId;       /* lock key (opaque int64_t to the lock subsystem) */
     pthread_mutex_t   mtx;
     pthread_cond_t    cv;
     pthread_t         global_owner; /* thread holding the global lock, 0 if none */
     int               global_depth; /* recursive count for global lock */
     int               global_held;  /* 1 if global lock is active */
     int               global_pending; /* threads waiting for global lock */
-    int               epoch_count;  /* number of active per-epoch locks */
+    /* Per-epoch holder tracking (R1 fix) */
+    int64_t           epoch_keys[MAX_PER_EPOCH_HOLDERS];
+    int               epoch_counts[MAX_PER_EPOCH_HOLDERS];
+    int               num_epochs;          /* number of distinct epochs with holders */
+    int               total_epoch_holders; /* sum of all epoch_counts (for the drain check) */
     int               refcount;     /* number of references to this entry */
     struct FileLockState* next;     /* hash chain next pointer */
 } FileLockState;
 
-static FileLockState* lock_table[LOCK_BUCKETS];
-static pthread_mutex_t table_lock = PTHREAD_MUTEX_INITIALIZER;
+typedef struct LockTable {
+    FileLockState* buckets[LOCK_BUCKETS];
+    pthread_mutex_t table_lock;
+} LockTable;
 
-/* Hash: file nodeId */
-static int lock_hash(int64_t nodeId) {
-    uint64_t h = (uint64_t)nodeId;
+static LockTable* lock_table_create(void) {
+    LockTable* t = (LockTable*)calloc(1, sizeof(LockTable));
+    if (!t) return NULL;
+    if (pthread_mutex_init(&t->table_lock, NULL) != 0) {
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+static void lock_table_destroy(LockTable* t) {
+    if (!t) return;
+    for (int i = 0; i < LOCK_BUCKETS; i++) {
+        FileLockState* e = t->buckets[i];
+        while (e) {
+            FileLockState* next = e->next;
+            pthread_mutex_destroy(&e->mtx);
+            pthread_cond_destroy(&e->cv);
+            free(e);
+            e = next;
+        }
+    }
+    pthread_mutex_destroy(&t->table_lock);
+    free(t);
+}
+
+void vfs_lock_destroy(vfs_t* vfs) {
+    if (!vfs) return;
+    if (vfs->lock_table) {
+        lock_table_destroy(vfs->lock_table);
+        vfs->lock_table = NULL;
+    }
+}
+
+/* Hash: opaque key int64_t */
+static int lock_hash(int64_t key) {
+    uint64_t h = (uint64_t)key;
     h ^= h >> 33;
     h *= 0xff51afd7ed558ccdULL;
     return (int)(h % LOCK_BUCKETS);
 }
 
-/* Find or create a FileLockState for nodeId.  Caller must hold table_lock. */
-static FileLockState* filelock_find_or_create(int64_t nodeId) {
-    int bkt = lock_hash(nodeId);
-    FileLockState* e = lock_table[bkt];
+/* Find or create a FileLockState for `key` in the given LockTable.
+   Caller must hold t->table_lock. */
+static FileLockState* filelock_find_or_create(LockTable* t, int64_t key) {
+    int bkt = lock_hash(key);
+    FileLockState* e = t->buckets[bkt];
     while (e) {
-        if (e->nodeId == nodeId) {
+        if (e->nodeId == key) {
             e->refcount++;
             return e;
         }
@@ -56,7 +110,7 @@ static FileLockState* filelock_find_or_create(int64_t nodeId) {
     }
     e = (FileLockState*)calloc(1, sizeof(FileLockState));
     if (!e) return NULL;
-    e->nodeId = nodeId;
+    e->nodeId = key;
     pthread_mutex_init(&e->mtx, NULL);
     pthread_cond_init(&e->cv, NULL);
     e->refcount = 1;
@@ -64,16 +118,28 @@ static FileLockState* filelock_find_or_create(int64_t nodeId) {
     e->global_depth = 0;
     e->global_held = 0;
     e->global_pending = 0;
-    e->epoch_count = 0;
-    e->next = lock_table[bkt];
-    lock_table[bkt] = e;
+    e->num_epochs = 0;
+    e->total_epoch_holders = 0;
+    e->next = t->buckets[bkt];
+    t->buckets[bkt] = e;
     return e;
 }
 
-static void filelock_release(FileLockState* e, int bkt) {
+/* Look up a FileLockState (no create).  Caller must hold t->table_lock. */
+static FileLockState* filelock_lookup(LockTable* t, int64_t key) {
+    int bkt = lock_hash(key);
+    FileLockState* e = t->buckets[bkt];
+    while (e) {
+        if (e->nodeId == key) return e;
+        e = e->next;
+    }
+    return NULL;
+}
+
+static void filelock_release(LockTable* t, FileLockState* e, int bkt) {
     e->refcount--;
     if (e->refcount <= 0) {
-        FileLockState** pp = &lock_table[bkt];
+        FileLockState** pp = &t->buckets[bkt];
         while (*pp) {
             if (*pp == e) {
                 *pp = e->next;
@@ -87,22 +153,76 @@ static void filelock_release(FileLockState* e, int bkt) {
     }
 }
 
+/* Per-epoch helpers (called with fls->mtx held).  Returns 0 on success,
+   -1 on overflow. */
+static int per_epoch_add(FileLockState* fls, int64_t epoch) {
+    /* If epoch already has holders, increment. */
+    for (int i = 0; i < fls->num_epochs; i++) {
+        if (fls->epoch_keys[i] == epoch) {
+            fls->epoch_counts[i]++;
+            fls->total_epoch_holders++;
+            return 0;
+        }
+    }
+    /* New epoch; needs a slot. */
+    if (fls->num_epochs >= MAX_PER_EPOCH_HOLDERS) {
+        return -1;  /* overflow — caller treats as error */
+    }
+    fls->epoch_keys[fls->num_epochs] = epoch;
+    fls->epoch_counts[fls->num_epochs] = 1;
+    fls->num_epochs++;
+    fls->total_epoch_holders++;
+    return 0;
+}
+
+static int per_epoch_remove(FileLockState* fls, int64_t epoch) {
+    for (int i = 0; i < fls->num_epochs; i++) {
+        if (fls->epoch_keys[i] == epoch) {
+            fls->epoch_counts[i]--;
+            fls->total_epoch_holders--;
+            if (fls->epoch_counts[i] == 0) {
+                /* Compact: shift left. */
+                for (int j = i; j < fls->num_epochs - 1; j++) {
+                    fls->epoch_keys[j] = fls->epoch_keys[j+1];
+                    fls->epoch_counts[j] = fls->epoch_counts[j+1];
+                }
+                fls->num_epochs--;
+            }
+            return 0;
+        }
+    }
+    return -1;  /* not held — caller treats as error */
+}
+
+static int per_epoch_has_holders(FileLockState* fls, int64_t epoch) {
+    for (int i = 0; i < fls->num_epochs; i++) {
+        if (fls->epoch_keys[i] == epoch) return 1;
+    }
+    return 0;
+}
+
 int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch) {
     if (!vfs || !vfs->ctx) return VFS_ERR_IO;
+    if (!vfs->lock_table) {
+        vfs->ctx->last_error = VFS_ERR_IO;
+        return VFS_ERR_IO;
+    }
 
-    pthread_mutex_lock(&table_lock);
-    FileLockState* fls = filelock_find_or_create(file);
+    LockTable* t = vfs->lock_table;
+
+    pthread_mutex_lock(&t->table_lock);
+    FileLockState* fls = filelock_find_or_create(t, file);
     if (!fls) {
-        pthread_mutex_unlock(&table_lock);
+        pthread_mutex_unlock(&t->table_lock);
         vfs->ctx->last_error = VFS_ERR_NOMEM;
         return VFS_ERR_NOMEM;
     }
-    pthread_mutex_unlock(&table_lock);
+    pthread_mutex_unlock(&t->table_lock);
 
     pthread_t self = pthread_self();
 
     if (epoch == 0) {
-        /* Global lock: announce intent, wait until per-epoch locks drain */
+        /* Global lock: announce intent, wait until per-epoch holders drain */
         pthread_mutex_lock(&fls->mtx);
         fls->global_pending = 1;
 
@@ -113,7 +233,7 @@ int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch) {
             return VFS_OK;
         }
 
-        while (fls->epoch_count > 0)
+        while (fls->total_epoch_holders > 0)
             pthread_cond_wait(&fls->cv, &fls->mtx);
 
         fls->global_owner = self;
@@ -124,31 +244,41 @@ int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch) {
         return VFS_OK;
     }
 
-    /* Per-epoch lock: wait until global lock is released and no global
-       lock is pending (another thread may be waiting to acquire it). */
+    /* Per-epoch lock: wait for global to be released, then for any
+       same-epoch holders to release.  Different-epoch holders don't
+       block us. */
     pthread_mutex_lock(&fls->mtx);
 
     while (fls->global_held || fls->global_pending)
         pthread_cond_wait(&fls->cv, &fls->mtx);
 
-    fls->epoch_count++;
+    while (per_epoch_has_holders(fls, epoch))
+        pthread_cond_wait(&fls->cv, &fls->mtx);
+
+    if (per_epoch_add(fls, epoch) != 0) {
+        /* Overflow — too many distinct epochs at this key. */
+        pthread_mutex_unlock(&fls->mtx);
+        vfs->ctx->last_error = VFS_ERR_NOMEM;
+        return VFS_ERR_NOMEM;
+    }
     pthread_mutex_unlock(&fls->mtx);
     return VFS_OK;
 }
 
 int vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch) {
     if (!vfs || !vfs->ctx) return VFS_ERR_IO;
+    if (!vfs->lock_table) {
+        vfs->ctx->last_error = VFS_ERR_IO;
+        return VFS_ERR_IO;
+    }
 
+    LockTable* t = vfs->lock_table;
     int bkt = lock_hash(file);
 
-    pthread_mutex_lock(&table_lock);
-    FileLockState* fls = lock_table[bkt];
-    while (fls) {
-        if (fls->nodeId == file) break;
-        fls = fls->next;
-    }
+    pthread_mutex_lock(&t->table_lock);
+    FileLockState* fls = filelock_lookup(t, file);
     if (!fls) {
-        pthread_mutex_unlock(&table_lock);
+        pthread_mutex_unlock(&t->table_lock);
         vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
     }
@@ -160,7 +290,7 @@ int vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch) {
         pthread_mutex_lock(&fls->mtx);
         if (fls->global_depth == 0 || !pthread_equal(fls->global_owner, self)) {
             pthread_mutex_unlock(&fls->mtx);
-            pthread_mutex_unlock(&table_lock);
+            pthread_mutex_unlock(&t->table_lock);
             vfs->ctx->last_error = VFS_ERR_IO;
             return VFS_ERR_IO;
         }
@@ -168,26 +298,27 @@ int vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch) {
         if (fls->global_depth == 0) {
             fls->global_owner = 0;
             fls->global_held = 0;
+            /* Wake any per-epoch waiters; they re-check their conditions. */
             pthread_cond_broadcast(&fls->cv);
         }
         pthread_mutex_unlock(&fls->mtx);
     } else {
         /* Per-epoch unlock */
         pthread_mutex_lock(&fls->mtx);
-        if (fls->epoch_count == 0) {
+        if (per_epoch_remove(fls, epoch) != 0) {
             pthread_mutex_unlock(&fls->mtx);
-            pthread_mutex_unlock(&table_lock);
+            pthread_mutex_unlock(&t->table_lock);
             vfs->ctx->last_error = VFS_ERR_IO;
             return VFS_ERR_IO;
         }
-        fls->epoch_count--;
-        if (fls->epoch_count == 0 && fls->global_pending > 0)
-            pthread_cond_signal(&fls->cv);
+        /* Wake any waiters: per-epoch waiters re-check same-epoch,
+           global waiters re-check total_epoch_holders. */
+        pthread_cond_broadcast(&fls->cv);
         pthread_mutex_unlock(&fls->mtx);
     }
 
-    filelock_release(fls, bkt);
-    pthread_mutex_unlock(&table_lock);
+    filelock_release(t, fls, bkt);
+    pthread_mutex_unlock(&t->table_lock);
     return VFS_OK;
 }
 
@@ -252,11 +383,21 @@ vfs_t* vfs_mount(const char* path, int64_t page_size) {
     }
 
     vfs->ctx = ctx;
+    vfs->lock_table = lock_table_create();
+    if (!vfs->lock_table) {
+        mapper_table_destroy(&ctx->mapper_table);
+        storage_close(ctx->sb);
+        free(ctx);
+        free(vfs);
+        return NULL;
+    }
     return vfs;
 }
 
 void vfs_unmount(vfs_t* vfs) {
     if (!vfs) return;
+    /* Phase 26 / W0: destroy the per-vfs_t lock table (fixes H4) */
+    vfs_lock_destroy(vfs);
     if (vfs->ctx) {
         /* Flush superblock to persist any pending changes */
         tree_superblock_write(vfs->ctx);
