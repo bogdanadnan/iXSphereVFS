@@ -73,24 +73,25 @@ typedef uint16_t AnchorKind;
  *
  *   Offset  Size  Field
  /* ---------------------------------------------------------------------------
- * DirNode (32 bytes, fully packed)
+ * DirNode (32 bytes, fully packed) — Phase 26 / W1b
  *
  *   Offset  Size  Field
  *   ──────  ────  ─────
- *     0      2    type        (uint16 — NODE_TYPE_DIR)
+ *     0      2    type         (uint16 — NODE_TYPE_DIR)
  *     2      2    reserved
- *     4      4    nodeId      (uint32)
- *     8      8    headPtr     (VirtualPtr — first DirContent)
+ *     4      4    nodeId       (uint32)
+ *     8      8    headPtr      (VirtualPtr — first DirContent)
  *    16     8    indexHeadPtr (VirtualPtr — first DirContentIndex at level 0)
- *    24     4    childCount  (uint32 — total DirContent entries ever
- *                                  inserted; monotonically incremented
- *                                  on every add (live entries and
- *                                  tombstones alike, since both are
- *                                  DirContent entries).  Provides a
- *                                  cheap upper bound for sizing the
- *                                  dedup hash_map in dirchain_list
- *                                  without walking the chain.)
- *    28     4    reserved
+ *    24     8    createdAt    (int64 — Unix timestamp, immutable)
+ *
+ * W1b: dropped childCount (was 4 bytes at offset 24).  The field was
+ * a monotonically-incrementing upper bound on DirContent inserts
+ * (live + tombstones) used to size the dedup hash_map in
+ * dirchain_list.  W5 removes the dedup entirely (per-ContentUnit
+ * chains are dedup'd at the structure level), so the field has no
+ * remaining purpose.  Replaced with createdAt to bring DirNode in
+ * line with FileNode (which has had createdAt at offset 24 since
+ * its original definition).
  * --------------------------------------------------------------------------- */
 
 #define DIRNODE_OFF_TYPE            0
@@ -98,7 +99,7 @@ typedef uint16_t AnchorKind;
 #define DIRNODE_OFF_NODEID          4
 #define DIRNODE_OFF_HEADPTR         8
 #define DIRNODE_OFF_INDEXHEADPTR   16
-#define DIRNODE_OFF_CHILDCOUNT     24
+#define DIRNODE_OFF_CTIME          24
 
 /* DirContentIndex — radix-tree node for directory indexing.  INTERNAL type
    (nodeType=0x02) navigates to children; LEAF type (nodeType=0x03) holds
@@ -114,10 +115,10 @@ typedef uint16_t AnchorKind;
 #define DIRCONTENTLINK_OFF_NEXTVP 16       /* int64 — VP of next link in the leaf's list */
 
 void nodes_write_dirnode(uint8_t* slot, uint32_t nodeId, int64_t headPtr,
-                          int64_t indexHeadPtr, int32_t childCount,
+                          int64_t indexHeadPtr, int64_t createdAt,
                           int64_t page_size);
 void nodes_read_dirnode(const uint8_t* slot, uint32_t* nodeId, int64_t* headPtr,
-                         int64_t* indexHeadPtr, int32_t* childCount,
+                         int64_t* indexHeadPtr, int64_t* createdAt,
                          int64_t page_size);
 
 void nodes_write_dircontentindex(uint8_t* slot, uint8_t hashNibble, uint8_t nodeType,

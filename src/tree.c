@@ -121,7 +121,7 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     nodes_write_dircontentindex(rootIndexSlot.bytes, 0, NODE_TYPE_INDEX_INTERNAL,
                                  0, 0, ctx->page_size);
 
-    nodes_write_dirnode(root_slot.bytes, 0, 0, rootIndexVP, 0, ctx->page_size);
+    nodes_write_dirnode(root_slot.bytes, 0, 0, rootIndexVP, (int64_t)time(NULL), ctx->page_size);
 
     pool_release(&ctx->pool, &rootIndexSlot);
     pool_release(&ctx->pool, &root_slot);
@@ -719,7 +719,9 @@ void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
 }
 
 /* ---------------------------------------------------------------------------
- * dirnode_increment_child_count — REMOVED in Phase 25 / Workload 6.
+/* ---------------------------------------------------------------------------
+ * dirnode_increment_child_count — REMOVED in Phase 25 / W6, then in Phase 26 /
+ * W1b the underlying field itself was dropped.
  *
  * Was an atomic increment of DirNode.childCount, called after every
  * DirContent insert (live or tombstone).  Provided an upper bound on
@@ -733,9 +735,11 @@ void sizechain_get(TreeContext* ctx, int64_t sizePtr, int64_t read_epoch,
  * a stale count back to the cache, racing with the in-flight release
  * of the parent slot.
  *
- * The increment is inlined in the call sites (W3–W5) so it operates
- * on the local parent_slot.bytes and is persisted by the same
- * pool_release that persists the rest of the DirContent update.
+ * W1b: childCount removed from DirNode.  Replaced with createdAt.
+ * The per-ContentUnit chains introduced in W5 are dedup'd at the
+ * structure level (one chain per child, with tombstone filter via
+ * the read-rule), so the dedup hash_map and the count that sized
+ * it both go away.
  * --------------------------------------------------------------------------- */
 
 /* ---------------------------------------------------------------------------
@@ -891,14 +895,9 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
            unless we explicitly write the slot. */
         vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
                   ctx->page_size);
-        /* Bump childCount: every DirContent insert counts, live or tombstone.
-           Inlined: the OLD dirnode_increment_child_count writes to the cache
-           via pool_resolve_rw, but the subsequent pool_release(&parent_slot)
-           would overwrite with our stale local. Doing it on the local instead
-           keeps the increment in sync with the release write-back. */
-        int32_t cur_child = (int32_t)vfs_rd4_s(parent_slot.bytes,
-                                               DIRNODE_OFF_CHILDCOUNT, ctx->page_size);
-        vfs_wr4_s(parent_slot.bytes, DIRNODE_OFF_CHILDCOUNT, cur_child + 1, ctx->page_size);
+        /* W1b: childCount field removed from DirNode.  The per-ContentUnit
+           chains in W5 are naturally dedup'd, so no replacement field is
+           needed. */
     }
 
     pool_release(&ctx->pool, &dc_slot);
@@ -1073,7 +1072,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                                  0, 0, ctx->page_size);
     pool_release(&ctx->pool, &dirIndexSlot);  /* dirIndexSlot not used after this */
 
-    nodes_write_dirnode(dir_slot.bytes, new_nodeId, 0, dirIndexVP, 0, ctx->page_size);
+    nodes_write_dirnode(dir_slot.bytes, new_nodeId, 0, dirIndexVP, (int64_t)time(NULL), ctx->page_size);
     pool_release(&ctx->pool, &dir_slot);  /* dir_slot not used after this */
 
     int64_t name_vp;
@@ -1123,11 +1122,7 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                                dc_vp, ctx->page_size);
         vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
                   ctx->page_size);
-        /* Bump childCount: inlined on the local copy so it survives
-           the pool_release write-back (see vfs_create for rationale). */
-        int32_t cur_child = (int32_t)vfs_rd4_s(parent_slot.bytes,
-                                               DIRNODE_OFF_CHILDCOUNT, ctx->page_size);
-        vfs_wr4_s(parent_slot.bytes, DIRNODE_OFF_CHILDCOUNT, cur_child + 1, ctx->page_size);
+        /* W1b: childCount removed. */
     }
 
     pool_release(&ctx->pool, &dc_slot);
@@ -1216,11 +1211,7 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                                dc_vp, ctx->page_size);
         vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
                   ctx->page_size);
-        /* Bump childCount: inlined on the local copy so it survives
-           the pool_release write-back (see vfs_create for rationale). */
-        int32_t cur_child = (int32_t)vfs_rd4_s(parent_slot.bytes,
-                                               DIRNODE_OFF_CHILDCOUNT, ctx->page_size);
-        vfs_wr4_s(parent_slot.bytes, DIRNODE_OFF_CHILDCOUNT, cur_child + 1, ctx->page_size);
+        /* W1b: childCount removed. */
     }
 
     pool_release(&ctx->pool, &dc_slot);
@@ -1455,11 +1446,7 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                                dc_vp, ctx->page_size);
         vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
                   ctx->page_size);
-        /* Bump childCount: inlined on the local copy so it survives
-           the pool_release write-back (see vfs_create for rationale). */
-        int32_t cur_child = (int32_t)vfs_rd4_s(parent_slot.bytes,
-                                               DIRNODE_OFF_CHILDCOUNT, ctx->page_size);
-        vfs_wr4_s(parent_slot.bytes, DIRNODE_OFF_CHILDCOUNT, cur_child + 1, ctx->page_size);
+        /* W1b: childCount removed. */
     }
 
     pool_release(&ctx->pool, &dc_slot);
@@ -1505,22 +1492,16 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
 
     int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
     int64_t headPtr = vfs_rd8_s(dir_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
-
-    /* Read DirNode.childCount (Phase 25) for adaptive hash_map sizing.
-       The hash_map picks (scale, granularity) internally from
-       max_entries; see hash_map_base_new_for_max_entries. */
-    uint32_t childCount = (uint32_t)vfs_rd4_s(dir_slot.bytes,
-                                              DIRNODE_OFF_CHILDCOUNT,
-                                              ctx->page_size);
     pool_release(&ctx->pool, &dir_slot);
 
-    /* Walk chain once into a per-call dedup VarArray (first-hit-wins).
-       A hash_map provides O(1) "already seen" check keyed by childNodeId,
-       indexed against the dedup var_array's append-order idx.  Phase 24.
-       Sized per-directory via childCount (Phase 25). */
+    /* W1b: childCount removed.  Until W5 removes the dedup entirely,
+       size the dedup hash_map with a modest default (0 → hash_map
+       picks the minimum scale=4, capacity=16).  The dedup only
+       protects the readdir output from the rare same-child
+       multi-link case (W5 deletes the multi-link), so an under-sized
+       map just incurs a few rehashes. */
     VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
-    HashMap(int64_t, int64_t) seen = hash_map_new_for_max(int64_t, int64_t,
-                                                          (int64_t)childCount);
+    HashMap(int64_t, int64_t) seen = hash_map_new_for_max(int64_t, int64_t, 0);
     if (!dedup || !seen) {
         var_array_delete(dedup);
         hash_map_free(seen);
@@ -1760,11 +1741,7 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                                    matched_walk_vp, ctx->page_size);
             vfs_wr8_s(src_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, srcIndex,
                       ctx->page_size);
-            /* Bump childCount: inlined on the local copy so it survives
-               the pool_release write-back (see vfs_create for rationale). */
-            int32_t cur_child = (int32_t)vfs_rd4_s(src_slot.bytes,
-                                                   DIRNODE_OFF_CHILDCOUNT, ctx->page_size);
-            vfs_wr4_s(src_slot.bytes, DIRNODE_OFF_CHILDCOUNT, cur_child + 1, ctx->page_size);
+            /* W1b: childCount removed. */
         }
 
         vfs_unlock(vfs, (int64_t)rn_childId, epoch);
@@ -1831,10 +1808,7 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                                dst_dc_vp, ctx->page_size);
         vfs_wr8_s(dst_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, dstIndex,
                   ctx->page_size);
-        /* Bump childCount: inlined on the local copy (see vfs_create). */
-        int32_t cur_child = (int32_t)vfs_rd4_s(dst_slot.bytes,
-                                               DIRNODE_OFF_CHILDCOUNT, ctx->page_size);
-        vfs_wr4_s(dst_slot.bytes, DIRNODE_OFF_CHILDCOUNT, cur_child + 1, ctx->page_size);
+        /* W1b: childCount removed. */
     }
 
     /* Create tombstone at src (cross-directory only) */
@@ -1879,10 +1853,7 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                                    src_dc_vp, ctx->page_size);
             vfs_wr8_s(src_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, srcIndex,
                       ctx->page_size);
-            /* Bump childCount: inlined on the local copy (see vfs_create). */
-            int32_t cur_child = (int32_t)vfs_rd4_s(src_slot.bytes,
-                                                   DIRNODE_OFF_CHILDCOUNT, ctx->page_size);
-            vfs_wr4_s(src_slot.bytes, DIRNODE_OFF_CHILDCOUNT, cur_child + 1, ctx->page_size);
+            /* W1b: childCount removed. */
         }
     } /* cross_dir */
 

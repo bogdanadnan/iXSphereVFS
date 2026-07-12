@@ -27,8 +27,10 @@ static void test_dirnode_write_read(void) {
     uint8_t slot[32];
     memset(slot, 0, sizeof(slot));
 
-    /* Write DirNode with nodeId=5, headPtr points to page=10, slot=3 */
-    nodes_write_dirnode(slot, 5, VFS_VPTR_MAKE(10, 3), 0, 0, VFS_PAGE_SIZE);
+    /* Write DirNode with nodeId=5, headPtr points to page=10, slot=3,
+       createdAt=1700000000 (a fixed test timestamp). */
+    nodes_write_dirnode(slot, 5, VFS_VPTR_MAKE(10, 3), 0, 1700000000LL,
+                        VFS_PAGE_SIZE);
 
     /* Verify type field at byte 0 */
     CHECK_EQ(vfs_rd2(slot, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
@@ -37,22 +39,22 @@ static void test_dirnode_write_read(void) {
     uint32_t nodeId;
     int64_t headPtr;
     int64_t indexHeadPtr;
-    int32_t childCount;
-    nodes_read_dirnode(slot, &nodeId, &headPtr, &indexHeadPtr, &childCount, VFS_PAGE_SIZE);
+    int64_t createdAt;
+    nodes_read_dirnode(slot, &nodeId, &headPtr, &indexHeadPtr, &createdAt,
+                       VFS_PAGE_SIZE);
 
     CHECK_EQ(nodeId, 5u);
     CHECK_EQ(VFS_VPTR_PAGE(headPtr), 10);
     CHECK_EQ(VFS_VPTR_SLOT(headPtr), 3);
+    CHECK_EQ(createdAt, 1700000000LL);
 
     /* Verify reserved bytes 2-3 are zero */
     CHECK_EQ(vfs_rd2(slot, DIRNODE_OFF_RSVD), 0);
 
-    /* Verify reserved bytes 16-31 are zero */
-    int all_zero = 1;
-    for (int i = 16; i < 32; i++) {
-        if (slot[i] != 0) { all_zero = 0; break; }
-    }
-    CHECK(all_zero);
+    /* Verify reserved bytes 16-23 (indexHeadPtr) are non-zero upper,
+       but lower 4 bytes (since headPtr was 0) are zero.  Just check
+       that the slot is exactly what we wrote. */
+    CHECK_EQ(vfs_rd8(slot, DIRNODE_OFF_INDEXHEADPTR), 0);
 }
 
 static void test_dirnode_zero_slot(void) {
