@@ -256,6 +256,57 @@ void nodes_read_pagenode(const uint8_t* slot, int64_t* versionRootPtr,
                          int64_t* nextPtr, uint32_t* page_index, int64_t page_size);
 
 /* ---------------------------------------------------------------------------
+ * Phase 26 / W1e: DirSegment and SlotNode — dir-side mirror of Segment
+ * (FileContent) and ContentUnit (PageNode).
+ *
+ * Both types share the unified 32-byte Anchor layout (type/flags/id at
+ * 0-7, headPtr at 8, sibPtr at 16, count at 24, reserved at 28), so
+ * they use the same write/read helpers as the file-side types — just
+ * with different AnchorKind values.  No new write/read functions are
+ * needed; call sites use nodes_write_anchor / nodes_read_anchor
+ * directly with the right kind.
+ *
+ *   DirSegment:  ANCHOR_KIND_SEGMENT_DIR (0x21)
+ *     - id       = segmentId (per-VFS unique)
+ *     - headPtr  = first SlotNode in the segment
+ *     - sibPtr   = next DirSegment in the chain
+ *     - count    = number of live SlotNode entries in this segment
+ *
+ *   SlotNode:    ANCHOR_KIND_UNIT_SLOT (0x31)
+ *     - id       = childNodeId of the entry (per-ContentUnit id source
+ *                  is childNodeId directly — no separate slot-ID space;
+ *                  see spec §4.4 and the W1 design notes)
+ *     - headPtr  = first DirContent in this slot's chain
+ *     - sibPtr   = next SlotNode in the same segment (sibling slot)
+ *     - count    = 0 (per-slot entry count is tracked on the
+ *                  DirContent chain itself, not here)
+ *
+ * Allocation sites for these types are added in W5 (dir segment
+ * population); this W1e header work just establishes the discriminator
+ * values and the per-type offset macros so call sites in W5 can be
+ * written without further header changes.
+ *
+ * The offset macros below are aliases of the ANCHOR_OFF_* macros
+ * (the layout is identical across all Anchor-typed slots).  They're
+ * provided for symmetry with the file-side PAGENODE_OFF_* / FILECONTENT_OFF_*
+ * macros — making the W5 dir-chain code read the same as the W3 file
+ * code, which is the central goal of W1.
+ * --------------------------------------------------------------------------- */
+
+#define DIRSEGMENT_OFF_TYPE         ANCHOR_OFF_TYPE         /* ANCHOR_KIND_SEGMENT_DIR */
+#define DIRSEGMENT_OFF_FLAGS        ANCHOR_OFF_FLAGS
+#define DIRSEGMENT_OFF_SEGMENTID    ANCHOR_OFF_ID
+#define DIRSEGMENT_OFF_HEADPTR      ANCHOR_OFF_HEADPTR      /* first SlotNode in segment */
+#define DIRSEGMENT_OFF_NEXTPTR      ANCHOR_OFF_SIBPTR       /* next DirSegment */
+#define DIRSEGMENT_OFF_SLOTCOUNT    ANCHOR_OFF_COUNT        /* live SlotNode entries */
+
+#define SLOTNODE_OFF_TYPE           ANCHOR_OFF_TYPE         /* ANCHOR_KIND_UNIT_SLOT */
+#define SLOTNODE_OFF_FLAGS          ANCHOR_OFF_FLAGS
+#define SLOTNODE_OFF_CHILDNODEID    ANCHOR_OFF_ID           /* id = childNodeId */
+#define SLOTNODE_OFF_HEADPTR        ANCHOR_OFF_HEADPTR      /* first DirContent in slot */
+#define SLOTNODE_OFF_NEXTPTR        ANCHOR_OFF_SIBPTR       /* next SlotNode in segment */
+
+/* ---------------------------------------------------------------------------
  * Phase 26 / W1a: Anchor write/read helpers (additive).
  *
  * These helpers operate on the unified 32-byte Anchor layout. Used for

@@ -501,6 +501,80 @@ static void test_anchor_size_is_32(void) {
     CHECK_EQ((int)ANCHOR_OFF_RESERVED, 28);
 }
 
+/* ---------------------------------------------------------------------------
+ * Phase 26 / W1e: DirSegment and SlotNode — dir-side mirror types.
+ *
+ * Both use the unified 32-byte Anchor layout.  Their offset macros
+ * must point to the same offsets as the file-side Segment / ContentUnit
+ * macros so the unified vfs_chain_walk (W2) can walk file and dir
+ * chains with byte-identical step code.
+ * --------------------------------------------------------------------------- */
+
+/* DirSegment offsets match FileContent / Segment offsets. */
+static void test_dirsegment_offset_parity(void) {
+    CHECK_EQ((int)DIRSEGMENT_OFF_TYPE,      (int)FILECONTENT_OFF_TYPE);
+    CHECK_EQ((int)DIRSEGMENT_OFF_FLAGS,     (int)FILECONTENT_OFF_FLAGS);
+    CHECK_EQ((int)DIRSEGMENT_OFF_SEGMENTID, (int)FILECONTENT_OFF_SEGMENTID);
+    CHECK_EQ((int)DIRSEGMENT_OFF_HEADPTR,   (int)FILECONTENT_OFF_ROOTPTR);
+    CHECK_EQ((int)DIRSEGMENT_OFF_NEXTPTR,   (int)FILECONTENT_OFF_NEXTPTR);
+    CHECK_EQ((int)DIRSEGMENT_OFF_SLOTCOUNT, (int)FILECONTENT_OFF_PAGECOUNT);
+}
+
+/* SlotNode offsets match PageNode / ContentUnit offsets. */
+static void test_slotnode_offset_parity(void) {
+    CHECK_EQ((int)SLOTNODE_OFF_TYPE,        (int)PAGENODE_OFF_TYPE);
+    CHECK_EQ((int)SLOTNODE_OFF_FLAGS,       (int)PAGENODE_OFF_FLAGS);
+    CHECK_EQ((int)SLOTNODE_OFF_CHILDNODEID, (int)PAGENODE_OFF_PAGEINDEX);
+    CHECK_EQ((int)SLOTNODE_OFF_HEADPTR,     (int)PAGENODE_OFF_VERSIONROOT);
+    CHECK_EQ((int)SLOTNODE_OFF_NEXTPTR,     (int)PAGENODE_OFF_NEXTPTR);
+}
+
+/* DirSegment and SlotNode can be written/read via the unified
+ * nodes_write_anchor / nodes_read_anchor helpers with the right kind. */
+static void test_dirslot_anchor_roundtrip(void) {
+    uint8_t seg_slot[32];
+    uint8_t slot_slot[32];
+    memset(seg_slot, 0, sizeof(seg_slot));
+    memset(slot_slot, 0, sizeof(slot_slot));
+
+    /* DirSegment: id=7, headPtr=first SlotNode, sibPtr=next DirSegment,
+       count=3 live slots. */
+    nodes_write_anchor(seg_slot, ANCHOR_KIND_SEGMENT_DIR,
+                       7, 0xAA00, 0xBB00, 3, VFS_PAGE_SIZE);
+    /* SlotNode: id=42 (childNodeId), headPtr=first DirContent,
+       sibPtr=next SlotNode in same segment, count=0. */
+    nodes_write_anchor(slot_slot, ANCHOR_KIND_UNIT_SLOT,
+                       42, 0xCC00, 0xDD00, 0, VFS_PAGE_SIZE);
+
+    /* Read back DirSegment */
+    AnchorKind k = 0;
+    uint32_t id = 0, count = 0;
+    int64_t head = 0, sib = 0;
+    nodes_read_anchor(seg_slot, &k, &id, &head, &sib, &count, VFS_PAGE_SIZE);
+    CHECK_EQ((int)k, (int)ANCHOR_KIND_SEGMENT_DIR);
+    CHECK_EQ((int)id, 7);
+    CHECK_EQ(head, 0xAA00);
+    CHECK_EQ(sib,  0xBB00);
+    CHECK_EQ((int)count, 3);
+
+    /* The type field at offset 0 (per DIRSEGMENT_OFF_TYPE) is 0x21. */
+    CHECK_EQ((int)vfs_rd2(seg_slot, DIRSEGMENT_OFF_TYPE), 0x21);
+
+    /* Read back SlotNode */
+    k = 0; id = 0; count = 0; head = 0; sib = 0;
+    nodes_read_anchor(slot_slot, &k, &id, &head, &sib, &count, VFS_PAGE_SIZE);
+    CHECK_EQ((int)k, (int)ANCHOR_KIND_UNIT_SLOT);
+    CHECK_EQ((int)id, 42);
+    CHECK_EQ(head, 0xCC00);
+    CHECK_EQ(sib,  0xDD00);
+    CHECK_EQ((int)count, 0);
+
+    /* The type field at offset 0 (per SLOTNODE_OFF_TYPE) is 0x31. */
+    CHECK_EQ((int)vfs_rd2(slot_slot, SLOTNODE_OFF_TYPE), 0x31);
+    /* childNodeId lives at the same offset as the Anchor `id` field. */
+    CHECK_EQ((int)vfs_rd4(slot_slot, SLOTNODE_OFF_CHILDNODEID), 42);
+}
+
 static void test_versionpage(void) {
     uint8_t slot[32];
     memset(slot, 0, sizeof(slot));
@@ -1062,6 +1136,9 @@ int main(void) {
     /* --- Phase 26 / W1a Anchor tests --- */
     test_anchor_write_read();
     test_anchor_size_is_32();
+    test_dirsegment_offset_parity();
+    test_slotnode_offset_parity();
+    test_dirslot_anchor_roundtrip();
     test_versionpage();
     test_versionpage_chain();
 
