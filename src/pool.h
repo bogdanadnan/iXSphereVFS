@@ -106,20 +106,6 @@ void pool_init(Pool* pool, StorageBackend* sb, int64_t* list_head);
 /* Allocate one 32-byte slot.  Returns VFS_VPTR_NULL on failure. */
 int64_t pool_alloc(Pool* pool);
 
-/* Phase 25: OLD pool_resolve / pool_resolve_ro / pool_resolve_rw
-   are KEPT as DEPRECATED wrappers for the test suite.  Production code
-   (src/) does NOT use these — it uses the by-value copy-out API
-   (pool_acquire + pool_release) exclusively.  The OLD API was a C1
-   hazard (raw pointer into cache, can be invalidated by eviction).
-   Future cleanup: migrate the test suite and remove these wrappers. */
-uint8_t* pool_resolve(Pool* pool, int64_t vptr, int writable);
-static inline uint8_t* pool_resolve_ro(Pool* pool, int64_t vptr) {
-    return pool_resolve(pool, vptr, 0);
-}
-static inline uint8_t* pool_resolve_rw(Pool* pool, int64_t vptr) {
-    return pool_resolve(pool, vptr, 1);
-}
-
 /* ---------------------------------------------------------------------------
  * PoolSlot — by-value 32-byte slot payload (Phase 25, C1 fix)
  *

@@ -413,7 +413,7 @@ void test_vptr_slot_encoding(void) {
     CHECK_EQ(VFS_VPTR_PAGE(vp254), 42);
     CHECK_EQ(VFS_VPTR_SLOT(vp254), 254);
 
-    /* Verify pool_resolve works for these VirtualPtrs */
+    /* Verify pool_acquire works for these VirtualPtrs */
     const char* path = "/tmp/test_pool_vptr_resolve.vfs";
     cleanup(path);
 
@@ -461,7 +461,7 @@ void test_vptr_slot_encoding(void) {
 /* ========================================================================== */
 
 void test_vptr_resolve_roundtrip(void) {
-    printf("12. VirtualPtr round-trip through pool_resolve...\n");
+    printf("12. VirtualPtr round-trip through pool_acquire...\n");
     const char* path = "/tmp/test_pool_vptr_rt.vfs";
     cleanup(path);
 

@@ -185,25 +185,6 @@ int64_t pool_alloc(Pool* pool) {
     }
 }
 
-/* Phase 25: TEST-ONLY compat wrappers (see pool.h for rationale).
-   These return raw pointers into the cache (the OLD API shape) for
-   the test suite.  Production code uses the safe by-value API. */
-uint8_t* pool_resolve(Pool* pool, int64_t vptr, int writable) {
-    if (vptr == VFS_VPTR_NULL) return NULL;
-
-    int64_t page_index = VFS_VPTR_PAGE(vptr);
-    int     slot_index = VFS_VPTR_SLOT(vptr);
-
-    uint8_t* payload = storage_read(pool->sb, page_index);
-    if (payload == NULL) return NULL;
-
-    if (writable) {
-        cache_mark_dirty(&pool->sb->cache, page_index, FLUSH_PRIO_POOL);
-    }
-
-    return payload + VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
-}
-
 /* ---------------------------------------------------------------------------
  * pool_acquire / pool_release — Phase 25 (C1 fix) by-value pool API
  *

@@ -10,7 +10,8 @@
  * Mapper — epoch mapping state for one VFS instance
  *
  * Manages the epoch mapper chain rooted at superblock->epochMapperPtr.
- * All operations use pool_alloc/pool_resolve via the VFS context's pool.
+ * All operations use pool_alloc / pool_acquire / pool_release via the
+ * VFS context's pool.
  * --------------------------------------------------------------------------- */
 
 typedef struct {
