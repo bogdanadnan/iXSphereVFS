@@ -2440,6 +2440,259 @@ static void test_vfs_create_open_many(void) {
     vfs_unmount(vfs);
 }
 
+/* ---------------------------------------------------------------------------
+ * W5g: Concurrent dir-write test.
+ *
+ * Two threads each create 1000 distinct children in the same dir.
+ * Validates the W4 lock discipline (parent + child lock) correctly
+ * serializes the writes — both threads' children must be visible
+ * after sync.
+ *
+ * Per W4 spec: vfs_create takes the parent DirNode lock first, then
+ * the new child's ContentUnit lock.  Concurrent creates serialize on
+ * the parent lock.
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    vfs_t* vfs;
+    int64_t dir_vp;
+    int     start;
+    int     count;
+    int     ok;
+} create_thread_args;
+
+static void* create_many_thread(void* arg) {
+    create_thread_args* a = (create_thread_args*)arg;
+    char name[32];
+    for (int i = 0; i < a->count; i++) {
+        int idx = a->start + i;
+        snprintf(name, sizeof(name), "f%05d.txt", idx);
+        if (vfs_create(a->vfs, a->dir_vp, name, 0) <= 0) {
+            return NULL;
+        }
+    }
+    a->ok = 1;
+    return NULL;
+}
+
+static void test_concurrent_dir_writes(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    create_thread_args a1 = {vfs, root_vp, 0,     1000, 0};
+    create_thread_args a2 = {vfs, root_vp, 1000,  1000, 0};
+
+    pthread_t t1, t2;
+    CHECK_EQ(pthread_create(&t1, NULL, create_many_thread, &a1), 0);
+    CHECK_EQ(pthread_create(&t2, NULL, create_many_thread, &a2), 0);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+
+    CHECK(a1.ok);
+    CHECK(a2.ok);
+
+    /* Verify all 2000 children are visible.  We use a single
+     * sequential scan to avoid concurrent readdir races (readdir
+     * itself isn't under a tree-level lock, but vfs_open is
+     * per-VP-lock-free, so this is safe). */
+    int found = 0;
+    char name[32];
+    for (int i = 0; i < 2000; i++) {
+        snprintf(name, sizeof(name), "f%05d.txt", i);
+        if (vfs_open(vfs, root_vp, name, 0) > 0) found++;
+    }
+    CHECK_EQ(found, 2000);
+
+    vfs_unmount(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * W5g: Concurrent rename test.
+ *
+ * Two threads each rename 1000 distinct children in the same dir
+ * (different children, different target names).  Validates the W4
+ * lock discipline for same-dir rename (parent + child lock, lower
+ * VP first) — both threads' renames must succeed and the new names
+ * must be findable.
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    vfs_t* vfs;
+    int64_t dir_vp;
+    int     start;
+    int     count;
+    int     ok;
+} rename_thread_args;
+
+static void* rename_many_thread(void* arg) {
+    rename_thread_args* a = (rename_thread_args*)arg;
+    char src[32], dst[32];
+    for (int i = 0; i < a->count; i++) {
+        int idx = a->start + i;
+        snprintf(src, sizeof(src), "old_%05d.txt", idx);
+        snprintf(dst, sizeof(dst), "new_%05d.txt", idx);
+        if (vfs_rename(a->vfs, a->dir_vp, src, a->dir_vp, dst, 0) != VFS_OK) {
+            return NULL;
+        }
+    }
+    a->ok = 1;
+    return NULL;
+}
+
+static void test_concurrent_rename(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    /* Pre-create 2000 source files. */
+    char name[32];
+    for (int i = 0; i < 2000; i++) {
+        snprintf(name, sizeof(name), "old_%05d.txt", i);
+        CHECK(vfs_create(vfs, root_vp, name, 0) > 0);
+    }
+
+    /* Concurrent rename: thread 1 renames 0..999, thread 2 renames
+     * 1000..1999.  Same parent, different children. */
+    rename_thread_args a1 = {vfs, root_vp, 0,     1000, 0};
+    rename_thread_args a2 = {vfs, root_vp, 1000,  1000, 0};
+
+    pthread_t t1, t2;
+    CHECK_EQ(pthread_create(&t1, NULL, rename_many_thread, &a1), 0);
+    CHECK_EQ(pthread_create(&t2, NULL, rename_many_thread, &a2), 0);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+
+    CHECK(a1.ok);
+    CHECK(a2.ok);
+
+    /* Verify all 2000 new names are findable and all 2000 old names
+     * are gone. */
+    int found_new = 0, found_old = 0;
+    for (int i = 0; i < 2000; i++) {
+        snprintf(name, sizeof(name), "new_%05d.txt", i);
+        if (vfs_open(vfs, root_vp, name, 0) > 0) found_new++;
+        snprintf(name, sizeof(name), "old_%05d.txt", i);
+        if (vfs_open(vfs, root_vp, name, 0) > 0) found_old++;
+    }
+    CHECK_EQ(found_new, 2000);
+    CHECK_EQ(found_old, 0);
+
+    vfs_unmount(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * W5g: 10K+ children stress test.
+ *
+ * Sequentially creates 10K children, then deletes half, renames
+ * the rest, and verifies the final readdir returns the right set.
+ * This stresses the DirSegment chunking (with 10K children, we
+ * expect ~10 SlotNodes per DirSegment and ~10 DirSegments).
+ * --------------------------------------------------------------------------- */
+
+static void test_stress_10k_children(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+    char name[32];
+
+    /* Create 10K children. */
+    for (int i = 0; i < 10000; i++) {
+        snprintf(name, sizeof(name), "stress_%05d.txt", i);
+        CHECK(vfs_create(vfs, root_vp, name, 0) > 0);
+    }
+
+    /* Delete every odd-indexed child. */
+    for (int i = 1; i < 10000; i += 2) {
+        snprintf(name, sizeof(name), "stress_%05d.txt", i);
+        CHECK_EQ(vfs_delete(vfs, root_vp, name, 0), VFS_OK);
+    }
+
+    /* Rename the remaining even-indexed children. */
+    for (int i = 0; i < 10000; i += 2) {
+        snprintf(name, sizeof(name), "stress_%05d.txt", i);
+        char new_name[32];
+        snprintf(new_name, sizeof(new_name), "renamed_%05d.txt", i);
+        CHECK_EQ(vfs_rename(vfs, root_vp, name, root_vp, new_name, 0), VFS_OK);
+    }
+
+    /* Verify: 5000 renamed children, 0 old stress_* children. */
+    int found_renamed = 0, found_stress = 0;
+    for (int i = 0; i < 10000; i += 2) {
+        snprintf(name, sizeof(name), "renamed_%05d.txt", i);
+        if (vfs_open(vfs, root_vp, name, 0) > 0) found_renamed++;
+        snprintf(name, sizeof(name), "stress_%05d.txt", i);
+        if (vfs_open(vfs, root_vp, name, 0) > 0) found_stress++;
+    }
+    CHECK_EQ(found_renamed, 5000);
+    CHECK_EQ(found_stress, 0);
+
+    vfs_unmount(vfs);
+}
+
+/* ---------------------------------------------------------------------------
+ * W5g: ContentUnit visibility rule (delete+recreate).
+ *
+ * Per spec §4.4: when a child is deleted and a NEW child is created
+ * with the same name, the radix index has two ContentUnit links at
+ * the same hash.  The visibility rule says: a ContentUnit is visible
+ * at epoch E iff its highest-applicable DirContent is a live entry
+ * (namePtr != 0).  Tombstoned ContentUnits are skipped.
+ *
+ * This test exercises:
+ *   ep0: vfs_create("a.txt")   → SlotNode 1 (live @ep0)
+ *   ep2: vfs_delete("a.txt")   → SlotNode 1 (tombstone @ep2)
+ *   ep4: vfs_create("a.txt")   → SlotNode 2 (live @ep4)
+ *
+ * At ep0: SlotNode 1 is visible (original child live)
+ * At ep2: SlotNode 1 is tombstoned, SlotNode 2 doesn't apply → NOTFOUND
+ * At ep4: SlotNode 2 is visible (new child live)
+ * --------------------------------------------------------------------------- */
+
+static void test_contentunit_visibility(void) {
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+    test_set_epoch_writable(-1);  /* use real epoch validation */
+
+    /* ep0: create the original child. */
+    int64_t orig_vp = vfs_create(vfs, root_vp, "shared.txt", 0);
+    CHECK(orig_vp > 0);
+
+    /* Bump to ep2 via snapshot.  After this, currentEpoch=2 and ep2
+     * is the writable head. */
+    int64_t s1 = vfs_snapshot(vfs);
+    CHECK_EQ(s1, 1);
+    CHECK_EQ(vfs->ctx->currentEpoch, 2);
+
+    /* ep2: delete the original child. */
+    CHECK_EQ(vfs_delete(vfs, root_vp, "shared.txt", 2), VFS_OK);
+
+    /* Bump to ep4.  After this, currentEpoch=4 and ep4 is writable. */
+    int64_t s2 = vfs_snapshot(vfs);
+    CHECK_EQ(s2, 3);
+    CHECK_EQ(vfs->ctx->currentEpoch, 4);
+
+    /* ep4: create a new child with the same name (different nodeId). */
+    int64_t new_vp = vfs_create(vfs, root_vp, "shared.txt", 4);
+    CHECK(new_vp > 0);
+    CHECK(new_vp != orig_vp);  /* new child, different VP */
+
+    /* At ep0: the original child should be visible. */
+    int64_t ep0_vp = vfs_open(vfs, root_vp, "shared.txt", 0);
+    CHECK_EQ(ep0_vp, orig_vp);
+
+    /* At ep2: the name is tombstoned, should NOT be found. */
+    int64_t ep2_vp = vfs_open(vfs, root_vp, "shared.txt", 2);
+    CHECK_EQ(ep2_vp, (int64_t)VFS_ERR_NOTFOUND);
+
+    /* At ep4: the new child should be visible. */
+    int64_t ep4_vp = vfs_open(vfs, root_vp, "shared.txt", 4);
+    CHECK_EQ(ep4_vp, new_vp);
+
+    vfs_unmount(vfs);
+}
+
 static void test_delete_recreate_same_name(void) {
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
@@ -2819,6 +3072,14 @@ int main(void) {
     test_delete_recreate_same_name();
     test_rename_tree();
     test_chain_walk_read_rule();
+    unlink(test_path);
+    test_concurrent_dir_writes();
+    unlink(test_path);
+    test_concurrent_rename();
+    unlink(test_path);
+    test_stress_10k_children();
+    unlink(test_path);
+    test_contentunit_visibility();
 
     /* Clean up */
     unlink(test_path);
