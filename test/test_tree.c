@@ -85,22 +85,24 @@ static void test_bootstrap_root(void) {
     /* Root DirNode must exist with correct fields */
     CHECK(ctx->rootNodeOffset != 0);
 
-    uint8_t* root_slot = pool_resolve_ro(&ctx->pool, ctx->rootNodeOffset);
-    CHECK(root_slot != NULL);
+    PoolSlot root_slot = {0};
+    pool_acquire(&ctx->pool, ctx->rootNodeOffset, false, &root_slot);
+    CHECK(root_slot.vptr != VFS_VPTR_NULL);
 
     /* Verify root DirNode: nodeId=0, type=0x01, headPtr=0 */
-    int16_t type = vfs_rd2(root_slot, DIRNODE_OFF_TYPE);
+    int16_t type = vfs_rd2_s(root_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size);
     CHECK_EQ((int)type, (int)NODE_TYPE_DIR);
 
-    uint32_t nodeId = (uint32_t)vfs_rd4(root_slot, DIRNODE_OFF_NODEID);
+    uint32_t nodeId = (uint32_t)vfs_rd4_s(root_slot.bytes, FILENODE_OFF_NODEID, ctx->page_size);
     CHECK_EQ(nodeId, 0u);
 
-    int64_t headPtr = vfs_rd8(root_slot, DIRNODE_OFF_HEADPTR);
+    int64_t headPtr = vfs_rd8_s(root_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     CHECK_EQ(headPtr, 0);
 
     /* nextNodeId should be 0 (node 0 used for root, next available is 0) */
     CHECK_EQ((int)ctx->nextNodeId, 0);
 
+    pool_release(&ctx->pool, &root_slot);
     vfs_unmount(vfs);
 }
 
@@ -115,16 +117,17 @@ static void test_bootstrap_reopen(void) {
     /* Root must still exist */
     CHECK(ctx->rootNodeOffset != 0);
 
-    uint8_t* root_slot = pool_resolve_ro(&ctx->pool, ctx->rootNodeOffset);
-    CHECK(root_slot != NULL);
+    PoolSlot root_slot = {0};
+    pool_acquire(&ctx->pool, ctx->rootNodeOffset, false, &root_slot);
+    CHECK(root_slot.vptr != VFS_VPTR_NULL);
 
-    int16_t type = vfs_rd2(root_slot, DIRNODE_OFF_TYPE);
+    int16_t type = vfs_rd2_s(root_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size);
     CHECK_EQ((int)type, (int)NODE_TYPE_DIR);
 
-    uint32_t nodeId = (uint32_t)vfs_rd4(root_slot, DIRNODE_OFF_NODEID);
+    uint32_t nodeId = (uint32_t)vfs_rd4_s(root_slot.bytes, DIRNODE_OFF_NODEID, ctx->page_size);
     CHECK_EQ(nodeId, 0u);
 
-    int64_t headPtr = vfs_rd8(root_slot, DIRNODE_OFF_HEADPTR);
+    int64_t headPtr = vfs_rd8_s(root_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     CHECK_EQ(headPtr, 0);
 
     /* nextNodeId should still be 0 (no new nodes created) */
@@ -141,6 +144,7 @@ static void test_bootstrap_reopen(void) {
     /* treeLockState should be 0 */
     CHECK_EQ(ctx->treeLockState, 0);
 
+    pool_release(&ctx->pool, &root_slot);
     vfs_unmount(vfs);
 }
 
