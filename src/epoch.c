@@ -63,11 +63,24 @@ static int commit_scan_dir(vfs_t* vfs, int64_t dir_vp, uint32_t s_epoch) {
     int64_t head = vfs_rd8_s(dir_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     pool_release(&ctx->pool, &dir_slot);
 
-    /* W5a: headPtr is a SlotNode chain.  Walk each SlotNode, then walk
-     * its DirContent chain (first applicable entry per SlotNode, per the
-     * read-rule).  This mirrors dirchain_list's walk structure. */
-    int64_t slot_walk_vp = head;
-    while (slot_walk_vp != 0) {
+    /* W5b: headPtr is a DirSegment chain.  Walk each Segment, then
+     * each Segment's SlotNode chain, then each SlotNode's DirContent
+     * chain (first applicable entry per SlotNode, per the read-rule).
+     * This mirrors dirchain_list's walk structure. */
+    int64_t seg_walk_vp = head;
+    while (seg_walk_vp != 0) {
+        PoolSlot seg_slot = {0};
+        pool_acquire(&ctx->pool, seg_walk_vp, false, &seg_slot);
+        if (seg_slot.vptr == VFS_VPTR_NULL) break;
+        AnchorKind seg_ak;
+        uint32_t seg_id, seg_cnt;
+        int64_t seg_head, seg_sib;
+        nodes_read_anchor(seg_slot.bytes, &seg_ak, &seg_id, &seg_head,
+                          &seg_sib, &seg_cnt, ctx->page_size);
+        pool_release(&ctx->pool, &seg_slot);
+
+        int64_t slot_walk_vp = seg_head;
+        while (slot_walk_vp != 0) {
         PoolSlot slot_slot = {0};
         pool_acquire(&ctx->pool, slot_walk_vp, false, &slot_slot);
         if (slot_slot.vptr == VFS_VPTR_NULL) break;
@@ -169,6 +182,8 @@ static int commit_scan_dir(vfs_t* vfs, int64_t dir_vp, uint32_t s_epoch) {
         }
 
         slot_walk_vp = slot_sib;
+        }
+        seg_walk_vp = seg_sib;
     }
     return 0;
 }

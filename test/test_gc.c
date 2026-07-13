@@ -23,33 +23,43 @@ static int tests_run = 0, tests_passed = 0;
 static const char* test_path = "/tmp/test_gc.tmp";
 static const char* nonstd_path = "/tmp/test_gc_4k.tmp";
 
-/* W5a helper: walk DirNode → SlotNode chain → first DirContent → childPtr.
- * Pre-W5a the chain was DirNode → DirContent directly, but the per-child
- * SlotNode indirection is now in place.  Returns 0 on failure (no SlotNode
- * or empty chain). */
+/* W5b helper: walk DirNode → DirSegment chain → SlotNode chain → first
+ * DirContent → childPtr.  Pre-W5a the chain was DirNode → DirContent
+ * directly; W5a added per-child SlotNode; W5b added per-1024 DirSegments.
+ * Returns 0 on failure (no Segment/SlotNode or empty chain). */
 static int64_t gc_dir_first_child(TreeContext* ctx, int64_t dir_vp) {
     uint8_t* rs = pool_resolve_ro(&ctx->pool, dir_vp);
     if (!rs) return 0;
-    int64_t slot_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-    while (slot_vp != 0) {
-        uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
-        if (!slot_s) return 0;
+    int64_t seg_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+    while (seg_vp != 0) {
+        uint8_t* seg_s = pool_resolve_ro(&ctx->pool, seg_vp);
+        if (!seg_s) return 0;
         AnchorKind ak;
-        uint32_t slot_id;
-        int64_t slot_head, slot_sib;
-        uint32_t slot_count;
-        nodes_read_anchor(slot_s, &ak, &slot_id, &slot_head, &slot_sib,
-                          &slot_count, VFS_PAGE_SIZE);
-        if (slot_head != 0) {
-            uint8_t* dc = pool_resolve_ro(&ctx->pool, slot_head);
-            if (dc) {
-                uint32_t cc, ce;
-                int64_t cp, np, nx;
-                nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-                if (np != 0) return cp;  /* live entry (namePtr != 0 = tombstone) */
+        uint32_t seg_id, seg_cnt;
+        int64_t seg_head, seg_sib;
+        nodes_read_anchor(seg_s, &ak, &seg_id, &seg_head, &seg_sib,
+                          &seg_cnt, VFS_PAGE_SIZE);
+        int64_t slot_vp = seg_head;
+        while (slot_vp != 0) {
+            uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
+            if (!slot_s) return 0;
+            AnchorKind sak;
+            uint32_t slot_id, slot_cnt;
+            int64_t slot_head, slot_sib;
+            nodes_read_anchor(slot_s, &sak, &slot_id, &slot_head, &slot_sib,
+                              &slot_cnt, VFS_PAGE_SIZE);
+            if (slot_head != 0) {
+                uint8_t* dc = pool_resolve_ro(&ctx->pool, slot_head);
+                if (dc) {
+                    uint32_t cc, ce;
+                    int64_t cp, np, nx;
+                    nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
+                    if (np != 0) return cp;  /* live entry */
+                }
             }
+            slot_vp = slot_sib;
         }
-        slot_vp = slot_sib;
+        seg_vp = seg_sib;
     }
     return 0;
 }
@@ -570,11 +580,21 @@ static void test_gc_vptr_remapping(void) {
     /* Pre-GC: walk and validate the pointer chain (proves structure is intact
        before compaction).  This verification runs regardless of GC outcome. */
     {
-        /* 1. Root DirNode headPtr → SlotNode → DirContent */
+        /* 1. Root DirNode headPtr → DirSegment → SlotNode → DirContent.
+         * W5b: with Segments, the chain has a Segment level. */
         uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
         CHECK(rs != NULL);
         CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
-        int64_t slot_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        int64_t seg_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        CHECK(seg_vp != 0);
+        uint8_t* seg_s = pool_resolve_ro(&ctx->pool, seg_vp);
+        CHECK(seg_s != NULL);
+        AnchorKind seg_ak;
+        uint32_t seg_id, seg_cnt;
+        int64_t seg_head, seg_sib;
+        nodes_read_anchor(seg_s, &seg_ak, &seg_id, &seg_head, &seg_sib,
+                          &seg_cnt, VFS_PAGE_SIZE);
+        int64_t slot_vp = seg_head;
         CHECK(slot_vp != 0);
         uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
         CHECK(slot_s != NULL);
@@ -674,39 +694,47 @@ static void test_gc_dircontent_survival(void) {
     CHECK(f2 > 0);
 
     /* Verify two entries exist at epoch 0.
-     * W5a: walk via SlotNode indirection (root → SlotNode chain → DC chain).
-     * Count SlotNodes (each = one unique child) with a live visible DC. */
+     * W5b: walk via DirSegment → SlotNode → DC chain. */
     int entries_before = 0;
     {
         uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
         if (rs) {
-            int64_t slot_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-            while (slot_vp != 0) {
-                uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
-                if (!slot_s) break;
+            int64_t seg_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+            while (seg_vp != 0) {
+                uint8_t* seg_s = pool_resolve_ro(&ctx->pool, seg_vp);
+                if (!seg_s) break;
                 AnchorKind ak;
-                uint32_t slot_id;
-                int64_t slot_head, slot_sib;
-                uint32_t slot_count;
-                nodes_read_anchor(slot_s, &ak, &slot_id, &slot_head, &slot_sib,
-                                  &slot_count, VFS_PAGE_SIZE);
-                /* Walk SlotNode's DC chain, find first applicable. */
-                int64_t dc_vp = slot_head;
-                int found = 0;
-                while (dc_vp != 0 && !found) {
-                    uint8_t* dc_s = pool_resolve_ro(&ctx->pool, dc_vp);
-                    if (!dc_s) break;
-                    uint32_t cc, ce; int64_t cp, np, nx;
-                    nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-                    (void)cc; (void)cp; (void)nx;
-                    int applies = (ce == 0);  /* query epoch = 0 */
-                    if (applies && np != 0) {
-                        entries_before++;
-                        found = 1;
+                uint32_t seg_id, seg_cnt;
+                int64_t seg_head, seg_sib;
+                nodes_read_anchor(seg_s, &ak, &seg_id, &seg_head, &seg_sib,
+                                  &seg_cnt, VFS_PAGE_SIZE);
+                int64_t slot_vp = seg_head;
+                while (slot_vp != 0) {
+                    uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
+                    if (!slot_s) break;
+                    AnchorKind sak;
+                    uint32_t slot_id, slot_cnt;
+                    int64_t slot_head, slot_sib;
+                    nodes_read_anchor(slot_s, &sak, &slot_id, &slot_head,
+                                      &slot_sib, &slot_cnt, VFS_PAGE_SIZE);
+                    int64_t dc_vp = slot_head;
+                    int found = 0;
+                    while (dc_vp != 0 && !found) {
+                        uint8_t* dc_s = pool_resolve_ro(&ctx->pool, dc_vp);
+                        if (!dc_s) break;
+                        uint32_t cc, ce; int64_t cp, np, nx;
+                        nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
+                        (void)cc; (void)cp; (void)nx;
+                        int applies = (ce == 0);  /* query epoch = 0 */
+                        if (applies && np != 0) {
+                            entries_before++;
+                            found = 1;
+                        }
+                        dc_vp = nx;
                     }
-                    dc_vp = nx;
+                    slot_vp = slot_sib;
                 }
-                slot_vp = slot_sib;
+                seg_vp = seg_sib;
             }
         }
     }
