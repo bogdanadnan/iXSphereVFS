@@ -1,6 +1,8 @@
 #ifndef VFS_POOL_H
 #define VFS_POOL_H
 
+#include <stddef.h>  /* offsetof — for the PoolSlot alignment assert */
+
 #include "ixsphere/vfs.h"
 #include "platform.h"
 #include "page_buf.h"
@@ -124,8 +126,17 @@ int64_t pool_alloc(Pool* pool);
 typedef struct {
     int64_t  vptr;          /* which slot this came from (set by acquire) */
     int      pinnedPage;    /* 0 or 1; set by acquire, cleared by release */
-    uint8_t  bytes[VFS_POOL_SLOT_SIZE];  /* the slot payload */
+    /* bytes is 8-byte aligned within the struct (compiler inserts 4 bytes
+       of padding after pinnedPage) so 8-byte atomic loads/stores on
+       bytes[8]/bytes[16]/bytes[24] are naturally aligned.  Required for
+       portable atomic ops on int64_t fields at those offsets (PAGENODE_OFF_*
+       etc.); x86 doesn't care about alignment, but ARM/SPARC do. */
+    uint8_t  bytes[VFS_POOL_SLOT_SIZE] __attribute__((aligned(8)));
 } PoolSlot;
+/* 4 bytes of padding between pinnedPage and bytes; verify explicitly so a
+   future struct edit doesn't silently break 8-byte alignment of bytes. */
+_Static_assert(offsetof(PoolSlot, bytes) % 8 == 0,
+               "PoolSlot.bytes must be 8-byte aligned for portable atomics");
 
 /* Copy 32 bytes from the pool page backing `vptr` into `*out`.
    If `pinPage` is true, the underlying cache page is marked dirty
