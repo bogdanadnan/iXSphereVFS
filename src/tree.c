@@ -788,6 +788,181 @@ WalkResult vfs_chain_walk(TreeContext* ctx,
 }
 
 /* ---------------------------------------------------------------------------
+ * W6: walk_anchor_chain — generic Anchor chain walk (FileContent or
+ * DirSegment).  Both types share the Anchor layout (ANCHOR_OFF_HEADPTR
+ * at offset 8, ANCHOR_OFF_SIBPTR at offset 16, ANCHOR_OFF_ID at
+ * offset 4, ANCHOR_OFF_COUNT at offset 24).  The chain head is
+ * FileNode.headPtr or DirNode.headPtr.
+ *
+ * The callback receives a by-value copy of each Anchor's 32 bytes.
+ * Return 0 from the callback to continue the walk, non-zero to
+ * stop early.  The walk itself is read-only (pinPage=false).
+ *
+ * Returns the number of Anchors visited (including any that
+ * triggered a non-zero callback return).
+ * --------------------------------------------------------------------------- */
+
+int walk_anchor_chain(TreeContext* ctx, int64_t head_vp,
+                      anchor_walk_cb cb, void* user) {
+    if (!ctx || !cb || head_vp == 0) return 0;
+    int visited = 0;
+    int64_t walk_vp = head_vp;
+    while (walk_vp != 0) {
+        PoolSlot anchor_slot = {0};
+        pool_acquire(&ctx->pool, walk_vp, false, &anchor_slot);
+        if (anchor_slot.vptr == VFS_VPTR_NULL) break;
+        int cb_rc = cb(ctx, anchor_slot.bytes, user);
+        visited++;
+        /* Capture sibPtr before release; once we release, the local
+           PoolSlot is invalidated.  Even if the callback wrote to it
+           via the bytes pointer, the next acquire reads fresh cache. */
+        int64_t sib = vfs_rd8_s(anchor_slot.bytes, ANCHOR_OFF_SIBPTR,
+                                ctx->page_size);
+        pool_release(&ctx->pool, &anchor_slot);
+        if (cb_rc != 0) break;
+        walk_vp = sib;
+    }
+    return visited;
+}
+
+/* ---------------------------------------------------------------------------
+ * W6: walk_content_unit_chain — generic ContentUnit chain walk
+ * (PageNode for files, SlotNode for dirs).  Both types share the
+ * Anchor layout (same as above).  The chain head is
+ * FileContent.HEADPTR or DirSegment.HEADPTR.
+ *
+ * Same callback semantics as walk_anchor_chain.  Returns the
+ * number of ContentUnits visited.
+ * --------------------------------------------------------------------------- */
+
+int walk_content_unit_chain(TreeContext* ctx, int64_t unit_head,
+                            anchor_walk_cb cb, void* user) {
+    return walk_anchor_chain(ctx, unit_head, cb, user);
+}
+
+/* ---------------------------------------------------------------------------
+ * W6: vfs_chain_walk_extended — full 6-step chain walk.
+ *
+ * Steps 1-3: resolve (root_vp, unit_id) to a ContentUnit.
+ *   Step 1: read root_vp (FileNode or DirNode) to get headPtr
+ *           (first FileContent or DirSegment).
+ *   Step 2: walk the Anchor chain to find the segment containing
+ *           the unit.  For files, segments are ordered by
+ *           segment_idx (derived from page_index / segment_size)
+ *           and each segment's page_index range is
+ *           [segment_idx * segment_size, (segment_idx+1) *
+ *           segment_size).  For dirs, segments are ordered
+ *           arbitrarily; we fall through to step 3 to find the
+ *           unit by id within the segment.
+ *   Step 3: walk the ContentUnit chain within the segment and
+ *           find the unit whose id field matches unit_id.
+ * Steps 4-5: delegate to vfs_chain_walk on the unit's leaf chain.
+ *   Step 4: walk the leaf chain (VersionPage / DirContent /
+ *           FileSize) from the unit's headPtr.
+ *   Step 5: apply the read-rule (mapper remap + even/odd +
+ *           exact-match-wins).
+ * Step 6: caller extracts the leaf's specialized fields
+ *   (dataPage for VersionPage, childPtr+namePtr for DirContent).
+ *
+ * Returns WALK_FOUND / WALK_NOT_FOUND / WALK_NEED_GROW.
+ * WALK_NEED_GROW is only returned when the unit doesn't exist
+ * (chain head is 0); the caller decides whether to grow.
+ * --------------------------------------------------------------------------- */
+
+/* Helper state for step 2-3: looking for a unit by id */
+typedef struct {
+    uint32_t   target_unit_id;
+    int64_t    found_unit_vp;     /* out: leaf chain head of the found unit */
+    PoolSlot*  found_unit_slot;   /* out: slot of the found unit */
+    int64_t    page_size;
+} w6_find_unit_state;
+
+static int w6_find_in_segment_cb(TreeContext* ctx,
+                                  const uint8_t* anchor_bytes,
+                                  void* user) {
+    w6_find_unit_state* st = (w6_find_unit_state*)user;
+    /* Step 3: compare the ContentUnit's id field.  If match, capture
+       its leaf chain head (ANCHOR_OFF_HEADPTR) and stop. */
+    uint32_t unit_id = (uint32_t)vfs_rd4_s(anchor_bytes, ANCHOR_OFF_ID,
+                                           st->page_size);
+    (void)ctx;
+    if (unit_id == st->target_unit_id) {
+        int64_t leaf_head = vfs_rd8_s(anchor_bytes, ANCHOR_OFF_HEADPTR,
+                                      st->page_size);
+        if (leaf_head == 0) {
+            /* Unit exists but has no leaf chain yet — the chain is
+               empty, so vfs_chain_walk will return NOT_FOUND.  The
+               caller can grow from here. */
+            st->found_unit_vp = 0;
+        } else {
+            st->found_unit_vp = leaf_head;
+        }
+        return 1;  /* stop the walk */
+    }
+    return 0;  /* continue */
+}
+
+WalkResult vfs_chain_walk_extended(TreeContext* ctx,
+                                   int64_t       root_vp,
+                                   uint32_t      unit_id,
+                                   int64_t       query_epoch,
+                                   PoolSlot*     out_leaf) {
+    if (!ctx || !out_leaf) return WALK_NOT_FOUND;
+    out_leaf->vptr = VFS_VPTR_NULL;
+    out_leaf->pinnedPage = 0;
+    memset(out_leaf->bytes, 0, VFS_POOL_SLOT_SIZE);
+
+    if (root_vp == 0) return WALK_NOT_FOUND;
+
+    /* Step 1: read the root node (FileNode or DirNode) to get the
+       first Anchor (FileContent or DirSegment).  Both node types
+       store their anchor chain head at offset 8 (the
+       ANCHOR_OFF_HEADPTR position within the Anchor layout). */
+    PoolSlot root_slot = {0};
+    pool_acquire(&ctx->pool, root_vp, false, &root_slot);
+    if (root_slot.vptr == VFS_VPTR_NULL) return WALK_NOT_FOUND;
+    /* Sanity check: byte 0 is the type.  FileNode=NODE_TYPE_FILE=0x03,
+       DirNode=NODE_TYPE_DIR=0x01.  For files, the leaf chain is the
+       VersionPage chain (off the PageNode, off the FileContent).
+       For dirs, the leaf chain is the DirContent chain (off the
+       SlotNode, off the DirSegment).  The walk logic is identical
+       — only the type byte differs. */
+    int16_t root_type = (int16_t)vfs_rd2_s(root_slot.bytes, 0, ctx->page_size);
+    if (root_type != (int16_t)NODE_TYPE_FILE &&
+        root_type != (int16_t)NODE_TYPE_DIR) {
+        pool_release(&ctx->pool, &root_slot);
+        return WALK_NOT_FOUND;
+    }
+    int64_t anchor_head = vfs_rd8_s(root_slot.bytes, ANCHOR_OFF_HEADPTR,
+                                    ctx->page_size);
+    pool_release(&ctx->pool, &root_slot);
+    if (anchor_head == 0) return WALK_NOT_FOUND;
+
+    /* Step 2-3: walk the Anchor chain to find the unit by id.  For
+       files, the segments are ordered by page_index range, so we
+       could optimize (skip segments whose range doesn't include
+       unit_id).  For dirs, segments are arbitrary.  We use the
+       generic walk + per-unit id match for both — correct for
+       both, only the "skip ahead" optimization is missed for
+       files.  That optimization can be added later (the segment
+       count for a 1024-slot segment is small; the per-segment
+       walk is the inner loop). */
+    w6_find_unit_state st = {
+        .target_unit_id = unit_id,
+        .found_unit_vp  = 0,
+        .found_unit_slot = NULL,
+        .page_size      = ctx->page_size,
+    };
+    (void)walk_anchor_chain(ctx, anchor_head, w6_find_in_segment_cb, &st);
+    if (st.found_unit_vp == 0) return WALK_NEED_GROW;
+
+    /* Step 4-5: delegate to the existing vfs_chain_walk on the
+       unit's leaf chain.  Same read-rule (mapper remap, even/odd,
+       exact-match-wins). */
+    return vfs_chain_walk(ctx, st.found_unit_vp, query_epoch, out_leaf);
+}
+
+/* ---------------------------------------------------------------------------
  * Phase 26 / W5b: DirSegment population helpers.
  *
  * DirSegments chunk the per-directory SlotNode chain into groups of

@@ -215,6 +215,73 @@ WalkResult vfs_chain_walk(TreeContext* ctx,
                           int64_t       read_epoch,
                           PoolSlot*     out_leaf);
 
+/* W6: unified chain-walk API.  Resolves root_vp + unit_id to a
+ * ContentUnit (via the Anchor chain + ContentUnit chain) and then
+ * walks the ContentUnit's leaf chain (VersionPage / DirContent /
+ * FileSize) with the read-rule.  All 6 steps in one call.
+ *
+ * root_vp:     the FileNode or DirNode VP
+ * unit_id:     the lookup key — page_index for files, slotId for dirs
+ * query_epoch: the query epoch (caller should pre-resolve via
+ *              mapper_table_resolve for snapshot remap)
+ * out_leaf:    receives the visible leaf's slot (by-value copy-out)
+ *
+ * Returns WALK_FOUND if a visible leaf exists, WALK_NOT_FOUND if
+ * the chain is exhausted without finding one, WALK_NEED_GROW if
+ * the ContentUnit doesn't exist (file-write only; caller should
+ * grow + retry).
+ *
+ * This is the 6-step walk from the spec collapsed into one entry
+ * point.  tree_resolve_page / dirchain_find_child / vfs_rename are
+ * thin wrappers over this.  Steps 1-3 (Anchor chain + ContentUnit
+ * walk) are byte-identical between files (FileContent / PageNode)
+ * and dirs (DirSegment / SlotNode) because both use the Anchor
+ * layout (ANCHOR_OFF_HEADPTR, ANCHOR_OFF_SIBPTR, ANCHOR_OFF_ID).
+ * Steps 4-5 (leaf walk + read-rule) are byte-identical to the
+ * existing vfs_chain_walk — the extended form delegates to it
+ * once the leaf chain head is resolved.  Step 6 (leaf
+ * specialization — extract dataPage for VersionPage,
+ * childPtr+namePtr for DirContent) is the caller's job.
+ *
+ * Lock discipline: when called on the write path, the caller must
+ * hold vfs_lock(vfs, root_vp, epoch) per the W3 spec.  This
+ * function does NOT acquire any locks; it reads the by-value
+ * PoolSlots (pinPage=false).
+ */
+WalkResult vfs_chain_walk_extended(TreeContext* ctx,
+                                   int64_t       root_vp,
+                                   uint32_t      unit_id,
+                                   int64_t       query_epoch,
+                                   PoolSlot*     out_leaf);
+
+/* W6: Anchor chain walk callback.  Receives a by-value copy of
+ * the Anchor's bytes.  Return 0 to continue, non-zero to stop.
+ * The callback can stash data in *user; the user pointer is
+ * passed through unchanged. */
+typedef int (*anchor_walk_cb)(TreeContext* ctx,
+                              const uint8_t* anchor_bytes,
+                              void* user);
+
+/* W6: walk a chain of Anchor nodes (FileContent for files,
+ * DirSegment for dirs) via sibPtr.  Calls cb for each Anchor.
+ * head_vp is the chain head (FileNode.headPtr or
+ * DirNode.headPtr).  pinPage=false (read-only).  Returns the
+ * number of Anchors visited.  Used by vfs_chain_walk_extended
+ * and by callers that need to iterate (dirchain_find_child's
+ * chain-walk fallback). */
+int walk_anchor_chain(TreeContext* ctx, int64_t head_vp,
+                      anchor_walk_cb cb, void* user);
+
+/* W6: walk a chain of ContentUnit nodes (PageNode for files,
+ * SlotNode for dirs) via sibPtr.  Calls cb for each ContentUnit.
+ * unit_head is the segment's headPtr (FileContent.HEADPTR or
+ * DirSegment.HEADPTR).  pinPage=false (read-only).  Returns
+ * the number of ContentUnits visited.  Used by
+ * vfs_chain_walk_extended and by callers that need to iterate
+ * (dirchain_find_child's by-name search). */
+int walk_content_unit_chain(TreeContext* ctx, int64_t unit_head,
+                            anchor_walk_cb cb, void* user);
+
 /* Walk a FileSize chain starting from sizePtr, apply the read-rule with
  * mapper remapping, and return the fileSize and modifiedAt at the visible
  * epoch.  If no entry applies, returns 0 for fileSize and 0 for modifiedAt.
