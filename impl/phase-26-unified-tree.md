@@ -1551,6 +1551,224 @@ format changes; old VFS files are not compatible. Budget
   max-holders sanity check (e.g., max 64 per-epoch entries)
   to detect buggy callers that leak locks.
 
+### Workload 6: chain-walk unification completion (U1)
+
+**Motivation.** W2 introduced `vfs_chain_walk` with the goal of
+collapsing the per-leaf chain walk + read-rule into a single
+function, with `tree_resolve_page` and `dirchain_find_child` as
+thin wrappers. The implementation only delivered steps 4–5 of
+the 6-step walk (leaf chain walk + read-rule). Steps 1–3
+(container chain + content unit walk + unit-id comparison) are
+still inlined in both `tree_resolve_page` (~430 lines,
+`src/tree.c:207–630`) and `dirchain_find_child` (~225 lines,
+`src/tree.c:2962–3188`). The header comments in
+`src/tree.h:65,117–119` claim "thin wrapper over
+`vfs_chain_walk`" — this is **false**; the bodies duplicate the
+walk logic.
+
+The read-rule logic is duplicated in 4 places: `vfs_chain_walk`
+itself, `dirchain_find_child` (radix fast path), `dirchain_find_child`
+(chain-walk fallback), and `vfs_rename`. Any future change to
+the read-rule must be applied in all 4 places — exactly the
+maintenance hazard the unification was meant to eliminate.
+
+The implementation review (see `PHASE26_IMPL_REVIEW.md` finding
+U1) flagged this as the biggest gap between spec and
+implementation: `tree.c` grew 46% in W0–W5 instead of shrinking
+2× as the spec predicted.
+
+**Current state (pre-W6).**
+- `vfs_chain_walk(ctx, chain_head, read_epoch, &out_leaf)`:
+  walks a leaf chain (VersionPage / DirContent / FileSize)
+  from a *resolved* `chain_head`, applies the read-rule, returns
+  the visible leaf. Steps 4–5 of the 6-step walk.
+- `tree_resolve_page`: 430 lines of standalone logic. Resolves
+  `logical_page` to a PageNode by walking the FileContent
+  chain + PageNode chain (steps 1–3), then inlines a copy of
+  the leaf walk + read-rule. Does **not** call
+  `vfs_chain_walk`.
+- `dirchain_find_child`: 225 lines of standalone logic. Walks
+  DirSegment chain + SlotNode chain + per-SlotNode DirContent
+  chain (steps 1–5). Inlines a copy of the leaf walk +
+  read-rule. Does **not** call `vfs_chain_walk`.
+- `vfs_rename`: inlines yet another copy of the read-rule for
+  its conflict-detection walk.
+
+**Proposed state (post-W6).**
+
+Three new shared functions in `tree.c` (or a new `chain_walk.c`
+if `tree.c` is too large):
+
+1. **`walk_anchor_chain(ctx, head_vp, callback, user)`** —
+   walks a chain of `Anchor` nodes (FileContent for files,
+   DirSegment for dirs) by following each node's `sibPtr` (and
+   accumulating children via the `headPtr` if the callback
+   needs them). Calls `callback` for each Anchor with the
+   Anchor's `bytes` (by-value copy-out). Unifies steps 1–2 of
+   the 6-step walk.
+   ```c
+   typedef int (*anchor_walk_cb)(TreeContext* ctx,
+                                 const uint8_t* anchor_bytes,
+                                 void* user);
+
+   int walk_anchor_chain(TreeContext* ctx, int64_t head_vp,
+                         anchor_walk_cb cb, void* user);
+   ```
+
+2. **`walk_content_unit_chain(ctx, content_unit_head, target_unit_id, &out_slot)`** —
+   walks a chain of `ContentUnit` nodes (PageNode for files,
+   SlotNode for dirs) by following each node's `sibPtr`, and
+   returns the unit whose `id` field (offset 4) matches
+   `target_unit_id`. Unifies step 3.
+   ```c
+   int walk_content_unit_chain(TreeContext* ctx, int64_t unit_head,
+                               uint32_t target_unit_id,
+                               PoolSlot* out);
+   ```
+
+3. **`vfs_chain_walk_extended(ctx, root_vp, unit_id, query_epoch, &out_leaf)`** —
+   new function (alternative: change `vfs_chain_walk` to take
+   `root_vp + unit_id` instead of `chain_head`). Combines
+   `walk_anchor_chain` + `walk_content_unit_chain` + the existing
+   leaf walk + read-rule to do all 6 steps. For dirs, the
+   `unit_id` is the SlotNode's `id` (== child `nodeId`); the
+   caller iterates over unit_ids to do name matching.
+   ```c
+   WalkResult vfs_chain_walk_extended(TreeContext* ctx,
+                                      int64_t root_vp,
+                                      uint32_t unit_id,
+                                      int64_t query_epoch,
+                                      PoolSlot* out_leaf);
+   ```
+
+`tree_resolve_page` collapses to a thin wrapper:
+```c
+int tree_resolve_page(vfs_t* vfs, int64_t file_vp, int64_t logical_page,
+                      int64_t epoch, bool is_write, PoolSlot* out) {
+    /* Lock discipline: is_write path holds vfs_lock(vfs, file_vp, epoch) */
+    return vfs_chain_walk_extended(vfs->ctx, file_vp,
+                                    (uint32_t)logical_page,
+                                    epoch, out);
+}
+```
+
+(Plus the existing `is_write=true` segment-growth logic stays in
+`tree_resolve_page` — that's the only non-walk work the function
+does. The 430-line bulk becomes a 50-line wrapper around the
+shared walk + a segment-growth block.)
+
+`dirchain_find_child` collapses similarly:
+```c
+int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
+                        int64_t epoch, int64_t* out_childPtr, ...) {
+    /* Compute name hash, walk all SlotNodes in the dir's chain.
+       For each SlotNode, call vfs_chain_walk_extended(dir_vp, slot_id, ...).
+       Compare name; if match, return childPtr. */
+}
+```
+
+(The by-name iteration stays in `dirchain_find_child` because the
+shared walk is by-id, not by-name. The remaining
+~80 lines are the iteration + name comparison, not the walk
+itself.)
+
+`vfs_rename` is updated to use the shared walk for its
+conflict-detection, removing the 3rd inlined read-rule copy.
+
+**Net code change (target).** `tree.c` net delta after W6:
+- `walk_anchor_chain` + `walk_content_unit_chain` +
+  `vfs_chain_walk_extended`: ~180 new lines (with comments).
+- `tree_resolve_page`: 430 → ~80 lines (−350).
+- `dirchain_find_child`: 225 → ~120 lines (−105).
+- `vfs_rename` read-rule: −15 lines.
+- **Total: ~470 lines removed, ~180 added, net −290 lines.**
+
+The "W2 promised 2× reduction" is not met (we're at ~10%
+reduction in `tree.c` after the W5 per-ContentUnit machinery
+came in), but the *duplication* of the read-rule is removed —
+the single source of truth is `vfs_chain_walk_extended`.
+
+**File changes.**
+- `src/tree.h`:
+  - Add `anchor_walk_cb` typedef and `walk_anchor_chain` /
+    `walk_content_unit_chain` / `vfs_chain_walk_extended`
+    declarations.
+  - Update the header comments on `tree_resolve_page` and
+    `dirchain_find_child` to *accurately* describe the
+    post-W6 structure (the "thin wrapper" claim becomes true
+    for `tree_resolve_page`; `dirchain_find_child` keeps the
+    by-name iteration but uses the shared walk internally).
+- `src/tree.c`:
+  - Implement `walk_anchor_chain`, `walk_content_unit_chain`,
+    `vfs_chain_walk_extended` (~180 lines).
+  - Rewrite `tree_resolve_page` to use the shared walk
+    (~80 lines target).
+  - Rewrite `dirchain_find_child` to use the shared walk
+    (~120 lines target).
+  - Update `vfs_rename` to use the shared walk for
+    conflict detection.
+
+**Tests.**
+- **Existing tests must pass unchanged** — the public API
+  (`tree_resolve_page` / `dirchain_find_child` / `vfs_rename`)
+  is preserved. The behavior is the same; the implementation
+  is consolidated.
+- **Add `test_chain_walk_extended`** — single test that
+  exercises `vfs_chain_walk_extended` in both file and dir
+  contexts, verifying the read-rule (committed-snapshot remap,
+  odd-skip, exact-match-wins) on a chain of mixed-epoch
+  leaves.
+- **Add `test_chain_walk_anchor_chain`** — verify the
+  segment-level walk handles a file with many pages (> 1
+  segment) and a dir with many children (> 1 segment).
+- **Add `test_chain_walk_no_duplication`** — grep `tree.c` for
+  the read-rule markers (mapper remap, even/odd) and assert
+  they appear in exactly one place (the shared function).
+  This is a build-time / static check, not a runtime test.
+
+**Bench (perf analysis).**
+- **FUSE bench:** expected **in noise** (no algorithmic change;
+  the segment-walk loop is the same; the chain-walk loop is
+  the same; the read-rule is the same). Goal: confirm no
+  regression. **In noise** verdict required.
+- **vfs_bench create:** may improve slightly (less duplicated
+  walk code = better icache / dcache locality). **In noise**
+  verdict acceptable; improvement is a bonus.
+- **vfs_bench write/scan:** expected **in noise** (the
+  hot path is `vfs_write` which is unchanged; `tree_resolve_page`
+  is on the read-side of writes for PageNode lookup).
+- **vfs_bench dir:** expected **in noise** (the by-name
+  iteration is the same; the inner walk is consolidated).
+
+**Risk.** **medium-high.**
+- The shared functions must produce the *same* read-rule
+  results as the current implementations. Any divergence is a
+  silent correctness regression.
+- The "by-name" lookup in `dirchain_find_child` is structurally
+  different from the "by-id" lookup in `tree_resolve_page` —
+  the shared `vfs_chain_walk_extended` must handle the by-id
+  case (its primary use), and the by-name iteration in
+  `dirchain_find_child` calls it once per unit.
+- The `vfs_chain_walk_extended` API change (or the new
+  function alongside the existing `vfs_chain_walk`) may
+  require updates to `verchain_get` and `sizechain_get`,
+  which are the existing thin wrappers over `vfs_chain_walk`.
+  These wrappers currently take a `chain_head`; if we add the
+  extended variant, they stay unchanged; if we change
+  `vfs_chain_walk`'s signature, they need to be updated.
+- **Recommended API choice:** keep `vfs_chain_walk(ctx,
+  chain_head, ...)` unchanged (it has 2 existing callers:
+  `verchain_get`, `sizechain_get`). Add `vfs_chain_walk_extended`
+  as a new function for the root_vp + unit_id form. The
+  extended form internally calls the existing `vfs_chain_walk`
+  once it has resolved the leaf chain head.
+
+**Estimated effort:** 3–5 days. W2 in retrospect was
+under-scoped at 3 days; W6 is the "W2 part 2" that was
+accidentally deferred.
+
+---
+
 ## Risks & open questions for reviewer
 
 1. **`ContentUnit.id` source.** For `UNIT_SLOT`, the `id` field
@@ -1767,8 +1985,8 @@ in this phase.
 | `src/vfs.c` | (W0) Move `lock_table` to `vfs_t`. Change key from `int` to `int64_t` (no semantic check). Add `vfs_lock_destroy` + teardown in `vfs_unmount`. Update `vfs_node_type` switch to handle all `AnchorKind` values; translate `ROOT_DIR`/`ROOT_FILE` to legacy `0x01`/`0x03` for the public API. |
 | `src/nodes.h` | (W1) Add `Anchor` struct + `ANCHOR_OFF_*` macros + `AnchorKind` enum. Add `Node` (with `createdAt`), `Segment`, `ContentUnit` layouts (all Anchors). Add `nodes_write_anchor` / `nodes_read_anchor` declarations. Deprecate `FILENODE_OFF_*`, `DIRNODE_OFF_*`, `FILECONTENT_OFF_*`, `PAGENODE_OFF_*` (replaced by `ANCHOR_OFF_*`). Add `ANCHOR_UNITS_PER_SEGMENT = 1024` macro. |
 | `src/nodes.c` | (W1) Implement `nodes_write_anchor` / `nodes_read_anchor`. Refit `nodes_write_filenode` / `dirnode` to use the new layout (with `createdAt` for both). |
-| `src/tree.h` | (W2) Add `vfs_chain_walk` declaration. Mark `tree_resolve_page` and `dirchain_find_child` as "thin wrappers, prefer `vfs_chain_walk` for new code." Remove `DirchainDedupEntry` declaration (dead after W5). |
-| `src/tree.c` | (W2-W5) Implement `vfs_chain_walk` (W2, with full read-rule). Rewrite `tree_resolve_page` and `dirchain_find_child` as wrappers (W2). Replace CAS-on-local with locks in `vfs_create`, `vfs_delete`, `vfs_mkdir`, `vfs_rmdir`, `vfs_rename`, `vfs_write` (COW), `vfs_truncate` (W3-W4). Update `dirchain_list` to walk segments + ContentUnits; remove dedup hash_map ops (W5). Update `dircontentindex_insert` / `remove` to point at `ContentUnit` VPs and handle multi-link-per-hash (W5). |
+| `src/tree.h` | (W2) Add `vfs_chain_walk` declaration. Mark `tree_resolve_page` and `dirchain_find_child` as "thin wrappers, prefer `vfs_chain_walk` for new code." Remove `DirchainDedupEntry` declaration (dead after W5). (W6) Add `walk_anchor_chain`, `walk_content_unit_chain`, `vfs_chain_walk_extended` declarations. Update `tree_resolve_page` / `dirchain_find_child` header comments to accurately reflect post-W6 structure. |
+| `src/tree.c` | (W2-W5) Implement `vfs_chain_walk` (W2, with full read-rule). Rewrite `tree_resolve_page` and `dirchain_find_child` as wrappers (W2). Replace CAS-on-local with locks in `vfs_create`, `vfs_delete`, `vfs_mkdir`, `vfs_rmdir`, `vfs_rename`, `vfs_write` (COW), `vfs_truncate` (W3-W4). Update `dirchain_list` to walk segments + ContentUnits; remove dedup hash_map ops (W5). Update `dircontentindex_insert` / `remove` to point at `ContentUnit` VPs and handle multi-link-per-hash (W5). (W6) Add `walk_anchor_chain` + `walk_content_unit_chain` + `vfs_chain_walk_extended` (~180 lines). Collapse `tree_resolve_page` 430→80 and `dirchain_find_child` 225→120. Update `vfs_rename` to use the shared walk. Net −290 lines. |
 | `src/gc.c` | (W5) Three sub-problems: (a) struct/type remap — add `gc_walk_segment` / `gc_walk_content_unit` for new `Anchor` types. (b) `gc_copy_entry` per-type field descriptors (ISSUES.md M4) — fix blind-remap of `createdAt`. (c) Survival analysis rewrite (ISSUES.md M2) — drop `MAX_CHILDREN = 1024` fixed array, use per-`ContentUnit` walks. |
 | `src/pool.h`, `src/pool.c` | (W5) Remove `pool_resolve_ro` / `pool_resolve_rw` compat shims. Remove `tree_resolve_page_compat` / `tree_resolve_page_compat_release`. Migrate any remaining callers in `test/`, `bench/`, `tools/` to `pool_acquire` / `pool_release`. |
 | `test/test_tree.c` | (W2) Add dedicated read-rule test (committed-snapshot remap, odd-skip, exact-match-wins). (W5) Add `test_concurrent_dir_writes`, `test_concurrent_rename`, the 10K+ stress test, and the ContentUnit visibility test. Update or remove `test_dirnode_child_count`. |
@@ -1791,9 +2009,13 @@ The migration is 6 workloads (W0-W5) plus test development:
 - **W3** (file lock swap, `vfs_write` + `vfs_truncate` + segment-append CAS sites): 1 day
 - **W4** (dir lock swap, 11 critical + 2 torn + radix-root CAS sites): 3 days
 - **W5** (dir segment + ContentUnit population, dedup removal, GC rework, shim removal): **5-7 days**
+- **W6** (chain-walk unification completion — collapses `tree_resolve_page` 430→80 and `dirchain_find_child` 225→120, removes the 4-place read-rule duplication; the spec's "2× code reduction" goal that W2 under-delivered): **3-5 days**
 - Concurrent test development: 1 day (parallel with W3-W5)
 - Buffer for surprises (probably a `mapper.c` or radix-index interaction we haven't fully thought through): 2 days
 
 **Total: ~4-5 weeks** (20-22 working days, with the
 +1 day for W0's expanded scope). W3 is the lowest-risk
 workload that could ship first as a confidence builder.
+**Revised total with W6: ~5-6 weeks** (23-27 working days)
+— W6 was identified post-hoc by the implementation review as
+the W2 "part 2" that was accidentally deferred.
