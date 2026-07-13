@@ -175,6 +175,10 @@ int     vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch);
 /* Release a per-file or global lock. */
 int     vfs_unlock(vfs_t* vfs, int64_t file, int64_t epoch);
 
+/* Tear down the lock table.  Called automatically by vfs_unmount; exposed
+   here for callers that manage vfs_t lifetime manually. */
+void    vfs_lock_destroy(vfs_t* vfs);
+
 /* ---------------------------------------------------------------------------
  * Snapshot & Commit (§12.4)
  * --------------------------------------------------------------------------- */
@@ -191,6 +195,14 @@ int     vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch);
 
 /* ---------------------------------------------------------------------------
  * Garbage Collection (§12.5)
+ *
+ * vfs_gc is SINGLE-THREADED-ONLY — it shadows the live tree through the
+ * pool and writes the result back to disk.  No concurrent vfs_read /
+ * vfs_write / vfs_lock calls on the same vfs_t are allowed while GC is
+ * running.  Other vfs_t instances mounting the same backing file must
+ * also be quiescent (no in-flight operations).  This is a deliberate
+ * simplification — the GC is a foreground maintenance op, not a
+ * background reaper.
  * --------------------------------------------------------------------------- */
 
 /* Shadow-compact the tree, removing soft-deleted epochs and reclaiming

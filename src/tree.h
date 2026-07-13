@@ -62,9 +62,11 @@ int dirchain_test_get_hash_rejects(void);
 
 /* Resolve a logical page within a file to its PageNode.
  *
- * Walks the FileContent chain to find the segment containing this page.
- * Creates missing FileContent + PageNode entries on file growth.
- * Builds the in-memory VirtualPtr array on first access to a segment.
+ * Thin wrapper over vfs_chain_walk: walks the FileContent chain to
+ * find the segment containing this page, then resolves the PageNode
+ * within the segment.  Creates missing FileContent + PageNode entries
+ * on file growth.  Builds the in-memory VirtualPtr array on first
+ * access to a segment.
  *
  * Phase 25: by-value copy-out.  Writes the 32-byte PageNode slot into
  * *out.  Returns 0 on success, -1 on error or page-not-found.  The
@@ -122,6 +124,11 @@ VFS_INLINE uint32_t tree_segment_size(TreeContext* ctx) {
 
 /* Walk a directory's DirContent chain to find an entry by name at a given
  * epoch (applying the read-rule and mapper remapping).
+ *
+ * Thin wrapper over vfs_chain_walk: walks DirSegment → SlotNode →
+ * DirContent chains (the W5b structure) and applies the read-rule to
+ * find the visible entry.  Prefer vfs_chain_walk directly for new code
+ * that doesn't need the name match.
  *
  * ctx         — VFS tree context
  * dir_vp      — VirtualPtr of the DirNode to search
