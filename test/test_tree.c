@@ -3186,14 +3186,14 @@ typedef struct {
     int64_t total_unit_count;  /* sum of ANCHOR_OFF_COUNT across segments */
 } w6_seg_count_state;
 
-static int w6_seg_count_cb(TreeContext* ctx, const uint8_t* anchor_bytes,
-                            void* user) {
+static int w6_seg_count_cb(TreeContext* ctx, int64_t anchor_vp,
+                            const uint8_t* anchor_bytes, void* user) {
     w6_seg_count_state* st = (w6_seg_count_state*)user;
+    (void)ctx; (void)anchor_vp;
     st->count++;
     uint32_t seg_cnt = (uint32_t)vfs_rd4_s(anchor_bytes, ANCHOR_OFF_COUNT,
                                            ctx->page_size);
     st->total_unit_count += (int64_t)seg_cnt;
-    (void)ctx;
     return 0;  /* continue */
 }
 

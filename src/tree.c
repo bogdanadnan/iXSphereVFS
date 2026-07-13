@@ -811,7 +811,8 @@ int walk_anchor_chain(TreeContext* ctx, int64_t head_vp,
         PoolSlot anchor_slot = {0};
         pool_acquire(&ctx->pool, walk_vp, false, &anchor_slot);
         if (anchor_slot.vptr == VFS_VPTR_NULL) break;
-        int cb_rc = cb(ctx, anchor_slot.bytes, user);
+        int64_t this_vp = walk_vp;  /* capture before cb — cb may release */
+        int cb_rc = cb(ctx, this_vp, anchor_slot.bytes, user);
         visited++;
         /* Capture sibPtr before release; once we release, the local
            PoolSlot is invalidated.  Even if the callback wrote to it
@@ -884,12 +885,13 @@ typedef struct {
 /* Inner callback: invoked for each ContentUnit in a segment.
    Returns 1 to stop the inner walk if the target unit is found. */
 static int w6_find_unit_inner_cb(TreeContext* ctx,
+                                  int64_t unit_vp,
                                   const uint8_t* unit_bytes,
                                   void* user) {
     w6_find_unit_state* st = (w6_find_unit_state*)user;
     uint32_t unit_id = (uint32_t)vfs_rd4_s(unit_bytes, ANCHOR_OFF_ID,
                                            st->page_size);
-    (void)ctx;
+    (void)ctx; (void)unit_vp;
     if (unit_id == st->target_unit_id) {
         st->found_leaf_head = vfs_rd8_s(unit_bytes, ANCHOR_OFF_HEADPTR,
                                         st->page_size);
@@ -904,11 +906,13 @@ static int w6_find_unit_inner_cb(TreeContext* ctx,
    looking for the target.  Returns 1 to stop the outer walk if
    the target unit is found in this segment. */
 static int w6_find_unit_in_segment_outer_cb(TreeContext* ctx,
+                                            int64_t anchor_vp,
                                             const uint8_t* anchor_bytes,
                                             void* user) {
     w6_find_unit_state* st = (w6_find_unit_state*)user;
     int64_t unit_head = vfs_rd8_s(anchor_bytes, ANCHOR_OFF_HEADPTR,
                                   st->page_size);
+    (void)anchor_vp;
     if (unit_head == 0) return 0;  /* empty segment, keep looking */
     walk_content_unit_chain(ctx, unit_head,
                             w6_find_unit_inner_cb, user);

@@ -254,11 +254,17 @@ WalkResult vfs_chain_walk_extended(TreeContext* ctx,
                                    int64_t       query_epoch,
                                    PoolSlot*     out_leaf);
 
-/* W6: Anchor chain walk callback.  Receives a by-value copy of
- * the Anchor's bytes.  Return 0 to continue, non-zero to stop.
- * The callback can stash data in *user; the user pointer is
- * passed through unchanged. */
+/* W6: Anchor chain walk callback.  Receives the anchor's VP
+ * and a by-value copy of the Anchor's 32 bytes.  Return 0 to
+ * continue, non-zero to stop.  The callback can stash data in
+ * *user; the user pointer is passed through unchanged.
+ *
+ * anchor_vp is the VirtualPtr of the current Anchor — useful for
+ * the caller to record prev_vp for sorted insertion
+ * (tree_resolve_page inserts PageNodes in sorted page_index order)
+ * or to break the walk when a target VP is reached. */
 typedef int (*anchor_walk_cb)(TreeContext* ctx,
+                              int64_t anchor_vp,
                               const uint8_t* anchor_bytes,
                               void* user);
 
