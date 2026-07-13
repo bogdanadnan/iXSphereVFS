@@ -396,26 +396,34 @@ static void test_open_file(void) {
 
     /* Open from a file VirtualPtr → VFS_ERR_NOTDIR */
     {
-        uint8_t* root_slot2 = pool_resolve_ro(&ctx->pool, root_vp);
-        CHECK(root_slot2 != NULL);
-        int64_t head2 = vfs_rd8(root_slot2, DIRNODE_OFF_HEADPTR);
+        PoolSlot root_slot2 = {0};
+        pool_acquire(&ctx->pool, root_vp, false, &root_slot2);
+        CHECK(root_slot2.vptr != VFS_VPTR_NULL);
+        int64_t head2 = vfs_rd8_s(root_slot2.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
         CHECK(head2 != 0);
         /* W5b: walk DirSegment → SlotNode → first DirContent → childPtr. */
-        uint8_t* seg_s = pool_resolve_ro(&ctx->pool, head2);
-        CHECK(seg_s != NULL);
-        int64_t slot_vp = vfs_rd8(seg_s, 8);
+        PoolSlot seg_s = {0};
+        pool_acquire(&ctx->pool, head2, false, &seg_s);
+        CHECK(seg_s.vptr != VFS_VPTR_NULL);
+        int64_t slot_vp = vfs_rd8_s(seg_s.bytes, 8, ctx->page_size);
         CHECK(slot_vp != 0);
-        uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
-        CHECK(slot_s != NULL);
-        int64_t dc_vp = vfs_rd8(slot_s, 8);
+        PoolSlot slot_s = {0};
+        pool_acquire(&ctx->pool, slot_vp, false, &slot_s);
+        CHECK(slot_s.vptr != VFS_VPTR_NULL);
+        int64_t dc_vp = vfs_rd8_s(slot_s.bytes, 8, ctx->page_size);
         CHECK(dc_vp != 0);
         uint32_t ce_c, ce_e;
         int64_t ce_cp, ce_np, ce_nx;
-        nodes_read_dircontent(pool_resolve_ro(&ctx->pool, dc_vp),
-                              &ce_c, &ce_e, &ce_cp, &ce_np, &ce_nx, VFS_PAGE_SIZE);
+        PoolSlot dc_slot = {0};
+        pool_acquire(&ctx->pool, dc_vp, false, &dc_slot);
+        nodes_read_dircontent(dc_slot.bytes, &ce_c, &ce_e, &ce_cp, &ce_np, &ce_nx, VFS_PAGE_SIZE);
         (void)ce_c; (void)ce_e; (void)ce_np; (void)ce_nx;
         opened = vfs_open(vfs, ce_cp, "anything.txt", 0);
         CHECK_EQ(opened, VFS_ERR_NOTDIR);
+        pool_release(&ctx->pool, &dc_slot);
+        pool_release(&ctx->pool, &slot_s);
+        pool_release(&ctx->pool, &seg_s);
+        pool_release(&ctx->pool, &root_slot2);
     }
 
     vfs_unmount(vfs);
