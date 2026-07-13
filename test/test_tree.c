@@ -673,22 +673,32 @@ static void test_file_size_epoch(void) {
     /* New file: size=0 */
     CHECK_EQ(vfs_file_size(vfs, file_vp, 0), 0);
 
-    /* Directly write a FileSize entry at epoch 2 (simulating a write) */
-    int64_t fs_vp = pool_alloc(&ctx->pool);
-    CHECK(fs_vp != VFS_VPTR_NULL);
-    uint8_t* fs_slot = pool_resolve_rw(&ctx->pool, fs_vp);
-    CHECK(fs_slot != NULL);
+    /* Append a FileSize entry at epoch 2 to the FileNode's sizePtr chain.
+     * This is the W3 lock-based write path — same as vfs_write /
+     * vfs_truncate use internally, exposed here at the chain-mutation
+     * level.  vfs_lock serialises with other epoch holders, the by-value
+     * pool slots replace the old raw-pointer CAS, and the FileNode's
+     * sizePtr is updated under the lock so the chain is consistent. */
+    CHECK_EQ(vfs_lock(vfs, file_vp, 2), VFS_OK);
+    {
+        PoolSlot file_slot = {0};
+        pool_acquire(&ctx->pool, file_vp, true, &file_slot);
+        CHECK(file_slot.vptr != VFS_VPTR_NULL);
+        int64_t old_sizePtr = vfs_rd8_s(file_slot.bytes, FILENODE_OFF_SIZEPTR,
+                                        ctx->page_size);
 
-    uint8_t* file_slot = pool_resolve_rw(&ctx->pool, file_vp);
-    CHECK(file_slot != NULL);
-    int64_t old_sizePtr = vfs_rd8(file_slot, FILENODE_OFF_SIZEPTR);
-
-    nodes_write_filesize(fs_slot, 2, 2000, 500, old_sizePtr, VFS_PAGE_SIZE);
-    vfs_mb_release();
-    int64_t cas_result = vfs_cas_i64(
-        (int64_t*)(file_slot + FILENODE_OFF_SIZEPTR),
-        old_sizePtr, fs_vp);
-    CHECK_EQ(cas_result, old_sizePtr);  /* CAS succeeded */
+        int64_t fs_vp = pool_alloc(&ctx->pool);
+        CHECK(fs_vp != VFS_VPTR_NULL);
+        PoolSlot fs_slot = {0};
+        pool_acquire(&ctx->pool, fs_vp, true, &fs_slot);
+        CHECK(fs_slot.vptr != VFS_VPTR_NULL);
+        nodes_write_filesize(fs_slot.bytes, 2, 2000, 500, old_sizePtr, ctx->page_size);
+        pool_release(&ctx->pool, &fs_slot);
+        vfs_mb_release();
+        vfs_wr8_s(file_slot.bytes, FILENODE_OFF_SIZEPTR, fs_vp, ctx->page_size);
+        pool_release(&ctx->pool, &file_slot);
+    }
+    CHECK_EQ(vfs_unlock(vfs, file_vp, 2), VFS_OK);
 
     /* At epoch 2: size=500, mtime=2000 */
     CHECK_EQ(vfs_file_size(vfs, file_vp, 2), 500);
