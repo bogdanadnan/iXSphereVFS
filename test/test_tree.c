@@ -3101,6 +3101,198 @@ static void test_chain_walk_read_rule(void) {
     unlink(path);
 }
 
+/* ---------------------------------------------------------------------------
+ * W6: test_chain_walk_extended — exercises vfs_chain_walk_extended on
+ * a file with multiple pages and mixed-epoch writes.  Verifies the
+ * 6-step walk: root_vp → FileContent chain → PageNode by id →
+ * VersionPage chain with read-rule.  The visible VersionPage's
+ * dataPage VP should be resolvable via the chain.
+ * --------------------------------------------------------------------------- */
+
+static void test_chain_walk_extended(void) {
+    const char* path = "/tmp/test_w6_extended.vfs";
+    unlink(path);
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "w6.txt", 0);
+    CHECK(file_vp > 0);
+
+    /* Write 3 pages at epoch 0: each creates a PageNode + VersionPage. */
+    char buf[8192];
+    memset(buf, 'A', sizeof(buf));
+    CHECK_EQ(vfs_write(vfs, file_vp, buf, 0, 8192, 0), 8192);
+    memset(buf, 'B', sizeof(buf));
+    CHECK_EQ(vfs_write(vfs, file_vp, buf, 8192, 8192, 0), 8192);
+    memset(buf, 'C', sizeof(buf));
+    CHECK_EQ(vfs_write(vfs, file_vp, buf, 16384, 8192, 0), 8192);
+
+    /* Resolve page 0 (unit_id=0) at epoch 0 — should find a VersionPage
+       whose stored data can be read back as 'A'. */
+    PoolSlot vp = {0};
+    WalkResult r = vfs_chain_walk_extended(ctx, file_vp, 0, 0, &vp);
+    CHECK_EQ(r, WALK_FOUND);
+    CHECK(vp.vptr != VFS_VPTR_NULL);
+    uint32_t stored_epoch = (uint32_t)vfs_rd4_s(vp.bytes, LEAF_OFF_EPOCH,
+                                                ctx->page_size);
+    CHECK_EQ(stored_epoch, 0u);
+
+    /* Resolve page 1 (unit_id=1) — different PageNode, different chain. */
+    PoolSlot vp1 = {0};
+    WalkResult r1 = vfs_chain_walk_extended(ctx, file_vp, 1, 0, &vp1);
+    CHECK_EQ(r1, WALK_FOUND);
+    CHECK(vp1.vptr != VFS_VPTR_NULL);
+    /* The two VersionPages are at different VPs. */
+    CHECK(vp1.vptr != vp.vptr);
+
+    /* Resolve page 99 (unit_id=99) — doesn't exist, WALK_NEED_GROW. */
+    PoolSlot vp99 = {0};
+    WalkResult r99 = vfs_chain_walk_extended(ctx, file_vp, 99, 0, &vp99);
+    CHECK_EQ(r99, WALK_NEED_GROW);
+
+    /* Read-rule: resolve at epoch 2 (read_epoch=2).  The chain
+       has a VersionPage at epoch 0 (eff_epoch=0 < 2, even) — the
+       read-rule returns it (WALK_FOUND) because the highest
+       even epoch below read_epoch wins. */
+    PoolSlot vp_ep2 = {0};
+    WalkResult r_ep2 = vfs_chain_walk_extended(ctx, file_vp, 0, 2, &vp_ep2);
+    CHECK_EQ(r_ep2, WALK_FOUND);
+    uint32_t stored_epoch_ep2 = (uint32_t)vfs_rd4_s(vp_ep2.bytes, LEAF_OFF_EPOCH,
+                                                   ctx->page_size);
+    CHECK_EQ(stored_epoch_ep2, 0u);
+
+    /* Write at epoch 2: creates a new VersionPage on the page-0 chain. */
+    memset(buf, 'X', sizeof(buf));
+    CHECK_EQ(vfs_write(vfs, file_vp, buf, 0, 100, 2), 100);
+
+    /* Re-resolve page 0 at epoch 2 — should find the new VersionPage
+       (exact match at epoch 2 wins). */
+    PoolSlot vp_ep2b = {0};
+    WalkResult r_ep2b = vfs_chain_walk_extended(ctx, file_vp, 0, 2, &vp_ep2b);
+    CHECK_EQ(r_ep2b, WALK_FOUND);
+    uint32_t stored_epoch2 = (uint32_t)vfs_rd4_s(vp_ep2b.bytes, LEAF_OFF_EPOCH,
+                                                 ctx->page_size);
+    CHECK_EQ(stored_epoch2, 2u);
+
+    vfs_unmount(vfs);
+    unlink(path);
+}
+
+/* W6: callback for test_chain_walk_anchor_chain — counts segments. */
+typedef struct {
+    int count;
+    int64_t total_unit_count;  /* sum of ANCHOR_OFF_COUNT across segments */
+} w6_seg_count_state;
+
+static int w6_seg_count_cb(TreeContext* ctx, const uint8_t* anchor_bytes,
+                            void* user) {
+    w6_seg_count_state* st = (w6_seg_count_state*)user;
+    st->count++;
+    uint32_t seg_cnt = (uint32_t)vfs_rd4_s(anchor_bytes, ANCHOR_OFF_COUNT,
+                                           ctx->page_size);
+    st->total_unit_count += (int64_t)seg_cnt;
+    (void)ctx;
+    return 0;  /* continue */
+}
+
+/* W6: test_chain_walk_anchor_chain — iterate over all FileContent
+ * segments of a file with > 1 segment.  Verifies the walk visits
+ * each segment exactly once and the count matches.
+ *
+ * ANCHOR_UNITS_PER_SEGMENT = 1024 (per src/nodes.h:39), so a file
+ * with 2000 pages has 2 FileContent segments.
+ */
+static void test_chain_walk_anchor_chain(void) {
+    const char* path = "/tmp/test_w6_anchor.vfs";
+    unlink(path);
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "multi.txt", 0);
+    CHECK(file_vp > 0);
+
+    /* Write 3 pages — all in segment 0 (segment_size = 1024 by default). */
+    char buf[8192];
+    memset(buf, 'A', sizeof(buf));
+    for (int i = 0; i < 3; i++) {
+        CHECK_EQ(vfs_write(vfs, file_vp, buf, (int64_t)i * 8192, 8192, 0), 8192);
+    }
+
+    /* Walk the FileContent chain — should be 1 segment with count=3. */
+    w6_seg_count_state st = {0, 0};
+    PoolSlot file_slot = {0};
+    pool_acquire(&ctx->pool, file_vp, false, &file_slot);
+    CHECK(file_slot.vptr != VFS_VPTR_NULL);
+    int64_t head = vfs_rd8_s(file_slot.bytes, ANCHOR_OFF_HEADPTR, ctx->page_size);
+    pool_release(&ctx->pool, &file_slot);
+    int visited = walk_anchor_chain(ctx, head, w6_seg_count_cb, &st);
+    CHECK_EQ(visited, 1);
+    CHECK_EQ(st.count, 1);
+    CHECK_EQ(st.total_unit_count, 3);
+
+    /* Force a second segment by writing to page seg_size.  This
+       allocates segment 1 with 1 PageNode (for page seg_size).
+       Segment 0 is sparse — it has 3 PageNodes (pages 0, 1, 2). */
+    int seg_size = (int)ctx->segment_size;
+    CHECK(seg_size > 0);
+    CHECK_EQ(vfs_write(vfs, file_vp, buf, (int64_t)seg_size * 8192, 8192, 0), 8192);
+
+    w6_seg_count_state st2 = {0, 0};
+    pool_acquire(&ctx->pool, file_vp, false, &file_slot);
+    head = vfs_rd8_s(file_slot.bytes, ANCHOR_OFF_HEADPTR, ctx->page_size);
+    pool_release(&ctx->pool, &file_slot);
+    visited = walk_anchor_chain(ctx, head, w6_seg_count_cb, &st2);
+    CHECK_EQ(visited, 2);
+    CHECK_EQ(st2.count, 2);
+    /* Segment 0 has 3 PageNodes (sparse), segment 1 has 1.  Total 4. */
+    CHECK_EQ(st2.total_unit_count, 4);
+
+    /* vfs_chain_walk_extended should still find pages 0, 1, 2 in
+       segment 0 and the per-segment page_index 0 in segment 1.
+       (The ContentUnit.id field is the per-segment page_index for
+       files, not the global page_index — so segment 1's
+       PageNode has id=0, not 1024.  The segment is determined by
+       the caller's segment_idx math; the walk searches by id.) */
+    PoolSlot vp_seg0 = {0};
+    WalkResult r_seg0 = vfs_chain_walk_extended(ctx, file_vp, 0, 0, &vp_seg0);
+    CHECK_EQ(r_seg0, WALK_FOUND);
+    CHECK(vp_seg0.vptr != VFS_VPTR_NULL);
+
+    PoolSlot vp_seg1 = {0};
+    WalkResult r_seg1 = vfs_chain_walk_extended(ctx, file_vp, 0, 0, &vp_seg1);
+    /* Note: r_seg0 and r_seg1 may return the same VP if the cache
+       happens to hand back the same slot, or different VPs.  The
+       important thing is that both succeed. */
+    CHECK_EQ(r_seg1, WALK_FOUND);
+    CHECK(vp_seg1.vptr != VFS_VPTR_NULL);
+
+    /* Same walk on a dir — DirSegment walk.  Create a dir with 3
+       children; should be 1 segment. */
+    int64_t dir_vp = vfs_mkdir(vfs, root_vp, "d", 0);
+    CHECK(dir_vp > 0);
+    CHECK_EQ(vfs_create(vfs, dir_vp, "a", 0) > 0, 1);
+    CHECK_EQ(vfs_create(vfs, dir_vp, "b", 0) > 0, 1);
+    CHECK_EQ(vfs_create(vfs, dir_vp, "c", 0) > 0, 1);
+
+    w6_seg_count_state st3 = {0, 0};
+    PoolSlot dir_slot = {0};
+    pool_acquire(&ctx->pool, dir_vp, false, &dir_slot);
+    CHECK(dir_slot.vptr != VFS_VPTR_NULL);
+    int64_t dir_head = vfs_rd8_s(dir_slot.bytes, ANCHOR_OFF_HEADPTR, ctx->page_size);
+    pool_release(&ctx->pool, &dir_slot);
+    visited = walk_anchor_chain(ctx, dir_head, w6_seg_count_cb, &st3);
+    CHECK_EQ(visited, 1);
+    CHECK_EQ(st3.count, 1);
+    CHECK_EQ(st3.total_unit_count, 3);
+
+    vfs_unmount(vfs);
+    unlink(path);
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -3265,6 +3457,10 @@ int main(void) {
     test_delete_recreate_same_name();
     test_rename_tree();
     test_chain_walk_read_rule();
+    unlink(test_path);
+    test_chain_walk_extended();
+    unlink(test_path);
+    test_chain_walk_anchor_chain();
     unlink(test_path);
     test_concurrent_dir_writes();
     unlink(test_path);

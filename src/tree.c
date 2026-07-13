@@ -846,16 +846,11 @@ int walk_content_unit_chain(TreeContext* ctx, int64_t unit_head,
  * Steps 1-3: resolve (root_vp, unit_id) to a ContentUnit.
  *   Step 1: read root_vp (FileNode or DirNode) to get headPtr
  *           (first FileContent or DirSegment).
- *   Step 2: walk the Anchor chain to find the segment containing
- *           the unit.  For files, segments are ordered by
- *           segment_idx (derived from page_index / segment_size)
- *           and each segment's page_index range is
- *           [segment_idx * segment_size, (segment_idx+1) *
- *           segment_size).  For dirs, segments are ordered
- *           arbitrarily; we fall through to step 3 to find the
- *           unit by id within the segment.
- *   Step 3: walk the ContentUnit chain within the segment and
- *           find the unit whose id field matches unit_id.
+ *   Step 2: walk the outer Anchor chain (FileContent for files,
+ *           DirSegment for dirs).
+ *   Step 3: within each segment, walk the inner ContentUnit chain
+ *           (PageNode for files, SlotNode for dirs) and find the
+ *           one with id == unit_id.
  * Steps 4-5: delegate to vfs_chain_walk on the unit's leaf chain.
  *   Step 4: walk the leaf chain (VersionPage / DirContent /
  *           FileSize) from the unit's headPtr.
@@ -865,41 +860,59 @@ int walk_content_unit_chain(TreeContext* ctx, int64_t unit_head,
  *   (dataPage for VersionPage, childPtr+namePtr for DirContent).
  *
  * Returns WALK_FOUND / WALK_NOT_FOUND / WALK_NEED_GROW.
- * WALK_NEED_GROW is only returned when the unit doesn't exist
- * (chain head is 0); the caller decides whether to grow.
+ * WALK_NEED_GROW is only returned when the ContentUnit doesn't
+ * exist (no segment / unit found); the caller decides whether to
+ * grow.
+ *
+ * The two-level walk uses walk_anchor_chain at the outer level
+ * and walk_content_unit_chain at the inner level.  The outer
+ * callback (w6_find_unit_in_segment_outer_cb) is invoked for
+ * each Anchor; it walks the segment's ContentUnit chain
+ * internally using the inner callback (w6_find_unit_inner_cb)
+ * and short-circuits both walks when the target unit is found.
  * --------------------------------------------------------------------------- */
 
-/* Helper state for step 2-3: looking for a unit by id */
+/* Helper state for step 2-3: looking for a unit by id across
+   all segments in the chain. */
 typedef struct {
     uint32_t   target_unit_id;
-    int64_t    found_unit_vp;     /* out: leaf chain head of the found unit */
-    PoolSlot*  found_unit_slot;   /* out: slot of the found unit */
+    int64_t    found_leaf_head;   /* out: leaf chain head of the found unit */
     int64_t    page_size;
+    int        found;             /* out: 1 if found, 0 if not */
 } w6_find_unit_state;
 
-static int w6_find_in_segment_cb(TreeContext* ctx,
-                                  const uint8_t* anchor_bytes,
+/* Inner callback: invoked for each ContentUnit in a segment.
+   Returns 1 to stop the inner walk if the target unit is found. */
+static int w6_find_unit_inner_cb(TreeContext* ctx,
+                                  const uint8_t* unit_bytes,
                                   void* user) {
     w6_find_unit_state* st = (w6_find_unit_state*)user;
-    /* Step 3: compare the ContentUnit's id field.  If match, capture
-       its leaf chain head (ANCHOR_OFF_HEADPTR) and stop. */
-    uint32_t unit_id = (uint32_t)vfs_rd4_s(anchor_bytes, ANCHOR_OFF_ID,
+    uint32_t unit_id = (uint32_t)vfs_rd4_s(unit_bytes, ANCHOR_OFF_ID,
                                            st->page_size);
     (void)ctx;
     if (unit_id == st->target_unit_id) {
-        int64_t leaf_head = vfs_rd8_s(anchor_bytes, ANCHOR_OFF_HEADPTR,
-                                      st->page_size);
-        if (leaf_head == 0) {
-            /* Unit exists but has no leaf chain yet — the chain is
-               empty, so vfs_chain_walk will return NOT_FOUND.  The
-               caller can grow from here. */
-            st->found_unit_vp = 0;
-        } else {
-            st->found_unit_vp = leaf_head;
-        }
-        return 1;  /* stop the walk */
+        st->found_leaf_head = vfs_rd8_s(unit_bytes, ANCHOR_OFF_HEADPTR,
+                                        st->page_size);
+        st->found = 1;
+        return 1;  /* stop inner walk */
     }
     return 0;  /* continue */
+}
+
+/* Outer callback: invoked for each Anchor (FileContent or
+   DirSegment).  For each, walks the segment's ContentUnit chain
+   looking for the target.  Returns 1 to stop the outer walk if
+   the target unit is found in this segment. */
+static int w6_find_unit_in_segment_outer_cb(TreeContext* ctx,
+                                            const uint8_t* anchor_bytes,
+                                            void* user) {
+    w6_find_unit_state* st = (w6_find_unit_state*)user;
+    int64_t unit_head = vfs_rd8_s(anchor_bytes, ANCHOR_OFF_HEADPTR,
+                                  st->page_size);
+    if (unit_head == 0) return 0;  /* empty segment, keep looking */
+    walk_content_unit_chain(ctx, unit_head,
+                            w6_find_unit_inner_cb, user);
+    return st->found;  /* 1 to stop outer walk, 0 to continue */
 }
 
 WalkResult vfs_chain_walk_extended(TreeContext* ctx,
@@ -938,28 +951,24 @@ WalkResult vfs_chain_walk_extended(TreeContext* ctx,
     pool_release(&ctx->pool, &root_slot);
     if (anchor_head == 0) return WALK_NOT_FOUND;
 
-    /* Step 2-3: walk the Anchor chain to find the unit by id.  For
-       files, the segments are ordered by page_index range, so we
-       could optimize (skip segments whose range doesn't include
-       unit_id).  For dirs, segments are arbitrary.  We use the
-       generic walk + per-unit id match for both — correct for
-       both, only the "skip ahead" optimization is missed for
-       files.  That optimization can be added later (the segment
-       count for a 1024-slot segment is small; the per-segment
-       walk is the inner loop). */
+    /* Step 2-3: walk the outer Anchor chain.  The outer callback
+       walks the inner ContentUnit chain and short-circuits both
+       when the target unit is found. */
     w6_find_unit_state st = {
         .target_unit_id = unit_id,
-        .found_unit_vp  = 0,
-        .found_unit_slot = NULL,
+        .found_leaf_head = 0,
         .page_size      = ctx->page_size,
+        .found          = 0,
     };
-    (void)walk_anchor_chain(ctx, anchor_head, w6_find_in_segment_cb, &st);
-    if (st.found_unit_vp == 0) return WALK_NEED_GROW;
+    walk_anchor_chain(ctx, anchor_head,
+                      w6_find_unit_in_segment_outer_cb, &st);
+    if (!st.found) return WALK_NEED_GROW;
+    if (st.found_leaf_head == 0) return WALK_NOT_FOUND;
 
     /* Step 4-5: delegate to the existing vfs_chain_walk on the
        unit's leaf chain.  Same read-rule (mapper remap, even/odd,
        exact-match-wins). */
-    return vfs_chain_walk(ctx, st.found_unit_vp, query_epoch, out_leaf);
+    return vfs_chain_walk(ctx, st.found_leaf_head, query_epoch, out_leaf);
 }
 
 /* ---------------------------------------------------------------------------
