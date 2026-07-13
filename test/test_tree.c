@@ -266,32 +266,36 @@ static void test_delete_file(void) {
     CHECK(nodeId > 0);
 
     /* Verify it exists in root's DirContent chain */
-    uint8_t* root_slot = pool_resolve_ro(&ctx->pool, root_vp);
-    CHECK(root_slot != NULL);
-    int64_t headPtr = vfs_rd8(root_slot, DIRNODE_OFF_HEADPTR);
+    PoolSlot root_slot = {0};
+    pool_acquire(&ctx->pool, root_vp, false, &root_slot);
+    CHECK(root_slot.vptr != VFS_VPTR_NULL);
+    int64_t headPtr = vfs_rd8_s(root_slot.bytes,  DIRNODE_OFF_HEADPTR, ctx->page_size);
     CHECK(headPtr != 0);
 
     int64_t seg_vp = headPtr;
     int found = 0;
     while (seg_vp != 0 && !found) {
         /* W5b: walk DirSegment → SlotNode → DirContent. */
-        uint8_t* seg_s = pool_resolve_ro(&ctx->pool, seg_vp);
-        CHECK(seg_s != NULL);
-        int64_t seg_head = vfs_rd8(seg_s, 8);  /* ANCHOR_OFF_HEADPTR */
-        int64_t seg_sib = vfs_rd8(seg_s, 16); /* ANCHOR_OFF_SIBPTR */
+        PoolSlot seg_s = {0};
+        pool_acquire(&ctx->pool, seg_vp, false, &seg_s);
+        CHECK(seg_s.vptr != VFS_VPTR_NULL);
+        int64_t seg_head = vfs_rd8_s(seg_s.bytes,  8, ctx->page_size);  /* ANCHOR_OFF_HEADPTR */
+        int64_t seg_sib = vfs_rd8_s(seg_s.bytes,  16, ctx->page_size); /* ANCHOR_OFF_SIBPTR */
         int64_t walk_vp = seg_head;
         while (walk_vp != 0 && !found) {
             /* W5a: walk the SlotNode chain (per-child) and its DirContent chain. */
-            uint8_t* ss = pool_resolve_ro(&ctx->pool, walk_vp);
-            CHECK(ss != NULL);
-            int64_t dc_walk = vfs_rd8(ss, 8);  /* ANCHOR_OFF_HEADPTR */
-            int64_t slot_sib = vfs_rd8(ss, 16);
+            PoolSlot ss = {0};
+            pool_acquire(&ctx->pool, walk_vp, false, &ss);
+            CHECK(ss.vptr != VFS_VPTR_NULL);
+            int64_t dc_walk = vfs_rd8_s(ss.bytes,  8, ctx->page_size);  /* ANCHOR_OFF_HEADPTR */
+            int64_t slot_sib = vfs_rd8_s(ss.bytes,  16, ctx->page_size);
             while (dc_walk != 0) {
-                uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, dc_walk);
-                CHECK(dc_slot != NULL);
+                PoolSlot dc_slot = {0};
+                pool_acquire(&ctx->pool, dc_walk, false, &dc_slot);
+                CHECK(dc_slot.vptr != VFS_VPTR_NULL);
                 uint32_t ce_child, ce_epoch;
                 int64_t ce_childPtr, ce_namePtr, ce_next;
-                nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch, &ce_childPtr,
                                       &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
                 (void)ce_child; (void)ce_childPtr;
                 if (ce_epoch == 0 && ce_namePtr != 0) {
@@ -300,13 +304,20 @@ static void test_delete_file(void) {
                                               entry_name, (int)sizeof(entry_name));
                     if (nl > 0 && strcmp(entry_name, "delete_me.txt") == 0)
                         found = 1;
-                }
+                
+    pool_release(&ctx->pool, &dc_slot);
+    pool_release(&ctx->pool, &dc_slot);}
                 dc_walk = ce_next;
-            }
+            
+    pool_release(&ctx->pool, &ss);
+    pool_release(&ctx->pool, &ss);}
             walk_vp = slot_sib;
-        }
+        
+    pool_release(&ctx->pool, &seg_s);
+    pool_release(&ctx->pool, &seg_s);}
         seg_vp = seg_sib;
-    }
+    
+    pool_release(&ctx->pool, &root_slot);}
     CHECK(found);
 
     /* Delete the file at epoch 2 */
@@ -314,30 +325,34 @@ static void test_delete_file(void) {
     CHECK_EQ(ret, VFS_OK);
 
     /* Verify the tombstone exists */
-    root_slot = pool_resolve_ro(&ctx->pool, root_vp);
-    CHECK(root_slot != NULL);
-    headPtr = vfs_rd8(root_slot, DIRNODE_OFF_HEADPTR);
+    pool_release(&ctx->pool, &root_slot);
+    pool_acquire(&ctx->pool, root_vp, false, &root_slot);
+    CHECK(root_slot.vptr != VFS_VPTR_NULL);
+    headPtr = vfs_rd8_s(root_slot.bytes,  DIRNODE_OFF_HEADPTR, ctx->page_size);
     CHECK(headPtr != 0);
 
     seg_vp = headPtr;
     int found_tombstone = 0;
     while (seg_vp != 0) {
-        uint8_t* seg_s = pool_resolve_ro(&ctx->pool, seg_vp);
-        CHECK(seg_s != NULL);
-        int64_t seg_head = vfs_rd8(seg_s, 8);
-        int64_t seg_sib = vfs_rd8(seg_s, 16);
+        PoolSlot seg_s = {0};
+        pool_acquire(&ctx->pool, seg_vp, false, &seg_s);
+        CHECK(seg_s.vptr != VFS_VPTR_NULL);
+        int64_t seg_head = vfs_rd8_s(seg_s.bytes,  8, ctx->page_size);
+        int64_t seg_sib = vfs_rd8_s(seg_s.bytes,  16, ctx->page_size);
         int64_t walk_vp = seg_head;
         while (walk_vp != 0) {
-            uint8_t* ss = pool_resolve_ro(&ctx->pool, walk_vp);
-            CHECK(ss != NULL);
-            int64_t dc_walk = vfs_rd8(ss, 8);
-            int64_t slot_sib = vfs_rd8(ss, 16);
+            PoolSlot ss = {0};
+            pool_acquire(&ctx->pool, walk_vp, false, &ss);
+            CHECK(ss.vptr != VFS_VPTR_NULL);
+            int64_t dc_walk = vfs_rd8_s(ss.bytes,  8, ctx->page_size);
+            int64_t slot_sib = vfs_rd8_s(ss.bytes,  16, ctx->page_size);
             while (dc_walk != 0) {
-                uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, dc_walk);
-                CHECK(dc_slot != NULL);
+                PoolSlot dc_slot = {0};
+                pool_acquire(&ctx->pool, dc_walk, false, &dc_slot);
+                CHECK(dc_slot.vptr != VFS_VPTR_NULL);
                 uint32_t ce_child, ce_epoch;
                 int64_t ce_childPtr, ce_namePtr, ce_next;
-                nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch, &ce_childPtr,
                                       &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
                 (void)ce_child; (void)ce_childPtr;
                 if (ce_epoch == 2 && ce_namePtr == 0)
