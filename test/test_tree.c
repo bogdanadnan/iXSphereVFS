@@ -248,6 +248,7 @@ static void test_create_file(void) {
     /* nextNodeId should now be 1 */
     CHECK_EQ((int)ctx->nextNodeId, 1);
 
+    pool_release(&ctx->pool, &root_slot);
     vfs_unmount(vfs);
 }
 
@@ -886,9 +887,11 @@ static void test_write_in_place(void) {
     int64_t walk = vp;
     while (walk != 0) {
         count_before++;
-        uint8_t* vs = pool_resolve_ro(&ctx->pool, walk);
-        CHECK(vs != NULL);
-        walk = vfs_rd8(vs, VERSIONPAGE_OFF_NEXTPTR);
+        PoolSlot vs = {0};
+        pool_acquire(&ctx->pool, walk, false, &vs);
+        CHECK(vs.vptr != VFS_VPTR_NULL);
+        walk = vfs_rd8_s(vs.bytes, VERSIONPAGE_OFF_NEXTPTR, ctx->page_size);
+        pool_release(&ctx->pool, &vs);
     }
     CHECK_EQ(count_before, 1);  /* exactly 1 VersionPage */
 
@@ -904,9 +907,11 @@ static void test_write_in_place(void) {
     walk = vp;
     while (walk != 0) {
         count_after++;
-        uint8_t* vs = pool_resolve_ro(&ctx->pool, walk);
-        CHECK(vs != NULL);
-        walk = vfs_rd8(vs, VERSIONPAGE_OFF_NEXTPTR);
+        PoolSlot vs = {0};
+        pool_acquire(&ctx->pool, walk, false, &vs);
+        CHECK(vs.vptr != VFS_VPTR_NULL);
+        walk = vfs_rd8_s(vs.bytes, VERSIONPAGE_OFF_NEXTPTR, ctx->page_size);
+        pool_release(&ctx->pool, &vs);
     }
     CHECK_EQ(count_after, 1);  /* still 1 VersionPage */
 
@@ -959,9 +964,11 @@ static void test_write_cow_epoch(void) {
     int64_t walk = vp;
     while (walk != 0) {
         count++;
-        uint8_t* vs = pool_resolve_ro(&ctx->pool, walk);
-        CHECK(vs != NULL);
-        walk = vfs_rd8(vs, VERSIONPAGE_OFF_NEXTPTR);
+        PoolSlot vs = {0};
+        pool_acquire(&ctx->pool, walk, false, &vs);
+        CHECK(vs.vptr != VFS_VPTR_NULL);
+        walk = vfs_rd8_s(vs.bytes, VERSIONPAGE_OFF_NEXTPTR, ctx->page_size);
+        pool_release(&ctx->pool, &vs);
     }
     CHECK_EQ(count, 2);
 
@@ -1047,32 +1054,44 @@ static void test_mkdir_basic(void) {
     CHECK(ret > 0);
 
     /* Verify entry exists in root's chain (W5a: SlotNode-wrapped) */
-    int64_t head = vfs_rd8_s(pool_resolve_ro(&ctx->pool, root_vp),
-                              DIRNODE_OFF_HEADPTR, ctx->page_size);
+    PoolSlot root_slot = {0};
+    pool_acquire(&ctx->pool, root_vp, false, &root_slot);
+    CHECK(root_slot.vptr != VFS_VPTR_NULL);
+    int64_t head = vfs_rd8_s(root_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     CHECK(head != 0);
+    pool_release(&ctx->pool, &root_slot);
 
     /* Walk DirSegment -> SlotNode -> first DirContent.  W5b. */
-    uint8_t* seg_s = pool_resolve_ro(&ctx->pool, head);
-    CHECK(seg_s != NULL);
-    int64_t slot_vp = vfs_rd8(seg_s, 8);  /* ANCHOR_OFF_HEADPTR */
+    PoolSlot seg_s = {0};
+    pool_acquire(&ctx->pool, head, false, &seg_s);
+    CHECK(seg_s.vptr != VFS_VPTR_NULL);
+    int64_t slot_vp = vfs_rd8_s(seg_s.bytes, 8, ctx->page_size);  /* ANCHOR_OFF_HEADPTR */
     CHECK(slot_vp != 0);
-    uint8_t* ss = pool_resolve_ro(&ctx->pool, slot_vp);
-    CHECK(ss != NULL);
-    int64_t dc_head = vfs_rd8(ss, 8);  /* ANCHOR_OFF_HEADPTR */
+    pool_release(&ctx->pool, &seg_s);
+
+    PoolSlot ss = {0};
+    pool_acquire(&ctx->pool, slot_vp, false, &ss);
+    CHECK(ss.vptr != VFS_VPTR_NULL);
+    int64_t dc_head = vfs_rd8_s(ss.bytes, 8, ctx->page_size);  /* ANCHOR_OFF_HEADPTR */
     CHECK(dc_head != 0);
+    pool_release(&ctx->pool, &ss);
 
     uint32_t cc, ce;
     int64_t cp, np, nx;
-    nodes_read_dircontent(pool_resolve_ro(&ctx->pool, dc_head),
-                          &cc, &ce, &cp, &np, &nx, ctx->page_size);
+    PoolSlot dc_slot = {0};
+    pool_acquire(&ctx->pool, dc_head, false, &dc_slot);
+    nodes_read_dircontent(dc_slot.bytes, &cc, &ce, &cp, &np, &nx, ctx->page_size);
     (void)cc; (void)ce; (void)np; (void)nx;
+    pool_release(&ctx->pool, &dc_slot);
     CHECK(cp != 0);
 
     /* Verify child is a DirNode */
-    uint8_t* child_slot = pool_resolve_ro(&ctx->pool, cp);
-    CHECK(child_slot != NULL);
-    CHECK_EQ(vfs_rd2_s(child_slot, DIRNODE_OFF_TYPE, ctx->page_size),
+    PoolSlot child_slot = {0};
+    pool_acquire(&ctx->pool, cp, false, &child_slot);
+    CHECK(child_slot.vptr != VFS_VPTR_NULL);
+    CHECK_EQ(vfs_rd2_s(child_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size),
              (int16_t)NODE_TYPE_DIR);
+    pool_release(&ctx->pool, &child_slot);
 
     vfs_unmount(vfs);
 }
@@ -1813,26 +1832,32 @@ static void test_sparse_small_file(void) {
     CHECK_EQ(pn_idx, 0u);
 
     /* Walk FileContent's pageRootPtr chain — assert exactly 1 PageNode */
-    uint8_t* file_slot = pool_resolve_ro(&ctx->pool, file_vp);
-    CHECK(file_slot != NULL);
-    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    PoolSlot file_slot = {0};
+    pool_acquire(&ctx->pool, file_vp, false, &file_slot);
+    CHECK(file_slot.vptr != VFS_VPTR_NULL);
+    int64_t fc_vp = vfs_rd8_s(file_slot.bytes, FILENODE_OFF_HEADPTR, ctx->page_size);
     CHECK(fc_vp != 0);
-    uint8_t* fc_slot = pool_resolve_ro(&ctx->pool, fc_vp);
-    CHECK(fc_slot != NULL);
-    int64_t pn_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+    PoolSlot fc_slot = {0};
+    pool_acquire(&ctx->pool, fc_vp, false, &fc_slot);
+    CHECK(fc_slot.vptr != VFS_VPTR_NULL);
+    int64_t pn_root = vfs_rd8_s(fc_slot.bytes, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
     CHECK(pn_root != 0);
 
     int pn_count = 0;
     int64_t walk = pn_root;
     while (walk != 0) {
         pn_count++;
-        uint8_t* pn = pool_resolve_ro(&ctx->pool, walk);
-        CHECK(pn != NULL);
-        int64_t next = vfs_rd8_s(pn, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+        PoolSlot pn = {0};
+        pool_acquire(&ctx->pool, walk, false, &pn);
+        CHECK(pn.vptr != VFS_VPTR_NULL);
+        int64_t next = vfs_rd8_s(pn.bytes, PAGENODE_OFF_NEXTPTR, ctx->page_size);
         walk = next;
+        pool_release(&ctx->pool, &pn);
     }
     CHECK_EQ(pn_count, 1);
 
+    pool_release(&ctx->pool, &fc_slot);
+    pool_release(&ctx->pool, &file_slot);
     vfs_unmount(vfs);
 }
 
@@ -1858,29 +1883,35 @@ static void test_sparse_chain_mid_insert(void) {
     CHECK_EQ(idx2, 2u);
 
     /* Walk the chain — page 2 should be at head, page 5 next */
-    uint8_t* file_slot = pool_resolve_ro(&ctx->pool, file_vp);
-    CHECK(file_slot != NULL);
-    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    PoolSlot file_slot = {0};
+    pool_acquire(&ctx->pool, file_vp, false, &file_slot);
+    CHECK(file_slot.vptr != VFS_VPTR_NULL);
+    int64_t fc_vp = vfs_rd8_s(file_slot.bytes, FILENODE_OFF_HEADPTR, ctx->page_size);
     CHECK(fc_vp != 0);
-    uint8_t* fc_slot = pool_resolve_ro(&ctx->pool, fc_vp);
-    CHECK(fc_slot != NULL);
-    int64_t pn_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+    PoolSlot fc_slot = {0};
+    pool_acquire(&ctx->pool, fc_vp, false, &fc_slot);
+    CHECK(fc_slot.vptr != VFS_VPTR_NULL);
+    int64_t pn_root = vfs_rd8_s(fc_slot.bytes, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
     CHECK(pn_root != 0);
 
     int pn_count = 0;
     int64_t walk = pn_root;
     while (walk != 0) {
         pn_count++;
-        uint8_t* pn = pool_resolve_ro(&ctx->pool, walk);
-        CHECK(pn != NULL);
-        uint32_t idx = (uint32_t)vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+        PoolSlot pn = {0};
+        pool_acquire(&ctx->pool, walk, false, &pn);
+        CHECK(pn.vptr != VFS_VPTR_NULL);
+        uint32_t idx = (uint32_t)vfs_rd4_s(pn.bytes, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
         if (pn_count == 1) CHECK_EQ(idx, 2u);  /* head: page 2 */
         if (pn_count == 2) CHECK_EQ(idx, 5u);  /* next: page 5 */
-        int64_t next = vfs_rd8_s(pn, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+        int64_t next = vfs_rd8_s(pn.bytes, PAGENODE_OFF_NEXTPTR, ctx->page_size);
         walk = next;
+        pool_release(&ctx->pool, &pn);
     }
     CHECK_EQ(pn_count, 2);
 
+    pool_release(&ctx->pool, &fc_slot);
+    pool_release(&ctx->pool, &file_slot);
     vfs_unmount(vfs);
 }
 
@@ -1906,29 +1937,35 @@ static void test_sparse_chain_tail_append(void) {
     CHECK_EQ(idx7, 7u);
 
     /* Walk chain: idx=2 at head, idx=7 at tail */
-    uint8_t* file_slot = pool_resolve_ro(&ctx->pool, file_vp);
-    CHECK(file_slot != NULL);
-    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    PoolSlot file_slot = {0};
+    pool_acquire(&ctx->pool, file_vp, false, &file_slot);
+    CHECK(file_slot.vptr != VFS_VPTR_NULL);
+    int64_t fc_vp = vfs_rd8_s(file_slot.bytes, FILENODE_OFF_HEADPTR, ctx->page_size);
     CHECK(fc_vp != 0);
-    uint8_t* fc_slot = pool_resolve_ro(&ctx->pool, fc_vp);
-    CHECK(fc_slot != NULL);
-    int64_t pn_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+    PoolSlot fc_slot = {0};
+    pool_acquire(&ctx->pool, fc_vp, false, &fc_slot);
+    CHECK(fc_slot.vptr != VFS_VPTR_NULL);
+    int64_t pn_root = vfs_rd8_s(fc_slot.bytes, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
     CHECK(pn_root != 0);
 
     int pn_count = 0;
     int64_t walk = pn_root;
     while (walk != 0) {
         pn_count++;
-        uint8_t* pn = pool_resolve_ro(&ctx->pool, walk);
-        CHECK(pn != NULL);
-        uint32_t idx = (uint32_t)vfs_rd4_s(pn, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+        PoolSlot pn = {0};
+        pool_acquire(&ctx->pool, walk, false, &pn);
+        CHECK(pn.vptr != VFS_VPTR_NULL);
+        uint32_t idx = (uint32_t)vfs_rd4_s(pn.bytes, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
         if (pn_count == 1) CHECK_EQ(idx, 2u);
         if (pn_count == 2) CHECK_EQ(idx, 7u);
-        int64_t next = vfs_rd8_s(pn, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+        int64_t next = vfs_rd8_s(pn.bytes, PAGENODE_OFF_NEXTPTR, ctx->page_size);
         walk = next;
+        pool_release(&ctx->pool, &pn);
     }
     CHECK_EQ(pn_count, 2);
 
+    pool_release(&ctx->pool, &fc_slot);
+    pool_release(&ctx->pool, &file_slot);
     vfs_unmount(vfs);
 }
 
@@ -1976,9 +2013,10 @@ static void test_sparse_read_no_allocate(void) {
     CHECK(pn == NULL);
 
     /* Assert no FileContent was allocated */
-    uint8_t* file_slot = pool_resolve_ro(&ctx->pool, file_vp);
-    CHECK(file_slot != NULL);
-    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    PoolSlot file_slot = {0};
+    pool_acquire(&ctx->pool, file_vp, false, &file_slot);
+    CHECK(file_slot.vptr != VFS_VPTR_NULL);
+    int64_t fc_vp = vfs_rd8_s(file_slot.bytes, FILENODE_OFF_HEADPTR, ctx->page_size);
     CHECK_EQ(fc_vp, 0);
 
     /* Write to page 5 — should allocate exactly 1 PageNode */
@@ -1988,24 +2026,29 @@ static void test_sparse_read_no_allocate(void) {
     CHECK_EQ(idx, 5u);
 
     /* Walk chain — exactly 1 PageNode */
-    fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
+    pool_release(&ctx->pool, &file_slot);
+    pool_acquire(&ctx->pool, file_vp, false, &file_slot);
+    fc_vp = vfs_rd8_s(file_slot.bytes, FILENODE_OFF_HEADPTR, ctx->page_size);
     CHECK(fc_vp != 0);
-    uint8_t* fc_slot = pool_resolve_ro(&ctx->pool, fc_vp);
-    CHECK(fc_slot != NULL);
-    int64_t pn_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+    PoolSlot fc_slot = {0};
+    pool_acquire(&ctx->pool, fc_vp, false, &fc_slot);
+    CHECK(fc_slot.vptr != VFS_VPTR_NULL);
+    int64_t pn_root = vfs_rd8_s(fc_slot.bytes, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
     CHECK(pn_root != 0);
 
     int pn_count = 0;
     int64_t walk = pn_root;
     while (walk != 0) {
         pn_count++;
-        uint8_t* pw = pool_resolve_ro(&ctx->pool, walk);
-        CHECK(pw != NULL);
-        int64_t next = vfs_rd8_s(pw, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+        PoolSlot pw = {0};
+        pool_acquire(&ctx->pool, walk, false, &pw);
+        CHECK(pw.vptr != VFS_VPTR_NULL);
+        int64_t next = vfs_rd8_s(pw.bytes, PAGENODE_OFF_NEXTPTR, ctx->page_size);
         walk = next;
-    }
+        }
     CHECK_EQ(pn_count, 1);
 
+    pool_release(&ctx->pool, &fc_slot);
     vfs_unmount(vfs);
 }
 
@@ -2335,9 +2378,10 @@ static void test_dircontentindex_insert_lookup(void) {
     int64_t page_size = ctx->page_size;
 
     /* Use the root DirNode's actual indexHeadPtr (created by bootstrap) */
-    uint8_t* rootSlot = pool_resolve_ro(&ctx->pool, ctx->rootNodeOffset);
-    CHECK(rootSlot != NULL);
-    int64_t indexRoot = vfs_rd8_s(rootSlot, DIRNODE_OFF_INDEXHEADPTR, page_size);
+    PoolSlot rootSlot = {0};
+    pool_acquire(&ctx->pool, ctx->rootNodeOffset, false, &rootSlot);
+    CHECK(rootSlot.vptr != VFS_VPTR_NULL);
+    int64_t indexRoot = vfs_rd8_s(rootSlot.bytes, DIRNODE_OFF_INDEXHEADPTR, page_size);
     CHECK(indexRoot != 0);  /* bootstrap should have created the tree root */
 
     /* Allocate a dummy DirContent slot to point at */
@@ -2356,6 +2400,7 @@ static void test_dircontentindex_insert_lookup(void) {
                                              page_size);
     CHECK(leafVP != 0);
 
+    pool_release(&ctx->pool, &rootSlot);
     vfs_unmount(vfs);
 }
 
@@ -2365,9 +2410,11 @@ static void test_dircontentindex_same_leaf(void) {
     TreeContext* ctx = vfs->ctx;
     int64_t page_size = ctx->page_size;
 
-    uint8_t* rootSlot = pool_resolve_ro(&ctx->pool, ctx->rootNodeOffset);
-    CHECK(rootSlot != NULL);
-    int64_t indexRoot = vfs_rd8_s(rootSlot, DIRNODE_OFF_INDEXHEADPTR, page_size);
+    PoolSlot rootSlot = {0};
+
+    pool_acquire(&ctx->pool, ctx->rootNodeOffset, false, &rootSlot);
+    CHECK(rootSlot.vptr != VFS_VPTR_NULL);
+    int64_t indexRoot = vfs_rd8_s(rootSlot.bytes, DIRNODE_OFF_INDEXHEADPTR, page_size);
     CHECK(indexRoot != 0);
 
     /* Two hashes that share the first 15 nibbles (prefix) but differ
@@ -2400,6 +2447,7 @@ static void test_dircontentindex_same_leaf(void) {
        nibble, and the tree is 16 levels deep. */
     CHECK_EQ(leaf1, leaf2);
 
+    pool_release(&ctx->pool, &rootSlot);
     vfs_unmount(vfs);
 }
 
