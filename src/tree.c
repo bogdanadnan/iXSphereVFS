@@ -2035,10 +2035,12 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         return VFS_ERR_NOTDIR;
     }
 
-    /* Check directory is empty.  W5b: walk DirSegments → SlotNodes →
-     * DirContents.  For each SlotNode, apply the per-SlotNode read-rule
-     * to find the visible entry; if any SlotNode has a visible live
-     * (namePtr != 0) entry, the directory is not empty. */
+    /* Check directory is empty.  W6: for each SlotNode, walk its
+     * DirContent chain via vfs_chain_walk (the read-rule).  If any
+     * SlotNode has a visible live (namePtr != 0) entry, the
+     * directory is not empty.  This replaces the inlined
+     * read-rule that was the 4th copy of the standard read-rule
+     * (vfs_chain_walk is the single source of truth). */
     int64_t child_seg_vp = vfs_rd8_s(child_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     {
         int64_t seg_walk = child_seg_vp;
@@ -2046,65 +2048,38 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
             PoolSlot seg_ss;
             pool_acquire(&ctx->pool, seg_walk, false, &seg_ss);
             if (seg_ss.vptr == VFS_VPTR_NULL) break;
-            AnchorKind seg_ak;
-            uint32_t seg_id, seg_cnt;
-            int64_t seg_head, seg_sib;
-            nodes_read_anchor(seg_ss.bytes, &seg_ak, &seg_id, &seg_head,
-                              &seg_sib, &seg_cnt, ctx->page_size);
+            int64_t seg_head = vfs_rd8_s(seg_ss.bytes, ANCHOR_OFF_HEADPTR,
+                                          ctx->page_size);
+            int64_t seg_sib = vfs_rd8_s(seg_ss.bytes, ANCHOR_OFF_SIBPTR,
+                                         ctx->page_size);
             pool_release(&ctx->pool, &seg_ss);
-            (void)seg_ak; (void)seg_id; (void)seg_cnt;
 
             int64_t slot_walk = seg_head;
-            int seg_has_visible = 0;
-            int seg_has_name = 0;
-            while (slot_walk != 0 && !seg_has_visible) {
+            int found_not_empty = 0;
+            while (slot_walk != 0 && !found_not_empty) {
                 PoolSlot ss;
                 pool_acquire(&ctx->pool, slot_walk, false, &ss);
                 if (ss.vptr == VFS_VPTR_NULL) break;
-                AnchorKind ak;
-                uint32_t sid;
-                int64_t shead, ssib;
-                uint32_t scnt;
-                nodes_read_anchor(ss.bytes, &ak, &sid, &shead, &ssib, &scnt,
-                                  ctx->page_size);
-                pool_release(&ctx->pool, &ss);
-                (void)ak; (void)sid; (void)scnt;
-
-                int64_t cw = shead;
-                int found_visible = 0;
-                int has_name = 0;
-                while (cw != 0 && !found_visible) {
-                    PoolSlot cs;
-                    pool_acquire(&ctx->pool, cw, false, &cs);
-                    if (cs.vptr == VFS_VPTR_NULL) break;
-                    uint32_t cce;
-                    int64_t cnp, cnx;
-                    uint32_t ccc_unused;
-                    int64_t ccp_unused;
-                    nodes_read_dircontent(cs.bytes, &ccc_unused, &cce,
-                                          &ccp_unused, &cnp, &cnx,
+                int64_t shead = vfs_rd8_s(ss.bytes, ANCHOR_OFF_HEADPTR,
+                                           ctx->page_size);
+                int64_t ssib = vfs_rd8_s(ss.bytes, ANCHOR_OFF_SIBPTR,
                                           ctx->page_size);
+                pool_release(&ctx->pool, &ss);
 
-                int64_t eff_epoch = (int64_t)cce;
-                if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)cce))
-                    eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)cce);
-
-                int applies = (eff_epoch == epoch) ||
-                              (eff_epoch < epoch && (eff_epoch & 1) == 0);
-                if (applies) {
-                    found_visible = 1;
-                    has_name = (cnp != 0) ? 1 : 0;
+                /* Walk the SlotNode's DirContent chain via
+                 * vfs_chain_walk (read-rule).  If a visible entry
+                 * exists with namePtr != 0, the slot is not empty. */
+                PoolSlot cs = {0};
+                WalkResult wr = vfs_chain_walk(ctx, shead, epoch, &cs);
+                if (wr == WALK_FOUND) {
+                    int64_t cnp = vfs_rd8_s(cs.bytes,
+                                              DIRCONTENT_OFF_NAMEPTR,
+                                              ctx->page_size);
+                    if (cnp != 0) found_not_empty = 1;
                 }
-                cw = cnx;
-                pool_release(&ctx->pool, &cs);
+                slot_walk = ssib;
             }
-            if (found_visible && has_name) {
-                seg_has_visible = 1;
-                seg_has_name = 1;
-            }
-            slot_walk = ssib;
-            }
-            if (seg_has_visible && seg_has_name) {
+            if (found_not_empty) {
                 vfs_unlock(vfs, (int64_t)found_childId, epoch);
                 vfs->ctx->last_error = VFS_ERR_NOTEMPTY;
                 pool_release(&ctx->pool, &child_slot);
@@ -2211,6 +2186,87 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
  * applicable record, so dedup is automatic.
  * --------------------------------------------------------------------------- */
 
+/* W6: state for the dirchain_list SlotNode walk.  Holds the
+ * output entries array and the read-epoch.  The callback emits
+ * one entry per live SlotNode at read_epoch. */
+typedef struct {
+    TreeContext* ctx;
+    int64_t      read_epoch;
+    VarArray(vfs_dirent_t) entries;  /* output */
+} w6_dirchain_list_state;
+
+/* Forward declarations — the segment callback calls the slot
+ * callback via walk_content_unit_chain. */
+static int w6_dirchain_list_slot_cb(TreeContext* ctx, int64_t slot_vp,
+                                      const uint8_t* slot_bytes,
+                                      void* user);
+
+/* W6: dirchain_list callback for walk_anchor_chain on the
+ * DirSegment chain.  For each segment, walks its SlotNode
+ * chain via walk_content_unit_chain + w6_dirchain_list_slot_cb.
+ * Returns 0 to continue (we want ALL segments, not just one). */
+static int w6_dirchain_list_seg_cb(TreeContext* ctx, int64_t seg_vp,
+                                     const uint8_t* seg_bytes, void* user) {
+    w6_dirchain_list_state* st = (w6_dirchain_list_state*)user;
+    (void)seg_vp;
+    int64_t slot_head = vfs_rd8_s(seg_bytes, ANCHOR_OFF_HEADPTR,
+                                    ctx->page_size);
+    if (slot_head == 0) return 0;  /* empty segment — keep going */
+    walk_content_unit_chain(ctx, slot_head, w6_dirchain_list_slot_cb, st);
+    return 0;
+}
+
+/* W6: dirchain_list callback for walk_content_unit_chain on
+ * the SlotNode chain within a DirSegment.  For each SlotNode,
+ * walks the DirContent chain via vfs_chain_walk (the read-rule)
+ * and emits a vfs_dirent_t for the visible live entry.  Live
+ * means namePtr != 0 (a tombstone is namePtr == 0). */
+static int w6_dirchain_list_slot_cb(TreeContext* ctx, int64_t slot_vp,
+                                      const uint8_t* slot_bytes,
+                                      void* user) {
+    w6_dirchain_list_state* st = (w6_dirchain_list_state*)user;
+    (void)slot_vp;
+    int64_t leaf_head = vfs_rd8_s(slot_bytes, ANCHOR_OFF_HEADPTR,
+                                    ctx->page_size);
+    if (leaf_head == 0) return 0;  /* empty slot — skip */
+
+    PoolSlot dc_slot = {0};
+    WalkResult r = vfs_chain_walk(ctx, leaf_head, st->read_epoch, &dc_slot);
+    if (r != WALK_FOUND) return 0;  /* no visible entry — skip */
+
+    uint32_t ce_child, ce_epoch;
+    int64_t ce_childPtr, ce_namePtr, ce_next;
+    nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch,
+                          &ce_childPtr, &ce_namePtr, &ce_next,
+                          ctx->page_size);
+
+    if (ce_namePtr == 0) {
+        /* Visible tombstone — no live entry for this child at
+         * this epoch.  Skip (per the pre-W6 behavior). */
+        return 0;
+    }
+
+    /* Live entry — emit. */
+    vfs_dirent_t e = {
+        .vp = ce_childPtr,
+        .nodeId = ce_child,
+        .isDir = false,
+        .name = {0},
+    };
+    /* Determine isDir by reading the child type. */
+    PoolSlot child_slot = {0};
+    pool_acquire(&ctx->pool, ce_childPtr, false, &child_slot);
+    if (child_slot.vptr != VFS_VPTR_NULL) {
+        int16_t ctype = vfs_rd2_s(child_slot.bytes, DIRNODE_OFF_TYPE,
+                                    ctx->page_size);
+        e.isDir = (ctype == (int16_t)NODE_TYPE_DIR);
+    }
+    pool_release(&ctx->pool, &child_slot);
+    nodes_read_name(&ctx->pool, ce_namePtr, e.name, (int)sizeof(e.name));
+    var_array_append(st->entries, e);
+    return 0;  /* continue — we want ALL visible entries, not just one */
+}
+
 int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
                       vfs_dirent_t** out_entries, int* out_count) {
     if (!ctx || !out_entries || !out_count) return VFS_ERR_IO;
@@ -2229,92 +2285,20 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     int64_t headPtr = vfs_rd8_s(dir_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     pool_release(&ctx->pool, &dir_slot);
 
-    /* W5b: walk DirSegments (chunks of 1024 SlotNodes each) →
-     * SlotNodes → DirContents.  No dedup needed — each SlotNode
-     * corresponds to exactly one child. */
+    /* W6: walk DirSegment chain (walk_anchor_chain) → for each
+     * segment, walk SlotNode chain (walk_content_unit_chain) →
+     * for each SlotNode, the callback walks its DirContent chain
+     * via vfs_chain_walk (read-rule) and emits the visible live
+     * entry.  No dedup needed — each SlotNode corresponds to
+     * exactly one child. */
     VarArray(vfs_dirent_t) entries = var_array_new(vfs_dirent_t);
     if (!entries) return VFS_ERR_IO;
 
-    int64_t seg_walk_vp = headPtr;
-    while (seg_walk_vp != 0) {
-        PoolSlot seg_slot = {0};
-        pool_acquire(&ctx->pool, seg_walk_vp, false, &seg_slot);
-        if (seg_slot.vptr == VFS_VPTR_NULL) break;
-        AnchorKind seg_ak;
-        uint32_t seg_id, seg_cnt;
-        int64_t seg_head, seg_sib;
-        nodes_read_anchor(seg_slot.bytes, &seg_ak, &seg_id, &seg_head,
-                          &seg_sib, &seg_cnt, ctx->page_size);
-        pool_release(&ctx->pool, &seg_slot);
-
-        int64_t slot_walk_vp = seg_head;
-        while (slot_walk_vp != 0) {
-            PoolSlot slot_slot = {0};
-            pool_acquire(&ctx->pool, slot_walk_vp, false, &slot_slot);
-            if (slot_slot.vptr == VFS_VPTR_NULL) break;
-            AnchorKind ak;
-            uint32_t slot_id;
-            int64_t slot_head, slot_sib;
-            uint32_t slot_count;
-            nodes_read_anchor(slot_slot.bytes, &ak, &slot_id, &slot_head,
-                              &slot_sib, &slot_count, ctx->page_size);
-            pool_release(&ctx->pool, &slot_slot);
-
-            /* Walk the SlotNode's DirContent chain. */
-            int64_t dc_walk_vp = slot_head;
-            int matched = 0;
-            while (dc_walk_vp != 0 && !matched) {
-                PoolSlot dc_slot = {0};
-                pool_acquire(&ctx->pool, dc_walk_vp, false, &dc_slot);
-                if (dc_slot.vptr == VFS_VPTR_NULL) break;
-                uint32_t ce_child, ce_epoch;
-                int64_t ce_childPtr, ce_namePtr, ce_next;
-                nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch,
-                                      &ce_childPtr, &ce_namePtr, &ce_next,
-                                      ctx->page_size);
-
-                int64_t eff_epoch = (int64_t)ce_epoch;
-                if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
-                    eff_epoch = mapper_table_resolve(&ctx->mapper_table,
-                                                    (int64_t)ce_epoch);
-
-                int applies = (eff_epoch == read_epoch) ||
-                              (eff_epoch < read_epoch && eff_epoch % 2 == 0);
-
-                if (applies) {
-                    if (ce_namePtr == 0) {
-                        /* Visible tombstone — no live entry for this
-                         * child at this epoch.  Skip. */
-                        matched = 1;
-                    } else {
-                        /* Live entry — emit it. */
-                        vfs_dirent_t e = {
-                            .vp = ce_childPtr,
-                            .nodeId = ce_child,
-                        .isDir = false,
-                        .name = {0},
-                    };
-                    PoolSlot child_slot = {0};
-                    pool_acquire(&ctx->pool, ce_childPtr, false, &child_slot);
-                    if (child_slot.vptr != VFS_VPTR_NULL) {
-                        int16_t ctype = vfs_rd2_s(child_slot.bytes,
-                                                   DIRNODE_OFF_TYPE,
-                                                   ctx->page_size);
-                        e.isDir = (ctype == (int16_t)NODE_TYPE_DIR);
-                    }
-                    pool_release(&ctx->pool, &child_slot);
-                    nodes_read_name(&ctx->pool, ce_namePtr, e.name,
-                                    (int)sizeof(e.name));
-                    var_array_append(entries, e);
-                    matched = 1;
-                }
-            }
-            dc_walk_vp = ce_next;
-            pool_release(&ctx->pool, &dc_slot);
-        }
-            slot_walk_vp = slot_sib;
-        }
-        seg_walk_vp = seg_sib;
+    w6_dirchain_list_state list_st = {
+        .ctx = ctx, .read_epoch = read_epoch, .entries = entries,
+    };
+    if (headPtr != 0) {
+        walk_anchor_chain(ctx, headPtr, w6_dirchain_list_seg_cb, &list_st);
     }
 
     int written = entries->count;

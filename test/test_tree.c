@@ -3102,6 +3102,79 @@ static void test_chain_walk_read_rule(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * W6: test_chain_walk_no_duplication — static check that the
+ * standard read-rule (mapper remap + even/odd + exact-match-wins)
+ * lives in EXACTLY ONE place: vfs_chain_walk in src/tree.c.  All
+ * callers go through vfs_chain_walk or vfs_chain_walk_extended
+ * (which delegates to vfs_chain_walk) for the per-leaf chain
+ * walk + read-rule.
+ *
+ * The read-rule markers we search for:
+ *   - "mapper_table_traversal_apply("  (per-entry mapper remap)
+ *   - "if (eff_epoch == read_epoch)"  (exact-match-wins)
+ *
+ * After W6, these markers should appear in EXACTLY ONE function
+ * (vfs_chain_walk).  vfs_chain_walk_extended has its own
+ * `eff_epoch` variable but uses the local `read_epoch` parameter,
+ * not the literal "read_epoch" string — so the static check
+ * specifically catches the read-rule pattern.
+ *
+ * vfs_commit (in src/epoch.c) keeps its own per-page
+ * VersionPage walk because the commit needs to know about
+ * has_snapshot AND has_live (two conditions the standard
+ * read-rule doesn't expose).  This is the ONE remaining inline
+ * walk; it's commit-specific, not the standard read-rule.
+ *
+ * We grep only src/tree.c for the marker — commit-specific code
+ * in src/epoch.c uses a different pattern (% 2 == 0 with a
+ * different surrounding condition).
+ * --------------------------------------------------------------------------- */
+
+static int count_occurrences_in(const char* path, const char* needle) {
+    FILE* f = fopen(path, "r");
+    if (!f) return -1;
+    int count = 0;
+    char* line = NULL;
+    size_t cap = 0;
+    ssize_t len;
+    while ((len = getline(&line, &cap, f)) != -1) {
+        /* Skip comment lines starting with " * " (block comment
+         * body).  Real code lines that mention the marker are
+         * counted.  Lines that start with "//" (C++ comments) are
+         * also skipped. */
+        char* p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '*' || *p == '/') continue;
+        if (strstr(line, needle) != NULL) count++;
+    }
+    free(line);
+    fclose(f);
+    return count;
+}
+
+static void test_chain_walk_no_duplication(void) {
+    /* The standard read-rule (mapper remap per entry + even/odd
+     * + exact-match-wins) must live in EXACTLY ONE function in
+     * src/tree.c — vfs_chain_walk.  After W6, all other callers
+     * go through vfs_chain_walk (directly) or vfs_chain_walk_extended
+     * (which delegates).  The commit-specific walk in src/epoch.c
+     * uses a different pattern and is excluded. */
+    int rule_markers = count_occurrences_in(
+        "/Users/bogdanadnan/Projects/ixsphere/native/iXSphereVFS/src/tree.c",
+        "mapper_table_traversal_apply(");
+    /* vfs_chain_walk has 1 call (line 826).  vfs_chain_walk_extended
+     * does NOT call it (the read-rule is delegated to vfs_chain_walk). */
+    CHECK_EQ(rule_markers, 1);
+
+    /* The exact-match-wins pattern should also appear once. */
+    int exact_match_markers = count_occurrences_in(
+        "/Users/bogdanadnan/Projects/ixsphere/native/iXSphereVFS/src/tree.c",
+        "if (eff_epoch == read_epoch)");
+    /* vfs_chain_walk has 1 (line 833). */
+    CHECK_EQ(exact_match_markers, 1);
+}
+
+/* ---------------------------------------------------------------------------
  * W6: test_chain_walk_extended — exercises vfs_chain_walk_extended on
  * a file with multiple pages and mixed-epoch writes.  Verifies the
  * 6-step walk: root_vp → FileContent chain → PageNode by id →
@@ -3461,6 +3534,8 @@ int main(void) {
     test_chain_walk_extended();
     unlink(test_path);
     test_chain_walk_anchor_chain();
+    unlink(test_path);
+    test_chain_walk_no_duplication();
     unlink(test_path);
     test_concurrent_dir_writes();
     unlink(test_path);

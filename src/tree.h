@@ -62,11 +62,15 @@ int dirchain_test_get_hash_rejects(void);
 
 /* Resolve a logical page within a file to its PageNode.
  *
- * Thin wrapper over vfs_chain_walk: walks the FileContent chain to
- * find the segment containing this page, then resolves the PageNode
- * within the segment.  Creates missing FileContent + PageNode entries
- * on file growth.  Builds the in-memory VirtualPtr array on first
- * access to a segment.
+ * W6: rewritten to use the shared chain-walk primitives
+ * (walk_anchor_chain + walk_content_unit_chain) for the
+ * segment + unit chain walks, and named helpers
+ * (w6_allocate_fc, w6_link_fc_into_chain, w6_link_pn_into_chain)
+ * for the segment-growth and sorted-insertion logic.  The
+ * function is no longer a "thin wrapper" — it has substantial
+ * segment-growth and tcache logic.  Prefer vfs_chain_walk_extended
+ * for new code that just needs to find a PageNode by id (no
+ * growth, no tcache).
  *
  * Phase 25: by-value copy-out.  Writes the 32-byte PageNode slot into
  * *out.  Returns 0 on success, -1 on error or page-not-found.  The
@@ -114,10 +118,15 @@ VFS_INLINE uint32_t tree_segment_size(TreeContext* ctx) {
 /* Walk a directory's DirContent chain to find an entry by name at a given
  * epoch (applying the read-rule and mapper remapping).
  *
- * Thin wrapper over vfs_chain_walk: walks DirSegment → SlotNode →
- * DirContent chains (the W5b structure) and applies the read-rule to
- * find the visible entry.  Prefer vfs_chain_walk directly for new code
- * that doesn't need the name match.
+ * W6: uses vfs_chain_walk for the per-leaf chain walk + read-rule
+ * (single source of truth for the read-rule; no inlined copies).
+ * The radix-tree fast path walks the dircontentlink chain
+ * manually (the dircontentlink layout differs from the Anchor
+ * layout).  The fallback path uses walk_anchor_chain for the
+ * DirSegment chain and walk_content_unit_chain for the SlotNode
+ * chain.  vfs_chain_walk is called for the per-SlotNode
+ * DirContent chain.  New code that doesn't need the by-name
+ * match should use vfs_chain_walk_extended directly.
  *
  * ctx         — VFS tree context
  * dir_vp      — VirtualPtr of the DirNode to search
