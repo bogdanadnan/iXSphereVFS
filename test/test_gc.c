@@ -617,8 +617,10 @@ static void test_gc_vptr_remapping(void) {
         /* 2. DirContent → FileNode */
         uint32_t cc, ce;
         int64_t dc_childPtr, dc_namePtr, dc_next;
-        nodes_read_dircontent(pool_resolve_ro(&ctx->pool, slot_head),
-                              &cc, &ce, &dc_childPtr, &dc_namePtr, &dc_next, VFS_PAGE_SIZE);
+        PoolSlot dc_s = {0};
+        pool_acquire(&ctx->pool, slot_head, false, &dc_s);
+        CHECK(dc_s.vptr != VFS_VPTR_NULL);
+        nodes_read_dircontent(dc_s.bytes, &cc, &ce, &dc_childPtr, &dc_namePtr, &dc_next, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)dc_namePtr; (void)dc_next;
         CHECK(dc_childPtr != 0);
 
