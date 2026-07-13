@@ -23,6 +23,37 @@ static int tests_run = 0, tests_passed = 0;
 static const char* test_path = "/tmp/test_gc.tmp";
 static const char* nonstd_path = "/tmp/test_gc_4k.tmp";
 
+/* W5a helper: walk DirNode → SlotNode chain → first DirContent → childPtr.
+ * Pre-W5a the chain was DirNode → DirContent directly, but the per-child
+ * SlotNode indirection is now in place.  Returns 0 on failure (no SlotNode
+ * or empty chain). */
+static int64_t gc_dir_first_child(TreeContext* ctx, int64_t dir_vp) {
+    uint8_t* rs = pool_resolve_ro(&ctx->pool, dir_vp);
+    if (!rs) return 0;
+    int64_t slot_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+    while (slot_vp != 0) {
+        uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
+        if (!slot_s) return 0;
+        AnchorKind ak;
+        uint32_t slot_id;
+        int64_t slot_head, slot_sib;
+        uint32_t slot_count;
+        nodes_read_anchor(slot_s, &ak, &slot_id, &slot_head, &slot_sib,
+                          &slot_count, VFS_PAGE_SIZE);
+        if (slot_head != 0) {
+            uint8_t* dc = pool_resolve_ro(&ctx->pool, slot_head);
+            if (dc) {
+                uint32_t cc, ce;
+                int64_t cp, np, nx;
+                nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
+                if (np != 0) return cp;  /* live entry (namePtr != 0 = tombstone) */
+            }
+        }
+        slot_vp = slot_sib;
+    }
+    return 0;
+}
+
 /* ---------------------------------------------------------------------------
  * Helpers
  * --------------------------------------------------------------------------- */
@@ -370,16 +401,8 @@ static void test_gc_crash_before_swap(void) {
 
     /* Verify data is correctly written before crash simulation */
     {
-        uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t head_check = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(head_check != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        uint8_t* dc = pool_resolve_ro(&ctx->pool, head_check);
-        CHECK(dc != NULL);
-        nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)np; (void)nx;
+        int64_t cp = gc_dir_first_child(ctx, root_vp);
+        CHECK(cp != 0);
         char buf[16];
         CHECK_EQ(vfs_read(vfs, cp, buf, 0, 5, 0), 5);
         CHECK_EQ(strncmp(buf, "CRASH", 5), 0);
@@ -547,17 +570,26 @@ static void test_gc_vptr_remapping(void) {
     /* Pre-GC: walk and validate the pointer chain (proves structure is intact
        before compaction).  This verification runs regardless of GC outcome. */
     {
-        /* 1. Root DirNode headPtr → DirContent */
+        /* 1. Root DirNode headPtr → SlotNode → DirContent */
         uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
         CHECK(rs != NULL);
         CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(head != 0);
+        int64_t slot_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        CHECK(slot_vp != 0);
+        uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
+        CHECK(slot_s != NULL);
+        AnchorKind ak;
+        uint32_t slot_id;
+        int64_t slot_head, slot_sib;
+        uint32_t slot_count;
+        nodes_read_anchor(slot_s, &ak, &slot_id, &slot_head, &slot_sib,
+                          &slot_count, VFS_PAGE_SIZE);
+        CHECK(slot_head != 0);
 
         /* 2. DirContent → FileNode */
         uint32_t cc, ce;
         int64_t dc_childPtr, dc_namePtr, dc_next;
-        nodes_read_dircontent(pool_resolve_ro(&ctx->pool, head),
+        nodes_read_dircontent(pool_resolve_ro(&ctx->pool, slot_head),
                               &cc, &ce, &dc_childPtr, &dc_namePtr, &dc_next, VFS_PAGE_SIZE);
         (void)cc; (void)ce; (void)dc_namePtr; (void)dc_next;
         CHECK(dc_childPtr != 0);
@@ -601,18 +633,9 @@ static void test_gc_vptr_remapping(void) {
     /* Run GC */
     int gc_ret = vfs_gc(vfs);
     if (gc_ret == VFS_OK) {
-        /* After GC: walk the remapped chain — same structure, new VirtualPtrs */
-        uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(head != 0);
-
-        uint32_t cc, ce;
-        int64_t dc_childPtr2, dn2, dx2;
-        nodes_read_dircontent(pool_resolve_ro(&ctx->pool, head),
-                              &cc, &ce, &dc_childPtr2, &dn2, &dx2, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)dn2; (void)dx2;
+        /* After GC: walk the remapped chain — same structure, new VirtualPtrs.
+         * W5a: walk via SlotNode indirection. */
+        int64_t dc_childPtr2 = gc_dir_first_child(ctx, root_vp);
         CHECK(dc_childPtr2 != 0);
 
         uint8_t* fn_slot = pool_resolve_ro(&ctx->pool, dc_childPtr2);
@@ -650,20 +673,40 @@ static void test_gc_dircontent_survival(void) {
     int64_t f2 = vfs_create(vfs, root_vp, "doomed.txt", 0);
     CHECK(f2 > 0);
 
-    /* Verify two entries exist at epoch 0 */
+    /* Verify two entries exist at epoch 0.
+     * W5a: walk via SlotNode indirection (root → SlotNode chain → DC chain).
+     * Count SlotNodes (each = one unique child) with a live visible DC. */
     int entries_before = 0;
     {
         uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
         if (rs) {
-            int64_t h = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-            while (h != 0) {
-                uint8_t* dc_s = pool_resolve_ro(&ctx->pool, h);
-                if (!dc_s) break;
-                uint32_t cc, ce; int64_t cp, np, nx;
-                nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-                (void)cc; (void)cp; (void)np; (void)nx;
-                if (ce <= 0) entries_before++;
-                h = nx;
+            int64_t slot_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+            while (slot_vp != 0) {
+                uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
+                if (!slot_s) break;
+                AnchorKind ak;
+                uint32_t slot_id;
+                int64_t slot_head, slot_sib;
+                uint32_t slot_count;
+                nodes_read_anchor(slot_s, &ak, &slot_id, &slot_head, &slot_sib,
+                                  &slot_count, VFS_PAGE_SIZE);
+                /* Walk SlotNode's DC chain, find first applicable. */
+                int64_t dc_vp = slot_head;
+                int found = 0;
+                while (dc_vp != 0 && !found) {
+                    uint8_t* dc_s = pool_resolve_ro(&ctx->pool, dc_vp);
+                    if (!dc_s) break;
+                    uint32_t cc, ce; int64_t cp, np, nx;
+                    nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
+                    (void)cc; (void)cp; (void)nx;
+                    int applies = (ce == 0);  /* query epoch = 0 */
+                    if (applies && np != 0) {
+                        entries_before++;
+                        found = 1;
+                    }
+                    dc_vp = nx;
+                }
+                slot_vp = slot_sib;
             }
         }
     }
@@ -802,18 +845,11 @@ static void test_gc_crash_after_swap(void) {
        in the deferred-free queue by a real GC after the swap. */
     int64_t old_pool_head = ctx->pool.list_head ? *ctx->pool.list_head : 0;
 
-    /* Pre-swap verification: DirContent chain is intact and data readable */
+    /* Pre-swap verification: DirContent chain is intact and data readable.
+     * W5a: walk via SlotNode indirection. */
     {
-        uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        int64_t h = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        CHECK(h != 0);
-        uint32_t cc, ce;
-        int64_t cp, np, nx;
-        uint8_t* dc = pool_resolve_ro(&ctx->pool, h);
-        CHECK(dc != NULL);
-        nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-        (void)cc; (void)ce; (void)np; (void)nx;
+        int64_t cp = gc_dir_first_child(ctx, root_vp);
+        CHECK(cp != 0);
         char buf[16];
         CHECK_EQ(vfs_read(vfs, cp, buf, 0, 7, 0), 7);
         CHECK_EQ(strncmp(buf, "SWAP_OK", 7), 0);
@@ -832,24 +868,18 @@ static void test_gc_crash_after_swap(void) {
 
     /* Verify new tree active: root DirNode accessible and type correct.
        Data verification uses if-guards because CAS-modified cache entries
-       may not survive close/reopen even after explicit tree_superblock_write. */
+       may not survive close/reopen even after explicit tree_superblock_write.
+       W5a: walk via SlotNode indirection. */
     {
         uint8_t* rs = pool_resolve_ro(&vfs->ctx->pool, vfs->ctx->rootNodeOffset);
         CHECK(rs != NULL);
         CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
-        int64_t head = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
-        if (head != 0) {
-            uint32_t cc, ce;
-            int64_t cp, np, nx;
-            uint8_t* dc = pool_resolve_ro(&vfs->ctx->pool, head);
-            if (dc) {
-                nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
-                (void)cc; (void)ce; (void)np; (void)nx;
-                char rbuf[16];
-                int ret = vfs_read(vfs, cp, rbuf, 0, 7, 0);
-                CHECK_EQ(ret, 7);
-                CHECK_EQ(strncmp(rbuf, "SWAP_OK", 7), 0);
-            }
+        int64_t cp = gc_dir_first_child(vfs->ctx, vfs->ctx->rootNodeOffset);
+        if (cp != 0) {
+            char rbuf[16];
+            int ret = vfs_read(vfs, cp, rbuf, 0, 7, 0);
+            CHECK_EQ(ret, 7);
+            CHECK_EQ(strncmp(rbuf, "SWAP_OK", 7), 0);
         }
     }
 

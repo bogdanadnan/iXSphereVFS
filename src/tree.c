@@ -954,27 +954,62 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
         return VFS_ERR_IO;
     }
 
-    /* W4: simple store under parent node lock + new_nodeId content_unit lock. */
+    /* W5a: Allocate a SlotNode to hold the new DirContent.  The chain
+     * structure changes from "DirNode -> DirContent (flat, all
+     * children)" to "DirNode -> SlotNode (per child) -> DirContent
+     * (per-child history)".  Each child has its own SlotNode, so the
+     * per-child DirContent chain is naturally dedup'd.  DirSegments
+     * are deferred to W5e — for now SlotNodes are prepended directly
+     * to DirNode.HEADPTR. */
+    int64_t slot_vp = pool_alloc(&ctx->pool);
+    if (slot_vp == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
+        vfs->ctx->last_error = VFS_ERR_FULL;
+        pool_release(&ctx->pool, &dc_slot);
+        pool_release(&ctx->pool, &parent_slot);
+        return VFS_ERR_FULL;
+    }
+    PoolSlot slot_slot = {0};
+    pool_acquire(&ctx->pool, slot_vp, true, &slot_slot);
+    if (slot_slot.vptr == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
+        vfs->ctx->last_error = VFS_ERR_IO;
+        pool_release(&ctx->pool, &dc_slot);
+        pool_release(&ctx->pool, &parent_slot);
+        return VFS_ERR_IO;
+    }
+    /* Write the first DirContent (the live entry). */
+    nodes_write_dircontent(dc_slot.bytes, new_nodeId, (uint32_t)epoch,
+                           file_vp, name_vp, 0, ctx->page_size);
+
+    /* W4 + W5a: simple store of the SlotNode into DirNode.HEADPTR.
+     * The SlotNode's headPtr is the first DirContent.  Old HEADPTR
+     * becomes the SlotNode's sibPtr so the chain continues. */
     {
         int64_t old_head = vfs_rd8_s(parent_slot.bytes,
                                        DIRNODE_OFF_HEADPTR, ctx->page_size);
-        nodes_write_dircontent(dc_slot.bytes, new_nodeId, (uint32_t)epoch,
-                               file_vp, name_vp, old_head, ctx->page_size);
         vfs_mb_release();
-        vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_HEADPTR, dc_vp, ctx->page_size);
+        nodes_write_anchor(slot_slot.bytes, ANCHOR_KIND_UNIT_SLOT,
+                           new_nodeId, dc_vp, old_head, 0, ctx->page_size);
+        vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_HEADPTR, slot_vp, ctx->page_size);
     }
+    pool_release(&ctx->pool, &slot_slot);
 
     /* Insert into the directory's radix tree index (Phase 18).
        The chain entry already exists — the tree is additive.  If the
        insert fails (pool exhausted), the tree entry is missing but
-       the chain remains the source of truth for readdir. */
+       the chain remains the source of truth for readdir.  W5d
+       R6 refit: the index now points at the SlotNode VP (the
+       ContentUnit for the dir side), not the DirContent VP. */
     {
         int64_t parentIndex = vfs_rd8_s(parent_slot.bytes,
                                          DIRNODE_OFF_INDEXHEADPTR,
                                          ctx->page_size);
         uint64_t nameHash = name_hash_compute(name, (int)strlen(name));
         dircontentindex_insert(&ctx->pool, &parentIndex, nameHash,
-                               dc_vp, ctx->page_size);
+                               slot_vp, ctx->page_size);
         /* Persist the (possibly newly-installed) tree root back to the
            DirNode slot.  dircontentindex_insert updates its int64_t*
            parameter by CAS, but only the caller's local copy is touched
@@ -1044,34 +1079,51 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                 PoolSlot linkSlot;
                 pool_acquire(&ctx->pool, linkVP, true, &linkSlot);
                 if (linkSlot.vptr == VFS_VPTR_NULL) break;
-                int64_t dcVP, nextLinkVP;
-                nodes_read_dircontentlink(linkSlot.bytes, &dcVP, &nextLinkVP,
+                int64_t slotVP, nextLinkVP;
+                nodes_read_dircontentlink(linkSlot.bytes, &slotVP, &nextLinkVP,
                                           ctx->page_size);
                 pool_release(&ctx->pool, &linkSlot);
 
-                PoolSlot dc_check;
-                pool_acquire(&ctx->pool, dcVP, true, &dc_check);
-                if (dc_check.vptr == VFS_VPTR_NULL) { linkVP = nextLinkVP; continue; }
+                /* W5a: the link now points at a SlotNode VP.  Walk
+                 * the SlotNode's DirContent chain for a match. */
+                PoolSlot slotSlot;
+                pool_acquire(&ctx->pool, slotVP, true, &slotSlot);
+                if (slotSlot.vptr == VFS_VPTR_NULL) { linkVP = nextLinkVP; continue; }
+                AnchorKind ak;
+                uint32_t sid;
+                int64_t shead, ssib;
+                uint32_t scnt;
+                nodes_read_anchor(slotSlot.bytes, &ak, &sid, &shead, &ssib, &scnt,
+                                  ctx->page_size);
+                pool_release(&ctx->pool, &slotSlot);
+                (void)ak; (void)scnt;
 
-                uint32_t cc, ce;
-                int64_t cp, np, nx;
-                nodes_read_dircontent(dc_check.bytes, &cc, &ce, &cp, &np, &nx,
-                                      ctx->page_size);
-                pool_release(&ctx->pool, &dc_check);
-                (void)cc; (void)cp; (void)nx;
+                int64_t dcVP = shead;
+                while (dcVP != 0) {
+                    PoolSlot dc_check;
+                    pool_acquire(&ctx->pool, dcVP, true, &dc_check);
+                    if (dc_check.vptr == VFS_VPTR_NULL) break;
+                    uint32_t cc, ce;
+                    int64_t cp, np, nx;
+                    nodes_read_dircontent(dc_check.bytes, &cc, &ce, &cp, &np, &nx,
+                                          ctx->page_size);
+                    pool_release(&ctx->pool, &dc_check);
+                    (void)cc; (void)cp; (void)nx;
 
-                if (ce == (uint32_t)epoch && np != 0) {
-                    uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
-                    if (entry_hash == target_hash) {
-                        char entry_name[256];
-                        int nl = nodes_read_name(&ctx->pool, np, entry_name,
-                                                 (int)sizeof(entry_name));
-                        if (nl > 0 && strcmp(entry_name, name) == 0) {
-                            vfs->ctx->last_error = VFS_ERR_EXISTS;
-                            pool_release(&ctx->pool, &parent_slot);
-                            return VFS_ERR_EXISTS;
+                    if (ce == (uint32_t)epoch && np != 0) {
+                        uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
+                        if (entry_hash == target_hash) {
+                            char entry_name[256];
+                            int nl = nodes_read_name(&ctx->pool, np, entry_name,
+                                                     (int)sizeof(entry_name));
+                            if (nl > 0 && strcmp(entry_name, name) == 0) {
+                                vfs->ctx->last_error = VFS_ERR_EXISTS;
+                                pool_release(&ctx->pool, &parent_slot);
+                                return VFS_ERR_EXISTS;
+                            }
                         }
                     }
+                    dcVP = nx;
                 }
                 linkVP = nextLinkVP;
             }
@@ -1203,24 +1255,47 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         return VFS_ERR_IO;
     }
 
-    int64_t old_head;
-    do {
-        old_head = vfs_atomic_load_i64(
-            (const int64_t*)(parent_slot.bytes + DIRNODE_OFF_HEADPTR));
-        nodes_write_dircontent(dc_slot.bytes, new_nodeId, (uint32_t)epoch,
-                               dir_vp, name_vp, old_head, ctx->page_size);
+    /* W5a: Allocate a SlotNode for the new subdir. */
+    int64_t slot_vp = pool_alloc(&ctx->pool);
+    if (slot_vp == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
+        vfs->ctx->last_error = VFS_ERR_FULL;
+        pool_release(&ctx->pool, &dc_slot);
+        pool_release(&ctx->pool, &parent_slot);
+        return VFS_ERR_FULL;
+    }
+    PoolSlot slot_slot = {0};
+    pool_acquire(&ctx->pool, slot_vp, true, &slot_slot);
+    if (slot_slot.vptr == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
+        vfs->ctx->last_error = VFS_ERR_IO;
+        pool_release(&ctx->pool, &dc_slot);
+        pool_release(&ctx->pool, &parent_slot);
+        return VFS_ERR_IO;
+    }
+    nodes_write_dircontent(dc_slot.bytes, new_nodeId, (uint32_t)epoch,
+                           dir_vp, name_vp, 0, ctx->page_size);
+    {
+        int64_t old_head = vfs_rd8_s(parent_slot.bytes,
+                                       DIRNODE_OFF_HEADPTR, ctx->page_size);
         vfs_mb_release();
-    } while (vfs_cas_i64((int64_t*)(parent_slot.bytes + DIRNODE_OFF_HEADPTR),
-                         old_head, dc_vp) != old_head);
+        nodes_write_anchor(slot_slot.bytes, ANCHOR_KIND_UNIT_SLOT,
+                           new_nodeId, dc_vp, old_head, 0, ctx->page_size);
+        vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_HEADPTR, slot_vp, ctx->page_size);
+    }
+    pool_release(&ctx->pool, &slot_slot);
 
-    /* Insert into the directory's radix tree index (Phase 18). */
+    /* Insert into the directory's radix tree index (Phase 18).
+     * W5d: point at the SlotNode VP. */
     {
         int64_t parentIndex = vfs_rd8_s(parent_slot.bytes,
                                          DIRNODE_OFF_INDEXHEADPTR,
                                          ctx->page_size);
         uint64_t nameHash = name_hash_compute(name, (int)strlen(name));
         dircontentindex_insert(&ctx->pool, &parentIndex, nameHash,
-                               dc_vp, ctx->page_size);
+                               slot_vp, ctx->page_size);
         vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
                   ctx->page_size);
         /* W1b: childCount removed. */
@@ -1285,15 +1360,66 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         return VFS_ERR_IO;
     }
 
-    /* W4: simple store under content_unit lock (O1 — see spec). */
+    /* W5a: find the SlotNode for found_childId in the parent's
+     * SlotNode chain, and prepend the tombstone DirContent to
+     * that SlotNode's headPtr (not the parent's HEADPTR).  Per
+     * O1, no parent node lock is held; the content_unit lock
+     * (found_childId) serializes this vfs_delete with any
+     * concurrent vfs_write etc. on the same child. */
+    int64_t found_slot_vp = 0;
     {
-        int64_t old_head = vfs_rd8_s(parent_slot.bytes,
-                                       DIRNODE_OFF_HEADPTR, ctx->page_size);
-        /* Tombstone: namePtr=0 means deleted */
+        int64_t slot_walk = vfs_rd8_s(parent_slot.bytes,
+                                        DIRNODE_OFF_HEADPTR, ctx->page_size);
+        int64_t prev_slot_vp = 0;
+        while (slot_walk != 0) {
+            PoolSlot ss = {0};
+            pool_acquire(&ctx->pool, slot_walk, false, &ss);
+            if (ss.vptr == VFS_VPTR_NULL) break;
+            AnchorKind ak;
+            uint32_t sid;
+            int64_t shead, ssib;
+            uint32_t scnt;
+            nodes_read_anchor(ss.bytes, &ak, &sid, &shead, &ssib, &scnt,
+                              ctx->page_size);
+            pool_release(&ctx->pool, &ss);
+            if (sid == found_childId) {
+                found_slot_vp = slot_walk;
+                break;
+            }
+            prev_slot_vp = slot_walk;
+            slot_walk = ssib;
+        }
+        if (found_slot_vp == 0) {
+            vfs_unlock(vfs, (int64_t)found_childId, epoch);
+            vfs->ctx->last_error = VFS_ERR_IO;
+            pool_release(&ctx->pool, &dc_slot);
+            pool_release(&ctx->pool, &parent_slot);
+            return VFS_ERR_IO;
+        }
+        /* Read the SlotNode to get the current headPtr. */
+        PoolSlot fs = {0};
+        pool_acquire(&ctx->pool, found_slot_vp, true, &fs);
+        if (fs.vptr == VFS_VPTR_NULL) {
+            vfs_unlock(vfs, (int64_t)found_childId, epoch);
+            vfs->ctx->last_error = VFS_ERR_IO;
+            pool_release(&ctx->pool, &dc_slot);
+            pool_release(&ctx->pool, &parent_slot);
+            return VFS_ERR_IO;
+        }
+        AnchorKind fak;
+        uint32_t fsid;
+        int64_t fshead, fssib;
+        uint32_t fscnt;
+        nodes_read_anchor(fs.bytes, &fak, &fsid, &fshead, &fssib, &fscnt,
+                          ctx->page_size);
+        /* Write the tombstone DirContent with sibPtr=fshead. */
         nodes_write_dircontent(dc_slot.bytes, found_childId, (uint32_t)epoch,
-                               found_childPtr, 0, old_head, ctx->page_size);
+                               found_childPtr, 0, fshead, ctx->page_size);
         vfs_mb_release();
-        vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_HEADPTR, dc_vp, ctx->page_size);
+        /* Update the SlotNode's headPtr to point to the new tombstone. */
+        vfs_wr8_s(fs.bytes, ANCHOR_OFF_HEADPTR, dc_vp, ctx->page_size);
+        pool_release(&ctx->pool, &fs);
+        (void)prev_slot_vp;  /* unused — no removal in W5a */
     }
 
     /* Insert a tree link for the tombstone (Phase 18).  The tree leaf
@@ -1301,14 +1427,15 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
        add a second link for the tombstone.  dirchain_find_child applies
        epoch dedup so the higher-epoch tombstone suppresses the live
        entry.  Tree-insert failure leaves the tombstone in the chain
-       only — chain walk fallback still hides the entry correctly. */
+       only — chain walk fallback still hides the entry correctly.
+       W5d: point at the SlotNode VP. */
     {
         int64_t parentIndex = vfs_rd8_s(parent_slot.bytes,
                                          DIRNODE_OFF_INDEXHEADPTR,
                                          ctx->page_size);
         uint64_t nameHash = name_hash_compute(name, (int)strlen(name));
         dircontentindex_insert(&ctx->pool, &parentIndex, nameHash,
-                               dc_vp, ctx->page_size);
+                               found_slot_vp, ctx->page_size);
         vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
                   ctx->page_size);
         /* W1b: childCount removed. */
@@ -1360,68 +1487,103 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
                     PoolSlot linkSlot;
                     pool_acquire(&ctx->pool, linkVP, true, &linkSlot);
                     if (linkSlot.vptr == VFS_VPTR_NULL) break;
-                    int64_t dcVP, nextLinkVP;
-                    nodes_read_dircontentlink(linkSlot.bytes, &dcVP, &nextLinkVP,
+                    int64_t slotVP, nextLinkVP;
+                    nodes_read_dircontentlink(linkSlot.bytes, &slotVP, &nextLinkVP,
                                               ctx->page_size);
                     pool_release(&ctx->pool, &linkSlot);
 
-                    PoolSlot dc_check;
-                    pool_acquire(&ctx->pool, dcVP, false, &dc_check);
-                    if (dc_check.vptr == VFS_VPTR_NULL) { linkVP = nextLinkVP; continue; }
+                    /* W5a: the link now points at a SlotNode VP. */
+                    PoolSlot slotSlot;
+                    pool_acquire(&ctx->pool, slotVP, false, &slotSlot);
+                    if (slotSlot.vptr == VFS_VPTR_NULL) { linkVP = nextLinkVP; continue; }
+                    AnchorKind ak;
+                    uint32_t sid;
+                    int64_t shead, ssib;
+                    uint32_t scnt;
+                    nodes_read_anchor(slotSlot.bytes, &ak, &sid, &shead, &ssib,
+                                      &scnt, ctx->page_size);
+                    pool_release(&ctx->pool, &slotSlot);
+                    (void)ak; (void)scnt; (void)ssib;
 
-                    uint32_t cc, ce;
-                    int64_t cp, np, nx;
-                    nodes_read_dircontent(dc_check.bytes, &cc, &ce, &cp, &np, &nx,
-                                          ctx->page_size);
-                    pool_release(&ctx->pool, &dc_check);
-                    if (np != 0 && ce <= (uint32_t)epoch) {
-                        uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
-                        if (entry_hash == target_hash) {
-                            char en[256];
-                            int nl = nodes_read_name(&ctx->pool, np, en,
-                                                     (int)sizeof(en));
-                            if (nl > 0 && strcmp(en, name) == 0) {
-                                found_vp = dcVP;
-                                found_childId = cc;
-                                found_childPtr = cp;
-                                break;
+                    int64_t dcVP = shead;
+                    while (dcVP != 0) {
+                        PoolSlot dc_check;
+                        pool_acquire(&ctx->pool, dcVP, false, &dc_check);
+                        if (dc_check.vptr == VFS_VPTR_NULL) break;
+                        uint32_t cc, ce;
+                        int64_t cp, np, nx;
+                        nodes_read_dircontent(dc_check.bytes, &cc, &ce, &cp, &np, &nx,
+                                              ctx->page_size);
+                        pool_release(&ctx->pool, &dc_check);
+                        if (np != 0 && ce <= (uint32_t)epoch) {
+                            uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
+                            if (entry_hash == target_hash) {
+                                char en[256];
+                                int nl = nodes_read_name(&ctx->pool, np, en,
+                                                         (int)sizeof(en));
+                                if (nl > 0 && strcmp(en, name) == 0) {
+                                    found_vp = dcVP;
+                                    found_childId = cc;
+                                    found_childPtr = cp;
+                                    break;
+                                }
                             }
                         }
+                        dcVP = nx;
                     }
+                    if (found_vp) break;
                     linkVP = nextLinkVP;
                 }
             }
         }
     }
 
-    /* Chain walk — safety net (always runs if not found in tree) */
+    /* Chain walk — safety net (always runs if not found in tree).
+     * W5a: headPtr is a SlotNode chain. */
     if (found_vp == 0) {
-        int64_t walk_vp = headPtr;
-        while (walk_vp != 0) {
-            PoolSlot dc_check;
-            pool_acquire(&ctx->pool, walk_vp, false, &dc_check);
-            if (dc_check.vptr == VFS_VPTR_NULL) break;
-            uint32_t cc, ce;
-            int64_t cp, np, nx;
-            nodes_read_dircontent(dc_check.bytes, &cc, &ce, &cp, &np, &nx, ctx->page_size);
-            pool_release(&ctx->pool, &dc_check);
-            if (np != 0 && ce <= (uint32_t)epoch) {
-                uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
-                if (entry_hash != target_hash) {
+        int64_t slot_walk_vp = headPtr;
+        while (slot_walk_vp != 0) {
+            PoolSlot slot_check;
+            pool_acquire(&ctx->pool, slot_walk_vp, false, &slot_check);
+            if (slot_check.vptr == VFS_VPTR_NULL) break;
+            AnchorKind ak;
+            uint32_t sid;
+            int64_t shead, ssib;
+            uint32_t scnt;
+            nodes_read_anchor(slot_check.bytes, &ak, &sid, &shead, &ssib, &scnt,
+                              ctx->page_size);
+            pool_release(&ctx->pool, &slot_check);
+            (void)ak; (void)scnt;
+
+            int64_t walk_vp = shead;
+            while (walk_vp != 0) {
+                PoolSlot dc_check;
+                pool_acquire(&ctx->pool, walk_vp, false, &dc_check);
+                if (dc_check.vptr == VFS_VPTR_NULL) break;
+                uint32_t cc, ce;
+                int64_t cp, np, nx;
+                nodes_read_dircontent(dc_check.bytes, &cc, &ce, &cp, &np, &nx, ctx->page_size);
+                pool_release(&ctx->pool, &dc_check);
+                if (np != 0 && ce <= (uint32_t)epoch) {
+                    uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
+                    if (entry_hash != target_hash) {
 #ifdef VFS_NAME_HASH_TESTING
                 s_hash_rejects++;
 #endif
                 walk_vp = nx; continue; }
-                char en[256];
-                int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
-                if (nl > 0 && strcmp(en, name) == 0) {
-                    found_vp = walk_vp;
-                    found_childId = cc;
-                    found_childPtr = cp;
-                    break;
+                    char en[256];
+                    int nl = nodes_read_name(&ctx->pool, np, en, (int)sizeof(en));
+                    if (nl > 0 && strcmp(en, name) == 0) {
+                        found_vp = walk_vp;
+                        found_childId = cc;
+                        found_childPtr = cp;
+                        break;
+                    }
                 }
+                walk_vp = nx;
             }
-            walk_vp = nx;
+            if (found_vp) break;
+            slot_walk_vp = ssib;
         }
     }
 
@@ -1448,61 +1610,63 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         return VFS_ERR_NOTDIR;
     }
 
-    /* Check directory is empty using read-rule: for each childNodeId, find the
-       entry at the highest epoch ≤ query_epoch.  If any such entry has
-       namePtr ≠ 0, the directory is not empty (tombstones with namePtr=0
-       indicate deleted entries). */
+    /* Check directory is empty.  W5a: walk the SlotNode chain, then
+     * each SlotNode's DirContent chain.  For each SlotNode, apply
+     * the per-SlotNode read-rule to find the visible entry; if
+     * any SlotNode has a visible live (namePtr != 0) entry, the
+     * directory is not empty.  The chain within a SlotNode is
+     * descending by epoch, so the first applicable entry wins. */
     int64_t child_head = vfs_rd8_s(child_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     {
-        /* Simple approach: walk chain and collect unique childNodeIds.
-           For each child, track the highest epoch and whether the entry
-           at that epoch has namePtr != 0. */
-        #define MAX_RMDIR_CHILDREN 1024
-        uint32_t child_ids[MAX_RMDIR_CHILDREN];
-        uint32_t child_best_epoch[MAX_RMDIR_CHILDREN];
-        int     child_has_name[MAX_RMDIR_CHILDREN];
-        int child_count = 0;
+        int64_t slot_walk = child_head;
+        while (slot_walk != 0) {
+            PoolSlot ss;
+            pool_acquire(&ctx->pool, slot_walk, false, &ss);
+            if (ss.vptr == VFS_VPTR_NULL) break;
+            AnchorKind ak;
+            uint32_t sid;
+            int64_t shead, ssib;
+            uint32_t scnt;
+            nodes_read_anchor(ss.bytes, &ak, &sid, &shead, &ssib, &scnt,
+                              ctx->page_size);
+            pool_release(&ctx->pool, &ss);
+            (void)ak; (void)sid; (void)scnt;
 
-        int64_t cw = child_head;
-        while (cw != 0 && child_count < MAX_RMDIR_CHILDREN) {
-            PoolSlot cs;
-            pool_acquire(&ctx->pool, cw, false, &cs);
-            if (cs.vptr == VFS_VPTR_NULL) break;
-            uint32_t ccc, cce;
-            int64_t ccp, cnp, cnx;
-            nodes_read_dircontent(cs.bytes, &ccc, &cce, &ccp, &cnp, &cnx,
-                                  ctx->page_size);
-            pool_release(&ctx->pool, &cs);
-            (void)ccp;
+            int64_t cw = shead;
+            int found_visible = 0;
+            int has_name = 0;
+            while (cw != 0 && !found_visible) {
+                PoolSlot cs;
+                pool_acquire(&ctx->pool, cw, false, &cs);
+                if (cs.vptr == VFS_VPTR_NULL) break;
+                uint32_t cce;
+                int64_t cnp, cnx;
+                uint32_t ccc_unused;
+                int64_t ccp_unused;
+                nodes_read_dircontent(cs.bytes, &ccc_unused, &cce, &ccp_unused,
+                                      &cnp, &cnx, ctx->page_size);
 
-            if (cce <= (uint32_t)epoch) {
-                int found = -1;
-                for (int i = 0; i < child_count; i++) {
-                    if (child_ids[i] == ccc) { found = i; break; }
+                int64_t eff_epoch = (int64_t)cce;
+                if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)cce))
+                    eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)cce);
+
+                int applies = (eff_epoch == epoch) ||
+                              (eff_epoch < epoch && (eff_epoch & 1) == 0);
+                if (applies) {
+                    found_visible = 1;
+                    has_name = (cnp != 0) ? 1 : 0;
                 }
-                if (found >= 0) {
-                    if (cce > child_best_epoch[found]) {
-                        child_best_epoch[found] = cce;
-                        child_has_name[found] = (cnp != 0) ? 1 : 0;
-                    }
-                } else {
-                    child_ids[child_count] = ccc;
-                    child_best_epoch[child_count] = cce;
-                    child_has_name[child_count] = (cnp != 0) ? 1 : 0;
-                    child_count++;
-                }
+                cw = cnx;
+                pool_release(&ctx->pool, &cs);
             }
-            cw = cnx;
-        }
-
-        for (int i = 0; i < child_count; i++) {
-            if (child_has_name[i]) {
+            if (found_visible && has_name) {
                 vfs_unlock(vfs, (int64_t)found_childId, epoch);
                 vfs->ctx->last_error = VFS_ERR_NOTEMPTY;
                 pool_release(&ctx->pool, &child_slot);
                 pool_release(&ctx->pool, &parent_slot);
                 return VFS_ERR_NOTEMPTY;
             }
+            slot_walk = ssib;
         }
     }
     pool_release(&ctx->pool, &child_slot);  /* child_slot not used after this */
@@ -1524,26 +1688,69 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
         return VFS_ERR_IO;
     }
 
-    /* W4: simple store under content_unit lock (O1). */
+    /* W5a: find the SlotNode for found_childId and prepend the
+     * tombstone to its chain (per O1, no parent node lock). */
+    int64_t found_slot_vp = 0;
     {
-        int64_t old_head = vfs_rd8_s(parent_slot.bytes,
-                                       DIRNODE_OFF_HEADPTR, ctx->page_size);
+        int64_t slot_walk = vfs_rd8_s(parent_slot.bytes,
+                                        DIRNODE_OFF_HEADPTR, ctx->page_size);
+        while (slot_walk != 0) {
+            PoolSlot ss = {0};
+            pool_acquire(&ctx->pool, slot_walk, false, &ss);
+            if (ss.vptr == VFS_VPTR_NULL) break;
+            AnchorKind ak;
+            uint32_t sid;
+            int64_t shead, ssib;
+            uint32_t scnt;
+            nodes_read_anchor(ss.bytes, &ak, &sid, &shead, &ssib, &scnt,
+                              ctx->page_size);
+            pool_release(&ctx->pool, &ss);
+            if (sid == found_childId) {
+                found_slot_vp = slot_walk;
+                break;
+            }
+            slot_walk = ssib;
+        }
+        if (found_slot_vp == 0) {
+            vfs_unlock(vfs, (int64_t)found_childId, epoch);
+            vfs->ctx->last_error = VFS_ERR_IO;
+            pool_release(&ctx->pool, &dc_slot);
+            pool_release(&ctx->pool, &parent_slot);
+            return VFS_ERR_IO;
+        }
+        PoolSlot fs = {0};
+        pool_acquire(&ctx->pool, found_slot_vp, true, &fs);
+        if (fs.vptr == VFS_VPTR_NULL) {
+            vfs_unlock(vfs, (int64_t)found_childId, epoch);
+            vfs->ctx->last_error = VFS_ERR_IO;
+            pool_release(&ctx->pool, &dc_slot);
+            pool_release(&ctx->pool, &parent_slot);
+            return VFS_ERR_IO;
+        }
+        AnchorKind fak;
+        uint32_t fsid;
+        int64_t fshead, fssib;
+        uint32_t fscnt;
+        nodes_read_anchor(fs.bytes, &fak, &fsid, &fshead, &fssib, &fscnt,
+                          ctx->page_size);
         nodes_write_dircontent(dc_slot.bytes, found_childId, (uint32_t)epoch,
-                               found_childPtr, 0, old_head, ctx->page_size);
+                               found_childPtr, 0, fshead, ctx->page_size);
         vfs_mb_release();
-        vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_HEADPTR, dc_vp, ctx->page_size);
+        vfs_wr8_s(fs.bytes, ANCHOR_OFF_HEADPTR, dc_vp, ctx->page_size);
+        pool_release(&ctx->pool, &fs);
     }
 
     /* Insert a tree link for the tombstone (Phase 18) — same pattern as
        vfs_delete.  The chain is source of truth, the tree is an additive
-       index; insert failure is benign. */
+       index; insert failure is benign.  W5d: point at the
+       SlotNode VP. */
     {
         int64_t parentIndex = vfs_rd8_s(parent_slot.bytes,
                                          DIRNODE_OFF_INDEXHEADPTR,
                                          ctx->page_size);
         uint64_t nameHash = name_hash_compute(name, (int)strlen(name));
         dircontentindex_insert(&ctx->pool, &parentIndex, nameHash,
-                               dc_vp, ctx->page_size);
+                               found_slot_vp, ctx->page_size);
         vfs_wr8_s(parent_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, parentIndex,
                   ctx->page_size);
         /* W1b: childCount removed. */
@@ -1594,117 +1801,98 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     int64_t headPtr = vfs_rd8_s(dir_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     pool_release(&ctx->pool, &dir_slot);
 
-    /* W1b: childCount removed.  Until W5 removes the dedup entirely,
-       size the dedup hash_map with a modest default (0 → hash_map
-       picks the minimum scale=4, capacity=16).  The dedup only
-       protects the readdir output from the rare same-child
-       multi-link case (W5 deletes the multi-link), so an under-sized
-       map just incurs a few rehashes. */
-    VarArray(DirchainDedupEntry) dedup = var_array_new(DirchainDedupEntry);
-    HashMap(int64_t, int64_t) seen = hash_map_new_for_max(int64_t, int64_t, 0);
-    if (!dedup || !seen) {
-        var_array_delete(dedup);
-        hash_map_free(seen);
-        return VFS_ERR_IO;
-    }
+    /* W5a: headPtr is a SlotNode chain.  Walk each SlotNode, find its
+     * visible DirContent, and emit a dirent.  No dedup needed — each
+     * SlotNode corresponds to exactly one child. */
+    VarArray(vfs_dirent_t) entries = var_array_new(vfs_dirent_t);
+    if (!entries) return VFS_ERR_IO;
 
-    int64_t walk_vp = headPtr;
-    while (walk_vp != 0) {
-        /* Phase 25: by-value pool slot (read-only). */
-        PoolSlot dc_slot = {0};
-        pool_acquire(&ctx->pool, walk_vp, false, &dc_slot);
-        if (dc_slot.vptr == VFS_VPTR_NULL) break;
-        uint32_t ce_child, ce_epoch;
-        int64_t ce_childPtr, ce_namePtr, ce_next;
-        nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next, ctx->page_size);
+    int64_t slot_walk_vp = headPtr;
+    while (slot_walk_vp != 0) {
+        PoolSlot slot_slot = {0};
+        pool_acquire(&ctx->pool, slot_walk_vp, false, &slot_slot);
+        if (slot_slot.vptr == VFS_VPTR_NULL) break;
+        AnchorKind ak;
+        uint32_t slot_id;
+        int64_t slot_head, slot_sib;
+        uint32_t slot_count;
+        nodes_read_anchor(slot_slot.bytes, &ak, &slot_id, &slot_head,
+                          &slot_sib, &slot_count, ctx->page_size);
+        pool_release(&ctx->pool, &slot_slot);
 
-        int64_t eff_epoch = (int64_t)ce_epoch;
-        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
-            eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
+        /* Walk the SlotNode's DirContent chain. */
+        int64_t dc_walk_vp = slot_head;
+        int matched = 0;
+        while (dc_walk_vp != 0 && !matched) {
+            PoolSlot dc_slot = {0};
+            pool_acquire(&ctx->pool, dc_walk_vp, false, &dc_slot);
+            if (dc_slot.vptr == VFS_VPTR_NULL) break;
+            uint32_t ce_child, ce_epoch;
+            int64_t ce_childPtr, ce_namePtr, ce_next;
+            nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch,
+                                  &ce_childPtr, &ce_namePtr, &ce_next,
+                                  ctx->page_size);
 
-        int applies = (eff_epoch == read_epoch) ||
-                      (eff_epoch < read_epoch && eff_epoch % 2 == 0);
-        if (!applies) { walk_vp = ce_next; pool_release(&ctx->pool, &dc_slot); continue; }
+            int64_t eff_epoch = (int64_t)ce_epoch;
+            if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
+                eff_epoch = mapper_table_resolve(&ctx->mapper_table,
+                                                (int64_t)ce_epoch);
 
-        /* O(1) "already seen" via hash_map.  Chain is descending by
-           epoch (prepend ordering), so first-hit-wins keeps the
-           highest-epoch record. */
-        if (hash_map_contains(seen, (int64_t)ce_child)) {
-            walk_vp = ce_next;
+            int applies = (eff_epoch == read_epoch) ||
+                          (eff_epoch < read_epoch && eff_epoch % 2 == 0);
+
+            if (applies) {
+                if (ce_namePtr == 0) {
+                    /* Visible tombstone — no live entry for this
+                     * child at this epoch.  Skip. */
+                    matched = 1;
+                } else {
+                    /* Live entry — emit it. */
+                    vfs_dirent_t e = {
+                        .vp = ce_childPtr,
+                        .nodeId = ce_child,
+                        .isDir = false,
+                        .name = {0},
+                    };
+                    PoolSlot child_slot = {0};
+                    pool_acquire(&ctx->pool, ce_childPtr, false, &child_slot);
+                    if (child_slot.vptr != VFS_VPTR_NULL) {
+                        int16_t ctype = vfs_rd2_s(child_slot.bytes,
+                                                   DIRNODE_OFF_TYPE,
+                                                   ctx->page_size);
+                        e.isDir = (ctype == (int16_t)NODE_TYPE_DIR);
+                    }
+                    pool_release(&ctx->pool, &child_slot);
+                    nodes_read_name(&ctx->pool, ce_namePtr, e.name,
+                                    (int)sizeof(e.name));
+                    var_array_append(entries, e);
+                    matched = 1;
+                }
+            }
+            dc_walk_vp = ce_next;
             pool_release(&ctx->pool, &dc_slot);
-            continue;
         }
-
-        DirchainDedupEntry entry = {
-            .childNodeId = (int64_t)ce_child,
-            .childPtr    = ce_childPtr,
-            .name_set    = (ce_namePtr != 0),
-            .namePtr     = ce_namePtr,
-        };
-        int64_t dedup_idx = dedup->count;
-        (void)var_array_append(dedup, entry);
-        (void)hash_map_put(seen, (int64_t)ce_child, dedup_idx);
-        walk_vp = ce_next;
-        pool_release(&ctx->pool, &dc_slot);
+        slot_walk_vp = slot_sib;
     }
 
-    /* Allocate output buffer to upper bound (dedup->count including
-       tombstones), then realloc to exact size after we know the
-       non-tombstone count.  This keeps the implementation to a
-       single pass over the dedup array. */
-    int total_count = dedup->count;
-    if (total_count == 0) {
-        hash_map_free(seen);
-        var_array_delete(dedup);
+    int written = entries->count;
+    if (written == 0) {
+        var_array_delete(entries);
         *out_entries = NULL;
         *out_count = 0;
         return VFS_OK;
     }
 
-    vfs_dirent_t* out = (vfs_dirent_t*)malloc((size_t)total_count * sizeof(vfs_dirent_t));
+    vfs_dirent_t* out = (vfs_dirent_t*)malloc((size_t)written * sizeof(vfs_dirent_t));
     if (!out) {
-        hash_map_free(seen);
-        var_array_delete(dedup);
+        var_array_delete(entries);
         return VFS_ERR_IO;
     }
-
-    int written = 0;
-    for (int i = 0; i < dedup->count; i++) {
-        DirchainDedupEntry* e = var_array_lookup(dedup, i);
-        if (!e || !e->name_set) continue;
-
-        out[written].vp     = e->childPtr;
-        out[written].nodeId = e->childNodeId;
-        out[written].name[0] = '\0';
-        out[written].isDir = false;
-
-        /* Phase 25: by-value pool slot (read-only) for child type check. */
-        PoolSlot child_slot = {0};
-        pool_acquire(&ctx->pool, e->childPtr, false, &child_slot);
-        if (child_slot.vptr != VFS_VPTR_NULL) {
-            int16_t ctype = vfs_rd2_s(child_slot.bytes, DIRNODE_OFF_TYPE,
-                                       ctx->page_size);
-            out[written].isDir = (ctype == (int16_t)NODE_TYPE_DIR);
-        }
-        pool_release(&ctx->pool, &child_slot);
-        if (e->namePtr != 0)
-            nodes_read_name(&ctx->pool, e->namePtr,
-                            out[written].name,
-                            (int)sizeof(out[written].name));
-        written++;
+    for (int i = 0; i < written; i++) {
+        vfs_dirent_t* e = var_array_lookup(entries, i);
+        out[i] = *e;
     }
-
-    var_array_delete(dedup);
-    hash_map_free(seen);
-
-    /* Shrink to exact size if we skipped some tombstones.  realloc
-       with a smaller size may move the block; that's fine since the
-       caller just gets back the (possibly new) pointer. */
-    if (written < total_count) {
-        vfs_dirent_t* exact = (vfs_dirent_t*)realloc(out, (size_t)written * sizeof(vfs_dirent_t));
-        if (exact) out = exact;  /* realloc with NULL or same-size returns original */
-    }
+    var_array_delete(entries);
 
     *out_entries = out;
     *out_count = written;
@@ -1817,7 +2005,20 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         return VFS_ERR_IO;
     }
 
-    if (src_parent == dst_parent && found_epoch == (uint32_t)epoch) {
+    if (src_parent == dst_parent) {
+        /* W5a: for same-dir rename, ALWAYS use the existing SlotNode
+         * and prepend a new DirContent.  The previous condition
+         * `found_epoch == epoch` forced snapshot renames into the
+         * cross-dir path, which created a duplicate SlotNode for
+         * the same child (and a phantom tombstone in the same
+         * chain).  That made dirchain_list return N entries for
+         * one child, breaking snapshot/head visibility.
+         *
+         * Prepending a new DC preserves the per-epoch rename
+         * history — each rename shows up as a new entry in the
+         * SlotNode's DirContent chain, and the read-rule picks
+         * the right one for the query epoch. */
+
         int64_t new_name_vp;
         int ns = nodes_write_name(&ctx->pool, dst, &new_name_vp);
         if (ns == 0) {
@@ -1828,37 +2029,82 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
             return VFS_ERR_IO;
         }
 
-        /* Capture the DirContent VP for the live entry at the src name.
-           We need it so we can zero its old tree link and add a new link
-           at the dst name's hash. */
-        int64_t walk_vp = vfs_rd8_s(src_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
-        int64_t matched_walk_vp = 0;
-        while (walk_vp != 0) {
-            PoolSlot dc;
-            pool_acquire(&ctx->pool, walk_vp, true, &dc);
-            if (dc.vptr == VFS_VPTR_NULL) break;
-            uint32_t cc, ce;
-            int64_t cp, np, nx;
-            nodes_read_dircontent(dc.bytes, &cc, &ce, &cp, &np, &nx, ctx->page_size);
-            if (cp == rn_childPtr && np != 0 && ce <= (uint32_t)epoch) {
-                matched_walk_vp = walk_vp;
-                vfs_mb_release();
-                /* W4: simple store under src_parent + child lock (held above). */
-                vfs_wr8_s(dc.bytes, DIRCONTENT_OFF_NAMEPTR, new_name_vp,
-                          ctx->page_size);
-                pool_release(&ctx->pool, &dc);
+        /* W5a: find the SlotNode for rn_childId, allocate a new
+         * DirContent, and prepend it to the SlotNode's chain (NOT
+         * modify the existing dc in place — the old code did that
+         * but it lost the per-epoch rename history). */
+        int64_t slot_walk = vfs_rd8_s(src_slot.bytes,
+                                        DIRNODE_OFF_HEADPTR, ctx->page_size);
+        int64_t found_slot_vp = 0;
+        while (slot_walk != 0) {
+            PoolSlot ss = {0};
+            pool_acquire(&ctx->pool, slot_walk, false, &ss);
+            if (ss.vptr == VFS_VPTR_NULL) break;
+            AnchorKind ak;
+            uint32_t sid;
+            int64_t shead, ssib;
+            uint32_t scnt;
+            nodes_read_anchor(ss.bytes, &ak, &sid, &shead, &ssib, &scnt,
+                              ctx->page_size);
+            pool_release(&ctx->pool, &ss);
+            if ((int64_t)sid == rn_childId) {
+                found_slot_vp = slot_walk;
                 break;
             }
-            pool_release(&ctx->pool, &dc);
-            walk_vp = nx;
+            slot_walk = ssib;
         }
-        if (matched_walk_vp == 0) {
-            vfs->ctx->last_error = VFS_ERR_IO;
+        if (found_slot_vp == 0) {
             vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+            vfs->ctx->last_error = VFS_ERR_IO;
             pool_release(&ctx->pool, &dst_slot);
             pool_release(&ctx->pool, &src_slot);
             return VFS_ERR_IO;
         }
+
+        int64_t rename_dc_vp = pool_alloc(&ctx->pool);
+        if (rename_dc_vp == VFS_VPTR_NULL) {
+            vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+            vfs->ctx->last_error = VFS_ERR_FULL;
+            pool_release(&ctx->pool, &dst_slot);
+            pool_release(&ctx->pool, &src_slot);
+            return VFS_ERR_FULL;
+        }
+        PoolSlot rename_dc_slot;
+        pool_acquire(&ctx->pool, rename_dc_vp, true, &rename_dc_slot);
+        if (rename_dc_slot.vptr == VFS_VPTR_NULL) {
+            vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+            vfs->ctx->last_error = VFS_ERR_IO;
+            pool_release(&ctx->pool, &dst_slot);
+            pool_release(&ctx->pool, &src_slot);
+            return VFS_ERR_IO;
+        }
+
+        /* Prepend a new DirContent to the SlotNode's chain. */
+        {
+            PoolSlot fs = {0};
+            pool_acquire(&ctx->pool, found_slot_vp, true, &fs);
+            if (fs.vptr == VFS_VPTR_NULL) {
+                vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+                vfs->ctx->last_error = VFS_ERR_IO;
+                pool_release(&ctx->pool, &rename_dc_slot);
+                pool_release(&ctx->pool, &dst_slot);
+                pool_release(&ctx->pool, &src_slot);
+                return VFS_ERR_IO;
+            }
+            AnchorKind fak;
+            uint32_t fsid;
+            int64_t fshead, fssib;
+            uint32_t fscnt;
+            nodes_read_anchor(fs.bytes, &fak, &fsid, &fshead, &fssib, &fscnt,
+                              ctx->page_size);
+            nodes_write_dircontent(rename_dc_slot.bytes, rn_childId,
+                                   (uint32_t)epoch, rn_childPtr,
+                                   new_name_vp, fshead, ctx->page_size);
+            vfs_mb_release();
+            vfs_wr8_s(fs.bytes, ANCHOR_OFF_HEADPTR, rename_dc_vp, ctx->page_size);
+            pool_release(&ctx->pool, &fs);
+        }
+        pool_release(&ctx->pool, &rename_dc_slot);
 
         /* Tree update (Phase 18): zero the link at the OLD name's hash
            (the link still points to matched_walk_vp — which now has the
@@ -1870,22 +2116,22 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
                                          ctx->page_size);
             uint64_t old_hash = name_hash_compute(src, (int)strlen(src));
             uint64_t new_hash = name_hash_compute(dst, (int)strlen(dst));
-            dircontentindex_remove(&ctx->pool, srcIndex, old_hash,
-                                   matched_walk_vp, ctx->page_size);
-            dircontentindex_insert(&ctx->pool, &srcIndex, new_hash,
-                                   matched_walk_vp, ctx->page_size);
-            vfs_wr8_s(src_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, srcIndex,
-                      ctx->page_size);
-            /* W1b: childCount removed. */
+            /* W5a/R6: radix index now points at the SlotNode VP.
+             * The SlotNode already has a link at the new name's
+             * hash.  For W5a, leave the index alone — the existing
+             * SlotNode is reachable via the new hash, and the old
+             * hash's link still works (just with stale hash).  R6
+             * proper in W5d will move the link to the new hash. */
+            (void)old_hash; (void)new_hash; (void)srcIndex;
         }
 
         vfs_unlock(vfs, (int64_t)rn_childId, epoch);
-        pool_release(&ctx->pool, &dst_slot);
-        pool_release(&ctx->pool, &src_slot);
         vfs_unlock(vfs, (int64_t)src_parent, epoch);
         if (src_parent != dst_parent) {
             vfs_unlock(vfs, (int64_t)dst_parent, epoch);
         }
+        pool_release(&ctx->pool, &dst_slot);
+        pool_release(&ctx->pool, &src_slot);
         return VFS_OK;
 
     }
@@ -1941,18 +2187,46 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
 
     }
 
-    /* CAS-prepend to dst_parent's headPtr */
-    /* W4: simple store under dst_parent + child lock (held above). */
+    /* W5a: for the dst parent, allocate a new SlotNode for the
+     * (potentially existing) child and prepend a new DirContent to
+     * it.  Per W5a without the R6 refit, we always create a new
+     * SlotNode (later W5d will reuse the existing one for same-child
+     * writes). */
+    int64_t dst_slot_vp = pool_alloc(&ctx->pool);
+    if (dst_slot_vp == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+        vfs_unlock(vfs, (int64_t)src_parent, epoch);
+        if (src_parent != dst_parent) vfs_unlock(vfs, (int64_t)dst_parent, epoch);
+        vfs->ctx->last_error = VFS_ERR_FULL;
+        pool_release(&ctx->pool, &dst_dc_slot);
+        pool_release(&ctx->pool, &dst_slot);
+        pool_release(&ctx->pool, &src_slot);
+        return VFS_ERR_FULL;
+    }
+    PoolSlot dst_slot_slot = {0};
+    pool_acquire(&ctx->pool, dst_slot_vp, true, &dst_slot_slot);
+    if (dst_slot_slot.vptr == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+        vfs_unlock(vfs, (int64_t)src_parent, epoch);
+        if (src_parent != dst_parent) vfs_unlock(vfs, (int64_t)dst_parent, epoch);
+        vfs->ctx->last_error = VFS_ERR_IO;
+        pool_release(&ctx->pool, &dst_dc_slot);
+        pool_release(&ctx->pool, &dst_slot);
+        pool_release(&ctx->pool, &src_slot);
+        return VFS_ERR_IO;
+    }
     {
         int64_t dst_old_head = vfs_rd8_s(dst_slot.bytes, DIRNODE_OFF_HEADPTR,
                                           ctx->page_size);
         nodes_write_dircontent(dst_dc_slot.bytes, rn_childId, (uint32_t)epoch,
-                               rn_childPtr, dst_name_vp, dst_old_head,
-                               ctx->page_size);
+                               rn_childPtr, dst_name_vp, 0, ctx->page_size);
         vfs_mb_release();
-        vfs_wr8_s(dst_slot.bytes, DIRNODE_OFF_HEADPTR, dst_dc_vp, ctx->page_size);
+        nodes_write_anchor(dst_slot_slot.bytes, ANCHOR_KIND_UNIT_SLOT,
+                           rn_childId, dst_dc_vp, dst_old_head, 0, ctx->page_size);
+        vfs_wr8_s(dst_slot.bytes, DIRNODE_OFF_HEADPTR, dst_slot_vp, ctx->page_size);
     }
-    pool_release(&ctx->pool, &dst_dc_slot);  /* dst_dc_slot not used after */
+    pool_release(&ctx->pool, &dst_slot_slot);
+    pool_release(&ctx->pool, &dst_dc_slot);
 
     /* Tree insert for the dst entry (Phase 18) — additive index. */
     {
@@ -1987,29 +2261,74 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
             return VFS_ERR_IO;
         }
 
-        /* W4: simple store under src_parent + child lock. */
+        /* W5a: cross-dir src tombstone — find the SlotNode for
+         * rn_childId in src parent and prepend the tombstone to
+         * its chain. */
         {
-            int64_t src_old_head = vfs_rd8_s(src_slot.bytes, DIRNODE_OFF_HEADPTR,
-                                              ctx->page_size);
+            int64_t slot_walk = vfs_rd8_s(src_slot.bytes,
+                                            DIRNODE_OFF_HEADPTR, ctx->page_size);
+            int64_t found_slot_vp = 0;
+            while (slot_walk != 0) {
+                PoolSlot ss = {0};
+                pool_acquire(&ctx->pool, slot_walk, false, &ss);
+                if (ss.vptr == VFS_VPTR_NULL) break;
+                AnchorKind ak;
+                uint32_t sid;
+                int64_t shead, ssib;
+                uint32_t scnt;
+                nodes_read_anchor(ss.bytes, &ak, &sid, &shead, &ssib, &scnt,
+                                  ctx->page_size);
+                if ((int64_t)sid == rn_childId) {
+                    found_slot_vp = slot_walk;
+                    pool_release(&ctx->pool, &ss);
+                    break;
+                }
+                pool_release(&ctx->pool, &ss);
+                slot_walk = ssib;
+            }
+            if (found_slot_vp == 0) {
+                vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+                vfs_unlock(vfs, (int64_t)src_parent, epoch);
+                if (src_parent != dst_parent) vfs_unlock(vfs, (int64_t)dst_parent, epoch);
+                vfs->ctx->last_error = VFS_ERR_IO;
+                pool_release(&ctx->pool, &src_dc_slot);
+                pool_release(&ctx->pool, &dst_slot);
+                pool_release(&ctx->pool, &src_slot);
+                return VFS_ERR_IO;
+            }
+            PoolSlot fs = {0};
+            pool_acquire(&ctx->pool, found_slot_vp, true, &fs);
+            if (fs.vptr == VFS_VPTR_NULL) {
+                vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+                vfs_unlock(vfs, (int64_t)src_parent, epoch);
+                if (src_parent != dst_parent) vfs_unlock(vfs, (int64_t)dst_parent, epoch);
+                vfs->ctx->last_error = VFS_ERR_IO;
+                pool_release(&ctx->pool, &src_dc_slot);
+                pool_release(&ctx->pool, &dst_slot);
+                pool_release(&ctx->pool, &src_slot);
+                return VFS_ERR_IO;
+            }
+            AnchorKind fak;
+            uint32_t fsid;
+            int64_t fshead, fssib;
+            uint32_t fscnt;
+            nodes_read_anchor(fs.bytes, &fak, &fsid, &fshead, &fssib, &fscnt,
+                              ctx->page_size);
             nodes_write_dircontent(src_dc_slot.bytes, rn_childId, (uint32_t)epoch,
-                                   rn_childPtr, 0, src_old_head, ctx->page_size);
+                                   rn_childPtr, 0, fshead, ctx->page_size);
             vfs_mb_release();
-            vfs_wr8_s(src_slot.bytes, DIRNODE_OFF_HEADPTR, src_dc_vp,
-                      ctx->page_size);
+            vfs_wr8_s(fs.bytes, ANCHOR_OFF_HEADPTR, src_dc_vp, ctx->page_size);
+            pool_release(&ctx->pool, &fs);
         }
         pool_release(&ctx->pool, &src_dc_slot);
 
-        /* Tree insert for the src tombstone (Phase 18) — same pattern as
-           vfs_delete: tombstone link at the src name's hash. */
+        /* Tree insert for the src tombstone (Phase 18).  W5d:
+         * the radix index already has a link to the SlotNode VP
+         * (from the original vfs_create); the tombstone we just
+         * added to the SlotNode's chain is enough.  We don't need
+         * to insert a new link here. */
         {
-            int64_t srcIndex = vfs_rd8_s(src_slot.bytes, DIRNODE_OFF_INDEXHEADPTR,
-                                         ctx->page_size);
-            uint64_t src_hash = name_hash_compute(src, (int)strlen(src));
-            dircontentindex_insert(&ctx->pool, &srcIndex, src_hash,
-                                   src_dc_vp, ctx->page_size);
-            vfs_wr8_s(src_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, srcIndex,
-                      ctx->page_size);
-            /* W1b: childCount removed. */
+            (void)src_dc_vp;
         }
     } /* cross_dir */
 
@@ -2487,81 +2806,150 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
         int64_t leafVP = dircontentindex_lookup(&ctx->pool, indexRoot,
                                                 target_hash, ctx->page_size);
         if (leafVP != 0) {
-            /* Walk the DirContentLink list at this leaf.  Each link
-               points to a DirContent in the chain.  Apply the same
-               hash-fast-reject + strcmp + read-rule dedup as the
-               chain walk below. */
+            /* W5a: the radix leaf's listVP is now a SlotNode chain
+             * (each SlotNode represents one or more DirContents for
+             * a child).  Walk the list, for each SlotNode walk its
+             * DirContent chain. */
             int64_t linkVP = leafVP;
             int64_t best_child = 0, best_childPtr = 0;
             int64_t best_eff_epoch = 0, best_raw_epoch = 0;
             int best_name_match = 0;
-            /* Track the most recent tombstone's childNodeId.  Since the
-               chain is HEAD-to-TAIL and new entries (including
-               tombstones) are prepended, a tombstone for childId X
-               always appears in the chain BEFORE a live entry for the
-               SAME childId X.  When we see a live entry, if its
-               childId matches tombstoned_childId, we know a tombstone
-               has already been processed and this live entry should
-               be suppressed. */
-            int64_t tombstoned_childId = 0;
 
             while (linkVP != 0) {
-                /* Phase 25: by-value pool slot (read-only). */
                 PoolSlot linkSlot = {0};
                 pool_acquire(&ctx->pool, linkVP, false, &linkSlot);
                 if (linkSlot.vptr == VFS_VPTR_NULL) break;
 
-                int64_t dcVP, nextLinkVP;
-                nodes_read_dircontentlink(linkSlot.bytes, &dcVP, &nextLinkVP,
-                                          ctx->page_size);
+                int64_t slotVP, nextLinkVP;
+                nodes_read_dircontentlink(linkSlot.bytes, &slotVP,
+                                          &nextLinkVP, ctx->page_size);
                 pool_release(&ctx->pool, &linkSlot);
 
-                /* Phase 25: by-value pool slot (read-only) for dc. */
-                PoolSlot dc_slot = {0};
-                pool_acquire(&ctx->pool, dcVP, false, &dc_slot);
-                if (dc_slot.vptr == VFS_VPTR_NULL) { linkVP = nextLinkVP; continue; }
+                PoolSlot slotSlot = {0};
+                pool_acquire(&ctx->pool, slotVP, false, &slotSlot);
+                if (slotSlot.vptr == VFS_VPTR_NULL) { linkVP = nextLinkVP; continue; }
+                AnchorKind ak;
+                uint32_t slot_id;
+                int64_t slot_head, slot_sib;
+                uint32_t slot_count;
+                nodes_read_anchor(slotSlot.bytes, &ak, &slot_id, &slot_head,
+                                  &slot_sib, &slot_count, ctx->page_size);
+                pool_release(&ctx->pool, &slotSlot);
 
-                uint32_t ce_child, ce_epoch;
-                int64_t ce_childPtr, ce_namePtr, ce_next;
-                nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch,
-                                      &ce_childPtr, &ce_namePtr, &ce_next,
-                                      ctx->page_size);
+                int64_t dcVP = slot_head;
+                while (dcVP != 0) {
+                    PoolSlot dc_slot = {0};
+                    pool_acquire(&ctx->pool, dcVP, false, &dc_slot);
+                    if (dc_slot.vptr == VFS_VPTR_NULL) break;
+                    uint32_t ce_child, ce_epoch;
+                    int64_t ce_childPtr, ce_namePtr, ce_next;
+                    nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch,
+                                          &ce_childPtr, &ce_namePtr, &ce_next,
+                                          ctx->page_size);
+
+                    int64_t eff_epoch = (int64_t)ce_epoch;
+                    if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
+                        eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
+
+                    int applies = (eff_epoch == read_epoch) ||
+                                  (eff_epoch < read_epoch && eff_epoch % 2 == 0);
+                    if (!applies) { dcVP = ce_next; pool_release(&ctx->pool, &dc_slot); continue; }
+
+                    if (ce_namePtr == 0) {
+                        dcVP = ce_next;
+                        pool_release(&ctx->pool, &dc_slot);
+                        break;  /* tombstoned — move to next SlotNode */
+                    }
+
+                    uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
+                    /* Read-rule: the first applicable entry in a SlotNode's
+                     * chain is the visible one.  If its name doesn't match,
+                     * the queried name doesn't exist (even if a lower-epoch
+                     * entry with the matching name is in the chain). */
+                    if (entry_hash == target_hash) {
+                        char entry_name[256];
+                        int nl = nodes_read_name(&ctx->pool, ce_namePtr,
+                                                  entry_name, (int)sizeof(entry_name));
+                        if (nl > 0 && strcmp(entry_name, name) == 0) {
+                            best_child      = (int64_t)ce_child;
+                            best_childPtr   = ce_childPtr;
+                            best_eff_epoch  = eff_epoch;
+                            best_raw_epoch  = (int64_t)ce_epoch;
+                            best_name_match = 1;
+                            pool_release(&ctx->pool, &dc_slot);
+                            break;  /* found */
+                        }
+                    }
+                    /* First applicable entry didn't match — the queried
+                     * name doesn't exist in this SlotNode at this epoch. */
+                    pool_release(&ctx->pool, &dc_slot);
+                    break;
+                }
+                linkVP = nextLinkVP;
+                if (best_name_match) break;
+            }
+
+            if (best_name_match) {
+                *out_childPtr = best_childPtr;
+                *out_nodeId   = (uint32_t)best_child;
+                if (out_epoch) *out_epoch = (uint32_t)best_raw_epoch;
+                return VFS_OK;
+            }
+        }
+    }
+
+    /* --- Fallback: chain walk (for directories without a tree) ---
+     * W5a: headPtr is a SlotNode chain (per-child).  Walk each
+     * SlotNode, then walk its DirContent chain to find the visible
+     * entry, and match the name. */
+    int64_t best_child = 0, best_childPtr = 0, best_eff_epoch = 0;
+    int64_t best_raw_epoch = 0;
+    int best_name_match = 0;
+
+    int64_t slot_walk_vp = headPtr;
+    while (slot_walk_vp != 0) {
+        PoolSlot slot_slot = {0};
+        pool_acquire(&ctx->pool, slot_walk_vp, false, &slot_slot);
+        if (slot_slot.vptr == VFS_VPTR_NULL) break;
+        AnchorKind ak;
+        uint32_t slot_id;
+        int64_t slot_head, slot_sib;
+        uint32_t slot_count;
+        nodes_read_anchor(slot_slot.bytes, &ak, &slot_id, &slot_head,
+                          &slot_sib, &slot_count, ctx->page_size);
+        pool_release(&ctx->pool, &slot_slot);
+
+        int64_t dc_walk_vp = slot_head;
+        while (dc_walk_vp != 0) {
+            PoolSlot dc_slot = {0};
+            pool_acquire(&ctx->pool, dc_walk_vp, false, &dc_slot);
+            if (dc_slot.vptr == VFS_VPTR_NULL) break;
+            uint32_t ce_child, ce_epoch;
+            int64_t ce_childPtr, ce_namePtr, ce_next;
+            nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch,
+                                  &ce_childPtr, &ce_namePtr, &ce_next,
+                                  ctx->page_size);
+
+            int64_t eff_epoch = (int64_t)ce_epoch;
+            if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
+                eff_epoch = mapper_table_resolve(&ctx->mapper_table,
+                                                (int64_t)ce_epoch);
+
+            int applies = (eff_epoch == read_epoch) ||
+                          (eff_epoch < read_epoch && eff_epoch % 2 == 0);
+            if (!applies) { dc_walk_vp = ce_next; pool_release(&ctx->pool, &dc_slot); continue; }
+
+            if (ce_namePtr == 0) {
+                /* Visible tombstone for this child at this epoch.
+                 * No match. */
+                dc_walk_vp = ce_next;
                 pool_release(&ctx->pool, &dc_slot);
+                break;  /* move to next SlotNode */
+            }
 
-                int64_t eff_epoch = (int64_t)ce_epoch;
-                if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
-                    eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
-
-                int applies = (eff_epoch == read_epoch) ||
-                              (eff_epoch < read_epoch && eff_epoch % 2 == 0);
-                if (!applies) { linkVP = nextLinkVP; continue; }
-
-                if (ce_namePtr == 0) {
-                    /* Tombstone.  Record this childId so subsequent
-                       live entries for the same childId are
-                       suppressed.  Don't touch best_child/best_childPtr. */
-                    tombstoned_childId = (int64_t)ce_child;
-                    linkVP = nextLinkVP;
-                    continue;
-                }
-
-                /* Live entry.  Skip if same childId as a tombstone we
-                   already processed.  Without this check, a
-                   delete+recreate sequence (where both have the same
-                   name but different childIds) would incorrectly
-                   include the OLD tombstoned entry's live record. */
-                if ((int64_t)ce_child == tombstoned_childId) {
-                    linkVP = nextLinkVP;
-                    continue;
-                }
-
-                uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
-                if (entry_hash != target_hash) {
-                    /* Hash mismatch — skip without incrementing
-                       s_hash_rejects (the counter is for chain-walk
-                       fast-reject, the tree path doesn't need it). */
-                    linkVP = nextLinkVP; continue;
-                }
+            uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
+            /* Read-rule: first applicable entry is the visible one. */
+            if (entry_hash == target_hash) {
                 char entry_name[256];
                 int nl = nodes_read_name(&ctx->pool, ce_namePtr,
                                           entry_name, (int)sizeof(entry_name));
@@ -2571,86 +2959,21 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                     best_eff_epoch  = eff_epoch;
                     best_raw_epoch  = (int64_t)ce_epoch;
                     best_name_match = 1;
+                    pool_release(&ctx->pool, &dc_slot);
+                    break;  /* found */
                 }
-                linkVP = nextLinkVP;
-            }
-
-            if (best_name_match) {
-                *out_childPtr = best_childPtr;
-                *out_nodeId   = (uint32_t)best_child;
-                if (out_epoch) *out_epoch = (uint32_t)best_raw_epoch;
-                return VFS_OK;
-            }
-            /* Tree exists, leaf found, but no matching name at this epoch.
-               Fall through to chain walk — the entry might have been created
-               before the tree was built (e.g. legacy files). */
-        }
-        /* Tree exists but no leaf for this hash, or leaf had no matching
-           entry.  Fall through to chain walk as safety net. */
-    }
-
-    /* --- Fallback: chain walk (for directories without a tree) --- */
-    int64_t best_child = 0, best_childPtr = 0, best_eff_epoch = 0;
-    int64_t best_raw_epoch = 0;
-    int best_name_match = 0;
-    int64_t tombstoned_childId = 0;
-
-    int64_t walk_vp = headPtr;
-    while (walk_vp != 0) {
-        /* Phase 25: by-value pool slot (read-only). */
-        PoolSlot dc_slot = {0};
-        pool_acquire(&ctx->pool, walk_vp, false, &dc_slot);
-        if (dc_slot.vptr == VFS_VPTR_NULL) break;
-        uint32_t ce_child, ce_epoch;
-        int64_t ce_childPtr, ce_namePtr, ce_next;
-        nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next, ctx->page_size);
-
-        int64_t eff_epoch = (int64_t)ce_epoch;
-        if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
-            eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
-
-        int applies = (eff_epoch == read_epoch) ||
-                      (eff_epoch < read_epoch && eff_epoch % 2 == 0);
-        if (!applies) { walk_vp = ce_next; pool_release(&ctx->pool, &dc_slot); continue; }
-
-        if (ce_namePtr == 0) {
-            /* Tombstone.  Record childId. */
-            tombstoned_childId = (int64_t)ce_child;
-            walk_vp = ce_next;
-            pool_release(&ctx->pool, &dc_slot);
-            continue;
-        }
-
-        /* Live entry.  Skip if same childId as a tombstone we've seen
-           earlier in the chain walk. */
-        if ((int64_t)ce_child == tombstoned_childId) {
-            walk_vp = ce_next;
-            pool_release(&ctx->pool, &dc_slot);
-            continue;
-        }
-
-        uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
-        if (entry_hash != target_hash) {
+            } else {
 #ifdef VFS_NAME_HASH_TESTING
                 s_hash_rejects++;
 #endif
-            walk_vp = ce_next;
+            }
+            /* First applicable entry didn't match — name doesn't exist
+             * in this SlotNode at this epoch. */
             pool_release(&ctx->pool, &dc_slot);
-            continue;
+            break;
         }
-        char entry_name[256];
-        int nl = nodes_read_name(&ctx->pool, ce_namePtr,
-                                  entry_name, (int)sizeof(entry_name));
-        if (nl > 0 && strcmp(entry_name, name) == 0) {
-            best_child    = (int64_t)ce_child;
-            best_childPtr = ce_childPtr;
-            best_eff_epoch = eff_epoch;
-            best_raw_epoch = (int64_t)ce_epoch;
-            best_name_match = 1;
-        }
-        walk_vp = ce_next;
-        pool_release(&ctx->pool, &dc_slot);
+        slot_walk_vp = slot_sib;
+        if (best_name_match) break;
     }
 
     if (!best_name_match) return VFS_ERR_NOTFOUND;

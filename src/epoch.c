@@ -62,28 +62,50 @@ static int commit_scan_dir(vfs_t* vfs, int64_t dir_vp, uint32_t s_epoch) {
 
     int64_t head = vfs_rd8_s(dir_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     pool_release(&ctx->pool, &dir_slot);
-    int64_t walk_vp = head;
-    while (walk_vp != 0) {
-        /* Phase 25: by-value pool slot (read-only). */
-        PoolSlot dc_slot = {0};
-        pool_acquire(&ctx->pool, walk_vp, false, &dc_slot);
-        if (dc_slot.vptr == VFS_VPTR_NULL) break;
-        uint32_t dc_child, dc_epoch;
-        int64_t dc_childPtr, dc_namePtr, dc_next;
-        nodes_read_dircontent(dc_slot.bytes, &dc_child, &dc_epoch, &dc_childPtr,
-                              &dc_namePtr, &dc_next, ctx->page_size);
-        (void)dc_child;
-        pool_release(&ctx->pool, &dc_slot);
 
-        /* Check read-rule: does this DirContent entry apply? */
-        int applies = (dc_epoch == s_epoch) ||
-                      (dc_epoch < s_epoch && dc_epoch % 2 == 0);
-        if (!applies || dc_namePtr == 0) { walk_vp = dc_next; continue; }
+    /* W5a: headPtr is a SlotNode chain.  Walk each SlotNode, then walk
+     * its DirContent chain (first applicable entry per SlotNode, per the
+     * read-rule).  This mirrors dirchain_list's walk structure. */
+    int64_t slot_walk_vp = head;
+    while (slot_walk_vp != 0) {
+        PoolSlot slot_slot = {0};
+        pool_acquire(&ctx->pool, slot_walk_vp, false, &slot_slot);
+        if (slot_slot.vptr == VFS_VPTR_NULL) break;
+        AnchorKind ak;
+        uint32_t slot_id;
+        int64_t slot_head, slot_sib;
+        uint32_t slot_count;
+        nodes_read_anchor(slot_slot.bytes, &ak, &slot_id, &slot_head,
+                          &slot_sib, &slot_count, ctx->page_size);
+        pool_release(&ctx->pool, &slot_slot);
+
+        int64_t dc_childPtr = 0;
+        int found_visible = 0;
+        int64_t dc_walk_vp = slot_head;
+        while (dc_walk_vp != 0 && !found_visible) {
+            PoolSlot dc_slot = {0};
+            pool_acquire(&ctx->pool, dc_walk_vp, false, &dc_slot);
+            if (dc_slot.vptr == VFS_VPTR_NULL) break;
+            uint32_t dc_child, dc_epoch;
+            int64_t dc_namePtr, dc_next;
+            nodes_read_dircontent(dc_slot.bytes, &dc_child, &dc_epoch,
+                                  &dc_childPtr, &dc_namePtr, &dc_next,
+                                  ctx->page_size);
+            pool_release(&ctx->pool, &dc_slot);
+
+            int applies = (dc_epoch == s_epoch) ||
+                          (dc_epoch < s_epoch && dc_epoch % 2 == 0);
+            if (applies && dc_namePtr != 0) {
+                found_visible = 1;
+            }
+            dc_walk_vp = dc_next;
+        }
+        if (!found_visible) { slot_walk_vp = slot_sib; continue; }
 
         /* Phase 25: by-value pool slot (read-only) for child type check. */
         PoolSlot child_slot = {0};
         pool_acquire(&ctx->pool, dc_childPtr, false, &child_slot);
-        if (child_slot.vptr == VFS_VPTR_NULL) { walk_vp = dc_next; continue; }
+        if (child_slot.vptr == VFS_VPTR_NULL) { slot_walk_vp = slot_sib; continue; }
 
         int16_t child_type = vfs_rd2_s(child_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size);
         int64_t sizePtr = vfs_rd8_s(child_slot.bytes, FILENODE_OFF_SIZEPTR, ctx->page_size);
@@ -146,7 +168,7 @@ static int commit_scan_dir(vfs_t* vfs, int64_t dir_vp, uint32_t s_epoch) {
             }
         }
 
-        walk_vp = dc_next;
+        slot_walk_vp = slot_sib;
     }
     return 0;
 }

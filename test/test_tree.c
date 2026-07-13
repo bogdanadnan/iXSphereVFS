@@ -18,6 +18,42 @@ static int tests_run = 0, tests_passed = 0;
 
 #define CHECK_EQ(a, b) CHECK((a) == (b))
 
+
+/* W5a: Walk a per-dir SlotNode chain and invoke a callback for each
+ * DirContent slot.  Returns 1 if the callback found its target, 0
+ * otherwise.  The callback signature is: int cb(uint8_t* dc_bytes,
+ * TreeContext* ctx, void* user).  Return non-zero to stop the walk. */
+typedef int (*dirchain_walk_cb)(uint8_t* dc_bytes, TreeContext* ctx, void* user);
+static int dirchain_walk(TreeContext* ctx, int64_t dir_vp, dirchain_walk_cb cb, void* user) {
+    PoolSlot dir_slot = {0};
+    pool_acquire(&ctx->pool, dir_vp, false, &dir_slot);
+    if (dir_slot.vptr == VFS_VPTR_NULL) return 0;
+    int64_t headPtr = vfs_rd8_s(dir_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
+    pool_release(&ctx->pool, &dir_slot);
+    int64_t slot_vp = headPtr;
+    while (slot_vp != 0) {
+        PoolSlot ss = {0};
+        pool_acquire(&ctx->pool, slot_vp, false, &ss);
+        if (ss.vptr == VFS_VPTR_NULL) break;
+        int64_t dc_head = vfs_rd8_s(ss.bytes, 8, ctx->page_size);  /* ANCHOR_OFF_HEADPTR */
+        int64_t dc_sib = vfs_rd8_s(ss.bytes, 16, ctx->page_size); /* ANCHOR_OFF_SIBPTR */
+        pool_release(&ctx->pool, &ss);
+        int64_t dc_vp = dc_head;
+        while (dc_vp != 0) {
+            PoolSlot dc = {0};
+            pool_acquire(&ctx->pool, dc_vp, false, &dc);
+            if (dc.vptr == VFS_VPTR_NULL) break;
+            int rc = cb(dc.bytes, ctx, user);
+            pool_release(&ctx->pool, &dc);
+            if (rc) return 1;
+            dc_vp = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_NEXTPTR, ctx->page_size);
+        }
+        slot_vp = dc_sib;
+    }
+    return 0;
+}
+
+
 /* ---------------------------------------------------------------------------
  * Bootstrap test
  * --------------------------------------------------------------------------- */
@@ -133,28 +169,42 @@ static void test_create_file(void) {
     int64_t headPtr = vfs_rd8(root_slot, DIRNODE_OFF_HEADPTR);
     CHECK(headPtr != 0);  /* should have 1 entry now */
 
-    /* Walk the chain to find our file */
+    /* Walk the chain to find our file (W5a: SlotNode-wrapped) */
     int64_t walk_vp = headPtr;
     int found = 0;
     while (walk_vp != 0 && !found) {
-        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
-        CHECK(dc_slot != NULL);
+        uint8_t* ss = pool_resolve_ro(&ctx->pool, walk_vp);
+        CHECK(ss != NULL);
+        /* Read the SlotNode (UNIT_SLOT Anchor). */
+        uint16_t ak = vfs_rd2(ss, 0);
+        CHECK_EQ(ak, 0x31);  /* ANCHOR_KIND_UNIT_SLOT */
+        uint32_t slot_id = (uint32_t)vfs_rd4(ss, 4);
+        int64_t slot_head = vfs_rd8(ss, 8);
+        int64_t slot_sib = vfs_rd8(ss, 16);
+        (void)slot_id;
+        /* Walk the SlotNode's DirContent chain. */
+        int64_t dc_walk = slot_head;
+        while (dc_walk != 0 && !found) {
+            uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, dc_walk);
+            CHECK(dc_slot != NULL);
 
-        uint32_t ce_child, ce_epoch;
-        int64_t ce_childPtr, ce_namePtr, ce_next;
-        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
-        (void)ce_childPtr;
-        if (ce_epoch == 0 && ce_namePtr != 0) {
-            char entry_name[256];
-            int name_len = nodes_read_name(&ctx->pool, ce_namePtr,
-                                            entry_name, (int)sizeof(entry_name));
-            if (name_len > 0 && strcmp(entry_name, "test.txt") == 0) {
-                found = 1;
-                CHECK_EQ((int)ce_child, 1);  /* first created file gets nodeId=1 */
+            uint32_t ce_child, ce_epoch;
+            int64_t ce_childPtr, ce_namePtr, ce_next;
+            nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                                  &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
+            (void)ce_childPtr;
+            if (ce_epoch == 0 && ce_namePtr != 0) {
+                char entry_name[256];
+                int name_len = nodes_read_name(&ctx->pool, ce_namePtr,
+                                                entry_name, (int)sizeof(entry_name));
+                if (name_len > 0 && strcmp(entry_name, "test.txt") == 0) {
+                    found = 1;
+                    CHECK_EQ((int)ce_child, 1);  /* first created file gets nodeId=1 */
+                }
             }
+            dc_walk = ce_next;
         }
-        walk_vp = ce_next;
+        walk_vp = slot_sib;
     }
     CHECK(found);
 
@@ -187,21 +237,29 @@ static void test_delete_file(void) {
     int64_t walk_vp = headPtr;
     int found = 0;
     while (walk_vp != 0 && !found) {
-        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
-        CHECK(dc_slot != NULL);
-        uint32_t ce_child, ce_epoch;
-        int64_t ce_childPtr, ce_namePtr, ce_next;
-        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
-        (void)ce_child; (void)ce_childPtr;
-        if (ce_epoch == 0 && ce_namePtr != 0) {
-            char entry_name[256];
-            int nl = nodes_read_name(&ctx->pool, ce_namePtr,
-                                      entry_name, (int)sizeof(entry_name));
-            if (nl > 0 && strcmp(entry_name, "delete_me.txt") == 0)
-                found = 1;
+        /* W5a: walk the SlotNode chain (per-child) and its DirContent chain. */
+        uint8_t* ss = pool_resolve_ro(&ctx->pool, walk_vp);
+        CHECK(ss != NULL);
+        int64_t dc_walk = vfs_rd8(ss, 8);  /* ANCHOR_OFF_HEADPTR */
+        int64_t slot_sib = vfs_rd8(ss, 16);
+        while (dc_walk != 0) {
+            uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, dc_walk);
+            CHECK(dc_slot != NULL);
+            uint32_t ce_child, ce_epoch;
+            int64_t ce_childPtr, ce_namePtr, ce_next;
+            nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                                  &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
+            (void)ce_child; (void)ce_childPtr;
+            if (ce_epoch == 0 && ce_namePtr != 0) {
+                char entry_name[256];
+                int nl = nodes_read_name(&ctx->pool, ce_namePtr,
+                                          entry_name, (int)sizeof(entry_name));
+                if (nl > 0 && strcmp(entry_name, "delete_me.txt") == 0)
+                    found = 1;
+            }
+            dc_walk = ce_next;
         }
-        walk_vp = ce_next;
+        walk_vp = slot_sib;
     }
     CHECK(found);
 
@@ -218,16 +276,23 @@ static void test_delete_file(void) {
     walk_vp = headPtr;
     int found_tombstone = 0;
     while (walk_vp != 0) {
-        uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, walk_vp);
-        CHECK(dc_slot != NULL);
-        uint32_t ce_child, ce_epoch;
-        int64_t ce_childPtr, ce_namePtr, ce_next;
-        nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
-                              &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
-        (void)ce_child; (void)ce_childPtr;
-        if (ce_epoch == 2 && ce_namePtr == 0)
-            found_tombstone = 1;
-        walk_vp = ce_next;
+        uint8_t* ss = pool_resolve_ro(&ctx->pool, walk_vp);
+        CHECK(ss != NULL);
+        int64_t dc_walk = vfs_rd8(ss, 8);
+        int64_t slot_sib = vfs_rd8(ss, 16);
+        while (dc_walk != 0) {
+            uint8_t* dc_slot = pool_resolve_ro(&ctx->pool, dc_walk);
+            CHECK(dc_slot != NULL);
+            uint32_t ce_child, ce_epoch;
+            int64_t ce_childPtr, ce_namePtr, ce_next;
+            nodes_read_dircontent(dc_slot, &ce_child, &ce_epoch, &ce_childPtr,
+                                  &ce_namePtr, &ce_next, VFS_PAGE_SIZE);
+            (void)ce_child; (void)ce_childPtr;
+            if (ce_epoch == 2 && ce_namePtr == 0)
+                found_tombstone = 1;
+            dc_walk = ce_next;
+        }
+        walk_vp = slot_sib;
     }
     CHECK(found_tombstone);
 
@@ -895,14 +960,20 @@ static void test_mkdir_basic(void) {
     int64_t ret = vfs_mkdir(vfs, root_vp, "a", 0);
     CHECK(ret > 0);
 
-    /* Verify entry exists in root's DirContent chain */
+    /* Verify entry exists in root's chain (W5a: SlotNode-wrapped) */
     int64_t head = vfs_rd8_s(pool_resolve_ro(&ctx->pool, root_vp),
                               DIRNODE_OFF_HEADPTR, ctx->page_size);
     CHECK(head != 0);
 
+    /* Walk SlotNode -> first DirContent in its chain. */
+    uint8_t* ss = pool_resolve_ro(&ctx->pool, head);
+    CHECK(ss != NULL);
+    int64_t dc_head = vfs_rd8(ss, 8);  /* ANCHOR_OFF_HEADPTR */
+    CHECK(dc_head != 0);
+
     uint32_t cc, ce;
     int64_t cp, np, nx;
-    nodes_read_dircontent(pool_resolve_ro(&ctx->pool, head),
+    nodes_read_dircontent(pool_resolve_ro(&ctx->pool, dc_head),
                           &cc, &ce, &cp, &np, &nx, ctx->page_size);
     (void)cc; (void)ce; (void)np; (void)nx;
     CHECK(cp != 0);
@@ -2092,7 +2163,9 @@ static void test_dirchain_find_child_collision_tolerance(void) {
     nodes_write_filenode(pool_resolve_ro(&ctx->pool, child_vp_b), nid_b, 0, 0, 0, ps);
 
     /* Allocate two DirContent entries: DC_a → DC_b → 0
-     * Both point to the forced-hash NameEntries and different child VPs */
+     * Both point to the forced-hash NameEntries and different child VPs.
+     * W5a: each child has its own SlotNode; the SlotNode's chain
+     * contains the DirContent. */
     int64_t dc_vp_a = pool_alloc(&ctx->pool);
     int64_t dc_vp_b = pool_alloc(&ctx->pool);
     CHECK(dc_vp_a != VFS_VPTR_NULL);
@@ -2100,12 +2173,24 @@ static void test_dirchain_find_child_collision_tolerance(void) {
     nodes_write_dircontent(pool_resolve_ro(&ctx->pool, dc_vp_b),
                            nid_b, 0, child_vp_b, name_vp_b, 0, ps);
     nodes_write_dircontent(pool_resolve_ro(&ctx->pool, dc_vp_a),
-                           nid_a, 0, child_vp_a, name_vp_a, dc_vp_b, ps);
+                           nid_a, 0, child_vp_a, name_vp_a, 0, ps);
 
-    /* Set root's headPtr to dc_vp_a */
+    /* Allocate two SlotNode entries: slot_a → slot_b → 0 */
+    int64_t slot_vp_a = pool_alloc(&ctx->pool);
+    int64_t slot_vp_b = pool_alloc(&ctx->pool);
+    CHECK(slot_vp_a != VFS_VPTR_NULL);
+    CHECK(slot_vp_b != VFS_VPTR_NULL);
+    uint8_t* slot_bytes_a = pool_resolve_ro(&ctx->pool, slot_vp_a);
+    uint8_t* slot_bytes_b = pool_resolve_ro(&ctx->pool, slot_vp_b);
+    nodes_write_anchor(slot_bytes_b, ANCHOR_KIND_UNIT_SLOT,
+                       nid_b, dc_vp_b, 0, 0, ps);
+    nodes_write_anchor(slot_bytes_a, ANCHOR_KIND_UNIT_SLOT,
+                       nid_a, dc_vp_a, slot_vp_b, 0, ps);
+
+    /* Set root's headPtr to slot_vp_a */
     uint8_t* root_slot = pool_resolve_ro(&ctx->pool, root_vp);
     CHECK(root_slot != NULL);
-    vfs_wr8_s(root_slot, DIRNODE_OFF_HEADPTR, dc_vp_a, ps);
+    vfs_wr8_s(root_slot, DIRNODE_OFF_HEADPTR, slot_vp_a, ps);
 
     /* Both lookups must succeed — hash collision forces strcmp fallback */
     int64_t childPtr;
