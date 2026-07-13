@@ -2198,21 +2198,27 @@ static void test_sparse_concurrent_insert(void) {
     CHECK(a2.success);
 
     /* Verify all 3 pages are in the chain in sorted order */
-    uint8_t* file_slot = pool_resolve_ro(&ctx->pool, file_vp);
-    int64_t fc_vp = vfs_rd8_s(file_slot, FILENODE_OFF_HEADPTR, ctx->page_size);
-    uint8_t* fc_slot = pool_resolve_ro(&ctx->pool, fc_vp);
-    int64_t pn_root = vfs_rd8_s(fc_slot, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+    PoolSlot file_slot = {0};
+    pool_acquire(&ctx->pool, file_vp, false, &file_slot);
+    int64_t fc_vp = vfs_rd8_s(file_slot.bytes, FILENODE_OFF_HEADPTR, ctx->page_size);
+    pool_release(&ctx->pool, &file_slot);
+    PoolSlot fc_slot = {0};
+    pool_acquire(&ctx->pool, fc_vp, false, &fc_slot);
+    int64_t pn_root = vfs_rd8_s(fc_slot.bytes, FILECONTENT_OFF_ROOTPTR, ctx->page_size);
+    pool_release(&ctx->pool, &fc_slot);
 
     int pn_count = 0;
     int64_t walk = pn_root;
     uint32_t seen[3] = {0, 0, 0};
     while (walk != 0) {
         CHECK(pn_count < 3);
-        uint8_t* pw = pool_resolve_ro(&ctx->pool, walk);
-        uint32_t idx = (uint32_t)vfs_rd4_s(pw, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
+        PoolSlot pw = {0};
+        pool_acquire(&ctx->pool, walk, false, &pw);
+        uint32_t idx = (uint32_t)vfs_rd4_s(pw.bytes, PAGENODE_OFF_PAGEINDEX, ctx->page_size);
         seen[pn_count] = idx;
         pn_count++;
-        int64_t next = vfs_rd8_s(pw, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+        int64_t next = vfs_rd8_s(pw.bytes, PAGENODE_OFF_NEXTPTR, ctx->page_size);
+        pool_release(&ctx->pool, &pw);
         walk = next;
     }
     CHECK_EQ(pn_count, 3);
@@ -2292,8 +2298,18 @@ static void test_dirchain_find_child_collision_tolerance(void) {
     int64_t child_vp_b = pool_alloc(&ctx->pool);
     CHECK(child_vp_a != VFS_VPTR_NULL);
     CHECK(child_vp_b != VFS_VPTR_NULL);
-    nodes_write_filenode(pool_resolve_ro(&ctx->pool, child_vp_a), nid_a, 0, 0, 0, ps);
-    nodes_write_filenode(pool_resolve_ro(&ctx->pool, child_vp_b), nid_b, 0, 0, 0, ps);
+    {
+        PoolSlot fn_slot = {0};
+        pool_acquire(&ctx->pool, child_vp_a, true, &fn_slot);
+        nodes_write_filenode(fn_slot.bytes, nid_a, 0, 0, 0, ps);
+        pool_release(&ctx->pool, &fn_slot);
+    }
+    {
+        PoolSlot fn_slot = {0};
+        pool_acquire(&ctx->pool, child_vp_b, true, &fn_slot);
+        nodes_write_filenode(fn_slot.bytes, nid_b, 0, 0, 0, ps);
+        pool_release(&ctx->pool, &fn_slot);
+    }
 
     /* Allocate two DirContent entries: DC_a → DC_b → 0
      * Both point to the forced-hash NameEntries and different child VPs.
@@ -2303,35 +2319,59 @@ static void test_dirchain_find_child_collision_tolerance(void) {
     int64_t dc_vp_b = pool_alloc(&ctx->pool);
     CHECK(dc_vp_a != VFS_VPTR_NULL);
     CHECK(dc_vp_b != VFS_VPTR_NULL);
-    nodes_write_dircontent(pool_resolve_ro(&ctx->pool, dc_vp_b),
-                           nid_b, 0, child_vp_b, name_vp_b, 0, ps);
-    nodes_write_dircontent(pool_resolve_ro(&ctx->pool, dc_vp_a),
-                           nid_a, 0, child_vp_a, name_vp_a, 0, ps);
+    {
+        PoolSlot dc_slot = {0};
+        pool_acquire(&ctx->pool, dc_vp_b, true, &dc_slot);
+        nodes_write_dircontent(dc_slot.bytes, nid_b, 0, child_vp_b, name_vp_b, 0, ps);
+        pool_release(&ctx->pool, &dc_slot);
+    }
+    {
+        PoolSlot dc_slot = {0};
+        pool_acquire(&ctx->pool, dc_vp_a, true, &dc_slot);
+        nodes_write_dircontent(dc_slot.bytes, nid_a, 0, child_vp_a, name_vp_a, 0, ps);
+        pool_release(&ctx->pool, &dc_slot);
+    }
 
     /* Allocate two SlotNode entries: slot_a → slot_b → 0 */
     int64_t slot_vp_a = pool_alloc(&ctx->pool);
     int64_t slot_vp_b = pool_alloc(&ctx->pool);
     CHECK(slot_vp_a != VFS_VPTR_NULL);
     CHECK(slot_vp_b != VFS_VPTR_NULL);
-    uint8_t* slot_bytes_a = pool_resolve_ro(&ctx->pool, slot_vp_a);
-    uint8_t* slot_bytes_b = pool_resolve_ro(&ctx->pool, slot_vp_b);
-    nodes_write_anchor(slot_bytes_b, ANCHOR_KIND_UNIT_SLOT,
-                       nid_b, dc_vp_b, 0, 0, ps);
-    nodes_write_anchor(slot_bytes_a, ANCHOR_KIND_UNIT_SLOT,
-                       nid_a, dc_vp_a, slot_vp_b, 0, ps);
+    {
+        PoolSlot slot_bytes_b = {0};
+        pool_acquire(&ctx->pool, slot_vp_b, true, &slot_bytes_b);
+        nodes_write_anchor(slot_bytes_b.bytes, ANCHOR_KIND_UNIT_SLOT,
+                           nid_b, dc_vp_b, 0, 0, ps);
+        pool_release(&ctx->pool, &slot_bytes_b);
+    }
+    {
+        PoolSlot slot_bytes_a = {0};
+        pool_acquire(&ctx->pool, slot_vp_a, true, &slot_bytes_a);
+        nodes_write_anchor(slot_bytes_a.bytes, ANCHOR_KIND_UNIT_SLOT,
+                           nid_a, dc_vp_a, slot_vp_b, 0, ps);
+        pool_release(&ctx->pool, &slot_bytes_a);
+    }
 
     /* W5b: wrap the SlotNodes in a DirSegment before installing in
      * root's HEADPTR.  Allocate the Segment, set headPtr/sibPtr, set
      * count=2. */
     int64_t seg_vp = pool_alloc(&ctx->pool);
     CHECK(seg_vp != VFS_VPTR_NULL);
-    uint8_t* seg_bytes = pool_resolve_ro(&ctx->pool, seg_vp);
-    nodes_write_anchor(seg_bytes, ANCHOR_KIND_SEGMENT_DIR, 0, slot_vp_a, 0, 2, ps);
+    {
+        PoolSlot seg_bytes = {0};
+        pool_acquire(&ctx->pool, seg_vp, true, &seg_bytes);
+        nodes_write_anchor(seg_bytes.bytes, ANCHOR_KIND_SEGMENT_DIR, 0, slot_vp_a, 0, 2, ps);
+        pool_release(&ctx->pool, &seg_bytes);
+    }
 
     /* Set root's headPtr to seg_vp (Segment, not SlotNode directly) */
-    uint8_t* root_slot = pool_resolve_ro(&ctx->pool, root_vp);
-    CHECK(root_slot != NULL);
-    vfs_wr8_s(root_slot, DIRNODE_OFF_HEADPTR, seg_vp, ps);
+    {
+        PoolSlot root_slot = {0};
+        pool_acquire(&ctx->pool, root_vp, true, &root_slot);
+        CHECK(root_slot.vptr != VFS_VPTR_NULL);
+        vfs_wr8_s(root_slot.bytes, DIRNODE_OFF_HEADPTR, seg_vp, ps);
+        pool_release(&ctx->pool, &root_slot);
+    }
 
     /* Both lookups must succeed — hash collision forces strcmp fallback */
     int64_t childPtr;
@@ -2462,10 +2502,12 @@ static void test_vfs_create_open_tree(void) {
     CHECK(file_vp > 0);
 
     /* Verify the tree has an entry for this file */
-    uint8_t* rootSlot = pool_resolve_ro(&ctx->pool, root_vp);
-    CHECK(rootSlot != NULL);
-    int64_t indexRoot = vfs_rd8_s(rootSlot, DIRNODE_OFF_INDEXHEADPTR,
+    PoolSlot rootSlot = {0};
+    pool_acquire(&ctx->pool, root_vp, false, &rootSlot);
+    CHECK(rootSlot.vptr != VFS_VPTR_NULL);
+    int64_t indexRoot = vfs_rd8_s(rootSlot.bytes, DIRNODE_OFF_INDEXHEADPTR,
                                    ctx->page_size);
+    pool_release(&ctx->pool, &rootSlot);
     CHECK(indexRoot != 0);
 
     /* Lookup via the tree */
@@ -2479,8 +2521,11 @@ static void test_vfs_create_open_tree(void) {
     int64_t linkVP = leafVP;
     while (linkVP != 0) {
         int64_t dcVP, nextLinkVP;
-        nodes_read_dircontentlink(pool_resolve_ro(&ctx->pool, linkVP),
+        PoolSlot link_slot = {0};
+        pool_acquire(&ctx->pool, linkVP, false, &link_slot);
+        nodes_read_dircontentlink(link_slot.bytes,
                                   &dcVP, &nextLinkVP, ctx->page_size);
+        pool_release(&ctx->pool, &link_slot);
         if (dcVP != 0) {
             found = 1;
             break;
