@@ -135,6 +135,14 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
                     int64_t dir_vp, int64_t epoch,
                     LivePageSet* lps);
 
+/* W5e: per-ContentUnit dir chain walk (DirSegment → SlotNode → DirContent).
+ * Replaces the old gc_walk_dircontent_chain's MAX_CHILDREN=1024 fixed
+ * array (ISSUES.md M2).  dir_head_vp is a DirSegment VP (parent's
+ * HEADPTR). */
+int gc_walk_dir_chain(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
+                      int64_t dir_head_vp, int64_t epoch,
+                      LivePageSet* lps);
+
 /* Walk a FileNode during GC shadow-compaction: copy the FileNode entry,
    then walk FileContent → PageNode → VersionPage chains and FileSize chain
    applying survival rules. */

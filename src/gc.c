@@ -1,9 +1,54 @@
 /* Phase 7: GC — Tree Lock, Deferred Free Queue */
 #include "gc.h"
 #include "tree.h"
+#include "nodes.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/* ---------------------------------------------------------------------------
+ * Per-type field descriptors (Phase 26 / W5e, ISSUES.md M4 fix).
+ *
+ * The old blind 8-byte remap of offsets 0/8/16/24 in gc_copy_entry
+ * could corrupt non-VP fields.  E.g., DirNode.createdAt at offset 24
+ * is a Unix timestamp that could coincidentally match a VP being
+ * remapped.  With Anchor types the problem is worse: anchors pack
+ * type/flags/id/count/sibPtr at offsets that overlap with VP fields
+ * in other types.
+ *
+ * The descriptor table below tells gc_copy_entry which offsets hold
+ * VirtualPtrs (must be remapped) vs. other types (must be left
+ * alone).  Per-type — for each node/anchor kind, an array of
+ * vp_offsets.
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    int      vp_offset_count;
+    uint8_t  vp_offsets[8];  /* at most 8 VPs per 32-byte slot */
+} GCFieldDesc;
+
+static const GCFieldDesc gc_field_desc[] = {
+    /* DIRNODE: HEADPTR (8), INDEXHEADPTR (16).  createdAt (24) is NOT a VP. */
+    [ANCHOR_KIND_ROOT_DIR]      = { 2, { 8, 16, 0, 0, 0, 0, 0, 0 } },
+    /* FILENODE: HEADPTR (8), SIZEPTR (16).  createdAt (24) is NOT. */
+    [ANCHOR_KIND_ROOT_FILE]     = { 2, { 8, 16, 0, 0, 0, 0, 0, 0 } },
+    /* SEGMENT_FILE: headPtr (8) is first PageNode, sibPtr (16) is next Segment. */
+    [ANCHOR_KIND_SEGMENT_FILE]  = { 2, { 8, 16, 0, 0, 0, 0, 0, 0 } },
+    /* SEGMENT_DIR: same shape. */
+    [ANCHOR_KIND_SEGMENT_DIR]   = { 2, { 8, 16, 0, 0, 0, 0, 0, 0 } },
+    /* UNIT_PAGE: VERSIONROOT (8) and nextPtr (24) are VPs. */
+    [ANCHOR_KIND_UNIT_PAGE]     = { 2, { 8, 24, 0, 0, 0, 0, 0, 0 } },
+    /* UNIT_SLOT: headPtr (8) is first DirContent, sibPtr (16) is next SlotNode. */
+    [ANCHOR_KIND_UNIT_SLOT]     = { 2, { 8, 16, 0, 0, 0, 0, 0, 0 } },
+};
+
+/* Leaf types (VersionPage / DirContent / FileSize) all share the
+ * unified LEAF layout: epoch (0,4), kind_specific (4,4), primary_ptr (8,8),
+ * secondary_ptr (16,8), nextPtr (24,8).  The 8-byte aligned VP offsets
+ * are 8, 16, 24.  We use a single descriptor for all leaf types. */
+static const GCFieldDesc gc_leaf_desc = { 3, { 8, 16, 24, 0, 0, 0, 0, 0 } };
+
+/* ---------------------------------------------------------------------------
 
 /* ---------------------------------------------------------------------------
  * Tree Lock (§9.6)
@@ -208,12 +253,34 @@ void gc_copy_entry(GCMap* gc_map, int64_t old_vp, int64_t new_vp,
         /* Copy the 32-byte slot */
         memcpy(new_slot, old_slot, VFS_POOL_SLOT_SIZE);
 
-        /* Remap VirtualPtrs within the slot.
-           Pool entries contain VirtualPtrs at offsets 0, 8, 16, 24.
-           Not all of these are VirtualPtrs (offset 0 may be a type field),
-           but only values that exist as keys in gc_map will be remapped,
-           which correctly filters out non-pointer fields. */
-        for (int off = 0; off < VFS_POOL_SLOT_SIZE; off += 8) {
+        /* W5e: per-type field descriptor (ISSUES.md M4 fix).
+         *
+         * Use the type field at offset 0 to select a descriptor.  The
+         * old blind 8-byte remap could corrupt non-VP fields (e.g.,
+         * DirNode.createdAt at offset 24, or Anchor fields at
+         * type/flags/id/count/sibPtr).  The descriptor knows which
+         * offsets are VPs.
+         *
+         * For leaf types (VersionPage / DirContent / FileSize), all
+         * share the same unified layout (LEAF_OFF_PRIMARY=8,
+         * LEAF_OFF_SECONDARY=16, LEAF_OFF_NEXTPTR=24), so we use a
+         * single descriptor for all of them.
+         */
+        uint16_t type16 = (uint16_t)vfs_rd2_s(new_slot, 0, page_size);
+        const GCFieldDesc* desc = NULL;
+        if (type16 == (uint16_t)ANCHOR_KIND_ROOT_DIR ||
+            type16 == (uint16_t)ANCHOR_KIND_ROOT_FILE ||
+            type16 == (uint16_t)ANCHOR_KIND_SEGMENT_FILE ||
+            type16 == (uint16_t)ANCHOR_KIND_SEGMENT_DIR ||
+            type16 == (uint16_t)ANCHOR_KIND_UNIT_PAGE ||
+            type16 == (uint16_t)ANCHOR_KIND_UNIT_SLOT) {
+            desc = &gc_field_desc[type16];
+        } else {
+            /* Leaf type (VersionPage / DirContent / FileSize). */
+            desc = &gc_leaf_desc;
+        }
+        for (int i = 0; i < desc->vp_offset_count; i++) {
+            int off = desc->vp_offsets[i];
             int64_t val = vfs_rd8_s(new_slot, off, page_size);
             if (val == 0) continue;  /* skip null — not in map */
             int64_t mapped = gc_map_get(gc_map, val);
@@ -261,17 +328,19 @@ int gc_walk_dirnode(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
     /* Copy the DirNode with remapping */
     gc_copy_entry(gc_map, dir_vp, new_dir_vp, dir_slot.bytes, new_dir_slot.bytes, ctx->page_size);
 
-    /* Read the old headPtr and delegate DirContent chain walk to the
-       dedicated function which applies full survival rules. */
+    /* W5b/W5e: headPtr is a DirSegment VP.  Walk the Segment →
+     * SlotNode → DirContent chain and copy survivors via
+     * gc_walk_dir_chain.  After the walk, the new DirNode's headPtr
+     * will be remapped from the old headPtr by gc_copy_entry's
+     * per-type descriptor (HEADPTR is at offset 8 for DirNode). */
     int64_t headPtr = vfs_rd8_s(dir_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     pool_release(&ctx->pool, &dir_slot);
-    int err = gc_walk_dircontent_chain(ctx, gc_map, alloc, headPtr, epoch, lps);
+    int err = gc_walk_dir_chain(ctx, gc_map, alloc, headPtr, epoch, lps);
     if (err != VFS_OK) { pool_release(&ctx->pool, &new_dir_slot); return err; }
 
-    /* Remap the new DirNode's headPtr from the old headPtr.
-       gc_walk_dircontent_chain copies surviving entries and records their
-       old→new VirtualPtr mappings in gc_map.  We look up the old headPtr
-       to get the new headPtr for the first DirContent entry. */
+    /* Remap the new DirNode's headPtr via gc_map (the old segment
+     * VP is mapped to the new segment VP if it survived; otherwise
+     * the new segment's VP is in the map for the segment's old VP). */
     int64_t new_headPtr = gc_map_get(gc_map, headPtr);
     vfs_wr8_s(new_dir_slot.bytes, DIRNODE_OFF_HEADPTR, new_headPtr, ctx->page_size);
     pool_release(&ctx->pool, &new_dir_slot);
@@ -629,6 +698,221 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
 /* ---------------------------------------------------------------------------
  * DirContent chain walk with survival rules
  * --------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------------
+ * gc_walk_dir_chain — W5e per-ContentUnit survival walk.
+ *
+ * Walks DirSegment → SlotNode → DirContent chains (the W5b structure).
+ * For each SlotNode, applies the per-ContentUnit read-rule to find the
+ * visible entry; if a live entry (namePtr != 0) exists, copies the
+ * SlotNode + the surviving DirContent.  SlotNodes with only tombstones
+ * are skipped (no need to copy dead content).
+ *
+ * Replaces the old gc_walk_dircontent_chain's MAX_CHILDREN=1024 fixed
+ * array (ISSUES.md M2).  Per-ContentUnit chains are short (1-2 entries
+ * typically), so the dedup is per-SlotNode — no cross-child tracking
+ * needed.
+ *
+ * Input: dir_head_vp is a DirSegment VP (root's HEADPTR or a Segment's
+ * headPtr).  Walks the Segment chain to find SlotNodes.
+ * --------------------------------------------------------------------------- */
+
+static int gc_alloc_slot(TreeContext* ctx, GCAllocCursor* alloc,
+                         PoolSlot* out_slot) {
+    if (alloc->cur_slot >= alloc->slots_per_page) {
+        alloc->cur_page_vp = gc_allocate_new_pool_page(ctx, NULL);
+        if (alloc->cur_page_vp == VFS_VPTR_NULL) return VFS_ERR_FULL;
+        alloc->cur_slot = 0;
+    }
+    int64_t new_vp = VFS_VPTR_MAKE(VFS_VPTR_PAGE(alloc->cur_page_vp),
+                                     alloc->cur_slot);
+    pool_acquire(&ctx->pool, new_vp, false, out_slot);
+    if (out_slot->vptr == VFS_VPTR_NULL) return VFS_ERR_IO;
+    alloc->cur_slot++;
+    return VFS_OK;
+}
+
+int gc_walk_dir_chain(TreeContext* ctx, GCMap* gc_map, GCAllocCursor* alloc,
+                      int64_t dir_head_vp, int64_t epoch,
+                      LivePageSet* lps) {
+    if (!ctx || !gc_map || !alloc) return VFS_ERR_IO;
+
+    int64_t seg_vp = dir_head_vp;
+    while (seg_vp != 0) {
+        PoolSlot seg_slot = {0};
+        pool_acquire(&ctx->pool, seg_vp, false, &seg_slot);
+        if (seg_slot.vptr == VFS_VPTR_NULL) break;
+        AnchorKind seg_ak;
+        uint32_t seg_id, seg_cnt;
+        int64_t seg_head, seg_sib;
+        nodes_read_anchor(seg_slot.bytes, &seg_ak, &seg_id, &seg_head,
+                          &seg_sib, &seg_cnt, ctx->page_size);
+        pool_release(&ctx->pool, &seg_slot);
+
+        /* Copy this Segment (if it has any surviving SlotNodes).  We
+         * do a tentative copy + remap, then update the Segment's
+         * headPtr/sibPtr after processing all its SlotNodes. */
+        int64_t new_seg_vp = 0;
+        PoolSlot new_seg_slot = {0};
+        int new_seg_valid = 0;
+        int64_t new_slot_head = 0;  /* head of the new SlotNode chain */
+
+        int64_t slot_vp = seg_head;
+        while (slot_vp != 0) {
+            PoolSlot slot_slot = {0};
+            pool_acquire(&ctx->pool, slot_vp, false, &slot_slot);
+            if (slot_slot.vptr == VFS_VPTR_NULL) break;
+            AnchorKind slot_ak;
+            uint32_t slot_id, slot_cnt;
+            int64_t slot_head, slot_sib;
+            nodes_read_anchor(slot_slot.bytes, &slot_ak, &slot_id, &slot_head,
+                              &slot_sib, &slot_cnt, ctx->page_size);
+            pool_release(&ctx->pool, &slot_slot);
+
+            /* Per-ContentUnit survival: walk the SlotNode's DC chain
+             * to find the visible entry (first applicable per
+             * read-rule).  If the visible entry is a live (namePtr != 0)
+             * DC, copy the SlotNode + the visible DC.  Otherwise skip
+             * (tombstone-only SlotNode — no need to copy dead data). */
+            int found_visible = 0;
+            int64_t vis_dc_vp = 0;
+            uint32_t vis_dc_child = 0;
+            int64_t vis_dc_childPtr = 0;
+            int64_t vis_dc_namePtr = 0;
+            int vis_dc_has_name = 0;
+            int64_t dc_walk_vp = slot_head;
+            while (dc_walk_vp != 0 && !found_visible) {
+                PoolSlot dc_slot = {0};
+                pool_acquire(&ctx->pool, dc_walk_vp, false, &dc_slot);
+                if (dc_slot.vptr == VFS_VPTR_NULL) break;
+                uint32_t dc_child, dc_epoch;
+                int64_t dc_childPtr, dc_namePtr, dc_next;
+                nodes_read_dircontent(dc_slot.bytes, &dc_child, &dc_epoch,
+                                      &dc_childPtr, &dc_namePtr, &dc_next,
+                                      ctx->page_size);
+                pool_release(&ctx->pool, &dc_slot);
+
+                int64_t eff_epoch = (int64_t)dc_epoch;
+                if (mapper_table_traversal_apply(&ctx->mapper_table,
+                                                  (int64_t)dc_epoch))
+                    eff_epoch = mapper_table_resolve(&ctx->mapper_table,
+                                                      (int64_t)dc_epoch);
+                int applies = (eff_epoch == epoch) ||
+                              (eff_epoch < epoch && (eff_epoch & 1) == 0);
+                if (applies) {
+                    found_visible = 1;
+                    vis_dc_vp = dc_walk_vp;
+                    vis_dc_child = dc_child;
+                    vis_dc_childPtr = dc_childPtr;
+                    vis_dc_namePtr = dc_namePtr;
+                    vis_dc_has_name = (dc_namePtr != 0) ? 1 : 0;
+                }
+                dc_walk_vp = dc_next;
+            }
+
+            if (found_visible && vis_dc_has_name) {
+                /* Lazily allocate the new Segment slot on first surviving SlotNode. */
+                if (!new_seg_valid) {
+                    int r = gc_alloc_slot(ctx, alloc, &new_seg_slot);
+                    if (r != VFS_OK) return r;
+                    new_seg_vp = VFS_VPTR_MAKE(
+                        VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot - 1);
+                    /* Tentative write of the Segment (headPtr=0, sibPtr=old sib). */
+                    nodes_write_anchor(new_seg_slot.bytes, ANCHOR_KIND_SEGMENT_DIR,
+                                       0, 0, gc_map_get(gc_map, seg_sib),
+                                       0, ctx->page_size);
+                    new_seg_valid = 1;
+                }
+                /* Copy the SlotNode (the SlotNode itself is just a
+                 * small Anchor; we keep it in the chain).  It points
+                 * to the new DC after remap.  The SlotNode's count is
+                 * 0 (single child per SlotNode in our model). */
+                int64_t new_slot_vp;
+                PoolSlot new_slot_slot = {0};
+                int rs = gc_alloc_slot(ctx, alloc, &new_slot_slot);
+                if (rs != VFS_OK) { pool_release(&ctx->pool, &new_seg_slot); return rs; }
+                new_slot_vp = VFS_VPTR_MAKE(
+                    VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot - 1);
+                gc_copy_entry(gc_map, slot_vp, new_slot_vp,
+                              slot_slot.bytes, new_slot_slot.bytes,
+                              ctx->page_size);
+                /* Now copy the visible DC and rewire the new SlotNode's headPtr. */
+                int64_t new_dc_vp;
+                PoolSlot new_dc_slot = {0};
+                int rd = gc_alloc_slot(ctx, alloc, &new_dc_slot);
+                if (rd != VFS_OK) { pool_release(&ctx->pool, &new_slot_slot); pool_release(&ctx->pool, &new_seg_slot); return rd; }
+                new_dc_vp = VFS_VPTR_MAKE(
+                    VFS_VPTR_PAGE(alloc->cur_page_vp), alloc->cur_slot - 1);
+                /* Re-acquire the source DC for copy. */
+                PoolSlot src_dc_slot = {0};
+                pool_acquire(&ctx->pool, vis_dc_vp, false, &src_dc_slot);
+                if (src_dc_slot.vptr == VFS_VPTR_NULL) {
+                    pool_release(&ctx->pool, &new_dc_slot);
+                    pool_release(&ctx->pool, &new_slot_slot);
+                    pool_release(&ctx->pool, &new_seg_slot);
+                    return VFS_ERR_IO;
+                }
+                gc_copy_entry(gc_map, vis_dc_vp, new_dc_vp,
+                              src_dc_slot.bytes, new_dc_slot.bytes,
+                              ctx->page_size);
+                pool_release(&ctx->pool, &src_dc_slot);
+                pool_release(&ctx->pool, &new_dc_slot);
+
+                /* Prepend the new SlotNode to the new Segment's SlotNode chain. */
+                if (new_slot_head == 0) {
+                    nodes_write_anchor(new_seg_slot.bytes, ANCHOR_KIND_SEGMENT_DIR,
+                                       0, new_slot_vp,
+                                       gc_map_get(gc_map, seg_sib),
+                                       1, ctx->page_size);
+                    new_slot_head = new_slot_vp;
+                } else {
+                    /* Insert at head: set new SlotNode's sibPtr to the
+                     * previous head, then update Segment's headPtr. */
+                    vfs_wr8_s(new_slot_slot.bytes, ANCHOR_OFF_SIBPTR,
+                              new_slot_head, ctx->page_size);
+                    pool_release(&ctx->pool, &new_slot_slot);
+                    nodes_write_anchor(new_seg_slot.bytes, ANCHOR_KIND_SEGMENT_DIR,
+                                       0, new_slot_vp,
+                                       gc_map_get(gc_map, seg_sib),
+                                       /* count will be updated later */ 0, ctx->page_size);
+                    new_slot_head = new_slot_vp;
+                    continue;  /* skip the pool_release at the end of the loop */
+                }
+                pool_release(&ctx->pool, &new_slot_slot);
+
+                /* Recursively walk the child (DirNode or FileNode). */
+                if (vis_dc_childPtr != 0) {
+                    PoolSlot child_slot = {0};
+                    pool_acquire(&ctx->pool, vis_dc_childPtr, false, &child_slot);
+                    if (child_slot.vptr != VFS_VPTR_NULL) {
+                        int16_t ctype = vfs_rd2_s(child_slot.bytes,
+                                                   DIRNODE_OFF_TYPE, ctx->page_size);
+                        pool_release(&ctx->pool, &child_slot);
+                        if (ctype == (int16_t)NODE_TYPE_DIR) {
+                            int err = gc_walk_dirnode(ctx, gc_map, alloc,
+                                                       vis_dc_childPtr, epoch, lps);
+                            if (err != VFS_OK) { pool_release(&ctx->pool, &new_seg_slot); return err; }
+                        } else if (ctype == (int16_t)NODE_TYPE_FILE) {
+                            int err = gc_walk_filenode(ctx, gc_map, alloc,
+                                                        vis_dc_childPtr, epoch, lps);
+                            if (err != VFS_OK) { pool_release(&ctx->pool, &new_seg_slot); return err; }
+                        }
+                    } else {
+                        pool_release(&ctx->pool, &child_slot);
+                    }
+                }
+            }
+            slot_vp = slot_sib;
+        }
+
+        if (new_seg_valid) {
+            pool_release(&ctx->pool, &new_seg_slot);
+        }
+
+        seg_vp = seg_sib;
+    }
+    return VFS_OK;
+}
 
 int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
                               GCAllocCursor* alloc,
