@@ -437,9 +437,10 @@ static void test_gc_crash_before_swap(void) {
     CHECK_EQ(vfs->ctx->rootNodeOffset, root_vp_saved);
     CHECK_EQ((int64_t)vfs->ctx->nextNodeId, next_nodeid_before);
     {
-        uint8_t* rs = pool_resolve_ro(&vfs->ctx->pool, vfs->ctx->rootNodeOffset);
-        CHECK(rs != NULL);
-        CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
+        PoolSlot rs = {0};
+        pool_acquire(&vfs->ctx->pool, vfs->ctx->rootNodeOffset, false, &rs);
+        CHECK(rs.vptr != VFS_VPTR_NULL);
+        CHECK_EQ(vfs_rd2_s(rs.bytes,  DIRNODE_OFF_TYPE, ctx->page_size), (int16_t)NODE_TYPE_DIR);
     }
 
     vfs_unmount(vfs);
@@ -582,27 +583,30 @@ static void test_gc_vptr_remapping(void) {
     {
         /* 1. Root DirNode headPtr → DirSegment → SlotNode → DirContent.
          * W5b: with Segments, the chain has a Segment level. */
-        uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
-        CHECK(rs != NULL);
-        CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
-        int64_t seg_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        PoolSlot rs = {0};
+        pool_acquire(&ctx->pool, root_vp, false, &rs);
+        CHECK(rs.vptr != VFS_VPTR_NULL);
+        CHECK_EQ(vfs_rd2_s(rs.bytes,  DIRNODE_OFF_TYPE, ctx->page_size), (int16_t)NODE_TYPE_DIR);
+        int64_t seg_vp = vfs_rd8_s(rs.bytes,  DIRNODE_OFF_HEADPTR, ctx->page_size);
         CHECK(seg_vp != 0);
-        uint8_t* seg_s = pool_resolve_ro(&ctx->pool, seg_vp);
-        CHECK(seg_s != NULL);
+        PoolSlot seg_s = {0};
+        pool_acquire(&ctx->pool, seg_vp, false, &seg_s);
+        CHECK(seg_s.vptr != VFS_VPTR_NULL);
         AnchorKind seg_ak;
         uint32_t seg_id, seg_cnt;
         int64_t seg_head, seg_sib;
-        nodes_read_anchor(seg_s, &seg_ak, &seg_id, &seg_head, &seg_sib,
+        nodes_read_anchor(seg_s.bytes, &seg_ak, &seg_id, &seg_head, &seg_sib,
                           &seg_cnt, VFS_PAGE_SIZE);
         int64_t slot_vp = seg_head;
         CHECK(slot_vp != 0);
-        uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
-        CHECK(slot_s != NULL);
+        PoolSlot slot_s = {0};
+        pool_acquire(&ctx->pool, slot_vp, false, &slot_s);
+        CHECK(slot_s.vptr != VFS_VPTR_NULL);
         AnchorKind ak;
         uint32_t slot_id;
         int64_t slot_head, slot_sib;
         uint32_t slot_count;
-        nodes_read_anchor(slot_s, &ak, &slot_id, &slot_head, &slot_sib,
+        nodes_read_anchor(slot_s.bytes, &ak, &slot_id, &slot_head, &slot_sib,
                           &slot_count, VFS_PAGE_SIZE);
         CHECK(slot_head != 0);
 
@@ -615,31 +619,35 @@ static void test_gc_vptr_remapping(void) {
         CHECK(dc_childPtr != 0);
 
         /* 3. FileNode → FileContent */
-        uint8_t* fn_slot = pool_resolve_ro(&ctx->pool, dc_childPtr);
-        CHECK(fn_slot != NULL);
-        CHECK_EQ(vfs_rd2(fn_slot, FILENODE_OFF_TYPE), (int16_t)NODE_TYPE_FILE);
-        int64_t fc_vp = vfs_rd8(fn_slot, FILENODE_OFF_HEADPTR);
+        PoolSlot fn_slot = {0};
+        pool_acquire(&ctx->pool, dc_childPtr, false, &fn_slot);
+        CHECK(fn_slot.vptr != VFS_VPTR_NULL);
+        CHECK_EQ(vfs_rd2_s(fn_slot.bytes,  FILENODE_OFF_TYPE, ctx->page_size), (int16_t)NODE_TYPE_FILE);
+        int64_t fc_vp = vfs_rd8_s(fn_slot.bytes,  FILENODE_OFF_HEADPTR, ctx->page_size);
         CHECK(fc_vp != 0);
 
         /* 4. FileContent → PageNode */
-        uint8_t* fc_slot = pool_resolve_ro(&ctx->pool, fc_vp);
-        CHECK(fc_slot != NULL);
-        int64_t pn_vp = vfs_rd8(fc_slot, FILECONTENT_OFF_ROOTPTR);
+        PoolSlot fc_slot = {0};
+        pool_acquire(&ctx->pool, fc_vp, false, &fc_slot);
+        CHECK(fc_slot.vptr != VFS_VPTR_NULL);
+        int64_t pn_vp = vfs_rd8_s(fc_slot.bytes,  FILECONTENT_OFF_ROOTPTR, ctx->page_size);
         CHECK(pn_vp != 0);
 
         /* 5. PageNode → VersionPage chain */
-        uint8_t* pn_slot = pool_resolve_ro(&ctx->pool, pn_vp);
-        CHECK(pn_slot != NULL);
+        PoolSlot pn_slot = {0};
+        pool_acquire(&ctx->pool, pn_vp, false, &pn_slot);
+        CHECK(pn_slot.vptr != VFS_VPTR_NULL);
         int64_t vp_vp_pre = vfs_atomic_load_i64(
-            (const int64_t*)(pn_slot + PAGENODE_OFF_VERSIONROOT));
+            (const int64_t*)(pn_slot.bytes + PAGENODE_OFF_VERSIONROOT));
         CHECK(vp_vp_pre != 0);
 
         /* 6. VersionPage has valid epoch and dataPage */
-        uint8_t* vp_slot = pool_resolve_ro(&ctx->pool, vp_vp_pre);
-        CHECK(vp_slot != NULL);
+        PoolSlot vp_slot = {0};
+        pool_acquire(&ctx->pool, vp_vp_pre, false, &vp_slot);
+        CHECK(vp_slot.vptr != VFS_VPTR_NULL);
         uint32_t vp_e;
         int64_t vp_dp, vp_nx;
-        nodes_read_versionpage(vp_slot, &vp_e, &vp_dp, &vp_nx, VFS_PAGE_SIZE);
+        nodes_read_versionpage(vp_slot.bytes, &vp_e, &vp_dp, &vp_nx, VFS_PAGE_SIZE);
         CHECK(vp_e == 0 || vp_e == 2);
         CHECK(vp_dp >= 0);
         (void)vp_nx;
@@ -658,9 +666,11 @@ static void test_gc_vptr_remapping(void) {
         int64_t dc_childPtr2 = gc_dir_first_child(ctx, root_vp);
         CHECK(dc_childPtr2 != 0);
 
-        uint8_t* fn_slot = pool_resolve_ro(&ctx->pool, dc_childPtr2);
-        CHECK(fn_slot != NULL);
-        CHECK_EQ(vfs_rd2(fn_slot, FILENODE_OFF_TYPE), (int16_t)NODE_TYPE_FILE);
+        PoolSlot fn_slot = {0};
+
+        pool_acquire(&ctx->pool, dc_childPtr2, false, &fn_slot);
+        CHECK(fn_slot.vptr != VFS_VPTR_NULL);
+        CHECK_EQ(vfs_rd2_s(fn_slot.bytes,  FILENODE_OFF_TYPE, ctx->page_size), (int16_t)NODE_TYPE_FILE);
 
         char rbuf[16];
         CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 8, 0), 8);
@@ -697,33 +707,37 @@ static void test_gc_dircontent_survival(void) {
      * W5b: walk via DirSegment → SlotNode → DC chain. */
     int entries_before = 0;
     {
-        uint8_t* rs = pool_resolve_ro(&ctx->pool, root_vp);
-        if (rs) {
-            int64_t seg_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+        PoolSlot rs = {0};
+        pool_acquire(&ctx->pool, root_vp, false, &rs);
+        if (rs.vptr != VFS_VPTR_NULL) {
+            int64_t seg_vp = vfs_rd8_s(rs.bytes,  DIRNODE_OFF_HEADPTR, ctx->page_size);
             while (seg_vp != 0) {
-                uint8_t* seg_s = pool_resolve_ro(&ctx->pool, seg_vp);
-                if (!seg_s) break;
+                PoolSlot seg_s = {0};
+                pool_acquire(&ctx->pool, seg_vp, false, &seg_s);
+                if (seg_s.vptr == VFS_VPTR_NULL) break;
                 AnchorKind ak;
                 uint32_t seg_id, seg_cnt;
                 int64_t seg_head, seg_sib;
-                nodes_read_anchor(seg_s, &ak, &seg_id, &seg_head, &seg_sib,
+                nodes_read_anchor(seg_s.bytes, &ak, &seg_id, &seg_head, &seg_sib,
                                   &seg_cnt, VFS_PAGE_SIZE);
                 int64_t slot_vp = seg_head;
                 while (slot_vp != 0) {
-                    uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
-                    if (!slot_s) break;
+                    PoolSlot slot_s = {0};
+                    pool_acquire(&ctx->pool, slot_vp, false, &slot_s);
+                    if (slot_s.vptr == VFS_VPTR_NULL) break;
                     AnchorKind sak;
                     uint32_t slot_id, slot_cnt;
                     int64_t slot_head, slot_sib;
-                    nodes_read_anchor(slot_s, &sak, &slot_id, &slot_head,
+                    nodes_read_anchor(slot_s.bytes, &sak, &slot_id, &slot_head,
                                       &slot_sib, &slot_cnt, VFS_PAGE_SIZE);
                     int64_t dc_vp = slot_head;
                     int found = 0;
                     while (dc_vp != 0 && !found) {
-                        uint8_t* dc_s = pool_resolve_ro(&ctx->pool, dc_vp);
-                        if (!dc_s) break;
+                        PoolSlot dc_s = {0};
+                        pool_acquire(&ctx->pool, dc_vp, false, &dc_s);
+                        if (dc_s.vptr == VFS_VPTR_NULL) break;
                         uint32_t cc, ce; int64_t cp, np, nx;
-                        nodes_read_dircontent(dc_s, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
+                        nodes_read_dircontent(dc_s.bytes, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
                         (void)cc; (void)cp; (void)nx;
                         int applies = (ce == 0);  /* query epoch = 0 */
                         if (applies && np != 0) {
@@ -899,9 +913,10 @@ static void test_gc_crash_after_swap(void) {
        may not survive close/reopen even after explicit tree_superblock_write.
        W5a: walk via SlotNode indirection. */
     {
-        uint8_t* rs = pool_resolve_ro(&vfs->ctx->pool, vfs->ctx->rootNodeOffset);
-        CHECK(rs != NULL);
-        CHECK_EQ(vfs_rd2(rs, DIRNODE_OFF_TYPE), (int16_t)NODE_TYPE_DIR);
+        PoolSlot rs = {0};
+        pool_acquire(&vfs->ctx->pool, vfs->ctx->rootNodeOffset, false, &rs);
+        CHECK(rs.vptr != VFS_VPTR_NULL);
+        CHECK_EQ(vfs_rd2_s(rs.bytes,  DIRNODE_OFF_TYPE, ctx->page_size), (int16_t)NODE_TYPE_DIR);
         int64_t cp = gc_dir_first_child(vfs->ctx, vfs->ctx->rootNodeOffset);
         if (cp != 0) {
             char rbuf[16];
