@@ -28,32 +28,36 @@ static const char* nonstd_path = "/tmp/test_gc_4k.tmp";
  * directly; W5a added per-child SlotNode; W5b added per-1024 DirSegments.
  * Returns 0 on failure (no Segment/SlotNode or empty chain). */
 static int64_t gc_dir_first_child(TreeContext* ctx, int64_t dir_vp) {
-    uint8_t* rs = pool_resolve_ro(&ctx->pool, dir_vp);
-    if (!rs) return 0;
-    int64_t seg_vp = vfs_rd8(rs, DIRNODE_OFF_HEADPTR);
+    PoolSlot rs = {0};
+    pool_acquire(&ctx->pool, dir_vp, false, &rs);
+    if (rs.vptr == VFS_VPTR_NULL) return 0;
+    int64_t seg_vp = vfs_rd8_s(rs.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     while (seg_vp != 0) {
-        uint8_t* seg_s = pool_resolve_ro(&ctx->pool, seg_vp);
-        if (!seg_s) return 0;
+        PoolSlot seg_s = {0};
+        pool_acquire(&ctx->pool, seg_vp, false, &seg_s);
+        if (seg_s.vptr == VFS_VPTR_NULL) return 0;
         AnchorKind ak;
         uint32_t seg_id, seg_cnt;
         int64_t seg_head, seg_sib;
-        nodes_read_anchor(seg_s, &ak, &seg_id, &seg_head, &seg_sib,
-                          &seg_cnt, VFS_PAGE_SIZE);
+        nodes_read_anchor(seg_s.bytes, &ak, &seg_id, &seg_head, &seg_sib,
+                          &seg_cnt, ctx->page_size);
         int64_t slot_vp = seg_head;
         while (slot_vp != 0) {
-            uint8_t* slot_s = pool_resolve_ro(&ctx->pool, slot_vp);
-            if (!slot_s) return 0;
+            PoolSlot slot_s = {0};
+            pool_acquire(&ctx->pool, slot_vp, false, &slot_s);
+            if (slot_s.vptr == VFS_VPTR_NULL) return 0;
             AnchorKind sak;
             uint32_t slot_id, slot_cnt;
             int64_t slot_head, slot_sib;
-            nodes_read_anchor(slot_s, &sak, &slot_id, &slot_head, &slot_sib,
-                              &slot_cnt, VFS_PAGE_SIZE);
+            nodes_read_anchor(slot_s.bytes, &sak, &slot_id, &slot_head, &slot_sib,
+                              &slot_cnt, ctx->page_size);
             if (slot_head != 0) {
-                uint8_t* dc = pool_resolve_ro(&ctx->pool, slot_head);
-                if (dc) {
+                PoolSlot dc = {0};
+                pool_acquire(&ctx->pool, slot_head, false, &dc);
+                if (dc.vptr != VFS_VPTR_NULL) {
                     uint32_t cc, ce;
                     int64_t cp, np, nx;
-                    nodes_read_dircontent(dc, &cc, &ce, &cp, &np, &nx, VFS_PAGE_SIZE);
+                    nodes_read_dircontent(dc.bytes, &cc, &ce, &cp, &np, &nx, ctx->page_size);
                     if (np != 0) return cp;  /* live entry */
                 }
             }
