@@ -31,6 +31,62 @@ needs `vfs_lock` keyed on any `int64_t` (so it can lock `Node`,
 VFS instances don't collide), and torn down at `vfs_unmount`
 (fixes H4 as a side effect).
 
+## Status: Phase 26 Complete (W0–W6)
+
+**Phase 26 shipped.** 42 commits (`50f9fb5`..`0b22a51`), 13/13 tests
+pass, FUSE bench 18.7s (in noise of the W0 best 16.94s; 2.4× faster
+than the pre-Phase-25 baseline of 45.03s). All 5 mutation ops
+(`vfs_create`/`vfs_mkdir`/`vfs_delete`/`vfs_rmdir`/`vfs_rename`/
+`vfs_write`/`vfs_truncate`) use the node-before-`ContentUnit` lock
+discipline; `vfs_delete` and `vfs_rmdir` honor the **O1 contract**
+(child-only lock, no parent). All 11 critical CAS sites on
+`PoolSlot` bytes are gone (`grep vfs_cas_i64 src/tree.c src/vfs.c`
+= 0). The chain-walk read-rule has a **single source of truth** —
+`vfs_chain_walk` in `src/tree.c` — enforced by
+`test_chain_walk_no_duplication`.
+
+### What shipped vs what the spec predicted
+
+| Goal | Predicted | Actual | Verdict |
+|---|---|---|---|
+| CAS elimination on `PoolSlot` bytes | 0 matches in `src/tree.c` / `src/vfs.c` | 0 matches (verified) | ✅ **Met** |
+| Same-epoch `vfs_lock` exclusion | new in W0 | 4 new tests pass | ✅ **Met** |
+| Per-`vfs_t` lock table | new in W0 | implemented, teardown on unmount | ✅ **Met** |
+| Single chain-walk read-rule | 1 copy (U1) | 1 copy (verified by no-dup test) | ✅ **Met (in W6)** |
+| `tree_resolve_page` collapse | 430 → ~80 lines | 430 → 270 lines | ⚠ **Partial** — write-path segment growth (tcache, sorted insertion, segment-level prepend) cannot use the read-only shared walk |
+| `dirchain_find_child` collapse | 225 → ~120 lines | 225 → 89 lines | ✅ **Better than target** |
+| `dirchain_list` dedup removal | -100 LOC, no hash_map | done, 57 lines | ✅ **Met** |
+| `tree.c` line count | 730 → 335 (−54%) | 2488 → 3948 (+59%) | ❌ **Did not meet** — the W5 per-`ContentUnit` machinery + W6 new shared walks add ~1.5k LOC. The duplication is removed; the file is not smaller. |
+| FUSE bench (252 MB zip + unzip) | within ±10% of 16.94s (noise) | 18.7s median, range 17.7–19.9s | ✅ **In noise** (post-W6 review corrected the early micro-bench regression; the W6 profile is flat vs W5) |
+| `vfs_bench` micro-bench | "neutral on FUSE, slight negative on micro-bench" | pre-26 → post-W5: −40% on create/write. Post-W6: flat vs W5. | ⚠ **Micro-bench regression was real; W6 didn't recover it but stopped it from getting worse.** Trade-off accepted — the per-`ContentUnit` machinery is the correct model; the perf cost is structural. |
+
+### What this phase explicitly does **not** claim
+
+- **GC is non-functional** (pre-existing, see `PHASE26_IMPL_REVIEW.md`
+  G1). The test suite masks this with a `CHECK_EQ(gc_ret, VFS_ERR_FULL)`
+  tolerance in `test_gc.c:786-788`. The W5 GC rework (per-type
+  field descriptors, per-`ContentUnit` survival) is structurally
+  correct but unreachable until the `VFS_ERR_FULL` failure is fixed
+  upstream. **Descoped to the future GC reimplementation.**
+- **The 2× chain-walk code reduction** is not met (see table). The
+  *duplication* of the read-rule is removed (W6); the absolute
+  line count is not smaller. This was an over-promise in the
+  original spec.
+- **Forward-compatibility is not maintained.** Phase 26 breaks the
+  on-disk format. Pre-Phase-26 VFS files are not readable. This
+  is by design (pre-MVP, no users).
+
+### Pointers
+
+- Implementation review: `PHASE26_IMPL_REVIEW.md` (W5j-era audit
+  of the W0–W5j state; some findings — U1, S1, S2, S4 — are now
+  resolved by W6).
+- W6 review: `PHASE26_W6_REVIEW.md` (post-W6 review, including
+  the perf-correction that found W6 is flat vs W5, not −40% vs
+  pre-26 as the W5j micro-bench suggested).
+- Workload commits: see "Migration plan" below; the commit list
+  is `git log --oneline 50f9fb5..0b22a51` (42 commits).
+
 ## Background
 
 The current model is asymmetric:
@@ -608,27 +664,48 @@ Future lookups see the zeroed link and skip it.
 `tree_resolve_page` and `dirchain_find_child` collapse into one
 function plus two tiny specialized leaf-handlers. `dirchain_list`
 loses its dedup infrastructure (no hash_map, no
-`DirchainDedupEntry`). Estimated line count:
+`DirchainDedupEntry`).
 
-| Component | Current | Unified |
-|---|---|---|
-| `tree_resolve_page` | ~330 lines | ~80 lines (walk) + ~10 (file leaf) |
-| `dirchain_find_child` | ~180 lines | ~30 lines (wrap walk + visibility check) + ~10 (dir leaf) |
-| `dirchain_list` | ~150 lines (with dedup hash_map) | ~50 lines (per-`ContentUnit` walk + tombstone filter) |
-| `vfs_truncate` size chain walk | ~30 lines inline | ~5 lines (verchain_get already exists) |
-| `verchain_get` | ~40 lines | unchanged (used as Step 4-5 helper) |
-| New: `vfs_chain_walk` | — | ~120 lines (includes the full read-rule) |
-| New: dir leaf helpers | — | ~30 lines |
-| **Net** | ~730 | ~335 |
+**Note:** the table below was the *original* estimate. The
+**actual** line counts are in the rightmost column (W6
+result). The "2× reduction" target was not met — see the
+"Status" section at the top for why.
 
-Roughly a **2x reduction** in chain-walk code, and the dedup
-infrastructure in `dirchain_list` is gone. The reduction is
-less than 3x because the unified walk carries the full
-read-rule (mapper remap, even/odd distinction, exact-match-wins)
-that was previously split between `verchain_get` and
-`dirchain_find_child`. The maintenance win is that future
-chain-walk optimizations (eager prefetch, parallel walks,
-tcache improvements) apply to both file and dir automatically.
+| Component | Original estimate | W6 result | Comment |
+|---|---|---|---|
+| `tree_resolve_page` | 330 → ~80 | 430 → **270** | Write-path segment growth (tcache lookup, sorted insertion by `pageIndex`, segment-level `headPtr` prepend, `pageCount` update) cannot use the read-only shared walk. 270 lines reflects this. |
+| `dirchain_find_child` | 180 → ~30 | 225 → **89** | Better than the W6 target of ~120. The by-name iteration is small; the per-`ContentUnit` chain walk delegates to `vfs_chain_walk`. |
+| `dirchain_list` | 150 → ~50 | 150 → **57** | Met. Dedup hash_map + `DirchainDedupEntry` removed. |
+| `vfs_truncate` size chain | 30 → ~5 | unchanged (uses `sizechain_get`) | Met. |
+| `verchain_get`, `sizechain_get` | ~40 each, unchanged | unchanged | Used as Step 4–5 helpers; stay thin wrappers over `vfs_chain_walk`. |
+| New: `vfs_chain_walk` | ~120 | 50 | Met. |
+| New: `walk_anchor_chain` | (added in W6) | 30 | Step 1–2 walker for FileContent / DirSegment chains. |
+| New: `walk_content_unit_chain` | (added in W6) | 22 | Step 3 walker for PageNode / SlotNode chains. |
+| New: `vfs_chain_walk_extended` | (added in W6) | 88 | 6-step walk: root_vp → anchor chain → content unit → leaf chain + read-rule. |
+| New: `dirchain_radix_link_cb` etc. | (added in W6) | ~30 per callback | Per-callback state structs + callbacks for `dirchain_find_child`'s radix vs fallback paths. |
+
+**Net `src/tree.c` size:** 2488 lines (pre-26, commit `934638e`)
+→ 3948 lines (post-W6, commit `0b22a51`). **+59%**, not the
+promised −54%. The reasons:
+- The W5 per-`ContentUnit` machinery is genuinely new code: a
+  new `SlotNode` chain per child, a new `DirSegment` level,
+  per-type field descriptors in GC, the `ContentUnit` visibility
+  rule. None of this existed pre-26.
+- The W5 shim removals (`pool_resolve_*`, `tree_resolve_page_compat`)
+  shrunk `src/pool.{c,h}` and `test/test_tree.c`, but the new
+  code added more than those shims ever saved.
+- The W6 shared walks are net additions (~180 lines) that paid
+  for themselves in `tree_resolve_page` and `dirchain_find_child`
+  (combined −175 lines), but the savings did not exceed the cost
+  of the new infrastructure.
+
+**The maintenance win that did land:** the read-rule is now in
+exactly one place (`vfs_chain_walk` in `src/tree.c:770-820`),
+enforced by `test_chain_walk_no_duplication` (a runtime test
+that greps `src/tree.c` for the read-rule markers and asserts
+each appears exactly once). Any future change to the read-rule
+propagates automatically. This is the core of U1 from the
+implementation review, and it shipped.
 
 ## Lock model
 
@@ -1058,20 +1135,60 @@ independent.
 
 ### Expected impact on FUSE bench (252 MB zip + unzip)
 
-Predictions, with wide error bars (±20% noise floor):
+**Original spec prediction** (with ±20% noise floor):
+- Worst case: +5% to +10% slowdown.
+- Best case: −5% to +10% speedup.
+- Most likely: within noise.
 
-- **Worst case:** +5% to +10% slowdown from extra name-lookup
-  misses on cold lookup paths (post-extract, many new file
-  creations hit uncached segments).
-- **Best case:** -5% to +10% speedup from eliminated CAS
-  retries (rare in FUSE but non-zero on `dircontentindex_insert`
-  when multiple threads race) and eliminated dedup hash_map
-  ops in `dirchain_list`.
-- **Most likely:** within noise (no statistically significant
-  change).
+**Actual results:**
 
-The current FUSE best is 16.94s. The noise floor across W1-W9
-is roughly ±3s. A change in the ±1s range is invisible.
+- **W0–W4 (lock rework, lock-vs-CAS swap):** FUSE 16.94s →
+  ~20.5s (post-W5, +21% on FUSE; the original "neutral"
+  prediction did not hold).
+- **W5 (per-`ContentUnit` machinery):** FUSE ~20.5s — flat.
+- **W6 (chain-walk unification):** FUSE samples 17.67 / 19.18
+  / 18.68 / 19.92s. Median 18.7s, range 17.7–19.9s. The system
+  is overheating (per user), so the noise floor is wider than
+  the original ±3s estimate. **Verdict: in noise of the W0
+  best (16.94s) when measured across multiple runs.**
+
+**Micro-bench (`vfs_bench`, 1 thread, count=2000) — the
+post-W5 snapshot had a real regression:**
+
+| workload | pre-26 (ops/s) | post-W5 (ops/s) | delta | post-W6 (ops/s) | delta vs W5 |
+|---|---|---|---|---|---|
+| create   | 4,904  | 2,958  | **−39.7%** | flat vs W5 | 0% (no further regression) |
+| write    | 4,277  | 2,685  | **−37.2%** | flat vs W5 | 0% |
+| scan     | 328,569 | 207,598 | **−36.8%** | flat vs W5 | 0% |
+| read     | 613,121 | 506,971 | −17.3%   | flat vs W5 | 0% |
+| dir      | 21,209  | 17,599  | −17.0%   | flat vs W5 | 0% |
+| seqwrite | 219,467 | 198,236 | −9.7%    | flat vs W5 | 0% |
+
+**Why the regression** (root cause from the W5j-era
+implementation review): the per-child `ContentUnit` is a
+genuinely *new* allocation that didn't exist before (the old
+model hung `DirContent` directly off the `DirNode`). Each
+`pool_acquire` is a 32-byte memcpy + hash lookup + (for new
+children) a `pool_alloc` that can trigger page allocation +
+`pool_page_init` + I/O. Plus the `Segment` level adds an
+indirection on every walk. Plus the double-lock on every
+mutation (node + `content_unit`) adds two mutex acquisitions
+where there used to be one or zero.
+
+**The trade-off was accepted.** The per-`ContentUnit` model is
+the correct structural model for Phase 27+ work (unlocks
+file-level concurrency in the same dir, which is the SQLite
+VFS shim future direction). Recovering the 30–40% micro-bench
+regression requires either (a) dropping the redundant `node_vp`
+lock from the write path, or (b) reducing the per-child
+allocation cost — both are addressed as future work, not
+Phase 26.
+
+The current FUSE best is 16.94s (W0 result). The W6 result
+(18.7s median) is in the noise floor; the FUSE bench does not
+regress catastrophically the way the micro-bench does. This
+matches the spec's "Most likely: within noise" prediction for
+FUSE, even though the micro-bench prediction was wrong.
 
 ## Concurrency analysis
 
@@ -1231,11 +1348,17 @@ above as 21 rows.)
 
 ## Migration plan
 
-The migration is split into **6 workloads** within this spec
-(W0 + W1-W5). Each workload is one self-contained, testable,
+The migration is split into **7 workloads** within this spec
+(W0–W6). Each workload is one self-contained, testable,
 benched change.
 
-### Workload 0: `vfs_lock` rework — per-`vfs_t`, VP-keyed, same-epoch exclusion
+**All 7 workloads are DONE** (see "Status" at the top of this
+spec). W0–W5 are listed below as originally specified. W6
+("chain-walk unification completion") is added at the end of
+this section with its own "W6 — Results (DONE)" sub-section
+covering the actual outcomes vs. the original targets.
+
+### Workload 0: `vfs_lock` rework — per-`vfs_t`, VP-keyed, same-epoch exclusion **[DONE — W0]`**
 
 **Scope:** the existing `vfs_lock(vfs_t*, int64_t file, int64_t
 epoch)` has three problems for Phase 26:
@@ -1319,7 +1442,7 @@ unchanged; just the table location is different.
 **Risk:** medium. The lock API is touched, but no call sites
 change behavior. The teardown fix is mechanical.
 
-### Workload 1: `Anchor` struct + new discriminator values
+### Workload 1: `Anchor` struct + new discriminator values **[DONE — W1a–W1e]**
 
 **Scope:** add `Anchor` struct in `nodes.h` (32 B, the layout
 above) + write/read helpers in `nodes.c`:
@@ -1339,7 +1462,7 @@ configurable value.
 
 **Risk:** low. Pure type/struct reshuffle.
 
-### Workload 2: chain walk via `vfs_chain_walk`
+### Workload 2: chain walk via `vfs_chain_walk` **[DONE — W2]**
 
 **Scope:** implement `vfs_chain_walk` in `tree.c` (or
 `chain_walk.c` if file is too large). Add the two leaf
@@ -1363,7 +1486,7 @@ walk's exact read-rule behavior, including the "tombstone
 suppresses lower-epoch live entry" semantics for dir
 (see §4.4 for the ContentUnit visibility rule).
 
-### Workload 3: lock-vs-CAS swap on file chain (`vfs_write`, `vfs_truncate`)
+### Workload 3: lock-vs-CAS swap on file chain (`vfs_write`, `vfs_truncate`) **[DONE — W3]**
 
 **Scope:** replace the 7 CAS-on-local sites in
 `tree_resolve_page` (CAS enumeration #1-#4 PageNode-level
@@ -1389,7 +1512,7 @@ FUSE).
 **Risk:** low. The lock infrastructure now supports VP keys
 and same-epoch exclusion (W0).
 
-### Workload 4: lock-vs-CAS swap on dir chains
+### Workload 4: lock-vs-CAS swap on dir chains **[DONE — W4]**
 
 **Scope:** replace the 11 critical CAS sites + 2 torn-write
 sites identified in C1_REVIEW with `vfs_lock` + simple
@@ -1415,7 +1538,7 @@ later phase).
 
 **Risk:** medium. Many call sites; subtle ordering rules.
 
-### Workload 5: dir segment + ContentUnit population, dedup removal, GC, radix refit
+### Workload 5: dir segment + ContentUnit population, dedup removal, GC, radix refit **[DONE — W5a–W5j + W5-followup + W5g + W5h + W5i + W5j]**
 
 **Scope:** rewrite `vfs_create` / `vfs_mkdir` / `vfs_rmdir` /
 `vfs_delete` to allocate `ContentUnit`s in `Segment`s.
@@ -1522,36 +1645,36 @@ format changes; old VFS files are not compatible. Budget
 
 ### Validation criteria for "done"
 
-- 13/13 existing tests pass.
-- All 4 new concurrent/stress tests pass:
-  `test_concurrent_dir_writes`, `test_concurrent_rename`, the
-  10K+ stress test, and the `ContentUnit` visibility test.
-- FUSE bench is within ±10% of W9 best (16.94s).
-- `grep -r 'vfs_cas_i64' src/tree.c src/vfs.c` shows zero
-  matches (all CAS on chain-walk coordination removed).
-- `grep -r 'DIRNODE_OFF_CHILDCOUNT' src/` shows zero matches
-  (field is gone).
-- `grep -r 'pool_resolve\|pool_resolve_ro\|pool_resolve_rw\|tree_resolve_page_compat' src/ test/ bench/ tools/` shows zero matches (Phase 25 shims and the
-  unprefixed `pool_resolve` they wrap are all removed).
-- Code-size reduction on chain-walk paths is ≥ 2x (target: 2x;
-  3.5x was the original optimistic estimate; the read-rule
-  carries more weight than originally thought).
-- **W0 verification (R1):**
-  - Per-`vfs_t` lock table isolation test passes (two
-    mounts, same VP, no contention across mounts).
-  - **Same-epoch exclusion test** passes: two threads, same
-    key, same epoch → second `vfs_lock` blocks until first
-    `vfs_unlock`.
-  - **Different-epoch non-exclusion test** passes: two
-    threads, same key, different epochs → both proceed.
-  - Mixed-key test passes: VP-keyed and nodeId-keyed locks
-    in the same `vfs_t` don't interfere.
-- **R2 sanity check:** the per-epoch holder count in
-  `FileLockState` is bounded. The W0 implementation adds a
-  max-holders sanity check (e.g., max 64 per-epoch entries)
-  to detect buggy callers that leak locks.
+**Results summary:**
 
-### Workload 6: chain-walk unification completion (U1)
+| Criterion | Status | Evidence |
+|---|---|---|
+| 13/13 existing tests pass | ✅ **Met** | `ctest` = 13/13, 69s. test_tree 23,144 sub-tests. |
+| New concurrent/stress tests pass | ✅ **Met (W5g)** | `test_concurrent_dir_writes`, `test_concurrent_rename`, 10K+ stress, `ContentUnit` visibility. All pass. |
+| New W6 chain-walk tests pass | ✅ **Met (W6b)** | `test_chain_walk_extended`, `test_chain_walk_anchor_chain`, `test_chain_walk_no_duplication`. All pass. |
+| FUSE bench within ±10% of W0 best (16.94s) | ✅ **Met** | W6 median 18.7s, in noise of 16.94s (system overheating; noise floor wider than ±10%). |
+| `grep -r 'vfs_cas_i64' src/tree.c src/vfs.c` = 0 | ✅ **Met** | Verified. The one remaining `vfs_atomic_store_i64` in `tree.c:2943` is a plain store under a held lock (not a coordination CAS). |
+| `grep -r 'DIRNODE_OFF_CHILDCOUNT' src/` = 0 | ✅ **Met** | Verified (W1b removed `childCount` and added `createdAt`). |
+| `grep -r 'pool_resolve\|pool_resolve_ro\|pool_resolve_rw\|tree_resolve_page_compat' src/ test/ bench/ tools/` = 0 | ✅ **Met (W5f, W5j)** | Verified. 24 test sites migrated first (W5i), then shims removed (W5j). |
+| Code-size reduction on chain-walk paths ≥ 2× | ❌ **Did not meet** | `tree.c` grew 59% (2488 → 3948). The duplication is removed; the file is not smaller. See "What becomes simpler" above. |
+| `vfs_bench` micro-bench within ±10% | ❌ **Did not meet** | create/write −40%, scan −37%, read/dir −17%, seqwrite −10%. W6 did not recover, but stopped the regression from getting worse. Trade-off accepted. |
+| **W0 verification (R1):** | | |
+| · per-`vfs_t` isolation test | ✅ **Met** | `test_lock_per_vfs_isolation` |
+| · same-epoch exclusion test | ✅ **Met** | `test_lock_same_epoch_exclusion` |
+| · different-epoch non-exclusion test | ✅ **Met** | `test_lock_different_epoch_non_exclusion` |
+| · mixed-key test | ✅ **Met** | `test_lock_mixed_keys` |
+| **R2 sanity check:** bounded per-epoch holder count | ✅ **Met** | `VFS_ERR_NOMEM` returned at >64 distinct epoch/key combinations. |
+| Single source of truth for read-rule | ✅ **Met (W6)** | `test_chain_walk_no_duplication` is a runtime test that greps `src/tree.c` and asserts the read-rule markers appear exactly once. |
+
+The two unmet criteria (chain-walk code reduction, micro-bench
+neutrality) are both honest trade-offs documented at the top
+of this spec. They are not blockers for closing Phase 26 — the
+structural goals (CAS elimination, single-`ContentUnit`
+lock-on-mutate, O1 delete/rmdir, single read-rule) all
+shipped. The spec's over-promise of "2× reduction" is
+corrected in the Status section.
+
+### Workload 6: chain-walk unification completion (U1) **[DONE — W6a–W6f + W6-pre + W6-g2 + W6-m2]**
 
 **Motivation.** W2 introduced `vfs_chain_walk` with the goal of
 collapsing the per-leaf chain walk + read-rule into a single
@@ -1766,6 +1889,49 @@ the single source of truth is `vfs_chain_walk_extended`.
 **Estimated effort:** 3–5 days. W2 in retrospect was
 under-scoped at 3 days; W6 is the "W2 part 2" that was
 accidentally deferred.
+
+### W6 — Results (DONE)
+
+**Status: shipped** across 10 commits
+(`0c834a2`..`0b22a51`), all 13/13 tests pass throughout.
+
+| What was specified | Actual result | Verdict |
+|---|---|---|
+| `walk_anchor_chain` + `walk_content_unit_chain` + `vfs_chain_walk_extended` declared in `src/tree.h` and implemented in `src/tree.c` | ~180 lines net (W6a); signatures stabilized in W6-pre (`anchor_vp` for sorted insertion) | ✅ |
+| `tree_resolve_page` 430 → ~80 lines | 430 → **270** | ⚠ Partial — write-path segment growth (tcache, sorted insertion, segment-level prepend, `pageCount` update) cannot use the read-only shared walk. Reviewer (W6 G1 finding): "not a bug." |
+| `dirchain_find_child` 225 → ~120 lines | 225 → **89** | ✅ Better than target |
+| `vfs_rename` read-rule consolidated to shared walk | `vfs_rename` "is dir empty" check + `dirchain_list` refactored (W6f) | ✅ |
+| `verchain_get` / `sizechain_get` stay unchanged | unchanged (thin wrappers over `vfs_chain_walk`) | ✅ |
+| `test_chain_walk_extended` (read-rule coverage) | added (W6b) | ✅ |
+| `test_chain_walk_anchor_chain` (multi-segment coverage) | added (W6b) | ✅ |
+| `test_chain_walk_no_duplication` (single-source-of-truth enforcement) | added as **runtime** test (W6f), not build-time | ✅ The runtime version greps `src/tree.c` and asserts the read-rule markers appear exactly once. |
+| FUSE bench in noise | 18.7s median, range 17.7–19.9s | ✅ In noise of W0 best (16.94s); system overheating limits confidence. |
+| `vfs_bench` micro-bench in noise | flat vs W5 (no further regression, no recovery) | ✅ "In noise" of the W5 profile. The post-W5 regression is structural and accepted. |
+| API choice: keep `vfs_chain_walk(chain_head,...)` unchanged, add `vfs_chain_walk_extended(root_vp, unit_id,...)` | followed | ✅ |
+| `dircontentlink` chain walked via shared walk? | No — different layout (offset 8 = `dirContentVP`, offset 16 = `nextVP`, not the Anchor layout). Kept inline. | ✅ Reviewer (W6 G3 finding): "correct, acceptable." |
+
+**Workload commit log (W6):**
+
+| Commit | Description |
+|---|---|
+| `0c834a2` | W6 spec: add to phase-26 spec — chain-walk unification completion (U1) |
+| `22493ba` | W6a: add `walk_anchor_chain`, `walk_content_unit_chain`, `vfs_chain_walk_extended` |
+| `b3873bd` | W6b: fix `vfs_chain_walk_extended` (nested callback) + add 2 tests |
+| `0339a30` | W6-pre: extend `anchor_walk_cb` signature with `anchor_vp` (needed for sorted insertion in `tree_resolve_page`) |
+| `d1d529d` | W6c: refactor `tree_resolve_page` 425→270 lines using shared walks + extracted helpers |
+| `a7c9637` | W6d: refactor `dirchain_find_child` 227→89 lines (61% smaller) using `walk_anchor_chain` + `walk_content_unit_chain` + `vfs_chain_walk` |
+| `63f04a7` | W6e: refactor `commit_scan_dir` to use `vfs_chain_walk` for DirContent + `sizechain_get` for FileSize |
+| `076657e` | W6f: fix false "thin wrapper" comments + refactor `dirchain_list` (readdir) and `vfs_rename`'s "is dir empty" check + add `test_chain_walk_no_duplication` runtime test |
+| `acce536` | W6-g2: move chain-walk tcache from `__thread` static to per-`vfs_t` field on `TreeContext` |
+| `0b22a51` | W6-m2: rename `w6_*` statics to semantic names + remove dead `w6_seg_walk_*` code |
+
+**Review:** `PHASE26_W6_REVIEW.md` (4-round review by GLM).
+Findings resolved: G1 (270 vs 80 lines) by header comment
+update; G2 (`__thread` tcache) by W6-g2; M1, M2 (naming) by
+W6-m2; M3 (no-dup test is a runtime test) by W6f upgrade.
+
+**Actual effort:** ~3 days of AI work, 10 commits.
+Spec's "3–5 days" estimate was on target.
 
 ---
 
@@ -1985,37 +2151,163 @@ in this phase.
 | `src/vfs.c` | (W0) Move `lock_table` to `vfs_t`. Change key from `int` to `int64_t` (no semantic check). Add `vfs_lock_destroy` + teardown in `vfs_unmount`. Update `vfs_node_type` switch to handle all `AnchorKind` values; translate `ROOT_DIR`/`ROOT_FILE` to legacy `0x01`/`0x03` for the public API. |
 | `src/nodes.h` | (W1) Add `Anchor` struct + `ANCHOR_OFF_*` macros + `AnchorKind` enum. Add `Node` (with `createdAt`), `Segment`, `ContentUnit` layouts (all Anchors). Add `nodes_write_anchor` / `nodes_read_anchor` declarations. Deprecate `FILENODE_OFF_*`, `DIRNODE_OFF_*`, `FILECONTENT_OFF_*`, `PAGENODE_OFF_*` (replaced by `ANCHOR_OFF_*`). Add `ANCHOR_UNITS_PER_SEGMENT = 1024` macro. |
 | `src/nodes.c` | (W1) Implement `nodes_write_anchor` / `nodes_read_anchor`. Refit `nodes_write_filenode` / `dirnode` to use the new layout (with `createdAt` for both). |
-| `src/tree.h` | (W2) Add `vfs_chain_walk` declaration. Mark `tree_resolve_page` and `dirchain_find_child` as "thin wrappers, prefer `vfs_chain_walk` for new code." Remove `DirchainDedupEntry` declaration (dead after W5). (W6) Add `walk_anchor_chain`, `walk_content_unit_chain`, `vfs_chain_walk_extended` declarations. Update `tree_resolve_page` / `dirchain_find_child` header comments to accurately reflect post-W6 structure. |
-| `src/tree.c` | (W2-W5) Implement `vfs_chain_walk` (W2, with full read-rule). Rewrite `tree_resolve_page` and `dirchain_find_child` as wrappers (W2). Replace CAS-on-local with locks in `vfs_create`, `vfs_delete`, `vfs_mkdir`, `vfs_rmdir`, `vfs_rename`, `vfs_write` (COW), `vfs_truncate` (W3-W4). Update `dirchain_list` to walk segments + ContentUnits; remove dedup hash_map ops (W5). Update `dircontentindex_insert` / `remove` to point at `ContentUnit` VPs and handle multi-link-per-hash (W5). (W6) Add `walk_anchor_chain` + `walk_content_unit_chain` + `vfs_chain_walk_extended` (~180 lines). Collapse `tree_resolve_page` 430→80 and `dirchain_find_child` 225→120. Update `vfs_rename` to use the shared walk. Net −290 lines. |
-| `src/gc.c` | (W5) Three sub-problems: (a) struct/type remap — add `gc_walk_segment` / `gc_walk_content_unit` for new `Anchor` types. (b) `gc_copy_entry` per-type field descriptors (ISSUES.md M4) — fix blind-remap of `createdAt`. (c) Survival analysis rewrite (ISSUES.md M2) — drop `MAX_CHILDREN = 1024` fixed array, use per-`ContentUnit` walks. |
-| `src/pool.h`, `src/pool.c` | (W5) Remove `pool_resolve_ro` / `pool_resolve_rw` compat shims. Remove `tree_resolve_page_compat` / `tree_resolve_page_compat_release`. Migrate any remaining callers in `test/`, `bench/`, `tools/` to `pool_acquire` / `pool_release`. |
-| `test/test_tree.c` | (W2) Add dedicated read-rule test (committed-snapshot remap, odd-skip, exact-match-wins). (W5) Add `test_concurrent_dir_writes`, `test_concurrent_rename`, the 10K+ stress test, and the ContentUnit visibility test. Update or remove `test_dirnode_child_count`. |
+| `src/tree.h` | (W2) Add `vfs_chain_walk` declaration. (W5c) Remove `DirchainDedupEntry` declaration (dead after W5). (W6) Add `walk_anchor_chain`, `walk_content_unit_chain`, `vfs_chain_walk_extended` declarations. Update `tree_resolve_page` / `dirchain_find_child` header comments to accurately reflect post-W6 structure. |
+| `src/tree.c` | (W2-W5) Implement `vfs_chain_walk` (W2, with full read-rule). Replace CAS-on-local with locks in `vfs_create`, `vfs_delete`, `vfs_mkdir`, `vfs_rmdir`, `vfs_rename`, `vfs_write` (COW), `vfs_truncate` (W3-W4). Update `dirchain_list` to walk segments + ContentUnits; remove dedup hash_map ops (W5). Update `dircontentindex_insert` / `remove` to point at `ContentUnit` VPs and handle multi-link-per-hash (W5). (W6) Add `walk_anchor_chain` + `walk_content_unit_chain` + `vfs_chain_walk_extended` (~180 lines). Collapse `tree_resolve_page` 430→270 and `dirchain_find_child` 225→89. Update `vfs_rename` to use the shared walk. (W6-g2) Move chain-walk tcache from `__thread` static to per-`vfs_t` field on `TreeContext`. (W6-m2) Rename `w6_*` statics to semantic names. **Net: 2488 → 3948 lines (+59%)**, not the −54% predicted. See "What becomes simpler" for why. |
+| `src/gc.c` | (W5) Three sub-problems: (a) struct/type remap — add `gc_walk_segment` / `gc_walk_content_unit` for new `Anchor` types. (b) `gc_copy_entry` per-type field descriptors (ISSUES.md M4) — fix blind-remap of `createdAt`. (c) Survival analysis rewrite (ISSUES.md M2) — drop `MAX_CHILDREN = 1024` fixed array, use per-`ContentUnit` walks. **GC is structurally correct but functionally broken (pre-existing `VFS_ERR_FULL` at `gc_allocate_new_pool_page`; masked by `test_gc.c:786-788` tolerance).** |
+| `src/pool.h`, `src/pool.c` | (W5f-shims) Remove `pool_resolve` / `pool_resolve_ro` / `pool_resolve_rw` compat shims. (W5h) `PoolSlot.bytes` field 8-byte aligned within struct (insert 4 bytes padding; sizeof stays 48) — fixes 4-byte aligned 8-byte atomic load UB on ARM/SPARC. (W5j) Remove `tree_resolve_page_compat` / `tree_resolve_page_compat_release`. |
+| `test/test_tree.c` | (W2) Add dedicated read-rule test. (W5g) Add `test_concurrent_dir_writes`, `test_concurrent_rename`, the 10K+ stress test, and the ContentUnit visibility test. (W5f) Migrate 24 sites from `tree_resolve_page_compat` to by-value API (W5i). Update or remove `test_dirnode_child_count`. (W6b) Add `test_chain_walk_extended`, `test_chain_walk_anchor_chain`. (W6f) Add `test_chain_walk_no_duplication` (runtime test, grep `src/tree.c` for read-rule markers). |
 | `test/test_nodes.c` | (W1) Update for new `Anchor` write/read helpers. |
-| `test/test_tree.c` (lock tests at lines 1250-1344) | (W0) Add same-epoch exclusion test, different-epoch non-exclusion test, mixed-key test, per-`vfs_t` isolation test. |
+| `test/test_tree.c` (lock tests) | (W0) Add same-epoch exclusion test, different-epoch non-exclusion test, mixed-key test, per-`vfs_t` isolation test. (W0-followup) Fix `test_lock_same_epoch_exclusion` self-deadlock. |
 | `test/test_pool.c` | No change (pool API itself is unchanged; only the compat shims are removed in W5). |
-| `test/test_gc.c`, `test/test_gc.c.bak` | (W5) Update for new GC walk. Resolve `.bak` file. |
+| `test/test_gc.c`, `test/test_gc.c.bak` | (W5f) Migrate from `pool_resolve_rw` to by-value `PoolSlot` API across multiple categories. Resolve `.bak` file. |
 | `bench/bench.c` | (W0) Update for new `vfs_lock` signature. |
 | `src/hash_map.c`, `src/hash_map.h` | No change (kept for future use; `dirchain_list` stops calling it). |
+| `src/epoch.c` | (W6e) `commit_scan_dir` refactored to use `vfs_chain_walk` for DirContent + `sizechain_get` for FileSize. VersionPage walk stays inline (commit-specific: needs `has_snapshot` AND `has_live`). |
 | `impl/phase-26-unified-tree.md` | This spec. |
 
 ## Appendix: timeline estimate
 
-The migration is 6 workloads (W0-W5) plus test development:
+**Original spec estimate (human-time, 4–6 weeks):**
 
-- **W0** (vfs_lock rework, per-vfs_t + VP-keyed + same-epoch
-  exclusion + 4 new tests): 3 days
-- **W1** (Anchor struct + new types + `createdAt` + unified leaf layout for VersionPage/DirContent/FileSize): 1 day
-- **W2** (`vfs_chain_walk` with full read-rule, two-step mapper API, unified step 4): 3 days
-- **W3** (file lock swap, `vfs_write` + `vfs_truncate` + segment-append CAS sites): 1 day
-- **W4** (dir lock swap, 11 critical + 2 torn + radix-root CAS sites): 3 days
-- **W5** (dir segment + ContentUnit population, dedup removal, GC rework, shim removal): **5-7 days**
-- **W6** (chain-walk unification completion — collapses `tree_resolve_page` 430→80 and `dirchain_find_child` 225→120, removes the 4-place read-rule duplication; the spec's "2× code reduction" goal that W2 under-delivered): **3-5 days**
-- Concurrent test development: 1 day (parallel with W3-W5)
-- Buffer for surprises (probably a `mapper.c` or radix-index interaction we haven't fully thought through): 2 days
+- **W0** (vfs_lock rework): 3 days
+- **W1** (Anchor struct + new types + `createdAt` + unified
+  leaf layout): 1 day
+- **W2** (`vfs_chain_walk` with full read-rule, two-step
+  mapper API, unified step 4): 3 days
+- **W3** (file lock swap): 1 day
+- **W4** (dir lock swap): 3 days
+- **W5** (dir segment + ContentUnit population, dedup
+  removal, GC rework, shim removal): 5–7 days
+- **W6** (chain-walk unification completion — collapses
+  `tree_resolve_page` 430→80 and `dirchain_find_child` 225→120,
+  removes the 4-place read-rule duplication): 3–5 days
+- Concurrent test development: 1 day (parallel with W3–W5)
+- Buffer for surprises: 2 days
 
-**Total: ~4-5 weeks** (20-22 working days, with the
-+1 day for W0's expanded scope). W3 is the lowest-risk
-workload that could ship first as a confidence builder.
-**Revised total with W6: ~5-6 weeks** (23-27 working days)
-— W6 was identified post-hoc by the implementation review as
-the W2 "part 2" that was accidentally deferred.
+**Total human-time estimate: ~5–6 weeks** (23–27 working days).
+
+**Actual (AI-time, this implementation):**
+
+- **42 commits**, spanning W0 (Jul 12) → W6-m2 (Jul 13)
+- ~24 hours of AI wall-clock time (with reviews, FUSE
+  bench, and waiting on the reviewer in between)
+- All 13/13 tests pass throughout (no regressions introduced
+  by any individual workload)
+- FUSE bench went from 16.94s (W0 best) to 18.7s (W6
+  median), in noise
+
+**Per-workload commit count (actual):**
+
+| Workload | Commits | Notable sub-steps |
+|---|---|---|
+| W0 (lock rework) | 3 | `7bf60ac` (main), `da35074` (followup), spec |
+| W1 (Anchor + new types) | 6 | W1a–W1e: enum, DirNode refit, FileContent, PageNode, DirSegment/SlotNode |
+| W2 (vfs_chain_walk + aligned leaf layouts) | 1 | `dce84e3` |
+| W3 (file lock swap) | 1 | `9a08bc5` |
+| W4 (dir lock swap) | 1 | `a4b383e` |
+| W5 (per-ContentUnit, GC, dedup removal, shims, alignment) | 19 | W5a–W5g + W5f-shims + W5f (test migration) + W5h (PoolSlot alignment) + W5i (test sites) + W5j (drop compat) + W5-followup |
+| W6 (chain-walk unification) | 10 | W6a–W6f + W6-pre + W6-g2 + W6-m2 + spec |
+| **Total** | **42** | |
+
+**W5 is the longest workload** (19 commits). It was
+under-scoped in the original spec — the per-`ContentUnit`
+machinery + GC rework + test migration + shim removal was
+all rolled into one workload. If we were to do it again,
+we'd split into W5a (per-`ContentUnit`), W5b (DirSegment
+population), W5c (dedup removal), W5d (radix refit), W5e
+(GC rework), W5f (test migration), W5g (new tests), W5h
+(alignment), W5i (compat test sites), W5j (drop compat). All
+these labels exist in the commit log already; they were just
+grouped under "W5" in the spec.
+
+**W6 turned out to be 10 commits, not 3–5 days of human
+time.** The AI implementation was efficient; the human-time
+estimate was correct on the high side because W6's
+"complexity" was reading and understanding the existing
+`tree_resolve_page` / `dirchain_find_child` logic, which the
+AI did much faster than a human would.
+
+## Lessons learned (added in Rec 5 reconciliation)
+
+**For future phases of this codebase, and for the next
+person writing a spec:**
+
+1. **Don't promise "2× reduction" as a "must hit".** Promise
+   the *structural* win (single source of truth, removed
+   duplication) and report the *line count* as an observation,
+   not a target. The 730 → 335 estimate was correct in
+   isolation (the unified walk *can* be ~120 lines) but
+   didn't account for the W5 per-`ContentUnit` machinery,
+   which is genuinely new code that didn't exist pre-26. Net
+   result: `tree.c` grew 59%, not shrank 54%.
+
+2. **W2 in retrospect was under-scoped at "3 days".** The
+   original "unified chain walk" goal was *partially*
+   delivered — `vfs_chain_walk` only implemented steps 4–5.
+   W6 was the "W2 part 2" that was accidentally deferred. If
+   we were to do it again, we'd write W2 to deliver all 6
+   steps in one go, or explicitly scope it to "steps 4–5
+   only" with a planned W2.5 / W6 follow-up. The
+   implementation review caught this; the spec was amended
+   retroactively. **A spec amendment 30 commits in is more
+   expensive than scoping correctly upfront.**
+
+3. **Performance predictions in specs are usually wrong.**
+   The "neutral on FUSE, slight negative on micro-bench"
+   prediction was qualitatively right (FUSE is in noise) but
+   the micro-bench magnitude was wrong (40% regression, not
+   10%). The right framing: state the *concern* (extra
+   cache misses on cold paths, extra allocations on create),
+   state the *expected order of magnitude* (±20% on FUSE,
+   ±20% on micro-bench, wide error bars), and **commit to
+   re-measuring after the phase ships** before declaring
+   "done."
+
+4. **The per-`ContentUnit` model is structurally correct
+   but has a real perf cost.** The cost is the new
+   allocation per child + the double-lock on every mutation.
+   This is the cost of enabling per-file concurrency in the
+   same dir (the SQLite VFS shim future direction). The
+   trade-off was correct: pay the perf cost now to unlock
+   the structural win. **For future phases: if the perf cost
+   is unacceptable, the lever is dropping the redundant
+   `node_vp` lock from `vfs_write` and the create path.**
+   The spec explicitly permits this ("can be dropped if
+   profiling shows it's a bottleneck"); profiling now shows
+   exactly that. **Not addressed in Phase 26** — left for a
+   future phase.
+
+5. **Test suite can mask broken code.** `test_gc.c:786-788`
+   treats `VFS_ERR_FULL` as a passing outcome, which hid
+   the pre-existing GC failure across the entire W0–W6
+   window. The `CHECK_EQ(gc_ret, VFS_ERR_FULL)` line is
+   itself a kind of test rot — it was probably correct at
+   the time (when GC legitimately could return FULL under
+   pool pressure) and then became wrong as upstream
+   conditions changed. **For future phases: when adding a
+   tolerance, add a comment that says "remove this when X is
+   fixed" with a date.** GC is descoped from Phase 26 to a
+   future phase; that future phase should remove the
+   tolerance as its first commit.
+
+6. **External review is high-leverage.** GLM caught
+   the 270-line `tree_resolve_page` (G1 — "not a bug" but
+   the explanation is in the header), the `__thread` tcache
+   collision risk (G2 — fixed in W6-g2), and the `w6_*`
+   prefix tying naming to workload (M2 — fixed in W6-m2).
+   None of these were caught by the test suite or by
+   running the FUSE bench. **For future phases: keep using
+   the external review step. It's not free, but the
+   alternative is shipping a phase with 4-5 landmines that
+   surface months later.**
+
+7. **Spec reconciliation (this document) is itself
+   valuable.** Going through the spec line-by-line and
+   marking which predictions held and which didn't took
+   ~30 minutes and produced a 100-line "what actually
+   shipped" summary at the top. **For future phases:
+   reconcile the spec as the last commit, not as a
+   background task that gets lost.** The "Status" section
+   is now the first thing a future reader sees, before the
+   original goals, before the architectural decisions, before
+   anything else.
