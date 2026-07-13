@@ -3206,8 +3206,161 @@ scan_links: {
 }
 
 /* ---------------------------------------------------------------------------
+/* ---------------------------------------------------------------------------
  * dirchain_find_child — walk DirContent chain, read-rule dedup, return match
+ *
+ * W6: rewritten to use vfs_chain_walk for the per-leaf chain walk
+ * + read-rule (instead of inlining the read-rule in 2 places) and
+ * walk_anchor_chain + walk_content_unit_chain for the segment +
+ * unit chain walks in the fallback path.  The radix path's
+ * dircontentlink chain is walked manually (the dircontentlink
+ * layout is different from the Anchor layout, so the generic
+ * walks don't apply).
+ *
+ * Two paths (preserved from the pre-W6 implementation):
+ *   1. Radix tree fast path (Phase 18): walk the radix index to
+ *      find a leaf, then walk the dircontentlink chain at the leaf.
+ *      For each link, the SlotNode's DirContent chain is walked
+ *      via vfs_chain_walk (read-rule), the visible DirContent's
+ *      name is compared to the target, and on match the result is
+ *      returned.
+ *   2. Fallback chain walk (when no radix index): walk the
+ *      DirSegment chain (walk_anchor_chain) → SlotNode chain
+ *      (walk_content_unit_chain) → for each SlotNode, walk the
+ *      DirContent chain (vfs_chain_walk) → name check.
+ *
+ * Both paths apply the same ContentUnit visibility rule: the
+ * first applicable DirContent in a SlotNode's chain is the
+ * visible one.  If its name doesn't match, the queried name
+ * doesn't exist (even if a lower-epoch entry with the matching
+ * name is in the chain).
+ *
+ * Locking: read-only path (pinPage=false throughout).  No locks
+ * acquired.  The pre-existing function did not acquire locks
+ * either.
+ *
+ * VFS_NAME_HASH_TESTING: when defined, the test-only fast-reject
+ * counter `s_hash_rejects` is incremented for hash mismatches in
+ * the fallback path.  Preserved from the pre-W6 implementation.
  * --------------------------------------------------------------------------- */
+
+/* W6: shared state for the by-name search.  Used by both the radix
+ * path and the fallback path.  Holds the best match so far. */
+typedef struct {
+    TreeContext* ctx;
+    const char*  name;
+    uint64_t     target_hash;
+    int64_t      read_epoch;
+    /* Out: best match */
+    int64_t      best_child, best_childPtr, best_raw_epoch;
+    int          best_name_match;
+} w6_find_name_state;
+
+/* W6: check if a SlotNode contains a name match.  Walks the
+ * SlotNode's DirContent chain via vfs_chain_walk (which applies
+ * the read-rule), reads the name of the visible DirContent, and
+ * compares to the target.  Updates st->best_* on match. */
+static void w6_check_slot_for_name(PoolSlot* slot_slot,
+                                    w6_find_name_state* st) {
+    TreeContext* ctx = st->ctx;
+    int64_t leaf_head = vfs_rd8_s(slot_slot->bytes, ANCHOR_OFF_HEADPTR,
+                                    ctx->page_size);
+    if (leaf_head == 0) return;  /* empty slot */
+
+    /* Use vfs_chain_walk to apply the read-rule (mapper remap,
+       even/odd, exact-match-wins) on the SlotNode's DirContent
+       chain.  The visible DirContent is returned in dc_slot. */
+    PoolSlot dc_slot = {0};
+    WalkResult r = vfs_chain_walk(ctx, leaf_head, st->read_epoch, &dc_slot);
+    if (r != WALK_FOUND) return;
+
+    /* Read the visible DirContent's fields. */
+    uint32_t ce_child, ce_epoch;
+    int64_t ce_childPtr, ce_namePtr, ce_next;
+    nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch,
+                          &ce_childPtr, &ce_namePtr, &ce_next,
+                          ctx->page_size);
+
+    if (ce_namePtr == 0) {
+        /* Visible tombstone for this child at this epoch.
+         * No match possible — the slot is deleted. */
+        return;
+    }
+
+    /* Read the name and compare.  Pre-hash fast-reject: if the
+     * stored hash doesn't match, skip the strcmp.  The pre-W6
+     * implementation had this same fast-reject. */
+    uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
+    if (entry_hash != st->target_hash) {
+#ifdef VFS_NAME_HASH_TESTING
+        s_hash_rejects++;
+#endif
+        return;
+    }
+    char entry_name[256];
+    int nl = nodes_read_name(&ctx->pool, ce_namePtr, entry_name,
+                              (int)sizeof(entry_name));
+    if (nl > 0 && strcmp(entry_name, st->name) == 0) {
+        st->best_child      = (int64_t)ce_child;
+        st->best_childPtr   = ce_childPtr;
+        st->best_raw_epoch  = (int64_t)ce_epoch;
+        st->best_name_match = 1;
+    }
+}
+
+/* W6: radix-path callback for the dircontentlink chain at a
+ * radix leaf.  Each link points at a SlotNode (via
+ * DIRCONTENTLINK_OFF_DIRCONTENTVP at offset 8).  We acquire
+ * the SlotNode and check it for a name match.  Returns 1 to
+ * stop the walk on match, 0 to continue. */
+static int w6_radix_link_cb(TreeContext* ctx, int64_t link_vp,
+                             const uint8_t* link_bytes, void* user) {
+    w6_find_name_state* st = (w6_find_name_state*)user;
+    (void)link_vp;
+    int64_t slot_vp = vfs_rd8_s(link_bytes, DIRCONTENTLINK_OFF_DIRCONTENTVP,
+                                ctx->page_size);
+    if (slot_vp == 0) return 0;
+    PoolSlot slot_slot = {0};
+    pool_acquire(&ctx->pool, slot_vp, false, &slot_slot);
+    if (slot_slot.vptr == VFS_VPTR_NULL) return 0;
+    w6_check_slot_for_name(&slot_slot, st);
+    pool_release(&ctx->pool, &slot_slot);
+    return st->best_name_match;  /* 1 to stop, 0 to continue */
+}
+
+/* W6: fallback-path callback for the SlotNode chain within a
+ * DirSegment.  Called for each SlotNode via
+ * walk_content_unit_chain.  Returns 1 to stop on match, 0 to
+ * continue. */
+static int w6_fallback_slot_cb(TreeContext* ctx, int64_t slot_vp,
+                                const uint8_t* slot_bytes, void* user) {
+    w6_find_name_state* st = (w6_find_name_state*)user;
+    (void)slot_vp;
+    /* The callback receives the SlotNode's bytes.  w6_check_slot_for_name
+     * needs a PoolSlot (because vfs_chain_walk writes the visible
+     * DirContent's bytes into the slot).  Build a temporary
+     * PoolSlot with the bytes copied in. */
+    PoolSlot slot_slot = {0};
+    memcpy(slot_slot.bytes, slot_bytes, VFS_POOL_SLOT_SIZE);
+    w6_check_slot_for_name(&slot_slot, st);
+    return st->best_name_match;
+}
+
+/* W6: fallback-path callback for the DirSegment chain.  Called
+ * for each DirSegment via walk_anchor_chain.  For each
+ * segment, walks its SlotNode chain via
+ * walk_content_unit_chain + w6_fallback_slot_cb.  Returns 1 to
+ * stop the outer walk on match, 0 to continue. */
+static int w6_fallback_seg_cb(TreeContext* ctx, int64_t seg_vp,
+                               const uint8_t* seg_bytes, void* user) {
+    w6_find_name_state* st = (w6_find_name_state*)user;
+    (void)seg_vp;
+    int64_t slot_head = vfs_rd8_s(seg_bytes, ANCHOR_OFF_HEADPTR,
+                                   ctx->page_size);
+    if (slot_head == 0) return 0;  /* empty segment, keep looking */
+    walk_content_unit_chain(ctx, slot_head, w6_fallback_slot_cb, st);
+    return st->best_name_match;
+}
 
 int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                         int64_t epoch, int64_t* out_childPtr,
@@ -3215,225 +3368,87 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
     if (!ctx || !name || name[0] == '\0') return VFS_ERR_IO;
     if (!out_childPtr || !out_nodeId) return VFS_ERR_IO;
 
-    /* Pre-compute hash for fast-reject: skip expensive strcmp when hashes
-     * don't match.  The hash is stored in the first NameEntry slot at
-     * offset 0 and read via nodes_read_name_hash. */
+    /* Pre-compute hash for fast-reject: skip expensive strcmp when
+     * hashes don't match.  Matches the pre-W6 implementation. */
     uint64_t target_hash = name_hash_compute(name, (int)strlen(name));
+    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
 
-    /* Phase 25: by-value pool slot (read-only, pinPage=false).  FUSE
-       hot path — copy-out closes C1; release is no-op on un-pinned. */
+    /* Shared state for both paths. */
+    w6_find_name_state st = {
+        .ctx = ctx, .name = name, .target_hash = target_hash,
+        .read_epoch = read_epoch,
+        .best_child = 0, .best_childPtr = 0, .best_raw_epoch = 0,
+        .best_name_match = 0,
+    };
+
+    /* Read the DirNode to get the radix index head and the
+     * segment chain head.  Release the dir_slot after reading
+     * (the pre-W6 implementation did the same — early release
+     * shrinks the live working set on the FUSE hot path). */
     PoolSlot dir_slot = {0};
     pool_acquire(&ctx->pool, dir_vp, false, &dir_slot);
     if (dir_slot.vptr == VFS_VPTR_NULL) return VFS_ERR_NOTFOUND;
-    if (vfs_rd2_s(dir_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR)
+    if (vfs_rd2_s(dir_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size)
+        != (int16_t)NODE_TYPE_DIR)
         return VFS_ERR_NOTDIR;
-
-    int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
-
-    /* --- Phase 18: radix tree fast path ---
-       If the directory has a tree index, walk it by name hash.  The
-       tree is the source of truth for name lookups — no chain fallback
-       when the tree exists. */
     int64_t indexRoot = vfs_rd8_s(dir_slot.bytes, DIRNODE_OFF_INDEXHEADPTR,
-                                   ctx->page_size);
+                                    ctx->page_size);
     int64_t headPtr   = vfs_rd8_s(dir_slot.bytes, DIRNODE_OFF_HEADPTR,
-                                   ctx->page_size);
-    /* dir_slot is no longer used after this point — release early to
-       shrink the live working set. */
+                                    ctx->page_size);
     pool_release(&ctx->pool, &dir_slot);
 
+    /* --- Path 1: radix tree fast path (Phase 18) ---
+     * If the directory has a radix index, the index is the source
+     * of truth for name lookups.  Walk it by name hash. */
     if (indexRoot != 0) {
         int64_t leafVP = dircontentindex_lookup(&ctx->pool, indexRoot,
                                                 target_hash, ctx->page_size);
         if (leafVP != 0) {
-            /* W5a: the radix leaf's listVP is now a SlotNode chain
-             * (each SlotNode represents one or more DirContents for
-             * a child).  Walk the list, for each SlotNode walk its
-             * DirContent chain. */
+            /* The radix leaf's data is a list of dircontentlink
+             * slots, each pointing at a SlotNode.  Walk the
+             * dircontentlink chain.  (We can't use walk_anchor_chain
+             * here — the dircontentlink layout has fields at offsets
+             * 8 (dirContentVP) and 16 (nextVP), not the Anchor
+             * layout (type/flags/id/headPtr/sibPtr).) */
             int64_t linkVP = leafVP;
-            int64_t best_child = 0, best_childPtr = 0;
-            int64_t best_eff_epoch = 0, best_raw_epoch = 0;
-            int best_name_match = 0;
-
+            int64_t nextLinkVP;
             while (linkVP != 0) {
                 PoolSlot linkSlot = {0};
                 pool_acquire(&ctx->pool, linkVP, false, &linkSlot);
                 if (linkSlot.vptr == VFS_VPTR_NULL) break;
-
-                int64_t slotVP, nextLinkVP;
-                nodes_read_dircontentlink(linkSlot.bytes, &slotVP,
-                                          &nextLinkVP, ctx->page_size);
+                int64_t slotVP = vfs_rd8_s(linkSlot.bytes,
+                                            DIRCONTENTLINK_OFF_DIRCONTENTVP,
+                                            ctx->page_size);
+                nextLinkVP = vfs_rd8_s(linkSlot.bytes,
+                                        DIRCONTENTLINK_OFF_NEXTVP,
+                                        ctx->page_size);
                 pool_release(&ctx->pool, &linkSlot);
-
-                PoolSlot slotSlot = {0};
-                pool_acquire(&ctx->pool, slotVP, false, &slotSlot);
-                if (slotSlot.vptr == VFS_VPTR_NULL) { linkVP = nextLinkVP; continue; }
-                AnchorKind ak;
-                uint32_t slot_id;
-                int64_t slot_head, slot_sib;
-                uint32_t slot_count;
-                nodes_read_anchor(slotSlot.bytes, &ak, &slot_id, &slot_head,
-                                  &slot_sib, &slot_count, ctx->page_size);
-                pool_release(&ctx->pool, &slotSlot);
-
-                int64_t dcVP = slot_head;
-                while (dcVP != 0) {
-                    PoolSlot dc_slot = {0};
-                    pool_acquire(&ctx->pool, dcVP, false, &dc_slot);
-                    if (dc_slot.vptr == VFS_VPTR_NULL) break;
-                    uint32_t ce_child, ce_epoch;
-                    int64_t ce_childPtr, ce_namePtr, ce_next;
-                    nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch,
-                                          &ce_childPtr, &ce_namePtr, &ce_next,
-                                          ctx->page_size);
-
-                    int64_t eff_epoch = (int64_t)ce_epoch;
-                    if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
-                        eff_epoch = mapper_table_resolve(&ctx->mapper_table, (int64_t)ce_epoch);
-
-                    int applies = (eff_epoch == read_epoch) ||
-                                  (eff_epoch < read_epoch && eff_epoch % 2 == 0);
-                    if (!applies) { dcVP = ce_next; pool_release(&ctx->pool, &dc_slot); continue; }
-
-                    if (ce_namePtr == 0) {
-                        dcVP = ce_next;
-                        pool_release(&ctx->pool, &dc_slot);
-                        break;  /* tombstoned — move to next SlotNode */
+                if (slotVP != 0) {
+                    PoolSlot slotSlot = {0};
+                    pool_acquire(&ctx->pool, slotVP, false, &slotSlot);
+                    if (slotSlot.vptr != VFS_VPTR_NULL) {
+                        w6_check_slot_for_name(&slotSlot, &st);
+                        pool_release(&ctx->pool, &slotSlot);
                     }
-
-                    uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
-                    /* Read-rule: the first applicable entry in a SlotNode's
-                     * chain is the visible one.  If its name doesn't match,
-                     * the queried name doesn't exist (even if a lower-epoch
-                     * entry with the matching name is in the chain). */
-                    if (entry_hash == target_hash) {
-                        char entry_name[256];
-                        int nl = nodes_read_name(&ctx->pool, ce_namePtr,
-                                                  entry_name, (int)sizeof(entry_name));
-                        if (nl > 0 && strcmp(entry_name, name) == 0) {
-                            best_child      = (int64_t)ce_child;
-                            best_childPtr   = ce_childPtr;
-                            best_eff_epoch  = eff_epoch;
-                            best_raw_epoch  = (int64_t)ce_epoch;
-                            best_name_match = 1;
-                            pool_release(&ctx->pool, &dc_slot);
-                            break;  /* found */
-                        }
-                    }
-                    /* First applicable entry didn't match — the queried
-                     * name doesn't exist in this SlotNode at this epoch. */
-                    pool_release(&ctx->pool, &dc_slot);
-                    break;
                 }
+                if (st.best_name_match) break;
                 linkVP = nextLinkVP;
-                if (best_name_match) break;
-            }
-
-            if (best_name_match) {
-                *out_childPtr = best_childPtr;
-                *out_nodeId   = (uint32_t)best_child;
-                if (out_epoch) *out_epoch = (uint32_t)best_raw_epoch;
-                return VFS_OK;
             }
         }
     }
 
-    /* --- Fallback: chain walk (for directories without a tree) ---
-     * W5b: headPtr is a DirSegment chain.  Walk each Segment → SlotNode
-     * → DirContent, applying the read-rule per SlotNode. */
-    int64_t best_child = 0, best_childPtr = 0, best_eff_epoch = 0;
-    int64_t best_raw_epoch = 0;
-    int best_name_match = 0;
-
-    int64_t seg_walk_vp = headPtr;
-    while (seg_walk_vp != 0) {
-        PoolSlot seg_slot = {0};
-        pool_acquire(&ctx->pool, seg_walk_vp, false, &seg_slot);
-        if (seg_slot.vptr == VFS_VPTR_NULL) break;
-        AnchorKind seg_ak;
-        uint32_t seg_id, seg_cnt;
-        int64_t seg_head, seg_sib;
-        nodes_read_anchor(seg_slot.bytes, &seg_ak, &seg_id, &seg_head,
-                          &seg_sib, &seg_cnt, ctx->page_size);
-        pool_release(&ctx->pool, &seg_slot);
-
-        int64_t slot_walk_vp = seg_head;
-        while (slot_walk_vp != 0) {
-            PoolSlot slot_slot = {0};
-            pool_acquire(&ctx->pool, slot_walk_vp, false, &slot_slot);
-            if (slot_slot.vptr == VFS_VPTR_NULL) break;
-            AnchorKind ak;
-            uint32_t slot_id;
-            int64_t slot_head, slot_sib;
-            uint32_t slot_count;
-            nodes_read_anchor(slot_slot.bytes, &ak, &slot_id, &slot_head,
-                              &slot_sib, &slot_count, ctx->page_size);
-            pool_release(&ctx->pool, &slot_slot);
-
-            int64_t dc_walk_vp = slot_head;
-            while (dc_walk_vp != 0) {
-            PoolSlot dc_slot = {0};
-            pool_acquire(&ctx->pool, dc_walk_vp, false, &dc_slot);
-            if (dc_slot.vptr == VFS_VPTR_NULL) break;
-            uint32_t ce_child, ce_epoch;
-            int64_t ce_childPtr, ce_namePtr, ce_next;
-            nodes_read_dircontent(dc_slot.bytes, &ce_child, &ce_epoch,
-                                  &ce_childPtr, &ce_namePtr, &ce_next,
-                                  ctx->page_size);
-
-            int64_t eff_epoch = (int64_t)ce_epoch;
-            if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)ce_epoch))
-                eff_epoch = mapper_table_resolve(&ctx->mapper_table,
-                                                (int64_t)ce_epoch);
-
-            int applies = (eff_epoch == read_epoch) ||
-                          (eff_epoch < read_epoch && eff_epoch % 2 == 0);
-            if (!applies) { dc_walk_vp = ce_next; pool_release(&ctx->pool, &dc_slot); continue; }
-
-            if (ce_namePtr == 0) {
-                /* Visible tombstone for this child at this epoch.
-                 * No match. */
-                dc_walk_vp = ce_next;
-                pool_release(&ctx->pool, &dc_slot);
-                break;  /* move to next SlotNode */
-            }
-
-            uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, ce_namePtr);
-            /* Read-rule: first applicable entry is the visible one. */
-            if (entry_hash == target_hash) {
-                char entry_name[256];
-                int nl = nodes_read_name(&ctx->pool, ce_namePtr,
-                                          entry_name, (int)sizeof(entry_name));
-                if (nl > 0 && strcmp(entry_name, name) == 0) {
-                    best_child      = (int64_t)ce_child;
-                    best_childPtr   = ce_childPtr;
-                    best_eff_epoch  = eff_epoch;
-                    best_raw_epoch  = (int64_t)ce_epoch;
-                    best_name_match = 1;
-                    pool_release(&ctx->pool, &dc_slot);
-                    break;  /* found */
-                }
-            } else {
-#ifdef VFS_NAME_HASH_TESTING
-                s_hash_rejects++;
-#endif
-            }
-            /* First applicable entry didn't match — name doesn't exist
-             * in this SlotNode at this epoch. */
-            pool_release(&ctx->pool, &dc_slot);
-            break;
-        }
-        slot_walk_vp = slot_sib;
-        if (best_name_match) break;
-        }
-        seg_walk_vp = seg_sib;
-        if (best_name_match) break;
+    /* --- Path 2: fallback chain walk (no radix index or no match) ---
+     * Walk DirSegment chain → SlotNode chain → per-SlotNode
+     * DirContent chain (read-rule).  Uses the shared walks for
+     * the segment and SlotNode chains. */
+    if (!st.best_name_match && headPtr != 0) {
+        walk_anchor_chain(ctx, headPtr, w6_fallback_seg_cb, &st);
     }
 
-    if (!best_name_match) return VFS_ERR_NOTFOUND;
-    *out_childPtr = best_childPtr;
-    *out_nodeId   = (uint32_t)best_child;
-    if (out_epoch) *out_epoch = (uint32_t)best_raw_epoch;
+    if (!st.best_name_match) return VFS_ERR_NOTFOUND;
+    *out_childPtr = st.best_childPtr;
+    *out_nodeId   = (uint32_t)st.best_child;
+    if (out_epoch) *out_epoch = (uint32_t)st.best_raw_epoch;
     return VFS_OK;
 }
 
