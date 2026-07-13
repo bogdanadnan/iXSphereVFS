@@ -228,21 +228,17 @@ int tree_init(TreeContext* ctx) {
  * the gc_generation changes (after GC compaction).  This is
  * unchanged from the pre-W6 implementation; it's a perf layer
  * on top of the chain walk. */
-#define W6_TCACHE_SIZE 16
+/* W6: chain-walk tcache is now per-`vfs_t` (per TreeContext) - see
+ * the chain_walk_tcache field added to TreeContext in
+ * include/ixsphere/vfs_internal.h.  Previously it was `__thread`
+ * statics, which had a cross-VFS collision risk (the key
+ * file_vp << 20 | segment_idx can collide across two VFS
+ * instances on the same thread).  Per-`vfs_t` matches the W0
+ * lock-table model and eliminates the collision.  The tcache
+ * is also automatically cleaned up on vfs_destroy (no
+ * __thread-lifetime leak). */
+#define CHAIN_WALK_TCACHE_SIZE 16
 #define SPARSE_CACHE_THRESHOLD 64
-typedef struct {
-    int64_t      key;
-    SegmentArray arr;
-    bool         populated;
-    int64_t      gen;
-} w6_tcache_entry;
-static __thread w6_tcache_entry w6_tcache[W6_TCACHE_SIZE] = {
-    {0,{0},false,0}, {0,{0},false,0}, {0,{0},false,0}, {0,{0},false,0},
-    {0,{0},false,0}, {0,{0},false,0}, {0,{0},false,0}, {0,{0},false,0},
-    {0,{0},false,0}, {0,{0},false,0}, {0,{0},false,0}, {0,{0},false,0},
-    {0,{0},false,0}, {0,{0},false,0}, {0,{0},false,0}, {0,{0},false,0},
-};
-static __thread int w6_tcache_next = 0;
 
 /* W6: helper — link a new FileContent VP into the segment chain.
  *
@@ -451,12 +447,12 @@ int tree_resolve_page(vfs_t* vfs, int64_t file_vp,
     /* --- Tcache fast path --- */
     int64_t cache_key = (file_vp << 20) | (segment_idx & 0xFFFFF);
     int cache_slot = -1;
-    for (int ci = 0; ci < W6_TCACHE_SIZE; ci++) {
-        if (w6_tcache[ci].key == cache_key && w6_tcache[ci].populated) {
-            if (w6_tcache[ci].gen != vfs_atomic_load_i64(&ctx->gc_generation)) {
-                w6_tcache[ci].populated = false;
+    for (int ci = 0; ci < CHAIN_WALK_TCACHE_SIZE; ci++) {
+        if (ctx->chain_walk_tcache[ci].key == cache_key && ctx->chain_walk_tcache[ci].populated) {
+            if (ctx->chain_walk_tcache[ci].gen != vfs_atomic_load_i64(&ctx->gc_generation)) {
+                ctx->chain_walk_tcache[ci].populated = false;
             } else {
-                if (segment_array_resolve(&ctx->pool, &w6_tcache[ci].arr,
+                if (segment_array_resolve(&ctx->pool, &ctx->chain_walk_tcache[ci].arr,
                                           (uint32_t)page_in_segment, out)) {
                     pool_release(&ctx->pool, &file_slot);
                     return 0;
@@ -511,8 +507,8 @@ int tree_resolve_page(vfs_t* vfs, int64_t file_vp,
                 pool_release(&ctx->pool, &fc_slot);
                 fc_held = 0;
                 /* Tcache patch for newly allocated page. */
-                if (cache_slot >= 0 && w6_tcache[cache_slot].populated && new_pn != 0) {
-                    w6_tcache[cache_slot].arr.vptr_array[page_in_segment] = new_pn;
+                if (cache_slot >= 0 && ctx->chain_walk_tcache[cache_slot].populated && new_pn != 0) {
+                    ctx->chain_walk_tcache[cache_slot].arr.vptr_array[page_in_segment] = new_pn;
                 }
                 /* Final copy-out and return. */
                 pool_acquire(&ctx->pool, new_pn, is_write, out);
@@ -657,25 +653,25 @@ int tree_resolve_page(vfs_t* vfs, int64_t file_vp,
     }
 
     /* Tcache patch. */
-    if (cache_slot >= 0 && w6_tcache[cache_slot].populated && result_pn_vp != 0) {
-        w6_tcache[cache_slot].arr.vptr_array[page_in_segment] = result_pn_vp;
+    if (cache_slot >= 0 && ctx->chain_walk_tcache[cache_slot].populated && result_pn_vp != 0) {
+        ctx->chain_walk_tcache[cache_slot].arr.vptr_array[page_in_segment] = result_pn_vp;
     }
 
     /* Populate tcache if segment has enough pages. */
     uint32_t fc_page_count = (uint32_t)vfs_atomic_load_i32(
         (const int32_t*)(fc_slot.bytes + FILECONTENT_OFF_PAGECOUNT));
     if ((int)fc_page_count >= SPARSE_CACHE_THRESHOLD) {
-        int slot = w6_tcache_next % W6_TCACHE_SIZE;
-        if (w6_tcache[slot].arr.built)
-            segment_array_destroy(&w6_tcache[slot].arr);
+        int slot = ctx->chain_walk_tcache_next % CHAIN_WALK_TCACHE_SIZE;
+        if (ctx->chain_walk_tcache[slot].arr.built)
+            segment_array_destroy(&ctx->chain_walk_tcache[slot].arr);
         int build_rc = segment_array_build(&ctx->pool,
             vfs_rd8_s(fc_slot.bytes, FILECONTENT_OFF_ROOTPTR, ctx->page_size),
-            seg_size, &w6_tcache[slot].arr);
+            seg_size, &ctx->chain_walk_tcache[slot].arr);
         if (build_rc == VFS_OK) {
-            w6_tcache[slot].key = cache_key;
-            w6_tcache[slot].populated = true;
-            w6_tcache[slot].gen = vfs_atomic_load_i64(&ctx->gc_generation);
-            w6_tcache_next++;
+            ctx->chain_walk_tcache[slot].key = cache_key;
+            ctx->chain_walk_tcache[slot].populated = true;
+            ctx->chain_walk_tcache[slot].gen = vfs_atomic_load_i64(&ctx->gc_generation);
+            ctx->chain_walk_tcache_next++;
 #ifndef NDEBUG
             atomic_fetch_add(&tree_resolve_page_cache_builds, 1);
 #endif

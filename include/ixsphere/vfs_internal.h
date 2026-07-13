@@ -42,6 +42,21 @@ typedef struct {
 
     /* Last error code — set by operations, reset to VFS_OK on success */
     vfs_error_t last_error;
+
+    /* W6: chain-walk tcache — per-`vfs_t` (replaces the pre-W6
+     * `__thread` static).  The pre-W6 `__thread` static had a
+     * cross-VFS collision risk (the key `file_vp << 20 | segment_idx`
+     * can collide across two VFS instances on the same thread).
+     * Per-`vfs_t` matches the W0 lock-table model and eliminates
+     * the collision.  Entries are invalidated on GC (gc_generation
+     * check at lookup time) and on vfs_destroy. */
+    struct {
+        int64_t       key;            /* (file_vp << 20) | segment_idx */
+        SegmentArray  arr;
+        bool          populated;
+        int64_t       gen;            /* gc_generation at build time */
+    } chain_walk_tcache[16];
+    int        chain_walk_tcache_next;   /* round-robin index for replacement */
 } TreeContext;
 
 struct vfs_t {
