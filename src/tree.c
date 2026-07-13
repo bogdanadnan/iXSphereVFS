@@ -629,30 +629,6 @@ int tree_resolve_page(vfs_t* vfs, int64_t file_vp,
     return 0;
 }
 
-/* Phase 25: TEST-ONLY compat shim — see tree.h.  Preserves the OLD
-   `uint8_t*` return shape for the test suite, rotating through a
-   thread-local pool of PoolSlots so multiple calls return distinct
-   pointers (the OLD API shape). */
-#define VFS_TREE_COMPAT_SLOTS 128
-static __thread PoolSlot _tree_resolve_compat[VFS_TREE_COMPAT_SLOTS] = {{0}};
-static __thread int      _tree_resolve_compat_next = 0;
-
-uint8_t* tree_resolve_page_compat(vfs_t* vfs, int64_t file_vp,
-                                   int64_t logical_page, int64_t epoch,
-                                   bool is_write) {
-    PoolSlot* slot = &_tree_resolve_compat[_tree_resolve_compat_next];
-    _tree_resolve_compat_next = (_tree_resolve_compat_next + 1) % VFS_TREE_COMPAT_SLOTS;
-    int rc = tree_resolve_page(vfs, file_vp, logical_page, epoch, is_write, slot);
-    if (rc != 0) return NULL;
-    return slot->bytes;
-}
-
-void tree_resolve_page_compat_release(vfs_t* vfs) {
-    /* No-op — the rotating slot is overwritten on the next call.  Kept
-       for API symmetry. */
-    (void)vfs;
-}
-
 /* ---------------------------------------------------------------------------
  * verchain_get — walk VersionPage chain, apply read-rule + mapper,
  * return data page index, or -1 if none found.

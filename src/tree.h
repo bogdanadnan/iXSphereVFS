@@ -87,17 +87,6 @@ int tree_resolve_page(vfs_t* vfs, int64_t file_vp,
                       int64_t logical_page, int64_t epoch, bool is_write,
                       PoolSlot* out);
 
-/* Phase 25: TEST-ONLY compatibility shim.  Returns a raw pointer to
-   a per-thread static PoolSlot's bytes.  NOT thread-safe; tests are
-   single-threaded.  Page is dirty-marked (pinned) when is_write=true
-   so subsequent writes persist; caller must call
-   tree_resolve_page_compat_release() after writing.  See pool.h for
-   the rationale. */
-extern uint8_t* tree_resolve_page_compat(vfs_t* vfs, int64_t file_vp,
-                                          int64_t logical_page, int64_t epoch,
-                                          bool is_write);
-extern void tree_resolve_page_compat_release(vfs_t* vfs);
-
 /* ---------------------------------------------------------------------------
  * Context accessors (inline helpers)
  * --------------------------------------------------------------------------- */
