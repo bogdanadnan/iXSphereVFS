@@ -163,19 +163,6 @@ int gc_walk_versionpage_chain(TreeContext* ctx, GCMap* gc_map,
                                int64_t version_root_vp,
                                LivePageSet* lps);
 
-/* Walk a DirContent chain applying survival rules.
- * For each DirContent entry:
- *   - DROP if epoch belongs to deleted epoch AND no surviving entry for
- *     same childNodeId at higher epoch ≤ live head
- *   - DROP tombstone (namePtr=0) if epoch belongs to deleted epoch
- *   - KEEP otherwise
- * Copies surviving entries via gc_copy_entry.
- * Returns VFS_OK on success. */
-int gc_walk_dircontent_chain(TreeContext* ctx, GCMap* gc_map,
-                              GCAllocCursor* alloc,
-                              int64_t head_content_vp, int64_t epoch,
-                              LivePageSet* lps);
-
 /* Walk a FileSize chain applying survival rules.
  *   - DROP entries for soft-deleted epochs (mapper traversalApply=false)
  *   - REWRITE epoch for committed epochs (traversalApply=true)

@@ -153,29 +153,6 @@ int dircontentindex_insert(Pool* pool, int64_t* indexRoot, uint64_t nameHash,
 int dircontentindex_remove(Pool* pool, int64_t indexRoot, uint64_t nameHash,
                            int64_t dirContentVP, int64_t page_size);
 
-/* ---------------------------------------------------------------------------
- * Directory listing dedup entry (Phase 19)
- *
- * Used by dirchain_list to collect unique childNodeId entries from the
- * DirContent chain walk.  Replaces the 5 parallel fixed-size arrays
- * (DENTRY_CACHE_MAX=1024) with a heap-backed, unbounded VarArray.
- *
- * Layout: 4 fields, 32 bytes.  No eff_epoch field — chain ordering
- * guarantees the first applicable hit per childNodeId is the highest-
- * epoch record, so dedup is by childNodeId alone.
- *
- * name_set is 1 for live entries, 0 for tombstones.  Tombstones are
- * added to the dedup array (to suppress lower-epoch live entries for
- * the same childNodeId) but filtered out in the output phase.
- * --------------------------------------------------------------------------- */
-
-typedef struct {
-    int64_t childNodeId;
-    int64_t childPtr;       /* VirtualPtr to child FileNode or DirNode */
-    int     name_set;        /* 1 = live entry, 0 = tombstone */
-    int64_t namePtr;        /* VirtualPtr to cached NameEntry (0 if tombstone) */
-} DirchainDedupEntry;
-
 /* Walk a directory's DirContent chain and list non-tombstone entries at a
  * given epoch (read-rule dedup by childNodeId).  Fills the entries[] array
  * Walks a directory's DirContent chain ONCE and produces a

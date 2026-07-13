@@ -1965,22 +1965,24 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
 
 /* ---------------------------------------------------------------------------
- * dirchain_list — walk DirContent chain, collect non-tombstone entries
- * at epoch via read-rule dedup by childNodeId.  Allocates a vfs_dirent_t[]
- * of exact size needed; caller frees with free() or vfs_free_dirents().
+ * dirchain_list — walk DirSegment → SlotNode → DirContent chains, collect
+ * non-tombstone entries at epoch via per-SlotNode read-rule.  Allocates
+ * a vfs_dirent_t[] of exact size needed; caller frees with free() or
+ * vfs_free_dirents().
  *
- * Phase 19: dedup state is a heap-backed VarArray (DirchainDedupEntry),
- * unbounded.  Replaces the 5 parallel fixed-size arrays (DENTRY_CACHE_MAX)
- * that previously truncated directories at 1024 unique children.
+ * W5b: walks via DirSegment chain (1024 SlotNodes per Segment) →
+ * SlotNode chain → DirContent chain.  Dedup is structural — each
+ * SlotNode corresponds to exactly one childNodeId, so the first
+ * applicable DirContent in a SlotNode is the only entry emitted for
+ * that child.  No hash_map dedup, no fixed-size array, no 1024-child
+ * truncation.
  *
- * Phase 24: this is the only readdir API (replaces both the old
- * caller-buffer dirchain_list and dirchain_list_all).  No cap, no
- * caller-buffer guess, no doubling.
+ * Phase 24: this is the only readdir API.  No cap, no caller-buffer
+ * guess, no doubling.
  *
  * Algorithm: chain is descending by epoch (prepend ordering).  First
  * applicable hit per childNodeId is by definition the highest-epoch
- * applicable record, so the dedup scans for "already seen" only — no
- * epoch comparison is needed.
+ * applicable record, so dedup is automatic.
  * --------------------------------------------------------------------------- */
 
 int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
