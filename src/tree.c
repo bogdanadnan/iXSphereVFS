@@ -2301,23 +2301,32 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         }
         pool_release(&ctx->pool, &rename_dc_slot);
 
-        /* Tree update (Phase 18): zero the link at the OLD name's hash
-           (the link still points to matched_walk_vp — which now has the
-           new name), and add a fresh link at the NEW name's hash.
-           dirchain_find_child applies epoch + name dedup so the stale
-           link's hash-mismatch naturally hides it. */
+        /* W5d: move the radix index link from the OLD name's hash to
+         * the NEW name's hash.  The SlotNode is the same (we just
+         * prepended a new DC to its chain) — so the link is the same
+         * target, just at a different hash.  The old link is removed
+         * (zeroed) and a new link is inserted at the new hash.
+         * Both ops are under the parent + child lock already held.
+         */
         {
             int64_t srcIndex = vfs_rd8_s(src_slot.bytes, DIRNODE_OFF_INDEXHEADPTR,
                                          ctx->page_size);
             uint64_t old_hash = name_hash_compute(src, (int)strlen(src));
             uint64_t new_hash = name_hash_compute(dst, (int)strlen(dst));
-            /* W5a/R6: radix index now points at the SlotNode VP.
-             * The SlotNode already has a link at the new name's
-             * hash.  For W5a, leave the index alone — the existing
-             * SlotNode is reachable via the new hash, and the old
-             * hash's link still works (just with stale hash).  R6
-             * proper in W5d will move the link to the new hash. */
-            (void)old_hash; (void)new_hash; (void)srcIndex;
+            /* Remove the old link (zero the field; the link slot
+             * leaks but the radix leaf is small).  This makes the
+             * old name's hash lookup miss the fast path and fall
+             * through to the chain walk — which also returns
+             * NOTFOUND for the old name (SlotNode's visible DC is
+             * the new name at this epoch). */
+            (void)dircontentindex_remove(&ctx->pool, srcIndex, old_hash,
+                                          found_slot_vp, ctx->page_size);
+            /* Insert a new link at the new hash pointing at the
+             * same SlotNode. */
+            dircontentindex_insert(&ctx->pool, &srcIndex, new_hash,
+                                    found_slot_vp, ctx->page_size);
+            vfs_wr8_s(src_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, srcIndex,
+                      ctx->page_size);
         }
 
         vfs_unlock(vfs, (int64_t)rn_childId, epoch);
@@ -2446,13 +2455,15 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
     pool_release(&ctx->pool, &dst_slot_slot);
     pool_release(&ctx->pool, &dst_dc_slot);
 
-    /* Tree insert for the dst entry (Phase 18) — additive index. */
+    /* W5d: tree insert for the dst entry — point at the SlotNode VP
+     * (the ContentUnit), not the DirContent VP.  The radix index
+     * payload is `contentUnitVP` per the W5a refit. */
     {
         int64_t dstIndex = vfs_rd8_s(dst_slot.bytes, DIRNODE_OFF_INDEXHEADPTR,
                                      ctx->page_size);
         uint64_t dst_hash = name_hash_compute(dst, (int)strlen(dst));
         dircontentindex_insert(&ctx->pool, &dstIndex, dst_hash,
-                               dst_dc_vp, ctx->page_size);
+                               dst_slot_vp, ctx->page_size);
         vfs_wr8_s(dst_slot.bytes, DIRNODE_OFF_INDEXHEADPTR, dstIndex,
                   ctx->page_size);
         /* W1b: childCount removed. */
