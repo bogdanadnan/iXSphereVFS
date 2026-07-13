@@ -252,7 +252,7 @@ int tree_init(TreeContext* ctx) {
  * (pinned via pool_acquire) and may pass a valid prev_slot
  * (pinned, must be NULL if prev_fc_vp == 0).
  */
-static int w6_link_fc_into_chain(vfs_t* vfs, int64_t epoch,
+static int link_fc_into_chain(vfs_t* vfs, int64_t epoch,
                                   PoolSlot* file_slot, int64_t prev_fc_vp,
                                   int64_t new_fc_vp) {
     if (prev_fc_vp == 0) {
@@ -285,7 +285,7 @@ static int w6_link_fc_into_chain(vfs_t* vfs, int64_t epoch,
  * Caller must hold the file lock on the write path.  The
  * new_fc_slot is NOT released by this function; the caller
  * releases it after linking the segment into the chain. */
-static int64_t w6_allocate_fc(vfs_t* vfs, int64_t page_in_segment,
+static int64_t allocate_filecontent(vfs_t* vfs, int64_t page_in_segment,
                               bool allocate_page, PoolSlot* out_fc_slot) {
     TreeContext* ctx = vfs->ctx;
     int64_t new_fc_vp = pool_alloc(&ctx->pool);
@@ -328,7 +328,7 @@ static int64_t w6_allocate_fc(vfs_t* vfs, int64_t page_in_segment,
  *
  * Caller must hold the file lock.  Caller must have a valid
  * fc_slot (pinned, not released by this function). */
-static int w6_link_pn_into_chain(vfs_t* vfs, int64_t epoch,
+static int link_pn_into_chain(vfs_t* vfs, int64_t epoch,
                                   PoolSlot* fc_slot, int64_t prev_pn_vp,
                                   int64_t new_pn_vp) {
     TreeContext* ctx = vfs->ctx;
@@ -355,32 +355,6 @@ static int w6_link_pn_into_chain(vfs_t* vfs, int64_t epoch,
     return 0;
 }
 
-/* W6: state for the segment walk — count segments via the
- * shared walk, find the target segment. */
-typedef struct {
-    int64_t  target_segment_idx;
-    int64_t  found_fc_vp;     /* out: FileContent VP for target segment */
-    int      found;           /* 1 if found, 0 if walk ended without finding */
-    int64_t  last_fc_vp;      /* out: last visited segment (for chaining new ones) */
-} w6_seg_walk_state;
-
-static int w6_seg_walk_cb(TreeContext* ctx, int64_t fc_vp,
-                           const uint8_t* anchor_bytes, void* user) {
-    w6_seg_walk_state* st = (w6_seg_walk_state*)user;
-    (void)ctx; (void)anchor_bytes;
-    st->last_fc_vp = fc_vp;
-    if (st->found_fc_vp == 0) {
-        /* first time we see the target — record it.  We compare using
-         * the call counter from the user state, but we don't have a
-         * counter here.  Instead, use the last_fc_vp + a count carried
-         * in st.  Since this callback is the only way we advance, we
-         * can use the structure of the walk.  The callback is invoked
-         * for each segment; we want the Nth one where N == target. */
-        /* We need a per-callback index.  Use a separate counter. */
-    }
-    return 0;  /* continue — we can't tell from inside the cb which index */
-}
-
 /* W6: state for the PageNode walk — find the target page_index,
  * record the insertion point. */
 typedef struct {
@@ -389,11 +363,11 @@ typedef struct {
     int64_t  prev_pn_vp;      /* out: prev PageNode (for sorted insertion) */
     int      found_higher;    /* 1 if we found a higher-id PageNode (insert before it) */
     int      found;           /* 1 if exact match found */
-} w6_pn_walk_state;
+} find_pageno_state;
 
-static int w6_pn_walk_cb(TreeContext* ctx, int64_t pn_vp,
+static int find_pageno_cb(TreeContext* ctx, int64_t pn_vp,
                           const uint8_t* unit_bytes, void* user) {
-    w6_pn_walk_state* st = (w6_pn_walk_state*)user;
+    find_pageno_state* st = (find_pageno_state*)user;
     uint32_t pn_idx = (uint32_t)vfs_rd4_s(unit_bytes, ANCHOR_OFF_ID,
                                          ctx->page_size);
     if (pn_idx == (uint32_t)st->target_page_in_segment) {
@@ -486,9 +460,9 @@ int tree_resolve_page(vfs_t* vfs, int64_t file_vp,
                 return -1;
             }
             bool alloc_pn = (seg_i == segment_idx) && is_write;
-            int64_t new_fc = w6_allocate_fc(vfs, page_in_segment, alloc_pn, &fc_slot);
+            int64_t new_fc = allocate_filecontent(vfs, page_in_segment, alloc_pn, &fc_slot);
             if (new_fc == 0) { pool_release(&ctx->pool, &file_slot); return -1; }
-            if (w6_link_fc_into_chain(vfs, epoch, &file_slot, prev_fc_vp, new_fc) != 0) {
+            if (link_fc_into_chain(vfs, epoch, &file_slot, prev_fc_vp, new_fc) != 0) {
                 pool_release(&ctx->pool, &fc_slot);
                 pool_release(&ctx->pool, &file_slot);
                 return -1;
@@ -560,12 +534,12 @@ int tree_resolve_page(vfs_t* vfs, int64_t file_vp,
     int found_higher = 0;
     int found_match = 0;
     if (fc_page_root != 0) {
-        w6_pn_walk_state pn_st = {
+        find_pageno_state pn_st = {
             .target_page_in_segment = page_in_segment,
             .found_pn_vp = 0, .prev_pn_vp = 0,
             .found_higher = 0, .found = 0,
         };
-        walk_content_unit_chain(ctx, fc_page_root, w6_pn_walk_cb, &pn_st);
+        walk_content_unit_chain(ctx, fc_page_root, find_pageno_cb, &pn_st);
         found_pn_vp = pn_st.found_pn_vp;
         prev_pn_vp = pn_st.prev_pn_vp;
         found_higher = pn_st.found_higher;
@@ -636,7 +610,7 @@ int tree_resolve_page(vfs_t* vfs, int64_t file_vp,
                              (uint32_t)page_in_segment, ctx->page_size);
         pool_release(&ctx->pool, &new_pn_slot);
         vfs_mb_release();
-        if (w6_link_pn_into_chain(vfs, epoch, &fc_slot,
+        if (link_pn_into_chain(vfs, epoch, &fc_slot,
                                    prev_pn_vp,
                                    new_pn_vp) != 0) {
             pool_release(&ctx->pool, &fc_slot);
@@ -925,9 +899,9 @@ int walk_content_unit_chain(TreeContext* ctx, int64_t unit_head,
  *
  * The two-level walk uses walk_anchor_chain at the outer level
  * and walk_content_unit_chain at the inner level.  The outer
- * callback (w6_find_unit_in_segment_outer_cb) is invoked for
+ * callback (find_unit_outer_cb) is invoked for
  * each Anchor; it walks the segment's ContentUnit chain
- * internally using the inner callback (w6_find_unit_inner_cb)
+ * internally using the inner callback (find_unit_inner_cb)
  * and short-circuits both walks when the target unit is found.
  * --------------------------------------------------------------------------- */
 
@@ -938,15 +912,15 @@ typedef struct {
     int64_t    found_leaf_head;   /* out: leaf chain head of the found unit */
     int64_t    page_size;
     int        found;             /* out: 1 if found, 0 if not */
-} w6_find_unit_state;
+} find_unit_state;
 
 /* Inner callback: invoked for each ContentUnit in a segment.
    Returns 1 to stop the inner walk if the target unit is found. */
-static int w6_find_unit_inner_cb(TreeContext* ctx,
+static int find_unit_inner_cb(TreeContext* ctx,
                                   int64_t unit_vp,
                                   const uint8_t* unit_bytes,
                                   void* user) {
-    w6_find_unit_state* st = (w6_find_unit_state*)user;
+    find_unit_state* st = (find_unit_state*)user;
     uint32_t unit_id = (uint32_t)vfs_rd4_s(unit_bytes, ANCHOR_OFF_ID,
                                            st->page_size);
     (void)ctx; (void)unit_vp;
@@ -963,17 +937,17 @@ static int w6_find_unit_inner_cb(TreeContext* ctx,
    DirSegment).  For each, walks the segment's ContentUnit chain
    looking for the target.  Returns 1 to stop the outer walk if
    the target unit is found in this segment. */
-static int w6_find_unit_in_segment_outer_cb(TreeContext* ctx,
+static int find_unit_outer_cb(TreeContext* ctx,
                                             int64_t anchor_vp,
                                             const uint8_t* anchor_bytes,
                                             void* user) {
-    w6_find_unit_state* st = (w6_find_unit_state*)user;
+    find_unit_state* st = (find_unit_state*)user;
     int64_t unit_head = vfs_rd8_s(anchor_bytes, ANCHOR_OFF_HEADPTR,
                                   st->page_size);
     (void)anchor_vp;
     if (unit_head == 0) return 0;  /* empty segment, keep looking */
     walk_content_unit_chain(ctx, unit_head,
-                            w6_find_unit_inner_cb, user);
+                            find_unit_inner_cb, user);
     return st->found;  /* 1 to stop outer walk, 0 to continue */
 }
 
@@ -1016,14 +990,14 @@ WalkResult vfs_chain_walk_extended(TreeContext* ctx,
     /* Step 2-3: walk the outer Anchor chain.  The outer callback
        walks the inner ContentUnit chain and short-circuits both
        when the target unit is found. */
-    w6_find_unit_state st = {
+    find_unit_state st = {
         .target_unit_id = unit_id,
         .found_leaf_head = 0,
         .page_size      = ctx->page_size,
         .found          = 0,
     };
     walk_anchor_chain(ctx, anchor_head,
-                      w6_find_unit_in_segment_outer_cb, &st);
+                      find_unit_outer_cb, &st);
     if (!st.found) return WALK_NEED_GROW;
     if (st.found_leaf_head == 0) return WALK_NOT_FOUND;
 
@@ -2189,26 +2163,26 @@ typedef struct {
     TreeContext* ctx;
     int64_t      read_epoch;
     VarArray(vfs_dirent_t) entries;  /* output */
-} w6_dirchain_list_state;
+} dirchain_list_state;
 
 /* Forward declarations — the segment callback calls the slot
  * callback via walk_content_unit_chain. */
-static int w6_dirchain_list_slot_cb(TreeContext* ctx, int64_t slot_vp,
+static int dirchain_list_slot_cb(TreeContext* ctx, int64_t slot_vp,
                                       const uint8_t* slot_bytes,
                                       void* user);
 
 /* W6: dirchain_list callback for walk_anchor_chain on the
  * DirSegment chain.  For each segment, walks its SlotNode
- * chain via walk_content_unit_chain + w6_dirchain_list_slot_cb.
+ * chain via walk_content_unit_chain + dirchain_list_slot_cb.
  * Returns 0 to continue (we want ALL segments, not just one). */
-static int w6_dirchain_list_seg_cb(TreeContext* ctx, int64_t seg_vp,
+static int dirchain_list_seg_cb(TreeContext* ctx, int64_t seg_vp,
                                      const uint8_t* seg_bytes, void* user) {
-    w6_dirchain_list_state* st = (w6_dirchain_list_state*)user;
+    dirchain_list_state* st = (dirchain_list_state*)user;
     (void)seg_vp;
     int64_t slot_head = vfs_rd8_s(seg_bytes, ANCHOR_OFF_HEADPTR,
                                     ctx->page_size);
     if (slot_head == 0) return 0;  /* empty segment — keep going */
-    walk_content_unit_chain(ctx, slot_head, w6_dirchain_list_slot_cb, st);
+    walk_content_unit_chain(ctx, slot_head, dirchain_list_slot_cb, st);
     return 0;
 }
 
@@ -2217,10 +2191,10 @@ static int w6_dirchain_list_seg_cb(TreeContext* ctx, int64_t seg_vp,
  * walks the DirContent chain via vfs_chain_walk (the read-rule)
  * and emits a vfs_dirent_t for the visible live entry.  Live
  * means namePtr != 0 (a tombstone is namePtr == 0). */
-static int w6_dirchain_list_slot_cb(TreeContext* ctx, int64_t slot_vp,
+static int dirchain_list_slot_cb(TreeContext* ctx, int64_t slot_vp,
                                       const uint8_t* slot_bytes,
                                       void* user) {
-    w6_dirchain_list_state* st = (w6_dirchain_list_state*)user;
+    dirchain_list_state* st = (dirchain_list_state*)user;
     (void)slot_vp;
     int64_t leaf_head = vfs_rd8_s(slot_bytes, ANCHOR_OFF_HEADPTR,
                                     ctx->page_size);
@@ -2290,11 +2264,11 @@ int dirchain_list(TreeContext* ctx, int64_t dir_vp, int64_t epoch,
     VarArray(vfs_dirent_t) entries = var_array_new(vfs_dirent_t);
     if (!entries) return VFS_ERR_IO;
 
-    w6_dirchain_list_state list_st = {
+    dirchain_list_state list_st = {
         .ctx = ctx, .read_epoch = read_epoch, .entries = entries,
     };
     if (headPtr != 0) {
-        walk_anchor_chain(ctx, headPtr, w6_dirchain_list_seg_cb, &list_st);
+        walk_anchor_chain(ctx, headPtr, dirchain_list_seg_cb, &list_st);
     }
 
     int written = entries->count;
@@ -3234,14 +3208,14 @@ typedef struct {
     /* Out: best match */
     int64_t      best_child, best_childPtr, best_raw_epoch;
     int          best_name_match;
-} w6_find_name_state;
+} find_name_state;
 
 /* W6: check if a SlotNode contains a name match.  Walks the
  * SlotNode's DirContent chain via vfs_chain_walk (which applies
  * the read-rule), reads the name of the visible DirContent, and
  * compares to the target.  Updates st->best_* on match. */
-static void w6_check_slot_for_name(PoolSlot* slot_slot,
-                                    w6_find_name_state* st) {
+static void check_slot_for_name(PoolSlot* slot_slot,
+                                    find_name_state* st) {
     TreeContext* ctx = st->ctx;
     int64_t leaf_head = vfs_rd8_s(slot_slot->bytes, ANCHOR_OFF_HEADPTR,
                                     ctx->page_size);
@@ -3293,9 +3267,9 @@ static void w6_check_slot_for_name(PoolSlot* slot_slot,
  * DIRCONTENTLINK_OFF_DIRCONTENTVP at offset 8).  We acquire
  * the SlotNode and check it for a name match.  Returns 1 to
  * stop the walk on match, 0 to continue. */
-static int w6_radix_link_cb(TreeContext* ctx, int64_t link_vp,
+static int dirchain_radix_link_cb(TreeContext* ctx, int64_t link_vp,
                              const uint8_t* link_bytes, void* user) {
-    w6_find_name_state* st = (w6_find_name_state*)user;
+    find_name_state* st = (find_name_state*)user;
     (void)link_vp;
     int64_t slot_vp = vfs_rd8_s(link_bytes, DIRCONTENTLINK_OFF_DIRCONTENTVP,
                                 ctx->page_size);
@@ -3303,7 +3277,7 @@ static int w6_radix_link_cb(TreeContext* ctx, int64_t link_vp,
     PoolSlot slot_slot = {0};
     pool_acquire(&ctx->pool, slot_vp, false, &slot_slot);
     if (slot_slot.vptr == VFS_VPTR_NULL) return 0;
-    w6_check_slot_for_name(&slot_slot, st);
+    check_slot_for_name(&slot_slot, st);
     pool_release(&ctx->pool, &slot_slot);
     return st->best_name_match;  /* 1 to stop, 0 to continue */
 }
@@ -3312,33 +3286,33 @@ static int w6_radix_link_cb(TreeContext* ctx, int64_t link_vp,
  * DirSegment.  Called for each SlotNode via
  * walk_content_unit_chain.  Returns 1 to stop on match, 0 to
  * continue. */
-static int w6_fallback_slot_cb(TreeContext* ctx, int64_t slot_vp,
+static int dirchain_fallback_slot_cb(TreeContext* ctx, int64_t slot_vp,
                                 const uint8_t* slot_bytes, void* user) {
-    w6_find_name_state* st = (w6_find_name_state*)user;
+    find_name_state* st = (find_name_state*)user;
     (void)slot_vp;
-    /* The callback receives the SlotNode's bytes.  w6_check_slot_for_name
+    /* The callback receives the SlotNode's bytes.  check_slot_for_name
      * needs a PoolSlot (because vfs_chain_walk writes the visible
      * DirContent's bytes into the slot).  Build a temporary
      * PoolSlot with the bytes copied in. */
     PoolSlot slot_slot = {0};
     memcpy(slot_slot.bytes, slot_bytes, VFS_POOL_SLOT_SIZE);
-    w6_check_slot_for_name(&slot_slot, st);
+    check_slot_for_name(&slot_slot, st);
     return st->best_name_match;
 }
 
 /* W6: fallback-path callback for the DirSegment chain.  Called
  * for each DirSegment via walk_anchor_chain.  For each
  * segment, walks its SlotNode chain via
- * walk_content_unit_chain + w6_fallback_slot_cb.  Returns 1 to
+ * walk_content_unit_chain + dirchain_fallback_slot_cb.  Returns 1 to
  * stop the outer walk on match, 0 to continue. */
-static int w6_fallback_seg_cb(TreeContext* ctx, int64_t seg_vp,
+static int dirchain_fallback_seg_cb(TreeContext* ctx, int64_t seg_vp,
                                const uint8_t* seg_bytes, void* user) {
-    w6_find_name_state* st = (w6_find_name_state*)user;
+    find_name_state* st = (find_name_state*)user;
     (void)seg_vp;
     int64_t slot_head = vfs_rd8_s(seg_bytes, ANCHOR_OFF_HEADPTR,
                                    ctx->page_size);
     if (slot_head == 0) return 0;  /* empty segment, keep looking */
-    walk_content_unit_chain(ctx, slot_head, w6_fallback_slot_cb, st);
+    walk_content_unit_chain(ctx, slot_head, dirchain_fallback_slot_cb, st);
     return st->best_name_match;
 }
 
@@ -3354,7 +3328,7 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
     int64_t read_epoch = mapper_table_resolve(&ctx->mapper_table, epoch);
 
     /* Shared state for both paths. */
-    w6_find_name_state st = {
+    find_name_state st = {
         .ctx = ctx, .name = name, .target_hash = target_hash,
         .read_epoch = read_epoch,
         .best_child = 0, .best_childPtr = 0, .best_raw_epoch = 0,
@@ -3407,7 +3381,7 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
                     PoolSlot slotSlot = {0};
                     pool_acquire(&ctx->pool, slotVP, false, &slotSlot);
                     if (slotSlot.vptr != VFS_VPTR_NULL) {
-                        w6_check_slot_for_name(&slotSlot, &st);
+                        check_slot_for_name(&slotSlot, &st);
                         pool_release(&ctx->pool, &slotSlot);
                     }
                 }
@@ -3422,7 +3396,7 @@ int dirchain_find_child(TreeContext* ctx, int64_t dir_vp, const char* name,
      * DirContent chain (read-rule).  Uses the shared walks for
      * the segment and SlotNode chains. */
     if (!st.best_name_match && headPtr != 0) {
-        walk_anchor_chain(ctx, headPtr, w6_fallback_seg_cb, &st);
+        walk_anchor_chain(ctx, headPtr, dirchain_fallback_seg_cb, &st);
     }
 
     if (!st.best_name_match) return VFS_ERR_NOTFOUND;
