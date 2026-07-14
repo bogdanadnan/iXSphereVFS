@@ -20,6 +20,11 @@ static int tests_run = 0, tests_passed = 0;
 
 #define CHECK_EQ(a, b) CHECK((a) == (b))
 
+/* Phase 27 C5: tests must check storage_read_with_status, not just
+   NULL/non-NULL.  Single-threaded tests, so a file-scope status
+   variable is safe (no aliasing risk). */
+static StorageReadStatus _st = STORAGE_OK;
+
 static const char* test_path = "/tmp/test_gc.tmp";
 static const char* nonstd_path = "/tmp/test_gc_4k.tmp";
 
@@ -469,7 +474,7 @@ static int count_pool_pages(TreeContext* ctx) {
     int64_t p = ctx->pool.list_head ? *ctx->pool.list_head : 0;
     while (p != 0) {
         n++;
-        uint8_t* ph = storage_read_with_status(ctx->sb, p, NULL);
+        uint8_t* ph = storage_read_with_status(ctx->sb, p, &_st);
         if (!ph) break;
         p = vfs_rd8(ph, 0);
     }
@@ -944,7 +949,7 @@ static void test_gc_crash_after_swap(void) {
         int old_count = 0;
         while (old_page != 0) {
             old_count++;
-            uint8_t* ph = storage_read_with_status(vfs->ctx->sb, old_page, NULL);
+            uint8_t* ph = storage_read_with_status(vfs->ctx->sb, old_page, &_st);
             if (!ph) break;
             old_page = vfs_rd8(ph, 0);
         }
@@ -1030,7 +1035,7 @@ static void test_gc_integration(void) {
         int64_t p = ctx->pool.list_head ? *ctx->pool.list_head : 0;
         while (p != 0) {
             pool_before++;
-            uint8_t* ph = storage_read_with_status(ctx->sb, p, NULL);
+            uint8_t* ph = storage_read_with_status(ctx->sb, p, &_st);
             if (!ph) break;
             p = vfs_rd8(ph, 0);
         }
@@ -1044,7 +1049,7 @@ static void test_gc_integration(void) {
             int64_t p = ctx->pool.list_head ? *ctx->pool.list_head : 0;
             while (p != 0) {
                 pool_after++;
-                uint8_t* ph = storage_read_with_status(ctx->sb, p, NULL);
+                uint8_t* ph = storage_read_with_status(ctx->sb, p, &_st);
                 if (!ph) break;
                 p = vfs_rd8(ph, 0);
             }

@@ -84,9 +84,13 @@ int64_t pool_list_find_free(Pool* pool) {
     int64_t page = vfs_atomic_load_i64(pool->list_head);
 
     while (page != 0) {
-        /* Read the pool page payload */
-        uint8_t* payload = storage_read_with_status(pool->sb, page, NULL);
-        if (payload == NULL) break;  /* corrupt or missing page */
+        /* Read the pool page payload.  Phase 27 C5: distinguish
+           "not allocated" (end of list — stop walking) from
+           "I/O error" or "CRC error" (data corruption — do NOT
+           use garbage bytes, treat as end of list). */
+        StorageReadStatus pst;
+        uint8_t* payload = storage_read_with_status(pool->sb, page, &pst);
+        if (payload == NULL) break;  /* not allocated OR corrupt — stop walking */
 
         /* Read poolState and check freeCount */
         uint32_t state = (uint32_t)vfs_rd4_s(payload, POOL_OFF_STATE, pool->sb->page_size);
@@ -100,7 +104,7 @@ int64_t pool_list_find_free(Pool* pool) {
         page = vfs_rd8_s(payload, POOL_OFF_NEXT, pool->sb->page_size);
     }
 
-    return 0;  /* all pages full or no pages */
+    return 0;  /* all pages full or no pages (or list head was 0) */
 }
 
 /* ---------------------------------------------------------------------------
@@ -137,9 +141,18 @@ int64_t pool_alloc(Pool* pool) {
             free(payload);
         }
 
-        /* 3. Read the pool page from cache */
-        uint8_t* payload = storage_read_with_status(pool->sb, page_index, NULL);
-        if (payload == NULL) return VFS_VPTR_NULL;
+        /* 3. Read the pool page from cache.  Phase 27 C5: a NULL
+           with status IO/CRC means data corruption — log it and
+           fail the allocation rather than silently using zeros. */
+        StorageReadStatus pst;
+        uint8_t* payload = storage_read_with_status(pool->sb, page_index, &pst);
+        if (payload == NULL) {
+            if (pst == STORAGE_IO_ERROR || pst == STORAGE_CRC_ERROR) {
+                fprintf(stderr, "vfs: pool_alloc: pool page %lld corrupted (status=%d)\n",
+                        (long long)page_index, (int)pst);
+            }
+            return VFS_VPTR_NULL;
+        }
 
         /* 4. Read poolState */
         uint32_t state = (uint32_t)vfs_atomic_load_i32(
@@ -171,9 +184,18 @@ int64_t pool_alloc(Pool* pool) {
                          old_state, (int32_t)new_state) != old_state) {
             /* CAS failed — another thread raced.  Re-fetch the payload pointer
                in case the page was evicted from cache and re-read from disk.
-               This eliminates the pinning race (finding #B). */
-            payload = storage_read_with_status(pool->sb, page_index, NULL);
-            if (payload == NULL) continue;
+               This eliminates the pinning race (finding #B).  Phase 27 C5:
+               on CRC/IO error, log and retry — the next iteration will
+               re-find a free page (or fail the whole pool_alloc). */
+            StorageReadStatus rst;
+            payload = storage_read_with_status(pool->sb, page_index, &rst);
+            if (payload == NULL) {
+                if (rst == STORAGE_IO_ERROR || rst == STORAGE_CRC_ERROR) {
+                    fprintf(stderr, "vfs: pool_alloc: pool page %lld corrupted in CAS retry (status=%d)\n",
+                            (long long)page_index, (int)rst);
+                }
+                continue;
+            }
             continue;
         }
 
@@ -215,8 +237,18 @@ void pool_acquire(Pool* pool, int64_t vptr, bool pinPage, PoolSlot* out) {
     int     slot_index = VFS_VPTR_SLOT(vptr);
     int     slot_offset = VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
 
-    uint8_t* payload = storage_read_with_status(pool->sb, page_index, NULL);
+    /* Phase 27 C5: a NULL with status IO/CRC means the page backing
+       this vptr is corrupted.  We can't copy garbage into the slot;
+       leaving it zeroed is the safest fallback, but log it so the
+       corruption is visible (and the caller's type/field checks
+       will likely fail downstream). */
+    StorageReadStatus pst;
+    uint8_t* payload = storage_read_with_status(pool->sb, page_index, &pst);
     if (payload == NULL) {
+        if (pst == STORAGE_IO_ERROR || pst == STORAGE_CRC_ERROR) {
+            fprintf(stderr, "vfs: pool_acquire: pool page %lld corrupted (vptr=%lld, status=%d)\n",
+                    (long long)page_index, (long long)vptr, (int)pst);
+        }
         /* Page not in cache and not on disk — leave bytes zeroed, no pin.
            Caller's type/field checks will detect the invalid slot. */
         return;
@@ -248,8 +280,18 @@ void pool_release(Pool* pool, PoolSlot* slot) {
     int     slot_index = VFS_VPTR_SLOT(slot->vptr);
     int     slot_offset = VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
 
-    uint8_t* payload = storage_read_with_status(pool->sb, page_index, NULL);
-    if (payload != NULL) {
+    /* Phase 27 C5: a NULL with status IO/CRC means writing back to
+       a corrupt page would propagate the corruption to disk.  Skip
+       the write and log — the pin stays (the page stays dirty) so
+       the caller's bytes are preserved in the pin path. */
+    StorageReadStatus pst;
+    uint8_t* payload = storage_read_with_status(pool->sb, page_index, &pst);
+    if (payload == NULL) {
+        if (pst == STORAGE_IO_ERROR || pst == STORAGE_CRC_ERROR) {
+            fprintf(stderr, "vfs: pool_release: pool page %lld corrupted, skipping write-back (vptr=%lld, status=%d)\n",
+                    (long long)page_index, (long long)slot->vptr, (int)pst);
+        }
+    } else {
         memcpy(payload + slot_offset, slot->bytes, VFS_POOL_SLOT_SIZE);
     }
     /* Mark dirty regardless — keeps the page resident and ensures the

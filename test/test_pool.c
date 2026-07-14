@@ -17,6 +17,11 @@ static int tests_passed = 0;
 
 #define CHECK_EQ(a, b)  CHECK((a) == (b))
 
+/* Phase 27 C5: tests must check storage_read_with_status, not just
+   NULL/non-NULL.  Single-threaded tests, so a file-scope status
+   variable is safe (no aliasing risk). */
+static StorageReadStatus _st = STORAGE_OK;
+
 /* ========================================================================== */
 
 void test_pool_layout(void) {
@@ -200,7 +205,7 @@ void test_alloc_fill_page(void) {
     }
 
     /* Verify poolState is empty: freeCount=0 */
-    uint8_t* payload = storage_read_with_status(sb, page, NULL);
+    uint8_t* payload = storage_read_with_status(sb, page, &_st);
     CHECK(payload != NULL);
     if (payload) {
         uint32_t state = (uint32_t)vfs_rd4(payload, POOL_OFF_STATE);
@@ -239,7 +244,7 @@ void test_alloc_creates_second_page(void) {
        second_page->nextPoolPage = first_page. */
     int64_t head = list_head;
     CHECK(head != 0);
-    uint8_t* head_payload = storage_read_with_status(sb, head, NULL);
+    uint8_t* head_payload = storage_read_with_status(sb, head, &_st);
     CHECK(head_payload != NULL);
     if (head_payload) {
         int64_t next = vfs_rd8(head_payload, POOL_OFF_NEXT);
@@ -299,7 +304,7 @@ void test_pool_crash_recovery(void) {
 
            Verify the old page's poolState by reading it directly. */
         int64_t old_page = 2;  /* first data page (pages 0,1 reserved) */
-        uint8_t* payload = storage_read_with_status(sb, old_page, NULL);
+        uint8_t* payload = storage_read_with_status(sb, old_page, &_st);
         CHECK(payload != NULL);
         if (payload) {
             uint32_t state = (uint32_t)vfs_rd4(payload, POOL_OFF_STATE);
@@ -598,14 +603,14 @@ void test_list_add_prepend(void) {
     CHECK_EQ(list_head, page_b);
 
     /* page_b->nextPoolPage == page_a */
-    uint8_t* head_payload = storage_read_with_status(sb, list_head, NULL);
+    uint8_t* head_payload = storage_read_with_status(sb, list_head, &_st);
     CHECK(head_payload != NULL);
     if (head_payload) {
         CHECK_EQ(vfs_rd8(head_payload, POOL_OFF_NEXT), page_a);
     }
 
     /* page_a->nextPoolPage == 0 (end of list) */
-    uint8_t* second_payload = storage_read_with_status(sb, page_a, NULL);
+    uint8_t* second_payload = storage_read_with_status(sb, page_a, &_st);
     CHECK(second_payload != NULL);
     if (second_payload) {
         CHECK_EQ(vfs_rd8(second_payload, POOL_OFF_NEXT), 0);
@@ -766,7 +771,7 @@ void test_pool_init_existing_file(void) {
         CHECK(list_head != 0);
 
         /* Verify the pool page has 250 free slots (255 - 5 allocated) */
-        uint8_t* payload = storage_read_with_status(sb, list_head, NULL);
+        uint8_t* payload = storage_read_with_status(sb, list_head, &_st);
         CHECK(payload != NULL);
         if (payload) {
             uint32_t state = (uint32_t)vfs_rd4(payload, POOL_OFF_STATE);

@@ -220,9 +220,16 @@ int64_t gc_allocate_new_pool_page(TreeContext* ctx, void* gc_map) {
     int64_t page_idx = storage_allocate(ctx->sb, 1);
     if (page_idx < 0) return VFS_VPTR_NULL;
 
-    /* Get a pointer to the page payload (page cache will allocate on read) */
-    uint8_t* payload = storage_read_with_status(ctx->sb, page_idx, NULL);
+    /* Get a pointer to the page payload (page cache will allocate on
+       read).  Phase 27 C5: a NULL with status IO/CRC means a freshly
+       allocated page already has on-disk corruption — log and fail. */
+    StorageReadStatus gst;
+    uint8_t* payload = storage_read_with_status(ctx->sb, page_idx, &gst);
     if (!payload) {
+        if (gst == STORAGE_IO_ERROR || gst == STORAGE_CRC_ERROR) {
+            fprintf(stderr, "vfs: gc_allocate_new_pool_page: page %lld corrupted on initial read (status=%d)\n",
+                    (long long)page_idx, (int)gst);
+        }
         storage_free(ctx->sb, page_idx);
         return VFS_VPTR_NULL;
     }
@@ -1170,8 +1177,18 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
     int64_t old_page = old_pool_list_head;
     while (old_page != 0) {
         deferred_free_enqueue(queue, old_page, ctx->sb);
-        uint8_t* old_header = storage_read_with_status(ctx->sb, old_page, NULL);
-        if (!old_header) break;
+        /* Phase 27 C5: a NULL with status IO/CRC means the on-disk
+           pool chain is corrupted — log and stop walking (we still
+           have the pages we already enqueued). */
+        StorageReadStatus ost;
+        uint8_t* old_header = storage_read_with_status(ctx->sb, old_page, &ost);
+        if (!old_header) {
+            if (ost == STORAGE_IO_ERROR || ost == STORAGE_CRC_ERROR) {
+                fprintf(stderr, "vfs: gc: pool list corrupted at page %lld (status=%d)\n",
+                        (long long)old_page, (int)ost);
+            }
+            break;
+        }
         int64_t next_page = vfs_rd8_s(old_header, 0, ctx->page_size);
         old_page = next_page;
     }

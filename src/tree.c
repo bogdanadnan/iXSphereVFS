@@ -97,12 +97,20 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     int err = tree_superblock_write(ctx);
     if (err != VFS_OK) return err;
 
-    /* Read segment_size from StorageBackend header page */
-    uint8_t* hdr = storage_read_with_status(ctx->sb, 0, NULL);
+    /* Read segment_size from StorageBackend header page.  Phase 27 C5:
+       a NULL with status IO/CRC means the header is corrupted on
+       disk — fail the bootstrap (don't fall back to a default that
+       would hide the corruption from later code). */
+    StorageReadStatus sb_st;
+    uint8_t* hdr = storage_read_with_status(ctx->sb, 0, &sb_st);
     if (hdr) {
         ctx->segment_size = (uint32_t)vfs_rd4_s(hdr, HDR_OFF_SEGMENT_SIZE, ctx->page_size);
-    } else {
+    } else if (sb_st == STORAGE_NOT_FOUND) {
         ctx->segment_size = 1024;  /* default */
+    } else {
+        fprintf(stderr, "vfs: tree_bootstrap_superblock: header page corrupted (status=%d)\n",
+                (int)sb_st);
+        return VFS_ERR_IO;
     }
 
     /* Allocate pool already exists in ctx->pool from vfs_mount (file opened via vfs_open) */
@@ -170,12 +178,19 @@ int tree_init(TreeContext* ctx) {
         ctx->treeLockState = 0;
     }
 
-    /* Read segment_size from StorageBackend header */
-    uint8_t* hdr = storage_read_with_status(ctx->sb, 0, NULL);
+    /* Read segment_size from StorageBackend header.  Phase 27 C5:
+       same logic as bootstrap — fail on corruption, default only on
+       "not allocated". */
+    StorageReadStatus sb_st;
+    uint8_t* hdr = storage_read_with_status(ctx->sb, 0, &sb_st);
     if (hdr) {
         ctx->segment_size = (uint32_t)vfs_rd4_s(hdr, HDR_OFF_SEGMENT_SIZE, ctx->page_size);
-    } else {
+    } else if (sb_st == STORAGE_NOT_FOUND) {
         ctx->segment_size = 1024;
+    } else {
+        fprintf(stderr, "vfs: tree_init: header page corrupted (status=%d)\n",
+                (int)sb_st);
+        return VFS_ERR_IO;
     }
 
     /* Walk epoch mapper chain (stub — just validate chain is readable).
