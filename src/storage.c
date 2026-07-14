@@ -372,18 +372,63 @@ int64_t storage_allocate(StorageBackend* sb, int count) {
     int64_t logical;
     int     oob_retries = 0;
     do {
-        /* Pre-check: if sb->total_pages is OOB, grow the table. */
+        /* Pre-check: determine if we need to grow the table
+           BEFORE the CAS-bump.  Three needs_grow cases:
+             a) sb->total_pages is OOB (beyond the current table)
+             b) sb->total_pages is the inline self-ref (inline_count-1)
+                and its entry is 0 (overflow[0] not allocated)
+             c) sb->total_pages is a self-ref in a previous overflow's
+                last entry, and that entry is 0 (the next overflow
+                is not allocated)
+           Case (c) is the dangerous one: without the pre-check,
+           try_claim_entry would see existing=0, CAS the entry to
+           a data page's physical, and corrupt the indirection
+           table.  The post-check below would catch it, but only
+           after the corruption already happened.
+
+           The pre-check reads overflow_count and
+           overflow_pages[overflow_idx][1+eidx] non-atomically.
+           Under contention, A can read overflow_count stale
+           (e.g., K when B has incremented to K+1) but see B's
+           self-ref write (overflow_pages[K-1][1+14] = non-zero).
+           A then thinks overflow[K] is added but it's not, and
+           try_claim_entry reads uninitialized memory.
+
+           To close this race, we hold overflow_lock for just the
+           pre-check (a few memory reads).  The lock is released
+           before the inner CAS, so the CAS itself is lock-free.
+           The lock is held for nanoseconds — contention is
+           minimal.  indir_ensure_capacity (which also takes the
+           lock, for longer) is rare, so the pre-check rarely
+           waits on it. */
         {
             IndirectionTable* it = &sb->indir;
+            int needs_grow = 0;
+            /* Acquire the lock for the pre-check only.  Released
+               after the needs_grow decision below. */
+            while (__sync_lock_test_and_set(&it->overflow_lock, 1)) { /* spin */ }
             int64_t tp = sb->total_pages;
-            if (tp >= it->inline_count) {
+            if (tp < 2) tp = 2;
+            if (tp < it->inline_count) {
+                if (tp == it->inline_count - 1 &&
+                    it->inline_entries[tp] == 0) {
+                    needs_grow = 1;
+                }
+            } else {
                 int64_t remaining   = tp - it->inline_count;
                 int64_t overflow_idx = remaining / it->entries_per_overflow;
+                int64_t eidx        = remaining % it->entries_per_overflow;
                 if (overflow_idx >= it->overflow_count) {
-                    if (++oob_retries > 8) return -1;
-                    if (indir_ensure_capacity(sb, 1) != 0) return -1;
-                    continue;  /* re-check from the top */
+                    needs_grow = 1;
+                } else if (eidx == it->entries_per_overflow - 1 &&
+                           it->overflow_pages[overflow_idx][1 + eidx] == 0) {
+                    needs_grow = 1;
                 }
+            }
+            __sync_lock_release(&it->overflow_lock);
+            if (needs_grow) {
+                if (indir_ensure_capacity(sb, 1) != 0) return -1;
+                continue;  /* re-check from the top */
             }
         }
 
