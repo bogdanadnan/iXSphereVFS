@@ -288,7 +288,10 @@ void storage_close(StorageBackend* sb) {
 /* Attempt to CAS-set an indirection entry from 0 to physical_offset.
    Returns 1 on success, 0 if the entry was already claimed. */
 static int try_claim_entry(StorageBackend* sb, int64_t logical_page, int64_t physical_offset) {
-    if (indir_lookup(sb, logical_page) != 0) return 0;  /* fast path: already taken */
+    int64_t existing = indir_lookup(sb, logical_page);
+    if (existing != 0) {
+        return 0;  /* fast path: already taken (self-ref, prior claim, etc.) */
+    }
 
     /* The entry is in the header buffer (inline) or overflow page buffer.
        Both are plain int64_t arrays.  CAS on the entry directly. */
@@ -345,18 +348,114 @@ int64_t storage_allocate(StorageBackend* sb, int count) {
         new_tail = old_tail + phys_record_size(sb);
     }
 
-    /* Atomically claim the slot at sb->total_pages.  If a concurrent
-       caller raced and claimed it first, fall back to the scan path
-       (rare; the user-called paths don't push that hard concurrently). */
+    /* Atomically claim the slot at sb->total_pages.  The do-while
+       handles three cases:
+         1. Normal: CAS-bump sb->total_pages, claim the slot.
+         2. Self-ref (entry is non-zero = the overflow's physical).
+            Just loop back — the next bump lands on a data slot.
+         3. OOB (sb->total_pages is beyond the current table).
+            The pre-check catches the common case (grow before
+            CAS-bump, so the OOB slot is claimable on the next
+            iteration).  But the pre-check is racy: between the
+            read of overflow_count and the CAS, another thread
+            can add an overflow, making the pre-check see a
+            stale (too-large) overflow_count and miss the OOB.
+            In that case the CAS bumps past the OOB slot.  The
+            post-check below catches this: if try_claim_entry
+            fails AND the entry is OOB, we grow the table and
+            retry the claim with the SAME logical (the OOB
+            data slot that became valid after the grow).  sb->
+            total_pages is now logical + 1, but we claim logical
+            itself.  If another thread already claimed it, we
+            loop back and the next iteration's pre-check sees
+            the updated state. */
     int64_t logical;
+    int     oob_retries = 0;
     do {
+        /* Pre-check: if sb->total_pages is OOB, grow the table. */
+        {
+            IndirectionTable* it = &sb->indir;
+            int64_t tp = sb->total_pages;
+            if (tp >= it->inline_count) {
+                int64_t remaining   = tp - it->inline_count;
+                int64_t overflow_idx = remaining / it->entries_per_overflow;
+                if (overflow_idx >= it->overflow_count) {
+                    if (++oob_retries > 8) return -1;
+                    if (indir_ensure_capacity(sb, 1) != 0) return -1;
+                    continue;  /* re-check from the top */
+                }
+            }
+        }
+
         int64_t old_total;
         do {
             old_total = sb->total_pages;
             if (old_total < 2) old_total = 2;  /* page 0 = header, 1 = superblock */
             logical = old_total;
         } while (vfs_cas_i64(&sb->total_pages, old_total, old_total + 1) != old_total);
-    } while (!try_claim_entry(sb, logical, old_tail));
+
+        if (try_claim_entry(sb, logical, old_tail)) break;
+
+        /* Claim failed.  Three sub-cases:
+           1. Self-ref in previous overflow whose next overflow
+              is already allocated (entry is non-zero = the
+              overflow's physical).  Just loop back — the next
+              bump lands on a data slot.
+           2. Self-ref in previous overflow whose next overflow
+              is NOT yet allocated (entry is 0).  This is the
+              dangerous case: try_claim_entry would CAS the
+              entry to a data page's physical, corrupting the
+              indirection table.  Grow the table and retry the
+              claim with the same logical.
+           3. OOB (logical is beyond the current table).  Same
+              fix: grow the table and retry with the same logical.
+
+           The pre-check catches the common case for (3) but
+           can miss it under contention (stale overflow_count
+           read).  The post-check below is the safety net for
+           both (2) and (3). */
+        {
+            IndirectionTable* it = &sb->indir;
+            int needs_grow = 0;
+            if (logical < it->inline_count) {
+                /* Inline self-ref (only inline[inline_count-1]). */
+                if (logical == it->inline_count - 1 &&
+                    it->inline_entries[logical] == 0) {
+                    needs_grow = 1;
+                }
+            } else {
+                int64_t remaining = logical - it->inline_count;
+                int64_t overflow_idx = remaining / it->entries_per_overflow;
+                int64_t eidx = remaining % it->entries_per_overflow;
+                if (overflow_idx >= it->overflow_count) {
+                    /* OOB: logical is beyond the current table. */
+                    needs_grow = 1;
+                } else if (eidx == it->entries_per_overflow - 1) {
+                    /* Last entry of overflow[overflow_idx] =
+                       self-ref of overflow[overflow_idx+1].
+                       If entry is 0, the next overflow is not
+                       yet allocated. */
+                    if (it->overflow_pages[overflow_idx][1 + eidx] == 0) {
+                        needs_grow = 1;
+                    }
+                }
+                /* Otherwise: normal data slot, entry is non-zero
+                   (already claimed by another thread) — CAS lost
+                   the race, just loop back. */
+            }
+            if (needs_grow) {
+                if (++oob_retries > 8) return -1;
+                if (indir_ensure_capacity(sb, 1) != 0) return -1;
+                /* Retry the claim with the same logical.  After
+                   the grow, the OOB/self-ref slot is now a
+                   valid entry.  If another thread claimed it,
+                   try_claim_entry returns 0 and we loop back. */
+                if (try_claim_entry(sb, logical, old_tail)) break;
+            }
+        }
+        /* Normal self-ref, CAS-lost, or post-grow-retry-lost:
+           loop back. */
+    } while (1);
 
     return logical;
 }

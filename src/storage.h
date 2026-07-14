@@ -51,7 +51,17 @@ typedef struct {
     int64_t*  overflow_logical; /* logical page index for each overflow page */
     int       overflow_count;  /* number of overflow pages */
     int       overflow_cap;    /* allocated capacity */
-    volatile int overflow_lock; /* protects realloc of overflow arrays */
+    volatile int overflow_lock; /* Phase 27 C6: protects the entire
+                                 * overflow-page allocation path in
+                                 * indir_ensure_capacity — the realloc,
+                                 * the chain link, and the array
+                                 * assignment.  Held under double-checked
+                                 * locking (lock-free fast path for the
+                                 * common case where no new overflow page
+                                 * is needed).  Previously only protected
+                                 * the realloc, which left the chain link
+                                 * and array assignment racy under
+                                 * multi-threaded storage_allocate. */
 
     int64_t   entries_per_overflow; /* (page_size / 8) - 1 */
 } IndirectionTable;

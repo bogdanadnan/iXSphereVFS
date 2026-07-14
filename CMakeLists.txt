@@ -56,6 +56,9 @@ add_executable(test_storage test/test_storage.c)
 target_link_libraries(test_storage ixsphere_vfs pthread)
 add_test(NAME test_storage COMMAND test_storage)
 
+add_executable(test_c6_debug test/test_c6_debug.c)
+target_link_libraries(test_c6_debug ixsphere_vfs pthread)
+
 add_executable(test_pool test/test_pool.c)
 target_link_libraries(test_pool ixsphere_vfs pthread)
 add_test(NAME test_pool COMMAND test_pool)
