@@ -39,6 +39,21 @@ static int64_t physical_offset(StorageBackend* sb, int64_t logical_page) {
  * --------------------------------------------------------------------------- */
 
 int mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) {
+    /* Phase 27 C5: delegate to the status-returning variant and
+       collapse both error classes back to -1 for callers that don't
+       care which kind of failure occurred. */
+    int s = mirror_read_with_status(sb, logical_page, out_payload);
+    return s == 0 ? 0 : -1;
+}
+
+/* mirror_read_with_status — phase 27 C5.  Distinguishes I/O errors
+   (pread failed) from CRC errors (data corruption).  Returns:
+     0  on success
+    -1  on I/O error (pread/pread short, or invalid indirection)
+    -2  on CRC error (payload doesn't match the PageHeader's checksum)
+   When -2 is returned the caller should treat the data as
+   untrustworthy and surface VFS_ERR_IO, NOT zero-fill. */
+int mirror_read_with_status(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) {
     int64_t offset = physical_offset(sb, logical_page);
     if (offset < 0) return -1;
 
@@ -49,10 +64,10 @@ int mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) 
         /* Single copy — validate and return */
         ssize_t n = pread(sb->fd, out_payload, (size_t)sb->page_size,
                           offset + PAGE_HEADER_SIZE);
-        if (n != sb->page_size) return -1;
+        if (n != sb->page_size) return -1;  /* I/O error */
 
         uint32_t crc = vfs_crc32c(out_payload, (size_t)sb->page_size);
-        if (crc != ph.checksum) return -1;
+        if (crc != ph.checksum) return -2;  /* CRC error */
         return 0;
     }
 
@@ -64,7 +79,7 @@ int mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) 
                           offset + PAGE_HEADER_SIZE);
         if (n != sb->page_size) return -1;
         uint32_t crc = vfs_crc32c(out_payload, (size_t)sb->page_size);
-        return (crc == ph.checksum) ? 0 : -1;
+        return (crc == ph.checksum) ? 0 : -2;
     }
 
     PageHeader ph_sib;
@@ -74,7 +89,7 @@ int mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) 
                           offset + PAGE_HEADER_SIZE);
         if (n != sb->page_size) return -1;
         uint32_t crc = vfs_crc32c(out_payload, (size_t)sb->page_size);
-        return (crc == ph.checksum) ? 0 : -1;
+        return (crc == ph.checksum) ? 0 : -2;
     }
 
     /* Pick the page with higher generation */
@@ -97,7 +112,7 @@ int mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) 
         if (crc == active_ph.checksum) return 0;
     }
 
-    /* Active half failed CRC — try the other */
+    /* Active half failed — try the other */
     int64_t  other_offset = (active_offset == offset) ? sibling_offset : offset;
     PageHeader other_ph   = (active_offset == offset) ? ph_sib : ph;
 
@@ -108,7 +123,7 @@ int mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) 
         if (crc == other_ph.checksum) return 0;
     }
 
-    return -1;  /* both halves corrupt */
+    return -2;  /* both halves CRC-corrupt */
 }
 
 /* ---------------------------------------------------------------------------

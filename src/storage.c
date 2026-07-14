@@ -488,23 +488,43 @@ void storage_free(StorageBackend* sb, int64_t logical_page) {
  * --------------------------------------------------------------------------- */
 
 uint8_t* storage_read(StorageBackend* sb, int64_t logical_page) {
+    /* Thin wrapper: returns NULL on any failure (cannot distinguish
+       "not allocated" from "I/O error" from "CRC error").  New code
+       should call storage_read_with_status. */
+    StorageReadStatus status;
+    return storage_read_with_status(sb, logical_page, &status);
+}
+
+uint8_t* storage_read_with_status(StorageBackend* sb, int64_t logical_page,
+                                  StorageReadStatus* out_status) {
+    if (out_status) *out_status = STORAGE_NOT_FOUND;
     _cache_total++;
 
-    /* 1. Check page cache */
+    /* 1. Check page cache — a cached entry is by definition valid
+       (it was validated when first read in; flushes re-validate). */
     CacheEntry* ce = cache_find(&sb->cache, logical_page);
     _last_was_hit = (ce != NULL);
-    if (ce) { _cache_hits++; return ce->payload; }
+    if (ce) { _cache_hits++; if (out_status) *out_status = STORAGE_OK; return ce->payload; }
 
     /* 2. Check if page is allocated */
     int64_t offset = indir_lookup(sb, logical_page);
-    if (offset == 0) return NULL;  /* never written */
+    if (offset == 0) return NULL;  /* not allocated → STORAGE_NOT_FOUND */
 
-    /* 3. Read from disk via lazy mirror */
+    /* 3. Read from disk via lazy mirror (with status).  Phase 27 C5:
+       a CRC mismatch is now distinguished from an I/O error.  We must
+       NOT zero-fill or insert garbage into the cache. */
     uint8_t* buf = malloc((size_t)sb->page_size);
-    if (!buf) return NULL;
+    if (!buf) {
+        if (out_status) *out_status = STORAGE_IO_ERROR;
+        return NULL;
+    }
 
-    if (mirror_read(sb, logical_page, buf) != 0) {
+    int mirror_status = mirror_read_with_status(sb, logical_page, buf);
+    if (mirror_status != 0) {
         free(buf);
+        if (out_status) {
+            *out_status = (mirror_status == -2) ? STORAGE_CRC_ERROR : STORAGE_IO_ERROR;
+        }
         return NULL;
     }
 
@@ -512,6 +532,7 @@ uint8_t* storage_read(StorageBackend* sb, int64_t logical_page) {
     cache_insert(&sb->cache, logical_page, buf, 0, 0);
 
     /* 5. Return the cached payload (cache owns buf now) */
+    if (out_status) *out_status = STORAGE_OK;
     ce = cache_find(&sb->cache, logical_page);
     return ce ? ce->payload : NULL;
 }

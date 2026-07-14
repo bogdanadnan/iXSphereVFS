@@ -122,7 +122,26 @@ int64_t         storage_allocate(StorageBackend* sb, int count);
 int             storage_acquire(StorageBackend* sb, int64_t logical_page);
 void            storage_free(StorageBackend* sb, int64_t logical_page);
 
+/* Status of a storage_read attempt.  Phase 27 C5: distinguishes
+   "page not allocated" (sparse-file semantics: zero-fill) from
+   "I/O error" (read failed) and "CRC error" (data corruption).
+   Previously all three were collapsed into a NULL return, which
+   caused silent data loss on disk corruption. */
+typedef enum {
+    STORAGE_OK         = 0,  /* payload valid, do not free */
+    STORAGE_NOT_FOUND  = 1,  /* not allocated in indirection table (sparse) */
+    STORAGE_IO_ERROR   = 2,  /* pread/pwrite failed */
+    STORAGE_CRC_ERROR  = 3   /* CRC32C mismatch — data corruption detected */
+} StorageReadStatus;
+
 uint8_t*        storage_read(StorageBackend* sb, int64_t logical_page);
+
+/* Read with explicit status.  Returns a cache-resident payload on
+   success (do not free); returns NULL on failure, with *out_status
+   set to the reason.  *out_status may be NULL. */
+uint8_t*        storage_read_with_status(StorageBackend* sb, int64_t logical_page,
+                                         StorageReadStatus* out_status);
+
 void            storage_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload, uint32_t priority);
 void            storage_flush(StorageBackend* sb, int64_t logical_page);
 void            storage_flush_cache_only(StorageBackend* sb);
@@ -154,6 +173,9 @@ int     indir_ensure_capacity(StorageBackend* sb, int needed);
  * --------------------------------------------------------------------------- */
 
 int  mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload);
+/* Phase 27 C5: status-returning variant.  0 on success, -1 on I/O
+   error, -2 on CRC error.  See lazy_mirror.c for the distinction. */
+int  mirror_read_with_status(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload);
 int  mirror_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload,
                   uint32_t flags);
 

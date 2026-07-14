@@ -36,7 +36,12 @@ int dirchain_test_get_hash_rejects(void) {
  * --------------------------------------------------------------------------- */
 
 int tree_superblock_read(TreeContext* ctx) {
-    uint8_t* payload = storage_read(ctx->sb, SUPERBLOCK_PAGE);
+    /* Phase 27 C5: distinguish "I/O error" / "CRC error" from
+       "not allocated" — the latter shouldn't happen for the
+       superblock page, but CRC corruption must surface as
+       VFS_ERR_IO (was previously silent zero-fill). */
+    StorageReadStatus sb_status = STORAGE_NOT_FOUND;
+    uint8_t* payload = storage_read_with_status(ctx->sb, SUPERBLOCK_PAGE, &sb_status);
     if (!payload) return VFS_ERR_IO;
 
     ctx->rootNodeOffset   = vfs_rd8_s(payload, SB_OFF_ROOT_OFFSET, ctx->page_size);
@@ -3722,9 +3727,21 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
             if (found_in_place) {
                 /* In-place write: read current page, overlay, write back.
                    storage_read/storage_write operate on cache pages, not
-                   pool slots, so the C1 hazard doesn't apply here. */
-                uint8_t* page_buf = storage_read(ctx->sb, data_page);
-                if (!page_buf) { pool_release(&ctx->pool, &pn_slot); pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); return -1; }
+                   pool slots, so the C1 hazard doesn't apply here.
+                   Phase 27 C5: use storage_read_with_status to
+                   distinguish a CRC error (data corruption) from a
+                   genuine "not allocated" — the latter cannot happen
+                   here (data_page is from a live VersionPage) so any
+                   failure is VFS_ERR_IO. */
+                StorageReadStatus istatus = STORAGE_NOT_FOUND;
+                uint8_t* page_buf = storage_read_with_status(ctx->sb, data_page, &istatus);
+                if (!page_buf) {
+                    pool_release(&ctx->pool, &pn_slot);
+                    pool_release(&ctx->pool, &file_slot);
+                    vfs_unlock(vfs, file, epoch);
+                    vfs->ctx->last_error = VFS_ERR_IO;
+                    return -1;
+                }
                 memcpy(page_buf + page_offset, src, (size_t)page_count);
                 storage_write(ctx->sb, data_page, page_buf, 0);
                 pool_release(&ctx->pool, &pn_slot);
@@ -3760,11 +3777,21 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
             if (!page_buf) { pool_release(&ctx->pool, &pn_slot); pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); return -1; }
 
             if (base_page >= 0) {
-                uint8_t* base_buf = storage_read(ctx->sb, base_page);
+                /* Phase 27 C5: propagate CRC / I/O errors instead of
+                   silently zero-filling a corrupted base page. */
+                StorageReadStatus bstatus = STORAGE_NOT_FOUND;
+                uint8_t* base_buf = storage_read_with_status(ctx->sb, base_page, &bstatus);
                 if (base_buf) {
                     memcpy(page_buf, base_buf, (size_t)page_size);
-                } else {
+                } else if (bstatus == STORAGE_NOT_FOUND) {
                     memset(page_buf, 0, (size_t)page_size);
+                } else {
+                    free(page_buf);
+                    pool_release(&ctx->pool, &pn_slot);
+                    pool_release(&ctx->pool, &file_slot);
+                    vfs_unlock(vfs, file, epoch);
+                    vfs->ctx->last_error = VFS_ERR_IO;
+                    return -1;
                 }
             } else {
                 memset(page_buf, 0, (size_t)page_size);
@@ -3923,17 +3950,30 @@ int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
         int found = (data_page >= 0);
 
         if (found) {
-            /* Read data page and copy intra-page portion */
+            /* Read data page and copy intra-page portion.  Phase 27 C5:
+               use storage_read_with_status to distinguish "page not
+               allocated" (zero-fill, sparse-file semantics) from
+               "I/O error" or "CRC error" (propagate VFS_ERR_IO, do
+               not zero-fill — that would silently corrupt data). */
             int64_t t_before = vfs_cache_total();
             int64_t h_before = vfs_cache_hits();
-            uint8_t* page_data = storage_read(ctx->sb, data_page);
+            StorageReadStatus rstatus = STORAGE_NOT_FOUND;
+            uint8_t* page_data = storage_read_with_status(ctx->sb, data_page, &rstatus);
             vfs_data_inc_total();
             if (vfs_cache_total() > t_before && vfs_cache_hits() > h_before)
                 vfs_data_inc_hits();
             if (page_data) {
                 memcpy(dst, page_data + page_offset, (size_t)page_count);
-            } else {
+            } else if (rstatus == STORAGE_NOT_FOUND) {
+                /* Sparse file: page never allocated.  Zero-fill. */
                 memset(dst, 0, (size_t)page_count);
+            } else {
+                /* I/O error or CRC error (data corruption).  Surface
+                   VFS_ERR_IO and stop the read — do not zero-fill, the
+                   data is untrustworthy. */
+                pool_release(&ctx->pool, &pn_slot);
+                vfs->ctx->last_error = VFS_ERR_IO;
+                return -1;
             }
         } else {
             /* No VersionPage found — page never written at this epoch */
