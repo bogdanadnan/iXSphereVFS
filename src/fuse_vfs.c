@@ -492,7 +492,7 @@ int fuse_vfs_create(const char* path, mode_t mode,
     free(path_copy);
 
     /* Acquire lock on the newly created file */
-    if (vfs_lock(state->vfs, vp, state->epoch) != VFS_OK)
+    if (vfs_lock(state->vfs, vp, vfs_current_epoch(state->vfs)) != VFS_OK)
         return -EACCES;
 
     fi->fh = (uint64_t)vp;
@@ -887,10 +887,11 @@ int vfs_error_to_errno(int vfs_err) {
     case VFS_ERR_NOTDIR:    return -ENOTDIR;
     case VFS_ERR_NOTEMPTY:  return -ENOTEMPTY;
     case VFS_ERR_CONFLICT:  return -EBUSY;
-    case VFS_ERR_FULL:      return -ENOSPC;
-    case VFS_ERR_NOMEM:     return -ENOMEM;
-    case VFS_ERR_EPOCH:     return -EINVAL;
-    default:                return -EIO;
+    case VFS_ERR_FULL:         return -ENOSPC;
+    case VFS_ERR_NOMEM:        return -ENOMEM;
+    case VFS_ERR_EPOCH:        return -EINVAL;
+    case VFS_ERR_NAMETOOLONG:  return -ENAMETOOLONG;
+    default:                   return -EIO;
     }
 }
 
@@ -903,10 +904,11 @@ const char* vfs_error_to_str(int vfs_err) {
     case VFS_ERR_NOTDIR:    return "not_a_directory";
     case VFS_ERR_NOTEMPTY:  return "not_empty";
     case VFS_ERR_CONFLICT:  return "conflict";
-    case VFS_ERR_FULL:      return "full";
-    case VFS_ERR_NOMEM:     return "out_of_memory";
-    case VFS_ERR_EPOCH:     return "invalid_epoch";
-    default:                return "unknown";
+    case VFS_ERR_FULL:         return "full";
+    case VFS_ERR_NOMEM:        return "out_of_memory";
+    case VFS_ERR_EPOCH:        return "invalid_epoch";
+    case VFS_ERR_NAMETOOLONG:  return "name_too_long";
+    default:                   return "unknown";
     }
 }
 
@@ -927,8 +929,19 @@ int64_t resolve_full_path(vfs_t* vfs, int64_t epoch, const char* path) {
     if (!path || path[0] == '\0' || (path[0] == '/' && path[1] == '\0'))
         return vfs_root(vfs);
 
-    /* Walk from root */
-    int64_t parent = vfs_root(vfs);
+    /* Walk from root, maintaining a VP stack so that ".." can pop back
+     * to the parent directory.  M7: each component is resolved with
+     * the caller-supplied epoch via vfs_open, so the read-rule applies
+     * to every step (e.g., a snapshot mount sees the snapshot's view
+     * of the directory at every level, not just the final one).
+     *
+     * Max depth is bounded by the FUSE kernel limit on path length
+     * (PATH_MAX = 4096, with each component ≥ 1 char → ≤ ~2048
+     * components).  We use 256 as a generous fixed cap; deeper
+     * paths get an I/O error rather than a stack overflow. */
+    enum { MAX_PATH_DEPTH = 256 };
+    int64_t stack[MAX_PATH_DEPTH];
+    int depth = 0;
 
     /* Make a mutable copy for strtok_r */
     size_t path_len = strlen(path);
@@ -940,40 +953,39 @@ int64_t resolve_full_path(vfs_t* vfs, int64_t epoch, const char* path) {
     char* token = strtok_r(path_copy, "/", &saveptr);
 
     while (token) {
-        /* Skip empty tokens (leading or double slashes) */
-        if (token[0] == '\0') {
+        /* Skip empty tokens (leading or double slashes) and "." */
+        if (token[0] == '\0' || strcmp(token, ".") == 0) {
             token = strtok_r(NULL, "/", &saveptr);
             continue;
         }
 
-        /* "." — stay in current directory */
-        if (strcmp(token, ".") == 0) {
-            token = strtok_r(NULL, "/", &saveptr);
-            continue;
-        }
-
-        /* ".." — parent directory (not supported: VFS has no parent pointer) */
+        /* ".." — pop the stack.  If the stack is empty (we're at
+         * root), ".." stays at root (POSIX says ".." at root is root). */
         if (strcmp(token, "..") == 0) {
-            free(path_copy);
-            return 0;
+            if (depth > 0) depth--;
+            token = strtok_r(NULL, "/", &saveptr);
+            continue;
         }
 
-        /* Resolve the component.  vfs_open sets vfs->ctx->last_error
-           on failure; callers read it via vfs_last_error(vfs) and
-           convert via vfs_error_to_errno to produce FUSE-negative
-           return values. */
-        int64_t child = vfs_open(vfs, parent, token, epoch);
+        /* Normal component — resolve relative to the current top
+         * of the stack (or root if the stack is empty). */
+        if (depth >= MAX_PATH_DEPTH) {
+            free(path_copy);
+            vfs->ctx->last_error = VFS_ERR_IO;
+            return VFS_ERR_IO;
+        }
+        int64_t base = (depth > 0) ? stack[depth - 1] : vfs_root(vfs);
+        int64_t child = vfs_open(vfs, base, token, epoch);
         if (child <= 0) {
             free(path_copy);
-            return 0;
+            return 0;  /* vfs_open set last_error */
         }
-
-        parent = child;
+        stack[depth++] = child;
         token = strtok_r(NULL, "/", &saveptr);
     }
 
     free(path_copy);
-    return parent;
+    return (depth > 0) ? stack[depth - 1] : vfs_root(vfs);
 }
 
 /* ---------------------------------------------------------------------------

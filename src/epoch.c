@@ -28,7 +28,15 @@ int64_t vfs_snapshot(vfs_t* vfs) {
     TreeContext* ctx = vfs->ctx;
 
     /* Atomically increment currentEpoch by 2 (add_fetch returns new value).
-       Snapshot epoch = old value + 1 = new value - 1. */
+       Snapshot epoch = old value + 1 = new value - 1.
+       M6 (option a): the new currentEpoch is in-memory only at this
+       point.  Callers that need durability must invoke vfs_flush()
+       afterwards — vfs_flush writes the superblock (via
+       tree_superblock_write) which persists currentEpoch.  Until
+       vfs_flush runs, a crash loses the snapshot epoch.  The SPEC
+       §12.4 promises an "immediately usable" epoch (the returned
+       value is valid for reads/writes in this process), but
+       durability across crashes requires vfs_flush. */
     int64_t new_epoch = vfs_atomic_add_i64(&ctx->currentEpoch, 2);
     return new_epoch - 1;  /* snapshot epoch is always odd */
 }
@@ -110,8 +118,28 @@ static int commit_scan_seg_cb(TreeContext* ctx, int64_t seg_vp,
  * The structure is preserved exactly: walk each visible child
  * at s_epoch, recurse into subdirectories, scan per-page
  * VersionPage chains for files.  All behavior identical to the
- * pre-W6 implementation. */
+ * pre-W6 implementation.
+ *
+ * M3: a depth limit is enforced to prevent stack overflow on
+ * deeply nested directory trees (the FUSE worker stack is small
+ * on macOS — see tree.c:2187).  When the limit is hit, the scan
+ * returns VFS_ERR_FULL (we can't continue without unbounded
+ * recursion).  Callers treat VFS_ERR_FULL from this path as
+ * "scan truncated" and decide whether to retry with a larger
+ * limit. */
+#define COMMIT_SCAN_MAX_DEPTH 64
+
+static int commit_scan_dir_impl(vfs_t* vfs, int64_t dir_vp, uint32_t s_epoch, int depth);
+
 static int commit_scan_dir(vfs_t* vfs, int64_t dir_vp, uint32_t s_epoch) {
+    return commit_scan_dir_impl(vfs, dir_vp, s_epoch, 0);
+}
+
+static int commit_scan_dir_impl(vfs_t* vfs, int64_t dir_vp, uint32_t s_epoch, int depth) {
+    /* M3: depth limit to prevent stack overflow on deeply nested trees. */
+    if (depth >= COMMIT_SCAN_MAX_DEPTH) {
+        return VFS_ERR_FULL;
+    }
     TreeContext* ctx = vfs->ctx;
     /* Read the DirNode to get the segment chain head.  Release
        early (the pre-W6 code did the same). */
@@ -174,8 +202,8 @@ static int commit_scan_dir(vfs_t* vfs, int64_t dir_vp, uint32_t s_epoch) {
             pool_release(&ctx->pool, &child_slot);
 
             if (child_type == (int16_t)NODE_TYPE_DIR) {
-                /* Recurse into subdirectory */
-                int err = commit_scan_dir(vfs, scan_st.childPtr, s_epoch);
+                /* Recurse into subdirectory (M3: pass depth) */
+                int err = commit_scan_dir_impl(vfs, scan_st.childPtr, s_epoch, depth + 1);
                 if (err != 0) return err;
 
             } else if (child_type == (int16_t)NODE_TYPE_FILE) {
@@ -280,6 +308,17 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
                             (uint32_t)current, MAPPER_FLAG_TRAVERSAL_APPLY);
     if (ret != VFS_OK) return ret;
 
+    /* M5: flush the dirty pool page that holds the new MapperEntry
+     * before the in-memory table update and the superblock write.
+     * Without this, a crash between mapper_insert and
+     * tree_superblock_write would leave the pool page dirty in
+     * memory but not on disk, creating a window where the in-memory
+     * mapper_table says the snapshot is committed but the on-disk
+     * mapper chain doesn't.  Flushing the pool page here makes the
+     * mapper write durable; the superblock write that follows is
+     * then the atomic commit point (consistent state on disk). */
+    storage_flush_cache_only(ctx->sb);
+
     /* Update in-memory mapper table (pool write already done above) */
     {
         int err = mapper_table_append(&ctx->mapper_table,
@@ -315,6 +354,11 @@ int vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch) {
     int ret = mapper_insert(&ctx->mapper, (uint32_t)snapshot_epoch,
                             toEpoch, 0);
     if (ret != VFS_OK) return ret;
+
+    /* M5: flush the pool page holding the new soft-delete mapping
+     * before the in-memory table update and the superblock write
+     * (see vfs_commit for the full rationale). */
+    storage_flush_cache_only(ctx->sb);
 
     /* Update in-memory mapper table (pool write already done above) */
     {

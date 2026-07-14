@@ -1198,6 +1198,16 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
         if (vfs && vfs->ctx) vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
     }
+    /* M10: enforce 255-byte name limit.  FUSE's dirent name field
+     * is char[256] (255 + NUL); the on-disk NameEntry chain can
+     * hold longer names, but every reader (FUSE, dirchain_list,
+     * etc.) assumes 255.  Reject longer names at the API boundary
+     * so they don't silently truncate and produce spurious
+     * NOTFOUNDs. */
+    if (strlen(name) > 255) {
+        vfs->ctx->last_error = VFS_ERR_NAMETOOLONG;
+        return VFS_ERR_NAMETOOLONG;
+    }
     TreeContext* ctx = vfs->ctx;
 
     /* Validate epoch is writable (Phase 6: uses real epoch validation) */
@@ -1428,6 +1438,11 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     if (!vfs || !vfs->ctx || !name || name[0] == '\0') {
         if (vfs && vfs->ctx) vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
+    }
+    /* M10: see vfs_create. */
+    if (strlen(name) > 255) {
+        vfs->ctx->last_error = VFS_ERR_NAMETOOLONG;
+        return VFS_ERR_NAMETOOLONG;
     }
     TreeContext* ctx = vfs->ctx;
 
@@ -2322,6 +2337,11 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
     }
+    /* M10: see vfs_create. */
+    if (strlen(src) > 255 || strlen(dst) > 255) {
+        vfs->ctx->last_error = VFS_ERR_NAMETOOLONG;
+        return VFS_ERR_NAMETOOLONG;
+    }
     TreeContext* ctx = vfs->ctx;
 
     if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
@@ -3112,7 +3132,13 @@ int dircontentindex_remove(Pool* pool, int64_t indexRoot, uint64_t nameHash,
                     leafSlotVP = childWalk;
                     break;
                 }
-                childVP = childListVP;
+                /* Phase 18 tree-correctness: when descending to an
+                 * INTERNAL child, use the child slot's own VP, not
+                 * its listVP (which is the child's content chain,
+                 * not the child node itself).  The lookup path
+                 * already does this correctly; this keeps remove
+                 * in sync (ISSUE.md M8). */
+                childVP = childWalk;
                 break;
             }
             childWalk = childNextVP;

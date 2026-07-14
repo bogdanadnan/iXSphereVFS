@@ -33,6 +33,7 @@ typedef enum {
     VFS_ERR_FULL      = -7,
     VFS_ERR_NOMEM     = -8,
     VFS_ERR_EPOCH     = -9,
+    VFS_ERR_NAMETOOLONG = -10,  /* M10: name > 255 bytes (FUSE dirent limit) */
 } vfs_error_t;
 
 /* Return a human-readable string for an error code. */

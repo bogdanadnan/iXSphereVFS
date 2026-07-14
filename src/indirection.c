@@ -108,6 +108,15 @@ void indir_set(StorageBackend* sb, int64_t logical_page, int64_t physical_offset
     if (overflow_idx < it->overflow_count) {
         int64_t* entries = it->overflow_pages[overflow_idx];
         vfs_atomic_store_i64(&entries[1 + entry_idx], physical_offset);
+        /* M12: mark the overflow page dirty so a cache-only flush
+         * (storage_flush_cache_only) and eviction paths see the
+         * update.  Without this, indir_set on an overflow entry is
+         * only persisted via the full storage_flush(-1) walk in
+         * storage.c. */
+        int64_t overflow_logical = it->overflow_logical[overflow_idx];
+        if (overflow_logical > 0) {
+            cache_mark_dirty(&sb->cache, overflow_logical, FLUSH_PRIO_INDIR);
+        }
     }
 }
 
