@@ -65,15 +65,15 @@ typedef struct {
     uint32_t     s_epoch;
     int64_t      childPtr;   /* out: childPtr of the visible DC */
     int          found;      /* 1 if a visible live entry was found */
-} w6_commit_scan_state;
+} commit_scan_state;
 
 /* W6: callback for walk_content_unit_chain on the SlotNode
  * chain within a DirSegment.  For each SlotNode, walks the
  * DirContent chain via vfs_chain_walk and captures the visible
  * childPtr if the entry is live (namePtr != 0) at s_epoch. */
-static int w6_commit_scan_slot_cb(TreeContext* ctx, int64_t slot_vp,
+static int commit_scan_slot_cb(TreeContext* ctx, int64_t slot_vp,
                                    const uint8_t* slot_bytes, void* user) {
-    w6_commit_scan_state* st = (w6_commit_scan_state*)user;
+    commit_scan_state* st = (commit_scan_state*)user;
     (void)slot_vp;
     int64_t leaf_head = vfs_rd8_s(slot_bytes, ANCHOR_OFF_HEADPTR,
                                     ctx->page_size);
@@ -99,17 +99,17 @@ static int w6_commit_scan_slot_cb(TreeContext* ctx, int64_t slot_vp,
 
 /* W6: callback for walk_anchor_chain on the DirSegment chain.
  * For each segment, walks its SlotNode chain via
- * walk_content_unit_chain + w6_commit_scan_slot_cb.  Stops on
+ * walk_content_unit_chain + commit_scan_slot_cb.  Stops on
  * match.  Returns 1 to stop the outer walk on match, 0 to
  * continue. */
-static int w6_commit_scan_seg_cb(TreeContext* ctx, int64_t seg_vp,
+static int commit_scan_seg_cb(TreeContext* ctx, int64_t seg_vp,
                                   const uint8_t* seg_bytes, void* user) {
-    w6_commit_scan_state* st = (w6_commit_scan_state*)user;
+    commit_scan_state* st = (commit_scan_state*)user;
     (void)seg_vp;
     int64_t slot_head = vfs_rd8_s(seg_bytes, ANCHOR_OFF_HEADPTR,
                                     ctx->page_size);
     if (slot_head == 0) return 0;
-    walk_content_unit_chain(ctx, slot_head, w6_commit_scan_slot_cb, st);
+    walk_content_unit_chain(ctx, slot_head, commit_scan_slot_cb, st);
     return st->found;
 }
 
@@ -169,11 +169,11 @@ static int commit_scan_dir(vfs_t* vfs, int64_t dir_vp, uint32_t s_epoch) {
 
             /* W6: find the visible DirContent at s_epoch via
              * vfs_chain_walk (replaces the inlined read-rule). */
-            w6_commit_scan_state scan_st = {
+            commit_scan_state scan_st = {
                 .ctx = ctx, .s_epoch = s_epoch,
                 .childPtr = 0, .found = 0,
             };
-            w6_commit_scan_slot_cb(ctx, slot_walk_vp, slot_slot.bytes, &scan_st);
+            commit_scan_slot_cb(ctx, slot_walk_vp, slot_slot.bytes, &scan_st);
             if (!scan_st.found) { slot_walk_vp = slot_sib; continue; }
 
             /* Read the child to determine type. */

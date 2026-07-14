@@ -62,10 +62,10 @@ int dirchain_test_get_hash_rejects(void);
 
 /* Resolve a logical page within a file to its PageNode.
  *
- * W6: rewritten to use the shared chain-walk primitives
+ * Phase 26 W6: rewritten to use the shared chain-walk primitives
  * (walk_anchor_chain + walk_content_unit_chain) for the
  * segment + unit chain walks, and named helpers
- * (w6_allocate_fc, w6_link_fc_into_chain, w6_link_pn_into_chain)
+ * (allocate_filecontent, link_fc_into_chain, link_pn_into_chain)
  * for the segment-growth and sorted-insertion logic.  The
  * function is no longer a "thin wrapper" — it has substantial
  * segment-growth and tcache logic.  Prefer vfs_chain_walk_extended

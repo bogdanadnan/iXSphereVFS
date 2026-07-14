@@ -3183,14 +3183,14 @@ static void test_chain_walk_no_duplication(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_chain_walk_extended(void) {
-    const char* path = "/tmp/test_w6_extended.vfs";
+    const char* path = "/tmp/test_chain_walk_extended.vfs";
     unlink(path);
     vfs_t* vfs = vfs_mount(path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
 
-    int64_t file_vp = vfs_create(vfs, root_vp, "w6.txt", 0);
+    int64_t file_vp = vfs_create(vfs, root_vp, "chain_walk.txt", 0);
     CHECK(file_vp > 0);
 
     /* Write 3 pages at epoch 0: each creates a PageNode + VersionPage. */
@@ -3257,11 +3257,11 @@ static void test_chain_walk_extended(void) {
 typedef struct {
     int count;
     int64_t total_unit_count;  /* sum of ANCHOR_OFF_COUNT across segments */
-} w6_seg_count_state;
+} seg_count_state;
 
-static int w6_seg_count_cb(TreeContext* ctx, int64_t anchor_vp,
+static int seg_count_cb(TreeContext* ctx, int64_t anchor_vp,
                             const uint8_t* anchor_bytes, void* user) {
-    w6_seg_count_state* st = (w6_seg_count_state*)user;
+    seg_count_state* st = (seg_count_state*)user;
     (void)ctx; (void)anchor_vp;
     st->count++;
     uint32_t seg_cnt = (uint32_t)vfs_rd4_s(anchor_bytes, ANCHOR_OFF_COUNT,
@@ -3278,7 +3278,7 @@ static int w6_seg_count_cb(TreeContext* ctx, int64_t anchor_vp,
  * with 2000 pages has 2 FileContent segments.
  */
 static void test_chain_walk_anchor_chain(void) {
-    const char* path = "/tmp/test_w6_anchor.vfs";
+    const char* path = "/tmp/test_chain_walk_anchor.vfs";
     unlink(path);
     vfs_t* vfs = vfs_mount(path, 8192);
     CHECK(vfs != NULL);
@@ -3296,13 +3296,13 @@ static void test_chain_walk_anchor_chain(void) {
     }
 
     /* Walk the FileContent chain — should be 1 segment with count=3. */
-    w6_seg_count_state st = {0, 0};
+    seg_count_state st = {0, 0};
     PoolSlot file_slot = {0};
     pool_acquire(&ctx->pool, file_vp, false, &file_slot);
     CHECK(file_slot.vptr != VFS_VPTR_NULL);
     int64_t head = vfs_rd8_s(file_slot.bytes, ANCHOR_OFF_HEADPTR, ctx->page_size);
     pool_release(&ctx->pool, &file_slot);
-    int visited = walk_anchor_chain(ctx, head, w6_seg_count_cb, &st);
+    int visited = walk_anchor_chain(ctx, head, seg_count_cb, &st);
     CHECK_EQ(visited, 1);
     CHECK_EQ(st.count, 1);
     CHECK_EQ(st.total_unit_count, 3);
@@ -3314,11 +3314,11 @@ static void test_chain_walk_anchor_chain(void) {
     CHECK(seg_size > 0);
     CHECK_EQ(vfs_write(vfs, file_vp, buf, (int64_t)seg_size * 8192, 8192, 0), 8192);
 
-    w6_seg_count_state st2 = {0, 0};
+    seg_count_state st2 = {0, 0};
     pool_acquire(&ctx->pool, file_vp, false, &file_slot);
     head = vfs_rd8_s(file_slot.bytes, ANCHOR_OFF_HEADPTR, ctx->page_size);
     pool_release(&ctx->pool, &file_slot);
-    visited = walk_anchor_chain(ctx, head, w6_seg_count_cb, &st2);
+    visited = walk_anchor_chain(ctx, head, seg_count_cb, &st2);
     CHECK_EQ(visited, 2);
     CHECK_EQ(st2.count, 2);
     /* Segment 0 has 3 PageNodes (sparse), segment 1 has 1.  Total 4. */
@@ -3351,13 +3351,13 @@ static void test_chain_walk_anchor_chain(void) {
     CHECK_EQ(vfs_create(vfs, dir_vp, "b", 0) > 0, 1);
     CHECK_EQ(vfs_create(vfs, dir_vp, "c", 0) > 0, 1);
 
-    w6_seg_count_state st3 = {0, 0};
+    seg_count_state st3 = {0, 0};
     PoolSlot dir_slot = {0};
     pool_acquire(&ctx->pool, dir_vp, false, &dir_slot);
     CHECK(dir_slot.vptr != VFS_VPTR_NULL);
     int64_t dir_head = vfs_rd8_s(dir_slot.bytes, ANCHOR_OFF_HEADPTR, ctx->page_size);
     pool_release(&ctx->pool, &dir_slot);
-    visited = walk_anchor_chain(ctx, dir_head, w6_seg_count_cb, &st3);
+    visited = walk_anchor_chain(ctx, dir_head, seg_count_cb, &st3);
     CHECK_EQ(visited, 1);
     CHECK_EQ(st3.count, 1);
     CHECK_EQ(st3.total_unit_count, 3);
