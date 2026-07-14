@@ -131,14 +131,6 @@ void            storage_flush_cache_only(StorageBackend* sb);
    pages that may still be referenced by in-flight readers. */
 void storage_set_deferred_queue(struct DeferredFreeQueue* queue);
 
-/* ---------------------------------------------------------------------------
- * Internal: raw I/O  (storage.c)
- * --------------------------------------------------------------------------- */
-
-int  raw_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload);
-int  raw_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload,
-               uint32_t flags);
-
 /* Internal helpers (storage.c) */
 int64_t phys_record_size(StorageBackend* sb);
 
@@ -213,9 +205,4 @@ static inline double vfs_cache_hit_ratio(void) {
     return (t > 0) ? (double)vfs_cache_hits() / (double)t : 0.0;
 }
 
-/* Maximum number of entries the page cache can hold before eviction. */
-int64_t vfs_cache_max_entries(void);int64_t vfs_cache_max_entries(void);
-
 #endif /* VFS_STORAGE_H */
-void vfs_data_inc_total(void);
-void vfs_data_inc_hits(void);

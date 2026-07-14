@@ -38,7 +38,6 @@ int64_t vfs_cache_hits(void)       { return _cache_hits; }
 int64_t vfs_data_total(void) { return _vfs_data_total; }
 int64_t vfs_data_hits(void)  { return _vfs_data_hits; }
 int     vfs_cache_was_last_hit(void) { return _last_was_hit; }
-int64_t vfs_cache_max_entries(void) { return CACHE_DEFAULT_MAX; }
 
 void vfs_data_inc_total(void) { _vfs_data_total++; }
 void vfs_data_inc_hits(void)  { _vfs_data_hits++; }
@@ -52,60 +51,6 @@ void storage_set_deferred_queue(DeferredFreeQueue* queue) {
 
 int64_t phys_record_size(StorageBackend* sb) {
     return sb->page_size + PAGE_HEADER_SIZE;
-}
-
-/* ---------------------------------------------------------------------------
- * raw_read / raw_write  (Stage A — no mirror, no cache)
- * --------------------------------------------------------------------------- */
-
-int raw_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) {
-    int64_t offset = indir_lookup(sb, logical_page);
-    if (offset == 0) return -1;  /* never written */
-
-    /* Read the 16-byte PageHeader */
-    PageHeader ph;
-    ssize_t n = pread(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
-    if (n != PAGE_HEADER_SIZE) return -1;
-
-    /* Read the payload */
-    n = pread(sb->fd, out_payload, (size_t)sb->page_size, offset + PAGE_HEADER_SIZE);
-    if (n != sb->page_size) return -1;
-
-    /* Validate CRC32C */
-    uint32_t computed = vfs_crc32c(out_payload, (size_t)sb->page_size);
-    if (computed != ph.checksum) return -1;
-
-    return 0;
-}
-
-int raw_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payload,
-              uint32_t flags) {
-    int64_t offset = indir_lookup(sb, logical_page);
-    if (offset == 0) return -1;  /* not allocated */
-
-    /* Compute CRC32C */
-    uint32_t crc = vfs_crc32c(payload, (size_t)sb->page_size);
-
-    /* Build PageHeader — preserve existing mirror/generation if any */
-    PageHeader ph;
-    ssize_t n = pread(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
-    if (n != PAGE_HEADER_SIZE) {
-        memset(&ph, 0, sizeof(ph));
-    }
-    ph.flags      = flags;
-    ph.checksum   = crc;
-    ph.generation += 1;
-    if (ph.mirror_page == 0) ph.mirror_page = -1;  /* 0 is not a valid mirror; -1 = none */
-
-    /* Write header */
-    n = pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, offset);
-    if (n != PAGE_HEADER_SIZE) return -1;
-
-    /* Write payload */
-    n = pwrite(sb->fd, payload, (size_t)sb->page_size, offset + PAGE_HEADER_SIZE);
-    if (n != sb->page_size) return -1;
-
-    return 0;
 }
 
 /* ---------------------------------------------------------------------------
