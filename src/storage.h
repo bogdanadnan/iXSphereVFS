@@ -134,11 +134,10 @@ typedef enum {
     STORAGE_CRC_ERROR  = 3   /* CRC32C mismatch — data corruption detected */
 } StorageReadStatus;
 
-uint8_t*        storage_read(StorageBackend* sb, int64_t logical_page);
-
 /* Read with explicit status.  Returns a cache-resident payload on
    success (do not free); returns NULL on failure, with *out_status
-   set to the reason.  *out_status may be NULL. */
+   set to the reason.  *out_status may be NULL (caller does not
+   distinguish "not allocated" from "I/O error" from "CRC error"). */
 uint8_t*        storage_read_with_status(StorageBackend* sb, int64_t logical_page,
                                          StorageReadStatus* out_status);
 
@@ -172,7 +171,6 @@ int     indir_ensure_capacity(StorageBackend* sb, int needed);
  * Internal: lazy mirror  (lazy_mirror.c)
  * --------------------------------------------------------------------------- */
 
-int  mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload);
 /* Phase 27 C5: status-returning variant.  0 on success, -1 on I/O
    error, -2 on CRC error.  See lazy_mirror.c for the distinction. */
 int  mirror_read_with_status(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload);

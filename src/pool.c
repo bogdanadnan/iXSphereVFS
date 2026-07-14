@@ -85,7 +85,7 @@ int64_t pool_list_find_free(Pool* pool) {
 
     while (page != 0) {
         /* Read the pool page payload */
-        uint8_t* payload = storage_read(pool->sb, page);
+        uint8_t* payload = storage_read_with_status(pool->sb, page, NULL);
         if (payload == NULL) break;  /* corrupt or missing page */
 
         /* Read poolState and check freeCount */
@@ -138,7 +138,7 @@ int64_t pool_alloc(Pool* pool) {
         }
 
         /* 3. Read the pool page from cache */
-        uint8_t* payload = storage_read(pool->sb, page_index);
+        uint8_t* payload = storage_read_with_status(pool->sb, page_index, NULL);
         if (payload == NULL) return VFS_VPTR_NULL;
 
         /* 4. Read poolState */
@@ -172,7 +172,7 @@ int64_t pool_alloc(Pool* pool) {
             /* CAS failed — another thread raced.  Re-fetch the payload pointer
                in case the page was evicted from cache and re-read from disk.
                This eliminates the pinning race (finding #B). */
-            payload = storage_read(pool->sb, page_index);
+            payload = storage_read_with_status(pool->sb, page_index, NULL);
             if (payload == NULL) continue;
             continue;
         }
@@ -215,7 +215,7 @@ void pool_acquire(Pool* pool, int64_t vptr, bool pinPage, PoolSlot* out) {
     int     slot_index = VFS_VPTR_SLOT(vptr);
     int     slot_offset = VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
 
-    uint8_t* payload = storage_read(pool->sb, page_index);
+    uint8_t* payload = storage_read_with_status(pool->sb, page_index, NULL);
     if (payload == NULL) {
         /* Page not in cache and not on disk — leave bytes zeroed, no pin.
            Caller's type/field checks will detect the invalid slot. */
@@ -248,7 +248,7 @@ void pool_release(Pool* pool, PoolSlot* slot) {
     int     slot_index = VFS_VPTR_SLOT(slot->vptr);
     int     slot_offset = VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
 
-    uint8_t* payload = storage_read(pool->sb, page_index);
+    uint8_t* payload = storage_read_with_status(pool->sb, page_index, NULL);
     if (payload != NULL) {
         memcpy(payload + slot_offset, slot->bytes, VFS_POOL_SLOT_SIZE);
     }

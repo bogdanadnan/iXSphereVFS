@@ -469,7 +469,7 @@ static int count_pool_pages(TreeContext* ctx) {
     int64_t p = ctx->pool.list_head ? *ctx->pool.list_head : 0;
     while (p != 0) {
         n++;
-        uint8_t* ph = storage_read(ctx->sb, p);
+        uint8_t* ph = storage_read_with_status(ctx->sb, p, NULL);
         if (!ph) break;
         p = vfs_rd8(ph, 0);
     }
@@ -944,7 +944,7 @@ static void test_gc_crash_after_swap(void) {
         int old_count = 0;
         while (old_page != 0) {
             old_count++;
-            uint8_t* ph = storage_read(vfs->ctx->sb, old_page);
+            uint8_t* ph = storage_read_with_status(vfs->ctx->sb, old_page, NULL);
             if (!ph) break;
             old_page = vfs_rd8(ph, 0);
         }
@@ -1030,7 +1030,7 @@ static void test_gc_integration(void) {
         int64_t p = ctx->pool.list_head ? *ctx->pool.list_head : 0;
         while (p != 0) {
             pool_before++;
-            uint8_t* ph = storage_read(ctx->sb, p);
+            uint8_t* ph = storage_read_with_status(ctx->sb, p, NULL);
             if (!ph) break;
             p = vfs_rd8(ph, 0);
         }
@@ -1044,7 +1044,7 @@ static void test_gc_integration(void) {
             int64_t p = ctx->pool.list_head ? *ctx->pool.list_head : 0;
             while (p != 0) {
                 pool_after++;
-                uint8_t* ph = storage_read(ctx->sb, p);
+                uint8_t* ph = storage_read_with_status(ctx->sb, p, NULL);
                 if (!ph) break;
                 p = vfs_rd8(ph, 0);
             }

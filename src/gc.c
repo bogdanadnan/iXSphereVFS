@@ -221,7 +221,7 @@ int64_t gc_allocate_new_pool_page(TreeContext* ctx, void* gc_map) {
     if (page_idx < 0) return VFS_VPTR_NULL;
 
     /* Get a pointer to the page payload (page cache will allocate on read) */
-    uint8_t* payload = storage_read(ctx->sb, page_idx);
+    uint8_t* payload = storage_read_with_status(ctx->sb, page_idx, NULL);
     if (!payload) {
         storage_free(ctx->sb, page_idx);
         return VFS_VPTR_NULL;
@@ -1170,7 +1170,7 @@ static int gc_shadow_compact(TreeContext* ctx, DeferredFreeQueue* queue) {
     int64_t old_page = old_pool_list_head;
     while (old_page != 0) {
         deferred_free_enqueue(queue, old_page, ctx->sb);
-        uint8_t* old_header = storage_read(ctx->sb, old_page);
+        uint8_t* old_header = storage_read_with_status(ctx->sb, old_page, NULL);
         if (!old_header) break;
         int64_t next_page = vfs_rd8_s(old_header, 0, ctx->page_size);
         old_page = next_page;

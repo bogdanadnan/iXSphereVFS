@@ -38,14 +38,6 @@ static int64_t physical_offset(StorageBackend* sb, int64_t logical_page) {
  * 4. If mirror_page != -1: read sibling, pick higher generation, validate
  * --------------------------------------------------------------------------- */
 
-int mirror_read(StorageBackend* sb, int64_t logical_page, uint8_t* out_payload) {
-    /* Phase 27 C5: delegate to the status-returning variant and
-       collapse both error classes back to -1 for callers that don't
-       care which kind of failure occurred. */
-    int s = mirror_read_with_status(sb, logical_page, out_payload);
-    return s == 0 ? 0 : -1;
-}
-
 /* mirror_read_with_status — phase 27 C5.  Distinguishes I/O errors
    (pread failed) from CRC errors (data corruption).  Returns:
      0  on success

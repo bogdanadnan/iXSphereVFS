@@ -109,14 +109,14 @@ void test_read_write(void) {
     storage_write(sb, pg, payload, 0);
 
     /* Read back */
-    uint8_t* result = storage_read(sb, pg);
+    uint8_t* result = storage_read_with_status(sb, pg, NULL);
     CHECK(result != NULL);
     if (result) {
         CHECK_EQ(memcmp(result, payload, 8192), 0);
     }
 
     /* Read never-written page returns NULL */
-    uint8_t* null_result = storage_read(sb, 50);
+    uint8_t* null_result = storage_read_with_status(sb, 50, NULL);
     CHECK(null_result == NULL);
 
     /* Flush and verify persistence */
@@ -127,7 +127,7 @@ void test_read_write(void) {
     sb = storage_open(path, 8192);
     CHECK(sb != NULL);
     if (sb) {
-        result = storage_read(sb, pg);
+        result = storage_read_with_status(sb, pg, NULL);
         CHECK(result != NULL);
         if (result) {
             CHECK_EQ(memcmp(result, payload, 8192), 0);
@@ -154,7 +154,7 @@ void test_lazy_mirror(void) {
     memset(buf1, 0x11, 8192);
     storage_write(sb, pg, buf1, 0);
 
-    uint8_t* r = storage_read(sb, pg);
+    uint8_t* r = storage_read_with_status(sb, pg, NULL);
     CHECK(r != NULL);
     if (r) CHECK_EQ(memcmp(r, buf1, 8192), 0);
 
@@ -163,7 +163,7 @@ void test_lazy_mirror(void) {
     memset(buf2, 0x22, 8192);
     storage_write(sb, pg, buf2, 0);
 
-    r = storage_read(sb, pg);
+    r = storage_read_with_status(sb, pg, NULL);
     CHECK(r != NULL);
     if (r) CHECK_EQ(memcmp(r, buf2, 8192), 0);
 
@@ -172,7 +172,7 @@ void test_lazy_mirror(void) {
     memset(buf3, 0x33, 8192);
     storage_write(sb, pg, buf3, 0);
 
-    r = storage_read(sb, pg);
+    r = storage_read_with_status(sb, pg, NULL);
     CHECK(r != NULL);
     if (r) CHECK_EQ(memcmp(r, buf3, 8192), 0);
 
@@ -201,7 +201,7 @@ void test_flush_order(void) {
     sb = storage_open(path, 8192);
     CHECK(sb != NULL);
     if (sb) {
-        uint8_t* r = storage_read(sb, pg);
+        uint8_t* r = storage_read_with_status(sb, pg, NULL);
         CHECK(r != NULL);
         if (r) CHECK_EQ(memcmp(r, data, 8192), 0);
         storage_close(sb);
@@ -251,7 +251,7 @@ void test_concurrent(void) {
     /* Verify we can read some pages */
     int readable = 0;
     for (int64_t pg = 2; pg < s_shared_sb->total_pages; pg++) {
-        uint8_t* r = storage_read(s_shared_sb, pg);
+        uint8_t* r = storage_read_with_status(s_shared_sb, pg, NULL);
         if (r) readable++;
     }
     CHECK(readable >= 400);

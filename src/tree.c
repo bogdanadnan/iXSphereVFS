@@ -98,7 +98,7 @@ int tree_bootstrap_superblock(TreeContext* ctx) {
     if (err != VFS_OK) return err;
 
     /* Read segment_size from StorageBackend header page */
-    uint8_t* hdr = storage_read(ctx->sb, 0);
+    uint8_t* hdr = storage_read_with_status(ctx->sb, 0, NULL);
     if (hdr) {
         ctx->segment_size = (uint32_t)vfs_rd4_s(hdr, HDR_OFF_SEGMENT_SIZE, ctx->page_size);
     } else {
@@ -171,7 +171,7 @@ int tree_init(TreeContext* ctx) {
     }
 
     /* Read segment_size from StorageBackend header */
-    uint8_t* hdr = storage_read(ctx->sb, 0);
+    uint8_t* hdr = storage_read_with_status(ctx->sb, 0, NULL);
     if (hdr) {
         ctx->segment_size = (uint32_t)vfs_rd4_s(hdr, HDR_OFF_SEGMENT_SIZE, ctx->page_size);
     } else {

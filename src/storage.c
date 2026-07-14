@@ -487,14 +487,6 @@ void storage_free(StorageBackend* sb, int64_t logical_page) {
  * Read / Write / Flush  (public — goes through cache + lazy mirror)
  * --------------------------------------------------------------------------- */
 
-uint8_t* storage_read(StorageBackend* sb, int64_t logical_page) {
-    /* Thin wrapper: returns NULL on any failure (cannot distinguish
-       "not allocated" from "I/O error" from "CRC error").  New code
-       should call storage_read_with_status. */
-    StorageReadStatus status;
-    return storage_read_with_status(sb, logical_page, &status);
-}
-
 uint8_t* storage_read_with_status(StorageBackend* sb, int64_t logical_page,
                                   StorageReadStatus* out_status) {
     if (out_status) *out_status = STORAGE_NOT_FOUND;
