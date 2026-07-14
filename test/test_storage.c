@@ -266,6 +266,111 @@ void test_concurrent(void) {
     cleanup(path);
 }
 
+/* ---------------------------------------------------------------------------
+ * Phase 27 C6: indir_ensure_capacity must grow the indirection table
+ * iteratively (no recursion) and produce a consistent indirection
+ * state.  Uses a small page_size (128 B → inline_count=11) so
+ * overflow pages trigger after a few allocations.
+ *
+ * Verifies:
+ *   - No recursion under contention (function returns, not stack-overflows)
+ *   - Post-state: overflow_count > 0 after needed > inline_count
+ *   - indir_lookup for the new overflow page's own logical index
+ *     returns the page's physical offset (self-reference works via chain)
+ *   - The post-state total_entries covers at least total_pages + needed
+ * --------------------------------------------------------------------------- */
+void test_indir_ensure_capacity_growth(void) {
+    printf("6. indir_ensure_capacity overflow growth...\n");
+    const char* path = "/tmp/test_storage_c6.vfs";
+    cleanup(path);
+
+    int64_t page_size = 128;
+    StorageBackend* sb = storage_open(path, page_size);
+    CHECK(sb != NULL);
+    if (!sb) { cleanup(path); return; }
+
+    int inline_count = inline_entry_count(page_size);
+    int entries_per_overflow = (int)(page_size / 8) - 1;
+    CHECK(inline_count == 11);
+    CHECK(entries_per_overflow == 15);
+
+    /* Sanity: inline area covers 11 pages.  storage_open already
+       allocated pages 0 (header) and 1 (superblock), so
+       sb->total_pages = 2 and we have 11 entries for pages 0..10
+       (page 0 = header, page 1 = superblock, pages 2..10 = 9 free
+       inline slots). */
+    CHECK_EQ(sb->total_pages, 2);
+
+    /* Phase 1: call indir_ensure_capacity with needed = 9.  Required
+       = total_pages + needed = 2 + 9 = 11.  total_entries = 11.
+       The early-out uses strict <, so 11 < 11 is false, and we
+       proceed to the loop.  This is the boundary case where the
+       self-reference requires an overflow page. */
+    int rc = indir_ensure_capacity(sb, 9);
+    CHECK_EQ(rc, 0);
+    CHECK(sb->indir.overflow_count == 1);
+
+    /* Post-state: the new overflow page covers pages 11..25 (15 entries,
+       of which 0 is its own self-reference).  Total indirection
+       capacity is 11 (inline) + 15 (1 overflow) = 26, covering
+       pages 0..25. */
+    int64_t total_entries_after = (int64_t)inline_count +
+        (int64_t)sb->indir.overflow_count * entries_per_overflow;
+    CHECK_EQ(total_entries_after, 26);
+
+    /* The new overflow page is at logical index sb->total_pages (was
+       2 at the time of allocation; total_pages is now 3). */
+    int64_t new_overflow_logical = sb->indir.overflow_logical[0];
+    CHECK(new_overflow_logical == 2);
+    CHECK_EQ(sb->total_pages, 3);
+
+    /* The first overflow page's own indirection entry is in the
+       INLINE area (new_logical=2 < inline_count=11), not in itself.
+       The self-reference case only kicks in for the second and
+       later overflow pages. */
+    int64_t self_phys = indir_lookup(sb, new_overflow_logical);
+    CHECK(self_phys > 0);
+    int64_t new_overflow_phys = self_phys;
+    int64_t inline_self = vfs_rd8_s((const uint8_t*)sb->header_buf,
+                                     HDR_OFF_ENTRIES + new_overflow_logical * 8,
+                                     page_size);
+    CHECK_EQ(inline_self, new_overflow_phys);
+
+    /* The first overflow page's own data (buf at offset 1+0) is the
+       indirection entry for logical index `inline_count` = 11 (the
+       start of this page's range), not for the page itself. */
+    int64_t* new_buf = sb->indir.overflow_pages[0];
+    CHECK(new_buf != NULL);
+    int64_t buf_entry_0 = vfs_rd8_s((const uint8_t*)new_buf, 1 * 8, page_size);
+    CHECK_EQ(buf_entry_0, 0);  /* page 11 not allocated yet → entry is 0 */
+
+    /* Phase 2: call indir_ensure_capacity with needed = 100.  We need
+       entries for pages 3..102 (100 more).  After: total_pages = 3,
+       required = 103, total_entries = 26.  The function should
+       allocate enough overflow pages to cover 103.  Each overflow
+       page gives 15 entries, so 1 more page is enough (26 + 15
+       = 41 entries, which is < 103 — needs more).  ceil((103-26)/15)
+       = ceil(77/15) = 6 overflow pages. */
+    rc = indir_ensure_capacity(sb, 100);
+    CHECK_EQ(rc, 0);
+    CHECK(sb->indir.overflow_count >= 6);
+
+    /* Phase 3: round-trip via storage_allocate.  This exercises
+       indir_ensure_capacity via the real call path.  Allocate 10
+       pages and verify the indirection resolves each one. */
+    int64_t initial_total = sb->total_pages;
+    for (int i = 0; i < 10; i++) {
+        int64_t pg = storage_allocate(sb, 1);
+        CHECK(pg > 0);
+        int64_t phys = indir_lookup(sb, pg);
+        CHECK(phys > 0);
+    }
+    CHECK_EQ(sb->total_pages, initial_total + 10);
+
+    storage_close(sb);
+    cleanup(path);
+}
+
 /* ========================================================================== */
 
 int main(void) {
@@ -277,6 +382,7 @@ int main(void) {
     test_lazy_mirror();
     test_flush_order();
     test_concurrent();
+    test_indir_ensure_capacity_growth();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

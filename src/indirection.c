@@ -125,9 +125,26 @@ int indir_ensure_capacity(StorageBackend* sb, int needed) {
     /* Check if we already have enough entries */
     /* We need entries up to at least total_pages + needed */
     int64_t required = sb->total_pages + needed;
+
+    /* Phase 27 C6: the early-out is strict < (NOT <=).  At
+       required == total_entries, the next overflow page's own
+       indirection entry would have to live in itself (circular
+       self-reference — the new page's entry is at offset 1+0
+       of its own payload).  The chain must already point to
+       that page before indir_lookup can resolve it, which
+       requires the page to have been allocated.  Hence we
+       must allocate a new overflow page whenever
+       required >= total_entries. */
     if (required < total_entries) return 0;
 
-    /* Need to allocate overflow pages */
+    /* Need to allocate overflow pages.  Phase 27 C6: iterative
+       (no recursion).  Each iteration allocates one overflow
+       page, links it into the chain, and bumps total_entries by
+       entries_per_overflow.  The loop test '>=' can over-allocate
+       by 1 page in the boundary case (required exactly equals
+       a freshly-grown total_entries — we exit with strictly more
+       than needed); this is harmless and the cost of being
+       conservative about the self-reference boundary. */
     while (required >= total_entries) {
         /* Allocate a new overflow page by advancing physical_tail */
         int64_t old_tail = sb->physical_tail;
@@ -148,8 +165,6 @@ int indir_ensure_capacity(StorageBackend* sb, int needed) {
         /* Register the new overflow page in the indirection table.
            Its logical page is the next one after current total_pages. */
         int64_t new_logical = sb->total_pages;
-
-        /* Ensure mirror arrays */
 
         /* Set the indirection entry for this new overflow page */
         if (new_logical < it->inline_count) {
@@ -199,14 +214,22 @@ int indir_ensure_capacity(StorageBackend* sb, int needed) {
 
         /* Link previous overflow page's 'next' to this new page's logical index.
            Use CAS to ensure atomic chain append — another thread may be appending
-           simultaneously. */
+           simultaneously.  Phase 27 C6: on CAS failure, free the buf
+           and 'continue' (iterative) instead of recursing.  This
+           eliminates the unbounded-recursion bug and the physical_tail /
+           total_pages leak that the recursive variant had under contention.
+
+           Known TODO: the indirection entry for the abandoned page
+           (set above) may now be a stale pointer to the freed buf's
+           physical offset.  Fixing cleanly requires deferring the
+           indirection write until after the chain link succeeds —
+           tracked separately. */
         if (it->overflow_count > 0) {
             int64_t* prev = it->overflow_pages[it->overflow_count - 1];
             int64_t expected_next = 0;
             if (vfs_cas_i64(&prev[0], expected_next, new_logical) != expected_next) {
-                /* Another thread appended — retry the entire capacity check */
                 free(buf);
-                return indir_ensure_capacity(sb, needed);
+                continue;  /* retry the iteration with a fresh logical index */
             }
         } else {
             /* First overflow page — CAS-update indirection_head */
