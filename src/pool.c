@@ -45,8 +45,9 @@ void pool_page_init(uint8_t* payload, int64_t page_size) {
  * --------------------------------------------------------------------------- */
 
 void pool_init(Pool* pool, StorageBackend* sb, int64_t* list_head) {
-    pool->sb        = sb;
-    pool->list_head = list_head;
+    pool->sb         = sb;
+    pool->list_head  = list_head;
+    pool->alloc_count = 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -203,7 +204,9 @@ int64_t pool_alloc(Pool* pool) {
         cache_mark_dirty(&pool->sb->cache, page_index, FLUSH_PRIO_POOL);
 
         /* 11. Return VirtualPtr */
-        return VFS_VPTR_MAKE(page_index, first_free);
+        int64_t vptr = VFS_VPTR_MAKE(page_index, first_free);
+        pool->alloc_count++;
+        return vptr;
     }
 }
 

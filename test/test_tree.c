@@ -738,6 +738,64 @@ static void test_file_size_epoch(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Phase 27 H1 regression: vfs_truncate-shrink and vfs_write-grow must
+ * NOT leak pool slots on each call.
+ *
+ * Pre-W3, both paths had a CAS retry loop that re-pool_alloc'd a new
+ * FileSize slot on every CAS failure, leaking a 32-byte slot per retry
+ * (no pool_free exists; reclamation is via GC).  W3 (commit 9a08bc5)
+ * replaced the CAS retry with a lock-based simple store, so each
+ * shrink/grow call allocates exactly one FileSize slot.
+ *
+ * Test asserts: N sequential shrinks on a file at one epoch allocate
+ * exactly N pool pages (delta sb->total_pages == N).  If H1 is
+ * reintroduced (e.g., a future refactor adds CAS back), delta would
+ * be > N and this test would fail.
+ * --------------------------------------------------------------------------- */
+static void test_h1_no_pool_slot_leak(void) {
+    unlink(test_path);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "h1leak.txt", 0);
+    CHECK(file_vp > 0);
+
+    /* Write 100 pages of data so vfs_write-grow is exercised when we
+       later grow via truncate.  This pre-allocates pool pages for
+       data + VersionPages. */
+    uint8_t buf[8192];
+    memset(buf, 0xAA, sizeof(buf));
+    for (int i = 0; i < 100; i++) {
+        int r = vfs_write(vfs, file_vp, buf, (int64_t)i * 8192, sizeof(buf), 0);
+        CHECK_EQ(r, (int)sizeof(buf));
+    }
+
+    int64_t baseline = pool_alloc_count(&ctx->pool);
+
+    /* Sequential shrinks.  Each shrink appends one FileSize entry to
+       the FileNode's SIZEPTR chain.  The pre-W3 CAS retry would have
+       leaked one slot per failed CAS, so the counter would grow
+       faster than the caller's expected rate. */
+    const int N = 50;
+    for (int i = 0; i < N; i++) {
+        int64_t new_size = (int64_t)(N - i - 1) * 8192;
+        if (new_size < 0) new_size = 0;
+        int r = vfs_truncate(vfs, file_vp, new_size, 0);
+        CHECK_EQ(r, VFS_OK);
+    }
+
+    int64_t final = pool_alloc_count(&ctx->pool);
+    int64_t delta = final - baseline;
+    /* Strict bound: exactly N pool_alloc calls for N shrinks.  No
+       additional allocations should happen in the shrink path. */
+    CHECK_EQ(delta, N);
+
+    vfs_unmount(vfs);
+}
+
+/* ---------------------------------------------------------------------------
  * tree_resolve_page test — file growth and in-memory page array
  * --------------------------------------------------------------------------- */
 
@@ -3528,6 +3586,7 @@ int main(void) {
     test_file_stat();
     test_stat_not_file();
     test_file_size_epoch();
+    test_h1_no_pool_slot_leak();
     test_resolve_page_growth();
 
     /* Write/read tests use a separate clean file */

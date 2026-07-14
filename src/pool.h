@@ -92,6 +92,14 @@ VFS_INLINE uint16_t pool_state_first_free(uint32_t state) {
 typedef struct {
     StorageBackend* sb;          /* for storage_allocate/read/write */
     int64_t*        list_head;   /* pointer to superblock's poolListHead field */
+    /* Phase 27 H1: instrumentation counter — every successful pool_alloc
+       bumps this.  Used by tests to detect pool-slot leaks (pre-W3
+       CAS-retry path allocated one slot per failed CAS; the count
+       would grow faster than the caller's expected allocation rate).
+       Monotonically increasing within a Pool's lifetime; never
+       decremented (no pool_free exists).  Exposed for regression
+       tests only. */
+    int64_t         alloc_count;
 } Pool;
 
 /* ---------------------------------------------------------------------------
@@ -107,6 +115,13 @@ void pool_init(Pool* pool, StorageBackend* sb, int64_t* list_head);
 
 /* Allocate one 32-byte slot.  Returns VFS_VPTR_NULL on failure. */
 int64_t pool_alloc(Pool* pool);
+
+/* H1 instrumentation: total successful pool_alloc calls in this Pool's
+   lifetime.  Used by regression tests to detect pool-slot leaks (a
+   single caller's expected N allocations should match N increments). */
+static inline int64_t pool_alloc_count(const Pool* pool) {
+    return pool->alloc_count;
+}
 
 /* ---------------------------------------------------------------------------
  * PoolSlot — by-value 32-byte slot payload (Phase 25, C1 fix)
