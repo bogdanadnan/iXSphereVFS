@@ -193,7 +193,7 @@ int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
 /* ---------------------------------------------------------------------------
  * GC root scan — shadow-compaction (§12.5)
  *
- * Walks the pool chain, the DententryCache, the epoch mapper chain
+ * Walks the pool chain, the slot cache, the epoch mapper chain
  * to build the live set, then shadow-compacts.
  * Returns VFS_OK on success. */
 int vfs_gc(vfs_t* vfs);

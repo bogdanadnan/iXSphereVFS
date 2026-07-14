@@ -125,6 +125,11 @@ int vfs_error_to_errno(int vfs_err);
 
 /* Same mapping but to a stable, ASCII string ("OK", "not_found", ...).
    Used by the control-file protocol in src/fuse_vfs_ctl.c. */
+/* Internal mirror of vfs_error_string() in vfs.h.  Kept as a
+   separate symbol so the FUSE shim can translate errors without
+   including the public ixsphere/vfs.h header (which would force
+   an include cycle in some build configs).  Values match
+   vfs_error_string() byte-for-byte. */
 const char* vfs_error_to_str(int vfs_err);
 
 /* ---------------------------------------------------------------------------

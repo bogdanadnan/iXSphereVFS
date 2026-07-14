@@ -10,7 +10,7 @@ int segment_array_build(Pool* pool, int64_t fc_pageRootPtr,
     if (!arr->vptr_array) return VFS_ERR_NOMEM;
 
     /* Fill with VFS_VPTR_NULL (0) — unallocated pages map to NULL */
-    memset(arr->vptr_array, 0, segment_size * sizeof(int64_t));
+    memset(arr->vptr_array, 0, (size_t)segment_size * sizeof(int64_t));
     arr->seg_size = segment_size;
 
     /* Walk the sparse PageNode chain, placing each node at its page_index */

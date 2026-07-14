@@ -30,7 +30,12 @@ static void vfs_crc32c_init_table(void) {
 }
 
 #if VFS_COMPILER_GCC
-    /* Run once before main() — no threading concern. */
+    /* Run once before main() — no threading concern.
+     * NOTE: on x86_64 the HW CRC32C path is taken unconditionally
+     * (see crc32c() below), so this table is computed but never
+     * used.  It's harmless (~1KB of .rodata + 1024-byte init at
+     * load time) and keeps the fallback path ready if the HW
+     * path is ever disabled at runtime. */
     __attribute__((constructor))
     static void vfs_crc32c_ctor(void) {
         vfs_crc32c_init_table();

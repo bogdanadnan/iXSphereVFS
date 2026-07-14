@@ -69,10 +69,6 @@ typedef uint16_t AnchorKind;
 #define MAPPER_FLAG_TRAVERSAL_APPLY  0x0001
 
 /* ---------------------------------------------------------------------------
- * DirNode (32 bytes, 16 used, 16 reserved)
- *
- *   Offset  Size  Field
- /* ---------------------------------------------------------------------------
  * DirNode (32 bytes, fully packed) — Phase 26 / W1b
  *
  *   Offset  Size  Field

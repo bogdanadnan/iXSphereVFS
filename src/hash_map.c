@@ -17,14 +17,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Defaults: scale=12 (capacity 2^12=4096), granularity=8 (chunk 256).
+/* Defaults: scale=16 (capacity 2^16=65536), granularity=9 (chunk 512).
  *
- * Tuned via microbench on typical dedup workloads.  scale=12 gives
- * 4096 slots which fits most directories with low load.  granularity=8
- * matches the smaller capacity (chunk_size^2 = 65536, so 4096 fits
+ * Tuned via microbench on typical dedup workloads.  scale=16 gives
+ * 65536 slots which fits most directories with low load.  granularity=9
+ * matches the larger capacity (chunk_size^2 = 262144, so 65536 fits
  * comfortably in one root chunk).
  *
- * For larger directories (>4096 unique entries), the hash map will
+ * For larger directories (>65536 unique entries), the hash map will
  * saturate and put returns -1; callers should use hash_map_new_cap
  * explicitly with a higher scale in that case.
  */

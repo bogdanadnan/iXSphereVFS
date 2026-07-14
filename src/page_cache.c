@@ -477,8 +477,3 @@ void cache_flush_all(StorageBackend* sb) {
         }
     }
 }
-
-void cache_dump_dirty_by_priority(StorageBackend* sb) {
-    /* No-op stub — diagnostic helper, off by default. */
-    (void)sb;
-}

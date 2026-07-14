@@ -327,9 +327,6 @@ int fuse_vfs_readdir(const char* path, void* buf, fuse_darwin_fill_dir_t filler,
     if (rc != VFS_OK) {
         return vfs_error_to_errno(rc);
     }
-    if (rc != VFS_OK) {
-        return vfs_error_to_errno(rc);
-    }
 
     /* Cursor-based readdir.
        The cache holds real entries only.  . and .. are special and
@@ -455,16 +452,10 @@ int fuse_vfs_write(const char* path, const char* buf, size_t size,
 
 #ifdef __APPLE__
 int fuse_vfs_create(const char* path, mode_t mode,
-                    struct fuse_file_info* fi
-#ifdef __APPLE__
-                    , uint32_t flags
-#endif
-                    ) {
+                    struct fuse_file_info* fi,
+                    uint32_t flags) {
     (void)mode;
-#ifdef __APPLE__
     (void)flags;
-#endif
-    (void)mode; (void)flags;
 #else
 int fuse_vfs_create(const char* path, mode_t mode,
                     struct fuse_file_info* fi) {
@@ -837,9 +828,10 @@ int fuse_vfs_lookup(fuse_ino_t parent, const char* name) {
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-function-pointer-types"
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wincompatible-function-pointer-types"
+/* macFUSE's fuse_operations expects callback signatures that differ
+ * from upstream libfuse (e.g., fuse_darwin_attr vs struct stat).  The
+ * known-incompatibility is silenced here; see the call sites for
+ * the per-callback wrappers if more divergence appears. */
 const struct fuse_operations fuse_vfs_ops = {
     .init        = fuse_vfs_init,
     .destroy     = fuse_vfs_destroy,
