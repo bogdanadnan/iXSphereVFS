@@ -37,14 +37,22 @@ static inline void spin_unlock(int* lock) {
 
 /* ---------------------------------------------------------------------------
  * LRU list helpers (caller holds the bucket lock)
+ *
+ * H8: timestamp is read by cache_evict_batch Pass 1 outside the lock (then
+ * re-read under the lock in Pass 2).  Writes here are under the lock; the
+ * atomic store is the well-defined counterpart to the atomic loads in
+ * cache_evict_batch.  Without it, the C11 memory model treats the
+ * Pass-1-then-Pass-2 read of e->timestamp as a data race.
  * --------------------------------------------------------------------------- */
 
 static void lru_promote(PageCache* cache, CacheEntry* e) {
-    e->timestamp = __sync_add_and_fetch(&cache->lru_clock, 1);
+    uint64_t t = (uint64_t)__sync_add_and_fetch(&cache->lru_clock, 1);
+    vfs_atomic_store_u64(&e->timestamp, t);
 }
 
 static void lru_insert_head(PageCache* cache, CacheEntry* e) {
-    e->timestamp = __sync_add_and_fetch(&cache->lru_clock, 1);
+    uint64_t t = (uint64_t)__sync_add_and_fetch(&cache->lru_clock, 1);
+    vfs_atomic_store_u64(&e->timestamp, t);
 }
 
 /* ---------------------------------------------------------------------------
@@ -162,7 +170,12 @@ static void cache_evict_batch(PageCache* cache, int target) {
     /* Pass 1: single scan, collect oldest candidates.  We keep an
        unsorted linear list capped at `target` and incrementally replace
        the newest candidate when we find an older one — simpler than a
-       full sort, sufficient for picking the `target` oldest. */
+       full sort, sufficient for picking the `target` oldest.
+       H8: e->dirty / e->priority / e->timestamp are read atomically
+       because Pass 2 re-reads them under the lock after this lock is
+       released, and the read-then-read pair is a data race without
+       atomicity (lru_promote can fire from cache_find / cache_insert
+       between the two passes). */
     uint64_t newest_in_set = 0;
     int set_full = 0;
     for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
@@ -170,14 +183,16 @@ static void cache_evict_batch(PageCache* cache, int target) {
         CacheEntry** pp = &cache->buckets[bkt];
         while (*pp) {
             CacheEntry* e = *pp;
-            int eligible = (!e->dirty) ||
-                           (e->dirty && e->priority == 0);
-            if (eligible && e->timestamp > 0) {
+            uint64_t ts    = vfs_atomic_load_u64(&e->timestamp);
+            uint32_t prio  = vfs_atomic_load_u32((uint32_t*)&e->priority);
+            uint32_t dirty = vfs_atomic_load_u32((uint32_t*)&e->dirty);
+            int eligible = (!dirty) || (dirty && prio == 0);
+            if (eligible && ts > 0) {
                 if (!set_full) {
                     cands[n].entry     = e;
                     cands[n].pp        = pp;
                     cands[n].bkt       = bkt;
-                    cands[n].timestamp = e->timestamp;
+                    cands[n].timestamp = ts;
                     n++;
                     if (n == cap) {
                         set_full = 1;
@@ -187,7 +202,7 @@ static void cache_evict_batch(PageCache* cache, int target) {
                                 newest_in_set = cands[k].timestamp;
                         }
                     }
-                } else if (e->timestamp < newest_in_set) {
+                } else if (ts < newest_in_set) {
                     /* Replace one entry at the boundary (oldest of the
                        "newest" group).  Any one suffices; pick the first. */
                     for (int k = 0; k < n; k++) {
@@ -195,7 +210,7 @@ static void cache_evict_batch(PageCache* cache, int target) {
                             cands[k].entry     = e;
                             cands[k].pp        = pp;
                             cands[k].bkt       = bkt;
-                            cands[k].timestamp = e->timestamp;
+                            cands[k].timestamp = ts;
                             break;
                         }
                     }
@@ -247,20 +262,25 @@ static void cache_evict_batch(PageCache* cache, int target) {
         int det_n = 0;
         for (int k = i; k < j; k++) {
             struct CacheEntry* e = cands[k].entry;
-            /* Re-validate under the lock. */
+            /* Re-validate under the lock.  H8: reload dirty/priority
+               atomically — the values captured in Pass 1 may have
+               changed (cache_mark_dirty, cache_insert) and the
+               atomic load makes the read well-defined under C11. */
             if (*cands[k].pp != e) continue;  /* already removed */
+            uint32_t dirty_now = vfs_atomic_load_u32((uint32_t*)&e->dirty);
+            uint32_t prio_now  = vfs_atomic_load_u32((uint32_t*)&e->priority);
             int still_eligible =
-                (!e->dirty) || (e->dirty && e->priority == 0);
+                (!dirty_now) || (dirty_now && prio_now == 0);
             if (!still_eligible) continue;
 
             *cands[k].pp = e->hash_next;
             cache->entry_count--;
-            if (e->dirty) cache->dirty_count--;
+            if (dirty_now) cache->dirty_count--;
             det[det_n].entry        = e;
             det[det_n].logical_page = e->logical_page;
             det[det_n].payload      = e->payload;
-            det[det_n].priority     = (uint32_t)e->priority;
-            det[det_n].is_dirty     = e->dirty;
+            det[det_n].priority     = prio_now;
+            det[det_n].is_dirty     = (int)dirty_now;
             det_n++;
         }
 
@@ -307,10 +327,11 @@ void cache_insert(PageCache* cache, int64_t logical_page,
         if (e->logical_page == logical_page) {
             /* Update existing entry — we already own the payload buffer */
             memcpy(e->payload, payload, (size_t)cache->page_size);
-            e->priority = priority;
+            vfs_atomic_store_u32((uint32_t*)&e->priority, (uint32_t)priority);
             if (dirty) {
-                if (!e->dirty) cache->dirty_count++;
-                e->dirty = 1;
+                uint32_t was = vfs_atomic_load_u32((uint32_t*)&e->dirty);
+                if (!was) cache->dirty_count++;
+                vfs_atomic_store_u32((uint32_t*)&e->dirty, 1);
             }
             lru_promote(cache, e);
             spin_unlock(&cache->bucket_locks[bkt]);
@@ -333,9 +354,9 @@ void cache_insert(PageCache* cache, int64_t logical_page,
     }
 
     e->logical_page = logical_page;
-    e->priority     = priority;
-    e->dirty        = dirty;
-    e->timestamp    = 0;
+    vfs_atomic_store_u32((uint32_t*)&e->priority, (uint32_t)priority);
+    vfs_atomic_store_u32((uint32_t*)&e->dirty, (uint32_t)dirty);
+    vfs_atomic_store_u64(&e->timestamp, 0);
 
     /* Insert into hash chain */
     e->hash_next = cache->buckets[bkt];
@@ -376,9 +397,10 @@ void cache_mark_dirty(PageCache* cache, int64_t logical_page, int priority) {
     CacheEntry* e = cache->buckets[bkt];
     while (e) {
         if (e->logical_page == logical_page) {
-            if (!e->dirty) cache->dirty_count++;
-            e->dirty    = 1;
-            e->priority = priority;
+            uint32_t was = vfs_atomic_load_u32((uint32_t*)&e->dirty);
+            if (!was) cache->dirty_count++;
+            vfs_atomic_store_u32((uint32_t*)&e->dirty, 1);
+            vfs_atomic_store_u32((uint32_t*)&e->priority, (uint32_t)priority);
             lru_promote(cache, e);
             break;
         }
@@ -395,7 +417,8 @@ void cache_mark_dirty(PageCache* cache, int64_t logical_page, int priority) {
 void cache_flush_page(StorageBackend* sb, int64_t logical_page) {
     PageCache* cache = &sb->cache;
     CacheEntry* e = cache_find(cache, logical_page);
-    if (!e || !e->dirty) return;
+    if (!e) return;
+    if (!vfs_atomic_load_u32((uint32_t*)&e->dirty)) return;
 
     int bkt = bucket_index(cache, logical_page);
     spin_lock(&cache->bucket_locks[bkt]);
@@ -404,11 +427,15 @@ void cache_flush_page(StorageBackend* sb, int64_t logical_page) {
        or evicted the entry in the meantime. */
     e = cache->buckets[bkt];
     while (e && e->logical_page != logical_page) e = e->hash_next;
-    if (e && e->dirty) {
-        if (indir_lookup(sb, logical_page) != 0) {
-            if (mirror_write(sb, logical_page, e->payload, (uint32_t)e->priority) == 0) {
-                e->dirty = 0;
-                cache->dirty_count--;
+    if (e) {
+        uint32_t dirty_now = vfs_atomic_load_u32((uint32_t*)&e->dirty);
+        if (dirty_now) {
+            uint32_t prio_now = vfs_atomic_load_u32((uint32_t*)&e->priority);
+            if (indir_lookup(sb, logical_page) != 0) {
+                if (mirror_write(sb, logical_page, e->payload, prio_now) == 0) {
+                    vfs_atomic_store_u32((uint32_t*)&e->dirty, 0);
+                    cache->dirty_count--;
+                }
             }
         }
     }
@@ -458,14 +485,16 @@ void cache_flush_all(StorageBackend* sb) {
             CacheEntry* e = cache->buckets[bkt];
             while (e) {
                 CacheEntry* next = e->hash_next;
-                if (e->dirty && e->priority == prio) {
+                uint32_t dirty_now = vfs_atomic_load_u32((uint32_t*)&e->dirty);
+                uint32_t prio_now  = vfs_atomic_load_u32((uint32_t*)&e->priority);
+                if (dirty_now && prio_now == prio) {
                     /* Indirection must have an entry for this page (allocated
                        by pool_alloc) — otherwise skip; we don't know where to
                        write it. */
                     if (indir_lookup(sb, e->logical_page) != 0) {
                         if (mirror_write(sb, e->logical_page, e->payload,
-                                         (uint32_t)e->priority) == 0) {
-                            e->dirty = 0;
+                                         prio_now) == 0) {
+                            vfs_atomic_store_u32((uint32_t*)&e->dirty, 0);
                             cache->dirty_count--;
                         }
                     }

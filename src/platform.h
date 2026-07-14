@@ -114,9 +114,30 @@ VFS_INLINE int32_t vfs_atomic_add_i32(int32_t* ptr, int32_t delta) {
 }
 
 VFS_INLINE int32_t vfs_cas_i32(int32_t* ptr, int32_t expected, int32_t val) {
-    __atomic_compare_exchange_n(ptr, &expected, val, 0, 
+    __atomic_compare_exchange_n(ptr, &expected, val, 0,
                                  __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
     return expected;
+}
+
+/* uint32_t atomics (H8: CacheEntry priority/dirty are int in the struct but
+ * accessed via __atomic_load_n with these wrappers; the wrapper's signedness
+ * matches __atomic_*'s underlying type and prevents signed/unsigned warnings
+ * when the value is treated as a bit pattern). */
+VFS_INLINE uint32_t vfs_atomic_load_u32(const uint32_t* ptr) {
+    return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
+}
+
+VFS_INLINE void vfs_atomic_store_u32(uint32_t* ptr, uint32_t val) {
+    __atomic_store_n(ptr, val, __ATOMIC_RELEASE);
+}
+
+/* uint64_t atomics (H8: CacheEntry timestamp) */
+VFS_INLINE uint64_t vfs_atomic_load_u64(const uint64_t* ptr) {
+    return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
+}
+
+VFS_INLINE void vfs_atomic_store_u64(uint64_t* ptr, uint64_t val) {
+    __atomic_store_n(ptr, val, __ATOMIC_RELEASE);
 }
 
 /* void* atomics */
@@ -187,6 +208,24 @@ VFS_INLINE int32_t vfs_atomic_add_i32(int32_t* ptr, int32_t delta) {
 
 VFS_INLINE int32_t vfs_cas_i32(int32_t* ptr, int32_t expected, int32_t val) {
     return InterlockedCompareExchange((volatile int32_t*)ptr, val, expected);
+}
+
+/* uint32_t atomics (H8: CacheEntry priority/dirty) */
+VFS_INLINE uint32_t vfs_atomic_load_u32(const uint32_t* ptr) {
+    return (uint32_t)InterlockedCompareExchange((volatile LONG*)ptr, 0, 0);
+}
+
+VFS_INLINE void vfs_atomic_store_u32(uint32_t* ptr, uint32_t val) {
+    InterlockedExchange((volatile LONG*)ptr, (LONG)val);
+}
+
+/* uint64_t atomics (H8: CacheEntry timestamp) */
+VFS_INLINE uint64_t vfs_atomic_load_u64(const uint64_t* ptr) {
+    return (uint64_t)InterlockedCompareExchange64((volatile int64_t*)ptr, 0, 0);
+}
+
+VFS_INLINE void vfs_atomic_store_u64(uint64_t* ptr, uint64_t val) {
+    InterlockedExchange64((volatile int64_t*)ptr, (int64_t)val);
 }
 
 /* void* atomics */
