@@ -169,6 +169,18 @@ static void* ensure_path_allocated(VarArrayBase* a, int idx) {
 int var_array_grow_base(VarArrayBase* a) {
     if (!a) return -1;
 
+    /* M13: cap count at INT_MAX - 1.  count is a 32-bit int (matches
+     * the original struct layout and the vfs_atomic_add_i32 CAS);
+     * without this cap, claiming more than INT_MAX slots would
+     * silently overflow, wrap idx to a negative value, and the
+     * subsequent ensure_path_allocated + slot write would corrupt
+     * unrelated memory.  At INT_MAX - 1 we refuse to grow — callers
+     * see the -1 return and can switch to a new VarArray. */
+    int32_t current = (int32_t)a->count;
+    if (current >= INT32_MAX - 1) {
+        return -1;
+    }
+
     /* Atomically claim the next index.  vfs_atomic_add_i32 returns the
      * value AFTER adding, so subtract 1 for 0-based indexing (first slot
      * is idx=0, not idx=1). */

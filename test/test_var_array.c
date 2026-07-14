@@ -816,6 +816,37 @@ static void test_set_allocates_only_path(void) {
     var_array_delete(arr);
 }
 
+/* M13: var_array_grow_base must refuse to claim a slot once count is at
+ * INT32_MAX - 1.  Without the cap, the i32 CAS on count would wrap and
+ * the next grow would corrupt memory (idx becomes a negative offset).
+ *
+ * We set count to INT32_MAX - 1 directly and verify grow_base returns -1.
+ * count is `volatile int` (32-bit) per the struct layout, so the read
+ * via (int32_t) is well-defined.  The VarArray(int) macro is layout-
+ * compatible with VarArrayBase* — see var_array.h:106-113. */
+static void test_grow_count_cap(void) {
+    VarArray(int) arr = var_array_new(int);
+    CHECK(arr != NULL);
+
+    /* Plant count at the cap.  grow_base checks the cap BEFORE
+     * ensure_path_allocated, so we never touch the tree (no need to
+     * allocate 2B chunks). */
+    arr->count = (int)(INT32_MAX - 1);
+
+    int idx = var_array_grow_base((VarArrayBase*)arr);
+    CHECK_EQ(idx, -1);
+    /* Count unchanged after the rejected grow. */
+    CHECK_EQ(arr->count, (int)(INT32_MAX - 1));
+
+    /* After backing off to one below the cap, grow should work. */
+    arr->count = 0;
+    idx = var_array_grow_base((VarArrayBase*)arr);
+    CHECK_EQ(idx, 0);
+    CHECK_EQ(arr->count, 1);
+
+    var_array_delete(arr);
+}
+
 int main(void) {
     printf("=== VarArray Tests ===\n");
 
@@ -850,6 +881,9 @@ int main(void) {
     test_set_with_typed_struct();
     test_set_holes_then_append();
     test_set_allocates_only_path();
+
+    /* M13: count overflow cap */
+    test_grow_count_cap();
 
     printf("test_var_array: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
