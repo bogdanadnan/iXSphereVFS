@@ -403,6 +403,7 @@ static void test_df_mirror_sibling(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_crash_before_swap(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -476,6 +477,7 @@ static int count_pool_pages(TreeContext* ctx) {
 }
 
 static void test_gc_pool_compaction(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -558,6 +560,7 @@ static void test_gc_pool_compaction(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_vptr_remapping(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -698,6 +701,7 @@ static void test_gc_vptr_remapping(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_dircontent_survival(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -832,11 +836,11 @@ static void test_gc_nonstd_page_size(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_gc_data_page_reclaim(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
-    test_set_epoch_writable(-1);
 
     char bigbuf[16384];
     memset(bigbuf, 'X', sizeof(bigbuf));
@@ -879,6 +883,7 @@ static void test_gc_data_page_reclaim(void) {
 }
 
 static void test_gc_crash_after_swap(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -950,6 +955,7 @@ static void test_gc_crash_after_swap(void) {
 }
 
 static void test_gc_commit_then_gc(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -993,6 +999,7 @@ static void test_gc_commit_then_gc(void) {
 }
 
 static void test_gc_integration(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;

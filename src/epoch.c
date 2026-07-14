@@ -5,19 +5,7 @@
 #include "nodes.h"
 #include <stdlib.h>
 
-/* Test override: -1 = use real implementation (Phase 6 default).
-   0 = frozen, 1 = all writable (backward compat for existing tests). */
-static int _test_epoch_writable = 1;
-
-void test_set_epoch_writable(int writable) {
-    _test_epoch_writable = writable;
-}
-
 bool vfs_epoch_is_writable(TreeContext* ctx, int64_t epoch) {
-    /* Test override: if set to 0 or 1, use that value directly */
-    if (_test_epoch_writable >= 0)
-        return _test_epoch_writable != 0;
-
     /* epoch == -1 means current live head */
     if (epoch == -1) epoch = ctx->currentEpoch;
 

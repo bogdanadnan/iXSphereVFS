@@ -14,12 +14,12 @@
  * --------------------------------------------------------------------------- */
 
 /* Check whether an epoch is writable.
-   Phase 6: returns true only for current live head and active snapshots. */
+   - Live head (currentEpoch) is always writable.
+   - Odd snapshot epoch, not in the mapper chain (i.e., active snapshot)
+     is writable.
+   - Committed or soft-deleted snapshots (in mapper) are not writable.
+   - Other even epochs (past even, not current) are not writable. */
 bool vfs_epoch_is_writable(TreeContext* ctx, int64_t epoch);
-
-/* Test helper: override vfs_epoch_is_writable return value.
-   Pass non-zero for writable (default), zero for frozen. */
-void test_set_epoch_writable(int writable);
 
 /* Create a snapshot by advancing the epoch counter by 2.
    Returns the snapshot epoch (always odd), or -1 on error.

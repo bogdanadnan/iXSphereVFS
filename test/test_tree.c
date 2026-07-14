@@ -76,6 +76,7 @@ static const char* test_path = "/tmp/test_tree_bootstrap.tmp";
 
 static void test_bootstrap_root(void) {
     /* Open fresh file → bootstrap creates root */
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK(vfs->ctx != NULL);
@@ -108,6 +109,7 @@ static void test_bootstrap_root(void) {
 
 static void test_bootstrap_reopen(void) {
     /* Open existing file → reopen */
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK(vfs->ctx != NULL);
@@ -150,6 +152,7 @@ static void test_bootstrap_reopen(void) {
 
 static void test_pool_list_head(void) {
     /* poolListHead should be non-zero after bootstrap (pool alloc happened) */
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
 
@@ -163,6 +166,7 @@ static void test_pool_list_head(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_create_file(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     CHECK(vfs->ctx != NULL);
@@ -257,6 +261,7 @@ static void test_create_file(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_delete_file(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -321,6 +326,10 @@ static void test_delete_file(void) {
     pool_release(&ctx->pool, &root_slot);}
     CHECK(found);
 
+    /* Snapshot so epoch 2 becomes the live head (phase 27 C4). */
+    int64_t del_snap = vfs_snapshot(vfs);
+    CHECK_EQ(del_snap, 1);
+
     /* Delete the file at epoch 2 */
     int ret = vfs_delete(vfs, root_vp, "delete_me.txt", 2);
     CHECK_EQ(ret, VFS_OK);
@@ -378,6 +387,7 @@ static void test_delete_file(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_open_file(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -435,6 +445,7 @@ static void test_open_file(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_create_duplicate(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -461,6 +472,7 @@ static void test_create_duplicate(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_create_after_delete(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -496,6 +508,7 @@ static void test_create_after_delete(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_double_delete(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -535,6 +548,7 @@ static void test_double_delete(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_double_create_delete(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -570,6 +584,7 @@ static void test_double_create_delete(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_delete_epoch_isolation(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -581,6 +596,10 @@ static void test_delete_epoch_isolation(void) {
     /* Verify it's visible at epoch 0 */
     int64_t found = vfs_open(vfs, root_vp, "epoch_test.txt", 0);
     CHECK(found > 0);
+
+    /* Snapshot so epoch 2 becomes the live head (phase 27 C4). */
+    int64_t dei_snap = vfs_snapshot(vfs);
+    CHECK_EQ(dei_snap, 1);
 
     /* Delete at epoch 2 */
     int ret = vfs_delete(vfs, root_vp, "epoch_test.txt", 2);
@@ -602,6 +621,7 @@ static void test_delete_epoch_isolation(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_file_stat(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -633,6 +653,7 @@ static void test_file_stat(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_stat_not_file(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -659,6 +680,7 @@ static void test_stat_not_file(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_file_size_epoch(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -720,6 +742,7 @@ static void test_file_size_epoch(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_resolve_page_growth(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -774,6 +797,7 @@ static void test_resolve_page_growth(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_write_basic(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -816,6 +840,7 @@ static void test_write_basic(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_read_basic(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -859,6 +884,7 @@ static void test_read_basic(void) {
 
 /* Write 200 bytes at offset 50 (cross-page), read back */
 static void test_write_cross_page(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -887,6 +913,7 @@ static void test_write_cross_page(void) {
 
 /* Same offset, same epoch: second write in-place (VersionPage count unchanged) */
 static void test_write_in_place(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -950,6 +977,7 @@ static void test_write_in_place(void) {
 
 /* Same offset, new epoch: COW creates new VersionPage, old epoch returns old data */
 static void test_write_cow_epoch(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -961,6 +989,10 @@ static void test_write_cow_epoch(void) {
     /* Write at epoch 0 */
     int ret = vfs_write(vfs, file_vp, "AAAA", 0, 4, 0);
     CHECK_EQ(ret, 4);
+
+    /* Snapshot so epoch 2 becomes the live head (phase 27 C4). */
+    int64_t cow_snap = vfs_snapshot(vfs);
+    CHECK_EQ(cow_snap, 1);
 
     /* Write same offset at epoch 2 (different epoch — triggers COW) */
     ret = vfs_write(vfs, file_vp, "BBBB", 0, 4, 2);
@@ -1002,6 +1034,7 @@ static void test_write_cow_epoch(void) {
 
 /* Write 2000 pages → second FileContent segment, reads across boundary */
 static void test_write_multi_segment(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -1039,10 +1072,12 @@ static void test_write_multi_segment(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * Write to frozen epoch test — vfs_epoch_is_writable returns false
+ * Write to past-even epoch test — vfs_epoch_is_writable returns false
+ * for past even epochs (per src/epoch.c real rules).
  * --------------------------------------------------------------------------- */
 
 static void test_write_frozen_epoch(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -1050,15 +1085,14 @@ static void test_write_frozen_epoch(void) {
 
     int64_t file_vp = vfs_create(vfs, root_vp, "frozen.txt", 0);
     CHECK(file_vp > 0);
+    /* currentEpoch = 0; write at epoch 2 (past even, not current)
+       must be rejected. */
+    int ret = vfs_write(vfs, file_vp, "DATA", 0, 4, 2);
+    CHECK_EQ(ret, VFS_ERR_IO);
 
-    /* Freeze epoch — write should fail */
-    test_set_epoch_writable(0);
-
-    int ret = vfs_write(vfs, file_vp, "DATA", 0, 4, 3);
-    CHECK_EQ(ret, -1);  /* VFS_ERR_IO mapped to -1 */
-
-    /* Unfreeze for cleanup */
-    test_set_epoch_writable(1);
+    /* Verify: write at currentEpoch=0 still works. */
+    ret = vfs_write(vfs, file_vp, "OKAY", 0, 4, 0);
+    CHECK_EQ(ret, 4);
 
     vfs_unmount(vfs);
 }
@@ -1069,6 +1103,7 @@ static void test_write_frozen_epoch(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_mkdir_basic(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -1126,6 +1161,7 @@ static void test_mkdir_basic(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_mkdir_duplicate(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -1142,6 +1178,7 @@ static void test_mkdir_duplicate(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rmdir_empty(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -1170,6 +1207,7 @@ static void test_rmdir_empty(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rmdir_notdir(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -1185,6 +1223,7 @@ static void test_rmdir_notdir(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_readdir_empty(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -1204,6 +1243,7 @@ static void test_readdir_empty(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_readdir_with_files(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -1238,6 +1278,7 @@ static void test_readdir_with_files(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_readdir_with_dirs(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -1275,6 +1316,7 @@ static void test_readdir_with_dirs(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_readdir_tombstone(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -1315,6 +1357,7 @@ static void test_readdir_tombstone(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rename_same_dir(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -1341,6 +1384,7 @@ static void test_rename_same_dir(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rename_cross_dir(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -1376,6 +1420,7 @@ static void test_rename_cross_dir(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rename_cross_epoch(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -1405,6 +1450,7 @@ static void test_rename_cross_epoch(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_rename_notfound(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -1421,6 +1467,7 @@ static void test_rename_notfound(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_last_error(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -1453,6 +1500,7 @@ static void test_last_error(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_lock_basic(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -1490,6 +1538,7 @@ static void* lock_thread_fn(void* arg) {
 }
 
 static void test_lock_concurrent_epochs(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -1547,6 +1596,7 @@ static void* per_epoch_thread(void* arg) {
 }
 
 static void test_lock_global_serializes(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
 
@@ -1612,6 +1662,7 @@ static void test_lock_per_vfs_isolation(void) {
 static void test_lock_mixed_keys(void) {
     /* VP-keyed and nodeId-keyed locks at the same vfs, different keys,
        should not interfere.  Use two distinct int64_t values. */
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
 
@@ -1685,6 +1736,7 @@ static void* same_epoch_thread_b(void* arg) {
 }
 
 static void test_lock_same_epoch_exclusion(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
 
@@ -1738,6 +1790,7 @@ static void* diff_epoch_thread(void* arg) {
 }
 
 static void test_lock_different_epoch_non_exclusion(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
 
@@ -1773,6 +1826,7 @@ static void test_lock_different_epoch_non_exclusion(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_dirchain_list_basic(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -1803,6 +1857,7 @@ static void test_dirchain_list_basic(void) {
 }
 
 static void test_dirchain_list_tombstone(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -1835,6 +1890,7 @@ static void test_dirchain_list_tombstone(void) {
 }
 
 static void test_sparse_small_file(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -1891,6 +1947,7 @@ static void test_sparse_small_file(void) {
 }
 
 static void test_sparse_chain_mid_insert(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -1952,6 +2009,7 @@ static void test_sparse_chain_mid_insert(void) {
 }
 
 static void test_sparse_chain_tail_append(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2015,6 +2073,7 @@ static void test_sparse_chain_tail_append(void) {
 #ifndef NDEBUG
 /* Debug-only test: depends on tree_resolve_page_cache_builds counter. */
 static void test_sparse_threshold_cache(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2050,6 +2109,7 @@ static void test_sparse_threshold_cache(void) {
 #endif
 
 static void test_sparse_read_no_allocate(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2151,6 +2211,7 @@ static void test_sparse_gc_roundtrip(void) {
 }
 
 static void test_sparse_cow_chain(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2229,6 +2290,7 @@ static void* conc_insert_thread(void* arg) {
 }
 
 static void test_sparse_concurrent_insert(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2304,6 +2366,7 @@ static void test_sparse_concurrent_insert(void) {
    walk's hash fast-reject is still tested indirectly via the
    fallback tests (no-tree cases). */
 static void test_dirchain_find_child_hash_fast_reject(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2335,6 +2398,7 @@ static void test_dirchain_find_child_hash_fast_reject(void) {
 
 #ifdef VFS_NAME_HASH_TESTING
 static void test_dirchain_find_child_collision_tolerance(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2462,6 +2526,7 @@ static void test_dirchain_find_child_collision_tolerance(void) {
 /* --- Directory radix tree tests (Phase 18) --- */
 
 static void test_dircontentindex_lookup_empty(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2475,6 +2540,7 @@ static void test_dircontentindex_lookup_empty(void) {
 }
 
 static void test_dircontentindex_insert_lookup(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2509,6 +2575,7 @@ static void test_dircontentindex_insert_lookup(void) {
 }
 
 static void test_dircontentindex_same_leaf(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2556,6 +2623,7 @@ static void test_dircontentindex_same_leaf(void) {
 }
 
 static void test_vfs_create_open_tree(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2607,6 +2675,7 @@ static void test_vfs_create_open_tree(void) {
 }
 
 static void test_vfs_create_open_many(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2669,6 +2738,7 @@ static void* create_many_thread(void* arg) {
 }
 
 static void test_concurrent_dir_writes(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -2734,6 +2804,7 @@ static void* rename_many_thread(void* arg) {
 }
 
 static void test_concurrent_rename(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -2784,6 +2855,7 @@ static void test_concurrent_rename(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_stress_10k_children(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
@@ -2843,10 +2915,10 @@ static void test_stress_10k_children(void) {
  * --------------------------------------------------------------------------- */
 
 static void test_contentunit_visibility(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     int64_t root_vp = vfs->ctx->rootNodeOffset;
-    test_set_epoch_writable(-1);  /* use real epoch validation */
 
     /* ep0: create the original child. */
     int64_t orig_vp = vfs_create(vfs, root_vp, "shared.txt", 0);
@@ -2887,6 +2959,7 @@ static void test_contentunit_visibility(void) {
 }
 
 static void test_delete_recreate_same_name(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -2900,6 +2973,10 @@ static void test_delete_recreate_same_name(void) {
     int ret = vfs_delete(vfs, root_vp, "recreate.txt", 0);
     CHECK_EQ(ret, VFS_OK);
 
+    /* Snapshot so epoch 2 becomes the live head (phase 27 C4). */
+    int64_t rsnap = vfs_snapshot(vfs);
+    CHECK_EQ(rsnap, 1);
+
     /* Re-create at the same name at epoch 2 (a new even epoch).
        The tombstone at epoch 0 (namePtr=0) is not a collision at
        epoch 2; the original live entry at epoch 0 does not block
@@ -2912,6 +2989,7 @@ static void test_delete_recreate_same_name(void) {
 }
 
 static void test_rename_tree(void) {
+    unlink(test_path);
     vfs_t* vfs = vfs_mount(test_path, 8192);
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
@@ -3235,6 +3313,10 @@ static void test_chain_walk_extended(void) {
     uint32_t stored_epoch_ep2 = (uint32_t)vfs_rd4_s(vp_ep2.bytes, LEAF_OFF_EPOCH,
                                                    ctx->page_size);
     CHECK_EQ(stored_epoch_ep2, 0u);
+
+    /* Snapshot so epoch 2 becomes the live head (phase 27 C4). */
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK_EQ(snap, 1);
 
     /* Write at epoch 2: creates a new VersionPage on the page-0 chain. */
     memset(buf, 'X', sizeof(buf));

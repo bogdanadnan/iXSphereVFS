@@ -808,8 +808,9 @@ static int scenario_snapshot(void) {
 
             /* Write v2 at offset 256 (different location, past v1's 128 bytes).
                This avoids the VFS COW limitation where in-place writes at
-               epoch 0 overwrite the same VersionPage. */
-            if (vfs_write(vfs, fvp, v2, 256, sizeof(v2), 0) != (int)sizeof(v2)) _exit(-1);
+               the same epoch overwrite the same VersionPage.  Phase 27 C4:
+               write at the current live head (epoch 2) after the snapshot. */
+            if (vfs_write(vfs, fvp, v2, 256, sizeof(v2), 2) != (int)sizeof(v2)) _exit(-1);
 
             vfs_flush(vfs);
             /* HARD CRASH — SIGKILL simulates process termination without cleanup */
@@ -840,9 +841,12 @@ static int scenario_snapshot(void) {
         int r1 = vfs_read(vfs, fvp2, buf, 0, sizeof(buf), snap_epoch);
         int match_v1 = (r1 == (int)sizeof(buf) && memcmp(buf, v1, sizeof(v1)) == 0);
 
-        /* Read at current epoch offset 256 — should get v2 */
+        /* Read at current epoch offset 256 — should get v2.
+           Phase 27 C4: currentEpoch is now 2 (persisted across the crash),
+           not 0.  Reading at epoch 0 would find the snapshot's v1
+           (highest applicable below the head), not the post-snapshot v2. */
         uint8_t buf2[128];
-        int r2 = vfs_read(vfs, fvp2, buf2, 256, sizeof(buf2), 0);
+        int r2 = vfs_read(vfs, fvp2, buf2, 256, sizeof(buf2), 2);
         int match_v2 = (r2 == (int)sizeof(buf2) && memcmp(buf2, v2, sizeof(v2)) == 0);
 
         vfs_unmount(vfs);
@@ -893,10 +897,11 @@ static int scenario_commit_mid(void) {
             int64_t snap = vfs_snapshot(vfs);
             if (snap < 0) _exit(-1);
 
-            /* Write v2 at a DIFFERENT offset to avoid in-place COW overwrite
-               of v1's VersionPage (both writes at epoch 0 share the same
-               VersionPage — a known VFS limitation). */
-            if (vfs_write(vfs, fvp, v2, 256, sizeof(v2), 0) != (int)sizeof(v2)) _exit(-1);
+            /* Write v2 at a DIFFERENT offset to keep both writes visible.
+               Phase 27 C4: write at the current live head (epoch 2)
+               after the snapshot, not at epoch 0 (which is now past-even
+               and would be rejected). */
+            if (vfs_write(vfs, fvp, v2, 256, sizeof(v2), 2) != (int)sizeof(v2)) _exit(-1);
 
             /* Commit the snapshot — merges snapshot state (v1) into base */
             if (vfs_commit(vfs, snap) != VFS_OK) _exit(-1);
@@ -924,15 +929,19 @@ static int scenario_commit_mid(void) {
             return -1;
         }
 
-        /* Read at current epoch (base) — after commit, the snapshot's v1
-           is merged in.  v1 at offset 0 should be visible. */
+        /* Read at past-even epoch 0 (v1 is the pre-snapshot state).
+           Phase 27 C4: v2 was written at epoch 2 (post-snapshot), so
+           reading at epoch 0 finds the v1 VersionPage (the highest
+           applicable below the head).  v2 lives at epoch 2. */
         uint8_t buf[128];
         int r = vfs_read(vfs, fvp2, buf, 0, sizeof(buf), 0);
         int match_v1 = (r == (int)sizeof(buf) && memcmp(buf, v1, sizeof(v1)) == 0);
 
-        /* v2 at offset 256 should also be visible in base */
+        /* v2 at offset 256 was written at epoch 2 (currentEpoch after
+           snapshot).  Read at epoch 2 to find the v2 VersionPage
+           (exact match). */
         uint8_t buf2[128];
-        int r2 = vfs_read(vfs, fvp2, buf2, 256, sizeof(buf2), 0);
+        int r2 = vfs_read(vfs, fvp2, buf2, 256, sizeof(buf2), 2);
         int match_v2 = (r2 == (int)sizeof(buf2) && memcmp(buf2, v2, sizeof(v2)) == 0);
 
         vfs_unmount(vfs);

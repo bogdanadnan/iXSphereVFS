@@ -66,7 +66,13 @@ static void test_snapshot_basic(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * vfs_epoch_is_writable tests
+ * vfs_epoch_is_writable tests — real validation rules
+ *
+ * Rules (per src/epoch.c):
+ *   - Live head (currentEpoch) is always writable.
+ *   - Odd snapshot epoch, not in mapper → writable (active snapshot).
+ *   - Odd snapshot epoch, in mapper → NOT writable (committed/soft-deleted).
+ *   - Even epoch, not currentEpoch → NOT writable (frozen past).
  * --------------------------------------------------------------------------- */
 
 static void test_epoch_writable(void) {
@@ -74,19 +80,50 @@ static void test_epoch_writable(void) {
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
 
-    /* Default override (test_set_epoch_writable=1): all writable */
+    /* Phase 1: currentEpoch = 0, no snapshots, no mapper. */
+    /* Live head (epoch 0) is writable. */
     CHECK(vfs_epoch_is_writable(ctx, 0));
-    CHECK(vfs_epoch_is_writable(ctx, 2));
+    /* Past even (epoch 2) is not writable. */
+    CHECK(!vfs_epoch_is_writable(ctx, 2));
+    /* Odd epoch never snapshotted (epoch 1) — mapper says it resolves
+       to itself (no entry), so writable. */
     CHECK(vfs_epoch_is_writable(ctx, 1));
 
-    /* Freeze: none writable */
-    test_set_epoch_writable(0);
-    CHECK(!vfs_epoch_is_writable(ctx, 0));
-    CHECK(!vfs_epoch_is_writable(ctx, 5));
+    /* Phase 2: take a snapshot. currentEpoch becomes 2. */
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK_EQ(snap, 1);
 
-    /* Restore all-writable */
-    test_set_epoch_writable(1);
-    CHECK(vfs_epoch_is_writable(ctx, 0));
+    /* Live head (epoch 2) is writable. */
+    CHECK(vfs_epoch_is_writable(ctx, 2));
+    /* Past even (epoch 0) is not writable. */
+    CHECK(!vfs_epoch_is_writable(ctx, 0));
+    /* Active snapshot (epoch 1) is writable. */
+    CHECK(vfs_epoch_is_writable(ctx, 1));
+
+    /* Phase 3: commit the snapshot. mapper has 1→2. */
+    CHECK_EQ(vfs_commit(vfs, snap), VFS_OK);
+
+    /* Live head still writable. */
+    CHECK(vfs_epoch_is_writable(ctx, 2));
+    /* Committed snapshot (epoch 1) is NOT writable (in mapper, resolves to 2). */
+    CHECK(!vfs_epoch_is_writable(ctx, 1));
+
+    /* Phase 4: soft-delete a snapshot.  After Phase 3 the mapper
+       has 1→2 (from commit).  A direct soft-delete of snap=3 would
+       try to insert 3→2, which collides with the existing 1→2.
+       Take a 2nd snapshot first to advance currentEpoch to 6, so
+       toEpoch=4 doesn't conflict. */
+    int64_t snap3 = vfs_snapshot(vfs);
+    CHECK_EQ(snap3, 3);
+    CHECK(vfs_epoch_is_writable(ctx, 3));    /* active */
+
+    int64_t snap5 = vfs_snapshot(vfs);
+    CHECK_EQ(snap5, 5);
+    CHECK(vfs_epoch_is_writable(ctx, 5));    /* active */
+
+    CHECK_EQ(vfs_delete_snapshot(vfs, snap5), VFS_OK);
+    CHECK(!vfs_epoch_is_writable(ctx, 5));   /* soft-deleted, in mapper */
+    CHECK(vfs_epoch_is_writable(ctx, 3));    /* still active */
 
     epoch_teardown(vfs);
 }
@@ -161,7 +198,6 @@ static void test_snapshot_write_readrule(void) {
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = get_root_vp(vfs);
-    test_set_epoch_writable(-1);  /* use real epoch validation */
 
     int64_t file_vp = vfs_create(vfs, root_vp, "snapwrite.txt", 0);
     CHECK(file_vp > 0);
@@ -233,7 +269,6 @@ static void test_rename_across_snapshots(void) {
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = get_root_vp(vfs);
-    test_set_epoch_writable(-1);  /* use real epoch validation */
 
     /* ep0: create test.txt in head */
     int64_t file_vp = vfs_create(vfs, root_vp, "test.txt", 0);
@@ -324,7 +359,6 @@ static void test_rename_across_folders_snapshots(void) {
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = get_root_vp(vfs);
-    test_set_epoch_writable(-1);  /* use real epoch validation */
 
     /* ep0: create 4 subdirectories + test.txt in epoch0 */
     int64_t dir_e0 = vfs_mkdir(vfs, root_vp, "epoch0", 0);
@@ -487,7 +521,6 @@ static void test_commit_subdir_conflict(void) {
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
-    test_set_epoch_writable(-1);  /* use real epoch implementation */
 
     int64_t sub_vp = vfs_mkdir(vfs, root_vp, "sub", 0);
     CHECK(sub_vp > 0);
@@ -527,7 +560,6 @@ static void test_mapper_integration(void) {
     CHECK(vfs != NULL);
     TreeContext* ctx = vfs->ctx;
     int64_t root_vp = ctx->rootNodeOffset;
-    test_set_epoch_writable(-1);
 
     int64_t file_vp = vfs_create(vfs, root_vp, "mt.txt", 0);
     CHECK(file_vp > 0);
