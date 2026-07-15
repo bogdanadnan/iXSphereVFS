@@ -550,6 +550,102 @@ static void test_commit_subdir_conflict(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * M3/N6: re-commit after a successful commit, exercising the
+ * commit_scan_dir VersionPage walk on a chain that contains entries
+ * with v_epochs that have been remapped by a previous commit's
+ * mapper entry (TRAVERSAL_APPLY).
+ *
+ * Without the fix, the per-VP check used raw v_epoch; with the fix,
+ * the mapper traversal-apply is applied first (same as vfs_chain_walk
+ * in src/tree.c).  This test verifies both that (a) the standard
+ * re-commit flow still detects the standard conflict (live write at
+ * the new live head before committing the new snapshot), and (b) the
+ * mapper state is consistent — a chain entry from a previously
+ * committed snapshot is still interpreted correctly.
+ * --------------------------------------------------------------------------- */
+
+static void test_commit_after_commit_recommit_conflict(void) {
+    vfs_t* vfs = epoch_setup();
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "rc.txt", 0);
+    CHECK(file_vp > 0);
+    CHECK_EQ(vfs_write(vfs, file_vp, "BASE", 0, 4, 0), 4);
+
+    /* Snapshot 1, write at snapshot 1, then commit snapshot 1
+     * (no live write at 2 → no conflict, mapper gets 1→2 with
+     * TRAVERSAL_APPLY). */
+    int64_t snap1 = vfs_snapshot(vfs);
+    CHECK_EQ(snap1, 1);
+    CHECK_EQ(vfs_write(vfs, file_vp, "SNAP1", 0, 5, 1), 5);
+    CHECK_EQ(vfs_commit(vfs, snap1), VFS_OK);
+    CHECK_EQ(mapper_table_resolve(&ctx->mapper_table, snap1), 2);
+    CHECK(mapper_table_traversal_apply(&ctx->mapper_table, snap1));
+
+    /* Now: snapshot 3, write at snapshot 3, write at live head 4,
+     * commit snapshot 3.  This must detect a conflict: the chain
+     * now has v_epochs [4, 3, 1, 0] (plus the size/file content
+     * chain), and commit_scan_dir must see v_epoch=3 (snapshot side)
+     * and v_epoch=4 (live side) and flag VFS_ERR_CONFLICT. */
+    int64_t snap3 = vfs_snapshot(vfs);
+    CHECK_EQ(snap3, 3);
+    CHECK_EQ(vfs_write(vfs, file_vp, "SNAP3", 0, 5, 3), 5);
+    CHECK_EQ(vfs_write(vfs, file_vp, "LIVE4", 0, 5, 4), 5);
+
+    int rc = vfs_commit(vfs, snap3);
+    if (rc != VFS_ERR_CONFLICT) {
+        printf("  DEBUG: re-commit returned %d (expected %d)\n",
+               rc, VFS_ERR_CONFLICT);
+    }
+    CHECK_EQ(rc, VFS_ERR_CONFLICT);
+
+    epoch_teardown(vfs);
+}
+
+static void test_commit_after_commit_no_conflict(void) {
+    /* Re-commit scenario without a live-head write.  After commit(1)
+     * is set up the mapper 1→2 with TRAVERSAL_APPLY; then a fresh
+     * snapshot 3 is taken and written at 3 only (no write at the
+     * new live head 4).  commit(3) must succeed because the
+     * effective-epoch check sees no live-side entry above s_epoch=3
+     * that is even.  The previously-committed v_epoch=1 entry,
+     * remapped to eff_epoch=2 by the mapper, is still < s_epoch=3
+     * and so does not trigger the "live side above" check. */
+    vfs_t* vfs = epoch_setup();
+    CHECK(vfs != NULL);
+    TreeContext* ctx = vfs->ctx;
+    int64_t root_vp = ctx->rootNodeOffset;
+
+    int64_t file_vp = vfs_create(vfs, root_vp, "ok.txt", 0);
+    CHECK(file_vp > 0);
+    CHECK_EQ(vfs_write(vfs, file_vp, "BASE", 0, 4, 0), 4);
+
+    int64_t snap1 = vfs_snapshot(vfs);
+    CHECK_EQ(snap1, 1);
+    CHECK_EQ(vfs_write(vfs, file_vp, "SNAP1", 0, 5, 1), 5);
+    CHECK_EQ(vfs_commit(vfs, snap1), VFS_OK);
+
+    int64_t snap3 = vfs_snapshot(vfs);
+    CHECK_EQ(snap3, 3);
+    CHECK_EQ(vfs_write(vfs, file_vp, "SNAP3", 0, 5, 3), 5);
+    /* No write at the live head 4. */
+
+    int rc = vfs_commit(vfs, snap3);
+    if (rc != VFS_OK) {
+        printf("  DEBUG: re-commit (no conflict) returned %d (expected 0)\n", rc);
+    }
+    CHECK_EQ(rc, VFS_OK);
+
+    /* Verify the new mapper entry is in place: 3→4 with TRAVERSAL_APPLY. */
+    CHECK_EQ(mapper_table_resolve(&ctx->mapper_table, snap3), 4);
+    CHECK(mapper_table_traversal_apply(&ctx->mapper_table, snap3));
+
+    epoch_teardown(vfs);
+}
+
+/* ---------------------------------------------------------------------------
  * Mapper integration: create file, snapshot, write at snapshot epoch, commit,
  * then verify vfs_mount / vfs_file_size at committed epoch.
  * Then soft-delete another snapshot and verify original epoch still works.
@@ -663,6 +759,12 @@ int main(void) {
 
     unlink(test_path);
     test_commit_subdir_conflict();
+
+    unlink(test_path);
+    test_commit_after_commit_recommit_conflict();
+
+    unlink(test_path);
+    test_commit_after_commit_no_conflict();
 
     unlink(test_path);
     test_mapper_integration();

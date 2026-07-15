@@ -23,7 +23,7 @@ against the latest codebase.
 | ❌ OPEN | Not addressed; still present |
 | 🔻 DESCOPED | Knowingly deferred to a future phase |
 
-**Summary: 28 resolved, 3 partial, 7 superseded, 8 open.**
+**Summary: 29 resolved, 2 partial, 7 superseded, 8 open.**
 
 ---
 
@@ -137,12 +137,32 @@ hash_map. Per-ContentUnit chains make dedup structural.
 is removed.)
 
 ### M3. `commit_scan_dir` has the same fixed-array limit and is recursive without depth bound
-**Status: ⚠️ PARTIAL (Phase 27).** The fixed-array limit is gone — refactored
-to use shared walk primitives. A depth limit (`COMMIT_SCAN_MAX_DEPTH = 64`)
-is now enforced (`epoch.c:130,139`). **Residual:** the mapper
-traversal-apply is not applied in the commit scan (still uses raw
-`dc_epoch` comparison, not the effective epoch). This can miss conflicts
-for committed snapshots.
+**Status: ✅ RESOLVED (Phase 27).** Two-part fix:
+
+1. **Depth limit (already in place, Phase 27).** Iterative walk with
+   `COMMIT_SCAN_MAX_DEPTH = 64` cap (`epoch.c:130,139`). Exceeding
+   depth returns `VFS_ERR_FULL` so the caller can retry with a
+   larger limit.
+
+2. **Mapper traversal-apply (this commit).** The per-VP check in
+   `commit_scan_dir_impl` now applies `mapper_table_traversal_apply`
+   to each `v_epoch` before comparing, exactly as `vfs_chain_walk`
+   does (`src/tree.c`). Without this, a VersionPage whose `v_epoch`
+   was remapped by a previous commit (e.g., snapshot 1 → committed
+   4) would be compared as `v_epoch=1` (raw) when it really is the
+   live side at `eff_epoch=4`. The fix makes `commit_scan_dir`
+   consistent with the standard read-rule.
+
+Verified with two new regression tests in `test/test_epoch.c`:
+- `test_commit_after_commit_recommit_conflict` — re-commit scenario
+  with a previous commit in place; new commit's live-head write
+  must still be detected as a conflict.
+- `test_commit_after_commit_no_conflict` — re-commit scenario with
+  no live-head write; commit must succeed (the previously-committed
+  v_epoch=1 entry, remapped to eff_epoch=2, is correctly recognized
+  as not-live-side above the new s_epoch=3).
+
+**Summary count update:** 23 new assertions in test_epoch (178→201).
 
 ### M4. `gc_copy_entry` remaps every 8-byte word that happens to match a map key
 **Status: ⚠️ PARTIAL (Phase 26 W5e).** Blind remap replaced by per-type
@@ -413,10 +433,9 @@ practice. But for consistency, these functions should also re-acquire
 `parent_slot` under the lock.
 
 ### N6. `M3` residual: `commit_scan_dir` doesn't apply mapper traversal-apply
-**Severity:** 🟡 Medium
-**Location:** `src/epoch.c:138+`
-
-The commit conflict-detection scan uses raw `dc_epoch` for the read-rule
-comparison, not the effective epoch (mapper remap). For committed snapshots
-whose entries were remapped, the scan can miss conflicts. The depth bound
-and fixed-array removal are done (M3 partial), but this mapper gap remains.
+**Status: ✅ RESOLVED (Phase 27).** Same fix as M3 — the
+`commit_scan_dir_impl` per-VP check now applies the mapper
+traversal-apply before comparing `v_epoch` to `s_epoch` (and to
+the `> s_epoch, even` live-side check). N6 was a duplicate filing
+of the M3 residual; both are now closed. See M3 entry above for
+the full fix description and regression tests.

@@ -259,9 +259,30 @@ static int commit_scan_dir_impl(vfs_t* vfs, int64_t dir_vp, uint32_t s_epoch, in
                          * read-rule — we keep the inline check
                          * because the standard read-rule returns
                          * just one entry, but we need to know
-                         * whether ANY entry exists at each side. */
-                        if (v_epoch == s_epoch) has_snapshot = 1;
-                        if (v_epoch > s_epoch && v_epoch % 2 == 0) has_live = 1;
+                         * whether ANY entry exists at each side.
+                         *
+                         * M3/N6: apply the mapper traversal-apply
+                         * (same pattern as vfs_chain_walk in
+                         * src/tree.c) before comparing.  Without
+                         * this, a VersionPage whose v_epoch was
+                         * remapped by a previous commit (e.g.,
+                         * snapshot 1 → committed 4) would be
+                         * compared as v_epoch=1 (the snapshot side
+                         * for a re-commit at s_epoch=1) when it
+                         * really is the live side at eff_epoch=4.
+                         * This would cause commit_scan_dir to miss
+                         * conflicts for previously-committed
+                         * snapshots whose pages diverge from new
+                         * snapshot writes. */
+                        int64_t eff_epoch = (int64_t)v_epoch;
+                        if (mapper_table_traversal_apply(
+                                &ctx->mapper_table, (int64_t)v_epoch)) {
+                            eff_epoch = mapper_table_resolve(
+                                &ctx->mapper_table, (int64_t)v_epoch);
+                        }
+                        if (eff_epoch == (int64_t)s_epoch) has_snapshot = 1;
+                        if (eff_epoch > (int64_t)s_epoch
+                            && eff_epoch % 2 == 0) has_live = 1;
                         vp = v_next;
                     }
                     if (has_snapshot && has_live) return VFS_ERR_CONFLICT;
