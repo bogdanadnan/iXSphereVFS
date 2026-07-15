@@ -1224,26 +1224,17 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
     PoolSlot file_slot   = {0};
     PoolSlot dc_slot     = {0};
 
-    /* Read parent DirNode, verify type */
-    pool_acquire(&ctx->pool, (int64_t)parent, true, &parent_slot);
+    /* Read parent DirNode type (read-only, before lock). */
+    pool_acquire(&ctx->pool, (int64_t)parent, false, &parent_slot);
 
     if (parent_slot.vptr == VFS_VPTR_NULL) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
     if (vfs_rd2_s(parent_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
         vfs->ctx->last_error = VFS_ERR_NOTDIR;
-        pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_NOTDIR;
     }
+    pool_release(&ctx->pool, &parent_slot);  /* drop read-only snapshot */
 
-    /* Check for name collision via dirchain_find_child (Phase 25 bug fix).
-       The old manual check `ce_epoch == epoch && ce_namePtr != 0` did not
-       consider the read-rule: a higher-epoch tombstone in the chain should
-       suppress a lower-epoch live entry.  When we delete a file and
-       re-create it with the same name at the same epoch, the old check
-       saw the original create's DirContent (live, namePtr != 0) and
-       returned VFS_ERR_EXISTS even though the file was actually deleted.
-
-       dirchain_find_child properly applies the read-rule + tombstones,
-       so a re-create at the same name after a delete is allowed. */
+    /* Check for name collision via dirchain_find_child. */
     {
         int64_t existing_child = 0;
         uint32_t existing_nodeId = 0;
@@ -1251,31 +1242,39 @@ int64_t vfs_create(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) 
                                      &existing_child, &existing_nodeId, NULL);
         if (rr == VFS_OK) {
             vfs->ctx->last_error = VFS_ERR_EXISTS;
-            pool_release(&ctx->pool, &parent_slot);
             return VFS_ERR_EXISTS;
         }
         if (rr != VFS_ERR_NOTFOUND && rr != VFS_ERR_NOTDIR) {
             vfs->ctx->last_error = VFS_ERR_IO;
-            pool_release(&ctx->pool, &parent_slot);
             return VFS_ERR_IO;
         }
-        /* NOTFOUND or NOTDIR (shouldn't happen for a file) -> proceed */
     }
 
     /* Atomically increment nextNodeId */
     uint32_t new_nodeId = (uint32_t)vfs_atomic_add_i32((int32_t*)&ctx->nextNodeId, 1);
-    /* nextNodeId starts at 0, first add yields nodeId=1 */
 
     /* W4: lock parent DirNode first (node lock), then new child (content_unit). */
     if (vfs_lock(vfs, (int64_t)parent, epoch) != VFS_OK) {
         vfs->ctx->last_error = VFS_ERR_IO;
-        pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_IO;
     }
     if (vfs_lock(vfs, (int64_t)new_nodeId, epoch) != VFS_OK) {
         vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_IO;
-        pool_release(&ctx->pool, &parent_slot);
+        return VFS_ERR_IO;
+    }
+
+    /* Re-acquire parent_slot UNDER the lock so the snapshot is fresh.
+     * The original code acquired parent_slot before the lock, producing
+     * a stale snapshot.  When pool_release(&parent_slot) wrote the stale
+     * DirNode bytes back to the cache, it clobbered other slots on the
+     * same pool page (Segments, SlotNodes) that were modified after the
+     * snapshot was taken. */
+    pool_acquire(&ctx->pool, (int64_t)parent, true, &parent_slot);
+    if (parent_slot.vptr == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
+        vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
     }
 
@@ -1460,12 +1459,11 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     PoolSlot dirIndexSlot = {0};
     PoolSlot dc_slot      = {0};
 
-    pool_acquire(&ctx->pool, (int64_t)parent, true, &parent_slot);
+    pool_acquire(&ctx->pool, (int64_t)parent, false, &parent_slot);
 
     if (parent_slot.vptr == VFS_VPTR_NULL) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
     if (vfs_rd2_s(parent_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
         vfs->ctx->last_error = VFS_ERR_NOTDIR;
-        pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_NOTDIR;
     }
 
@@ -1592,19 +1590,27 @@ int64_t vfs_mkdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
             seg_vp = seg_sib;
         }
     }
+    pool_release(&ctx->pool, &parent_slot);  /* drop read-only snapshot */
 
     uint32_t new_nodeId = (uint32_t)vfs_atomic_add_i32(
         (int32_t*)&ctx->nextNodeId, 1);
     /* W4: lock parent first, then new child */
     if (vfs_lock(vfs, (int64_t)parent, epoch) != VFS_OK) {
         vfs->ctx->last_error = VFS_ERR_IO;
-        pool_release(&ctx->pool, &parent_slot);
         return VFS_ERR_IO;
     }
     if (vfs_lock(vfs, (int64_t)new_nodeId, epoch) != VFS_OK) {
         vfs_unlock(vfs, (int64_t)parent, epoch);
         vfs->ctx->last_error = VFS_ERR_IO;
-        pool_release(&ctx->pool, &parent_slot);
+        return VFS_ERR_IO;
+    }
+
+    /* Re-acquire parent_slot UNDER the lock (same fix as vfs_create). */
+    pool_acquire(&ctx->pool, (int64_t)parent, true, &parent_slot);
+    if (parent_slot.vptr == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, (int64_t)new_nodeId, epoch);
+        vfs_unlock(vfs, (int64_t)parent, epoch);
+        vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
     }
 

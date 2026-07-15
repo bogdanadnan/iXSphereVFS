@@ -233,7 +233,13 @@ int vfs_lock(vfs_t* vfs, int64_t file, int64_t epoch) {
             return VFS_OK;
         }
 
-        while (fls->total_epoch_holders > 0)
+        /* Wait for BOTH: any per-epoch holders to drain AND any
+         * existing global holder to release.  The original code only
+         * checked total_epoch_holders, missing the global_held check
+         * — two concurrent epoch==0 callers would both pass through,
+         * defeating the exclusivity the global lock is supposed to
+         * provide. */
+        while (fls->global_held || fls->total_epoch_holders > 0)
             pthread_cond_wait(&fls->cv, &fls->mtx);
 
         fls->global_owner = self;
