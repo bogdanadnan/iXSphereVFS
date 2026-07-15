@@ -23,7 +23,7 @@ against the latest codebase.
 | ❌ OPEN | Not addressed; still present |
 | 🔻 DESCOPED | Knowingly deferred to a future phase |
 
-**Summary: 26 resolved, 3 partial, 7 superseded, 10 open.**
+**Summary: 27 resolved, 3 partial, 7 superseded, 9 open.**
 
 ---
 
@@ -166,8 +166,28 @@ invoke `vfs_flush()` afterwards." The crash window remains — the snapshot epoc
 is lost on crash until the next `vfs_flush`. Accepted as documented behavior.
 
 ### M7. `resolve_full_path` does not support `..` and silently returns 0 (ENOENT)
-**Status: ❌ OPEN.** `resolve_full_path` (`fuse_vfs.c:964`) still returns 0
-for paths containing `..`. No parent-pointer mechanism added.
+**Status: ✅ RESOLVED (Phase 27, commit `3cb66de`).** Reviewer re-annotated
+as ❌ OPEN in the Phase 27 status sweep, but the fix shipped in the
+`phase-27-issues-cleanup-m` commit. The function now maintains a VP
+stack: push on normal component, pop on `..` (stays at root if stack
+empty, per POSIX), skip on `.`. Each push resolves via `vfs_open` with
+the caller-supplied epoch, so the read-rule applies at every level
+(snapshot mounts see the snapshot's view at every step, not just the
+final one). Max depth 256 (PATH_MAX/2 with comfortable headroom).
+
+**Verified with new regression test `test_resolve_path`** (33 assertions,
+all pass under ctest). Covers:
+- simple absolute paths (dir and file)
+- root shortcuts (`/`, `""`, `//`)
+- `.` skip, `..` pop, multiple `..`
+- `..` at root stays at root (POSIX)
+- complex mix of `.` and `..`
+- missing component returns 0 (VFS_ERR_NOTFOUND)
+- epoch-aware resolution: snapshot epoch sees deleted files at
+  live epoch and vice versa
+
+Test links against `src/fuse_vfs.c` directly (no FUSE runtime needed)
+so it can run in CI alongside the other C tests.
 
 ### M8. `dircontentindex_remove` vs `dircontentindex_lookup` disagree on how to descend
 **Status: ✅ RESOLVED (Phase 27).** `dircontentindex_remove` now uses

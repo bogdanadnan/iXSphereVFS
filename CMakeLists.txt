@@ -83,6 +83,18 @@ add_executable(test_gc test/test_gc.c)
 target_link_libraries(test_gc ixsphere_vfs pthread)
 add_test(NAME test_gc COMMAND test_gc)
 
+# M7 regression: resolve_full_path (.. support) lives in src/fuse_vfs.c
+# (FUSE shim) but is pure VFS API underneath, so it can be tested
+# without mounting FUSE.  We link against fuse_vfs.c directly to get
+# the symbol; FUSE_USE_VERSION is needed so fuse_vfs.h's off_t and
+# struct fuse_file_info types resolve at compile time, but we do NOT
+# link against libfuse3 — the test never calls any FUSE API.
+add_executable(test_resolve_path test/test_resolve_path.c src/fuse_vfs.c)
+target_compile_definitions(test_resolve_path PRIVATE FUSE_USE_VERSION=317 FUSE_DARWIN_ENABLE_EXTENSIONS=0)
+target_include_directories(test_resolve_path PRIVATE ${FUSE3_INCLUDE_DIRS})
+target_link_libraries(test_resolve_path ixsphere_vfs pthread)
+add_test(NAME test_resolve_path COMMAND test_resolve_path)
+
 add_executable(test_var_array test/test_var_array.c)
 target_link_libraries(test_var_array ixsphere_vfs pthread)
 add_test(NAME test_var_array COMMAND test_var_array)
