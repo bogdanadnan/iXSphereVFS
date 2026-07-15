@@ -1772,7 +1772,8 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     if (!vfs_epoch_is_writable(ctx, (int64_t)epoch)) return VFS_ERR_IO;
 
-    /* Use dirchain_find_child to locate the entry (read-rule + mapper + dedup) */
+    /* Use dirchain_find_child to locate the entry (read-rule + mapper + dedup).
+     * No lock needed — this is a read-only lookup on the chain. */
     int64_t found_childPtr = 0;
     uint32_t found_childId = 0;
     int r = dirchain_find_child(ctx, parent, name, epoch,
@@ -1787,11 +1788,20 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     PoolSlot parent_slot = {0};
     PoolSlot dc_slot     = {0};
 
-    pool_acquire(&ctx->pool, (int64_t)parent, true, &parent_slot);
-    if (parent_slot.vptr == VFS_VPTR_NULL) { vfs->ctx->last_error = VFS_ERR_IO; return VFS_ERR_IO; }
-
+    /* N5 (post-N4): acquire parent_slot AFTER taking the lock.  Holding
+     * a pinned parent_slot before the lock produces a stale snapshot;
+     * pool_release at the end would clobber other slots on the same
+     * pool page modified concurrently (same bug as the vfs_create N4
+     * fix).  The read-only dirchain_find_child above already proved
+     * the entry exists, so we don't need the parent snapshot to look
+     * it up. */
     if (vfs_lock(vfs, (int64_t)found_childId, epoch) != VFS_OK) {
-        pool_release(&ctx->pool, &parent_slot);
+        return VFS_ERR_IO;
+    }
+    pool_acquire(&ctx->pool, (int64_t)parent, true, &parent_slot);
+    if (parent_slot.vptr == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, (int64_t)found_childId, epoch);
+        vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
     }
 
@@ -1895,16 +1905,25 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     PoolSlot parent_slot = {0};
     PoolSlot dc_slot     = {0};
 
-    pool_acquire(&ctx->pool, (int64_t)parent, true, &parent_slot);
-
-    if (parent_slot.vptr == VFS_VPTR_NULL) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
-    if (vfs_rd2_s(parent_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
-        vfs->ctx->last_error = VFS_ERR_NOTDIR;
-        pool_release(&ctx->pool, &parent_slot);
-        return VFS_ERR_NOTDIR;
+    /* N5 (post-N4): use a read-only parent snapshot for the type
+     * check and chain walk, then drop it.  The pinned snapshot is
+     * re-acquired under the child lock below, after we've located
+     * the entry.  Holding a pinned parent_slot across the lock
+     * would let the eventual pool_release clobber other slots on
+     * the same pool page modified concurrently (same bug as the
+     * vfs_create N4 fix). */
+    {
+        PoolSlot ps_ro = {0};
+        pool_acquire(&ctx->pool, (int64_t)parent, false, &ps_ro);
+        if (ps_ro.vptr == VFS_VPTR_NULL) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
+        if (vfs_rd2_s(ps_ro.bytes, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+            vfs->ctx->last_error = VFS_ERR_NOTDIR;
+            pool_release(&ctx->pool, &ps_ro);
+            return VFS_ERR_NOTDIR;
+        }
+        pool_release(&ctx->pool, &ps_ro);
     }
 
-    int64_t headPtr = vfs_rd8_s(parent_slot.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
     int64_t found_vp = 0;
     uint32_t found_childId = 0;
     int64_t found_childPtr = 0;
@@ -1912,71 +1931,82 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
 
     /* Tree lookup first (if index exists) */
     {
-        int64_t indexRoot = vfs_rd8_s(parent_slot.bytes, DIRNODE_OFF_INDEXHEADPTR,
-                                       ctx->page_size);
-        if (indexRoot != 0) {
-            int64_t leafVP = dircontentindex_lookup(&ctx->pool, indexRoot,
-                                                    target_hash, ctx->page_size);
-            if (leafVP != 0) {
-                int64_t linkVP = leafVP;
-                while (linkVP != 0) {
-                    PoolSlot linkSlot;
-                    pool_acquire(&ctx->pool, linkVP, true, &linkSlot);
-                    if (linkSlot.vptr == VFS_VPTR_NULL) break;
-                    int64_t slotVP, nextLinkVP;
-                    nodes_read_dircontentlink(linkSlot.bytes, &slotVP, &nextLinkVP,
-                                              ctx->page_size);
-                    pool_release(&ctx->pool, &linkSlot);
+        PoolSlot ps_ro = {0};
+        pool_acquire(&ctx->pool, (int64_t)parent, false, &ps_ro);
+        if (ps_ro.vptr != VFS_VPTR_NULL) {
+            int64_t indexRoot = vfs_rd8_s(ps_ro.bytes, DIRNODE_OFF_INDEXHEADPTR,
+                                           ctx->page_size);
+            pool_release(&ctx->pool, &ps_ro);
+            if (indexRoot != 0) {
+                int64_t leafVP = dircontentindex_lookup(&ctx->pool, indexRoot,
+                                                        target_hash, ctx->page_size);
+                if (leafVP != 0) {
+                    int64_t linkVP = leafVP;
+                    while (linkVP != 0) {
+                        PoolSlot linkSlot;
+                        pool_acquire(&ctx->pool, linkVP, true, &linkSlot);
+                        if (linkSlot.vptr == VFS_VPTR_NULL) break;
+                        int64_t slotVP, nextLinkVP;
+                        nodes_read_dircontentlink(linkSlot.bytes, &slotVP, &nextLinkVP,
+                                                  ctx->page_size);
+                        pool_release(&ctx->pool, &linkSlot);
 
-                    /* W5a: the link now points at a SlotNode VP. */
-                    PoolSlot slotSlot;
-                    pool_acquire(&ctx->pool, slotVP, false, &slotSlot);
-                    if (slotSlot.vptr == VFS_VPTR_NULL) { linkVP = nextLinkVP; continue; }
-                    AnchorKind ak;
-                    uint32_t sid;
-                    int64_t shead, ssib;
-                    uint32_t scnt;
-                    nodes_read_anchor(slotSlot.bytes, &ak, &sid, &shead, &ssib,
-                                      &scnt, ctx->page_size);
-                    pool_release(&ctx->pool, &slotSlot);
-                    (void)ak; (void)scnt; (void)ssib;
+                        /* W5a: the link now points at a SlotNode VP. */
+                        PoolSlot slotSlot;
+                        pool_acquire(&ctx->pool, slotVP, false, &slotSlot);
+                        if (slotSlot.vptr == VFS_VPTR_NULL) { linkVP = nextLinkVP; continue; }
+                        AnchorKind ak;
+                        uint32_t sid;
+                        int64_t shead, ssib;
+                        uint32_t scnt;
+                        nodes_read_anchor(slotSlot.bytes, &ak, &sid, &shead, &ssib,
+                                          &scnt, ctx->page_size);
+                        pool_release(&ctx->pool, &slotSlot);
+                        (void)ak; (void)scnt; (void)ssib;
 
-                    int64_t dcVP = shead;
-                    while (dcVP != 0) {
-                        PoolSlot dc_check;
-                        pool_acquire(&ctx->pool, dcVP, false, &dc_check);
-                        if (dc_check.vptr == VFS_VPTR_NULL) break;
-                        uint32_t cc, ce;
-                        int64_t cp, np, nx;
-                        nodes_read_dircontent(dc_check.bytes, &cc, &ce, &cp, &np, &nx,
-                                              ctx->page_size);
-                        pool_release(&ctx->pool, &dc_check);
-                        if (np != 0 && ce <= (uint32_t)epoch) {
-                            uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
-                            if (entry_hash == target_hash) {
-                                char en[256];
-                                int nl = nodes_read_name(&ctx->pool, np, en,
-                                                         (int)sizeof(en));
-                                if (nl > 0 && strcmp(en, name) == 0) {
-                                    found_vp = dcVP;
-                                    found_childId = cc;
-                                    found_childPtr = cp;
-                                    break;
+                        int64_t dcVP = shead;
+                        while (dcVP != 0) {
+                            PoolSlot dc_check;
+                            pool_acquire(&ctx->pool, dcVP, false, &dc_check);
+                            if (dc_check.vptr == VFS_VPTR_NULL) break;
+                            uint32_t cc, ce;
+                            int64_t cp, np, nx;
+                            nodes_read_dircontent(dc_check.bytes, &cc, &ce, &cp, &np, &nx, ctx->page_size);
+                            pool_release(&ctx->pool, &dc_check);
+                            if (np != 0 && ce <= (uint32_t)epoch) {
+                                uint64_t entry_hash = nodes_read_name_hash(&ctx->pool, np);
+                                if (entry_hash == target_hash) {
+                                    char en[256];
+                                    int nl = nodes_read_name(&ctx->pool, np, en,
+                                                             (int)sizeof(en));
+                                    if (nl > 0 && strcmp(en, name) == 0) {
+                                        found_vp = dcVP;
+                                        found_childId = cc;
+                                        found_childPtr = cp;
+                                        break;
+                                    }
                                 }
                             }
+                            dcVP = nx;
                         }
-                        dcVP = nx;
+                        if (found_vp) break;
+                        linkVP = nextLinkVP;
                     }
-                    if (found_vp) break;
-                    linkVP = nextLinkVP;
                 }
             }
         }
     }
 
     /* Chain walk — safety net (always runs if not found in tree).
-     * W5a: headPtr is a SlotNode chain. */
+     * W5a: walk DirSegments → SlotNodes → DirContent chain. */
     if (found_vp == 0) {
+        int64_t headPtr = 0;
+        PoolSlot ps_ro = {0};
+        pool_acquire(&ctx->pool, (int64_t)parent, false, &ps_ro);
+        if (ps_ro.vptr != VFS_VPTR_NULL) {
+            headPtr = vfs_rd8_s(ps_ro.bytes, DIRNODE_OFF_HEADPTR, ctx->page_size);
+            pool_release(&ctx->pool, &ps_ro);
+        }
         int64_t slot_walk_vp = headPtr;
         while (slot_walk_vp != 0) {
             PoolSlot slot_check;
@@ -2024,8 +2054,16 @@ int vfs_rmdir(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     }
 
     if (found_vp == 0) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
+
     if (vfs_lock(vfs, (int64_t)found_childId, epoch) != VFS_OK) {
-        pool_release(&ctx->pool, &parent_slot);
+        return VFS_ERR_IO;
+    }
+    /* Re-acquire parent_slot pinned UNDER the lock (same N5 fix as
+     * vfs_delete). */
+    pool_acquire(&ctx->pool, (int64_t)parent, true, &parent_slot);
+    if (parent_slot.vptr == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, (int64_t)found_childId, epoch);
+        vfs->ctx->last_error = VFS_ERR_IO;
         return VFS_ERR_IO;
     }
 
@@ -2359,28 +2397,36 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
     PoolSlot src_slot = {0};
     PoolSlot dst_slot = {0};
 
-    /* Verify both parents are DirNodes */
-    pool_acquire(&ctx->pool, (int64_t)src_parent, true, &src_slot);
-
-    if (src_slot.vptr == VFS_VPTR_NULL) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
-    if (vfs_rd2_s(src_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
-        vfs->ctx->last_error = VFS_ERR_NOTDIR;
-        pool_release(&ctx->pool, &src_slot);
-        return VFS_ERR_NOTDIR;
+    /* N5 (post-N4): verify both parents are DirNodes with read-only
+     * snapshots, then drop them.  Pinned snapshots taken before the
+     * lock would let the eventual pool_release clobber other slots
+     * on the same pool page modified concurrently (same bug as the
+     * vfs_create N4 fix).  The pinned snapshots are re-acquired under
+     * the lock below. */
+    {
+        PoolSlot ps_ro = {0};
+        pool_acquire(&ctx->pool, (int64_t)src_parent, false, &ps_ro);
+        if (ps_ro.vptr == VFS_VPTR_NULL) { vfs->ctx->last_error = VFS_ERR_NOTFOUND; return VFS_ERR_NOTFOUND; }
+        if (vfs_rd2_s(ps_ro.bytes, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+            vfs->ctx->last_error = VFS_ERR_NOTDIR;
+            pool_release(&ctx->pool, &ps_ro);
+            return VFS_ERR_NOTDIR;
+        }
+        pool_release(&ctx->pool, &ps_ro);
     }
-
-    pool_acquire(&ctx->pool, (int64_t)dst_parent, true, &dst_slot);
-
-    if (dst_slot.vptr == VFS_VPTR_NULL) {
-        vfs->ctx->last_error = VFS_ERR_IO;
-        pool_release(&ctx->pool, &src_slot);
-        return VFS_ERR_IO;
-    }
-    if (vfs_rd2_s(dst_slot.bytes, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
-        vfs->ctx->last_error = VFS_ERR_NOTDIR;
-        pool_release(&ctx->pool, &dst_slot);
-        pool_release(&ctx->pool, &src_slot);
-        return VFS_ERR_NOTDIR;
+    {
+        PoolSlot ps_ro = {0};
+        pool_acquire(&ctx->pool, (int64_t)dst_parent, false, &ps_ro);
+        if (ps_ro.vptr == VFS_VPTR_NULL) {
+            vfs->ctx->last_error = VFS_ERR_NOTFOUND;
+            return VFS_ERR_NOTFOUND;
+        }
+        if (vfs_rd2_s(ps_ro.bytes, DIRNODE_OFF_TYPE, ctx->page_size) != (int16_t)NODE_TYPE_DIR) {
+            vfs->ctx->last_error = VFS_ERR_NOTDIR;
+            pool_release(&ctx->pool, &ps_ro);
+            return VFS_ERR_NOTDIR;
+        }
+        pool_release(&ctx->pool, &ps_ro);
     }
 
     /* Find source entry using dirchain_find_child */
@@ -2445,6 +2491,28 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         pool_release(&ctx->pool, &dst_slot);
         pool_release(&ctx->pool, &src_slot);
         return VFS_ERR_IO;
+    }
+
+    /* N5 (post-N4): re-acquire parent slots pinned UNDER the lock so
+     * the snapshots used for INDEXHEADPTR writes are fresh.  Same
+     * fix as vfs_create, vfs_mkdir, vfs_delete, vfs_rmdir. */
+    pool_acquire(&ctx->pool, (int64_t)src_parent, true, &src_slot);
+    if (src_slot.vptr == VFS_VPTR_NULL) {
+        vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+        vfs_unlock(vfs, (int64_t)src_parent, epoch);
+        if (src_parent != dst_parent) vfs_unlock(vfs, (int64_t)dst_parent, epoch);
+        vfs->ctx->last_error = VFS_ERR_IO;
+        return VFS_ERR_IO;
+    }
+    if (src_parent != dst_parent) {
+        pool_acquire(&ctx->pool, (int64_t)dst_parent, true, &dst_slot);
+        if (dst_slot.vptr == VFS_VPTR_NULL) {
+            vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+            vfs_unlock(vfs, (int64_t)src_parent, epoch);
+            vfs_unlock(vfs, (int64_t)dst_parent, epoch);
+            vfs->ctx->last_error = VFS_ERR_IO;
+            return VFS_ERR_IO;
+        }
     }
 
     if (src_parent == dst_parent) {
