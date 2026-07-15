@@ -23,7 +23,7 @@ against the latest codebase.
 | ❌ OPEN | Not addressed; still present |
 | 🔻 DESCOPED | Knowingly deferred to a future phase |
 
-**Summary: 25 resolved, 3 partial, 7 superseded, 11 open.**
+**Summary: 26 resolved, 3 partial, 7 superseded, 10 open.**
 
 ---
 
@@ -295,21 +295,33 @@ the old indentation artifacts are gone.
 ### N1. `test_gc` produces assertion failures and CRC errors on stderr (noise, not a regression)
 **Severity:** 🟡 Medium (test quality)
 **Location:** `test/test_gc.c`, `src/gc.c`
+**Status: ✅ RESOLVED (Phase 27).** Three changes:
 
-`test_gc` passes (264/264) but produces `Assertion failed` and
-`page N corrupted on initial read (status=2)` messages on stderr. This is
-because GC is non-functional (returns `VFS_ERR_FULL`), and the C5 fix now
-correctly reports CRC errors for the corrupted pages GC leaves behind.
-The test tolerates `VFS_ERR_FULL` via `CHECK_EQ(gc_ret, VFS_ERR_FULL)`.
+1. **Real test bug found and fixed (use-after-free).** Both
+   `test_gc_crash_before_swap` and `test_gc_crash_after_swap` used
+   `ctx->page_size` *after* `vfs_unmount(vfs)` — `ctx` was a freed
+   pointer. This was always wrong; it only manifested as a ctest
+   "Subprocess aborted" when the freed memory happened to contain a
+   small `page_size` (which trips the VFS_BOUNDS_CHECK_S assert in
+   `vfs_rd2_s`). Replaced with `vfs->ctx->page_size` after the
+   remount. Verified standalone run and 13/13 ctest pass.
 
-The assertion in `vfs_rd2_s` (`page_buf.h:89`) fires when a subsequent
-test case reads a slot from a page whose page_size metadata is corrupted
-by the failed GC. `ctest` catches the signal and reports "Subprocess
-aborted" even though the test reports success.
+2. **SIGABRT handler in `test_gc/main`.** A `signal(SIGABRT, ...)`
+   handler that swallows post-summary aborts (with a flag set right
+   after `printf("test_gc: N/N passed")`). Pre-summary aborts still
+   propagate — the handler restores `SIG_DFL` and re-raises. This
+   protects against future GC-non-functional cases that may corrupt
+   page metadata in the cleanup path.
 
-**Direction:** Fix GC (the root cause), or add a `signal(SIGABRT, SIG_IGN)`
-in `test_gc` to suppress the assertion noise. The test's
-`CHECK_EQ(gc_ret, VFS_ERR_FULL)` tolerance should be removed when GC is fixed.
+3. **GC-corrupted page stderr messages retained** (`vfs: gc_allocate_new_pool_page: page N corrupted on initial read`). These
+   are legitimate diagnostics from the C5 fix — they prove the
+   error-propagation is working. Suppressing them would lose
+   signal. They are noise only in the sense that GC is not yet
+   functional; once GC works, the messages will stop.
+
+When GC is reworked, remove (1) the `CHECK_EQ(gc_ret, VFS_ERR_FULL)`
+tolerances throughout the GC tests, (2) the SIGABRT handler, and
+(3) this ISSUES.md entry.
 
 ### N2. GC write-back still uses `pinPage=false` everywhere (silent data loss if GC ever works)
 **Severity:** 🔴 Critical (latent — currently unreachable)
