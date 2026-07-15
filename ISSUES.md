@@ -23,7 +23,7 @@ against the latest codebase.
 | ❌ OPEN | Not addressed; still present |
 | 🔻 DESCOPED | Knowingly deferred to a future phase |
 
-**Summary: 27 resolved, 3 partial, 7 superseded, 9 open.**
+**Summary: 28 resolved, 3 partial, 7 superseded, 8 open.**
 
 ---
 
@@ -262,9 +262,27 @@ and kept as a fallback. Not removed, but the waste is acknowledged.
 W5c/W6 `dirchain_list` refactor.
 
 ### L10. `vfs_error_string` and `vfs_error_to_str` are two different stringifications
-**Status: ❌ OPEN.** Both still exist: `vfs_error_string` (`vfs.c:331`,
-public API) and `vfs_error_to_str` (`fuse_vfs.c:898`, internal). Not
-consolidated.
+**Status: ✅ RESOLVED (Phase 27).** Per user direction (no external
+users, pre-MVP), went with option 1 from the design discussion: drop
+`vfs_error_to_str`, ctl uses the public `vfs_error_string` directly.
+
+Changes:
+- `src/fuse_vfs.c`: deleted `vfs_error_to_str` (16-line function).
+- `src/fuse_vfs.h`: removed declaration, replaced with a comment
+  pointing at `vfs_error_string`.
+- `src/fuse_vfs_ctl.c`: 4 call sites updated. `vfs_error_string` takes
+  `vfs_error_t` (not `int`) so the `(int)` casts became
+  `(vfs_error_t)`. Ctl output format changes from `ERR not_found` to
+  `ERR Not found` (more debuggable).
+- `src/vfs.c`: `vfs_error_string` was missing the
+  `VFS_ERR_NAMETOOLONG` case (added in M10 but `vfs_error_string`
+  wasn't updated). Added it as `"Name too long"`.
+- `test/test_main.c`: added the new assertion.
+
+Verified: 14/14 ctest pass. The internal/external split was an
+unforced design choice — the public header is already
+self-contained, and a single source of truth eliminates the
+"remember to update both" hazard.
 
 ### L11. `epoch.c` comment indentation artifacts
 **Status: ✅ RESOLVED (Phase 27).** `commit_scan_dir` was refactored in W6e;

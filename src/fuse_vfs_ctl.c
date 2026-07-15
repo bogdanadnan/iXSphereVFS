@@ -111,7 +111,7 @@ static int ctl_dispatch(fuse_vfs_state_t* state, const char* cmd) {
         int64_t epoch = vfs_snapshot(vfs);
         if (epoch < 0) {
             rc = ctl_appendf(state, "ERR %s\n",
-                              vfs_error_to_str((int)vfs_last_error(vfs)));
+                              vfs_error_string(vfs_last_error(vfs)));
         } else {
             rc = ctl_appendf(state, "%lld\n", (long long)epoch);
         }
@@ -124,7 +124,7 @@ static int ctl_dispatch(fuse_vfs_state_t* state, const char* cmd) {
             if (r == 0)              rc = ctl_appendf(state, "ok\n");
             else if (r == VFS_ERR_CONFLICT) rc = ctl_appendf(state, "conflict\n");
             else                     rc = ctl_appendf(state, "ERR %s\n",
-                                                   vfs_error_to_str(r));
+                                                   vfs_error_string((vfs_error_t)r));
         }
     } else if (strncmp(cmd, "delete-snapshot ", 16) == 0) {
         long long epoch = atoll(cmd + 16);
@@ -134,13 +134,13 @@ static int ctl_dispatch(fuse_vfs_state_t* state, const char* cmd) {
             int r = vfs_delete_snapshot(vfs, (int64_t)epoch);
             if (r == 0) rc = ctl_appendf(state, "ok\n");
             else        rc = ctl_appendf(state, "ERR %s\n",
-                                         vfs_error_to_str(r));
+                                         vfs_error_string((vfs_error_t)r));
         }
     } else if (strcmp(cmd, "gc") == 0) {
         int r = vfs_gc(vfs);
         if (r == 0) rc = ctl_appendf(state, "ok\n");
         else        rc = ctl_appendf(state, "ERR %s\n",
-                                     vfs_error_to_str(r));
+                                     vfs_error_string((vfs_error_t)r));
     } else {
         rc = ctl_appendf(state, "ERR unknown command: '%s'\n", cmd);
     }

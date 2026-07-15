@@ -895,23 +895,6 @@ int vfs_error_to_errno(int vfs_err) {
     }
 }
 
-const char* vfs_error_to_str(int vfs_err) {
-    switch (vfs_err) {
-    case VFS_OK:            return "OK";
-    case VFS_ERR_IO:        return "IO";
-    case VFS_ERR_NOTFOUND:  return "not_found";
-    case VFS_ERR_EXISTS:    return "exists";
-    case VFS_ERR_NOTDIR:    return "not_a_directory";
-    case VFS_ERR_NOTEMPTY:  return "not_empty";
-    case VFS_ERR_CONFLICT:  return "conflict";
-    case VFS_ERR_FULL:         return "full";
-    case VFS_ERR_NOMEM:        return "out_of_memory";
-    case VFS_ERR_EPOCH:        return "invalid_epoch";
-    case VFS_ERR_NAMETOOLONG:  return "name_too_long";
-    default:                   return "unknown";
-    }
-}
-
 /* ---------------------------------------------------------------------------
  * Path resolution — splits a POSIX path ("/a/b/c.txt") into components
  * and walks the VFS tree to resolve the final VirtualPtr.

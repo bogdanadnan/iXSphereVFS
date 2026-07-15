@@ -172,10 +172,11 @@ int main(void) {
     printf("=== iXSphereVFS Tests ===\n\n");
 
     printf("1. Error strings...\n");
-    CHECK_STREQ(vfs_error_string(VFS_OK),           "OK");
-    CHECK_STREQ(vfs_error_string(VFS_ERR_NOTFOUND), "Not found");
-    CHECK_STREQ(vfs_error_string(VFS_ERR_IO),       "I/O error");
-    CHECK_STREQ(vfs_error_string(-999),             "Unknown error");
+    CHECK_STREQ(vfs_error_string(VFS_OK),               "OK");
+    CHECK_STREQ(vfs_error_string(VFS_ERR_NOTFOUND),     "Not found");
+    CHECK_STREQ(vfs_error_string(VFS_ERR_IO),           "I/O error");
+    CHECK_STREQ(vfs_error_string(VFS_ERR_NAMETOOLONG),  "Name too long");
+    CHECK_STREQ(vfs_error_string(-999),                 "Unknown error");
 
     test_platform_detection();
     test_crc32c();
