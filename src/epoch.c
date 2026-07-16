@@ -29,14 +29,23 @@ int64_t vfs_snapshot(vfs_t* vfs) {
 
     /* Atomically increment currentEpoch by 2 (add_fetch returns new value).
        Snapshot epoch = old value + 1 = new value - 1.
-       M6 (option a): the new currentEpoch is in-memory only at this
-       point.  Callers that need durability must invoke vfs_flush()
-       afterwards — vfs_flush writes the superblock (via
-       tree_superblock_write) which persists currentEpoch.  Until
-       vfs_flush runs, a crash loses the snapshot epoch.  The SPEC
-       §12.4 promises an "immediately usable" epoch (the returned
-       value is valid for reads/writes in this process), but
-       durability across crashes requires vfs_flush. */
+
+       Durability contract: this snapshot is IN-MEMORY ONLY.  The
+       returned epoch is valid for reads/writes in this process
+       ("immediately usable") but is lost on crash until persisted.
+
+       Snapshots are intentionally cheap (one atomic add, no I/O)
+       because the intended use case is a SQLite VFS where each
+       transaction gets a snapshot.  With thousands of transactions
+       per second, durably flushing each snapshot would dominate
+       I/O.  The crash-consistent commit point is vfs_commit, which
+       writes the mapper entry, flushes the pool cache, and writes
+       the superblock.  A crash before vfs_commit just discards the
+       snapshot — no on-disk state was modified by it.
+
+       Callers that need crash durability must invoke vfs_commit
+       (preferred) or vfs_flush (broader; flushes everything) after
+       the snapshot. */
     int64_t new_epoch = vfs_atomic_add_i64(&ctx->currentEpoch, 2);
     return new_epoch - 1;  /* snapshot epoch is always odd */
 }

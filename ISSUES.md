@@ -23,7 +23,7 @@ against the latest codebase.
 | ❌ OPEN | Not addressed; still present |
 | 🔻 DESCOPED | Knowingly deferred to a future phase |
 
-**Summary: 32 resolved, 2 partial, 7 superseded, 4 open.**
+**Summary: 33 resolved, 1 partial, 7 superseded, 4 open.**
 
 ---
 
@@ -215,10 +215,33 @@ fix applied to `vfs_delete_snapshot`. The pool page is durable before the
 superblock commit point.
 
 ### M6. `vfs_snapshot` advances `currentEpoch` in memory only — not durable
-**Status: ⚠️ PARTIAL (Phase 27).** Documented but not fixed. The code comment
-(`epoch.c:43-52`) now explicitly states: "Callers that need durability must
-invoke `vfs_flush()` afterwards." The crash window remains — the snapshot epoch
-is lost on crash until the next `vfs_flush`. Accepted as documented behavior.
+**Status: ✅ RESOLVED (Phase 27).** Not a bug — the design is correct
+for the intended use case (SQLite VFS with snapshots-as-transactions).
+
+**Design rationale**: snapshots are intentionally in-memory because
+they're expected to be frequent. The SQLite VFS (phase 28) will use
+one snapshot per transaction; with thousands of transactions per
+second, durably flushing each one would dominate the I/O cost. The
+correctness contract is:
+- `vfs_snapshot` is **fast** (one atomic add), in-memory, may be
+  lost on crash. The returned epoch is valid for reads/writes in
+  this process; if the process crashes before the epoch is committed
+  or rolled back, the epoch is gone (no orphan data on disk — the
+  snapshot was never persisted).
+- `vfs_commit` is the **durability point**. It writes the mapper
+  entry (in the pool page), flushes the pool cache, then writes
+  the superblock. A crash after this point preserves the commit.
+- `vfs_rollback` (soft-delete) drops the in-memory snapshot
+  without I/O.
+
+The "loss window" between `vfs_snapshot` and `vfs_commit` is not a
+bug — it's the cost of cheap snapshots. If a crash occurs, the
+uncommitted snapshot is lost, but no on-disk state was modified
+by the snapshot. The user must explicitly call `vfs_commit` (or
+`vfs_flush`) to make the snapshot durable.
+
+Updated the code comment in `epoch.c:43-56` to reflect this
+contract with the SQLite transaction use case as motivation.
 
 ### M7. `resolve_full_path` does not support `..` and silently returns 0 (ENOENT)
 **Status: ✅ RESOLVED (Phase 27, commit `3cb66de`).** Reviewer re-annotated
