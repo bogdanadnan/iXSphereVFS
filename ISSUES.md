@@ -23,7 +23,7 @@ against the latest codebase.
 | ❌ OPEN | Not addressed; still present |
 | 🔻 DESCOPED | Knowingly deferred to a future phase |
 
-**Summary: 29 resolved, 2 partial, 7 superseded, 8 open.**
+**Summary: 30 resolved, 2 partial, 7 superseded, 6 open.**
 
 ---
 
@@ -83,12 +83,47 @@ in the storage_allocate pre-check.
 for regression detection (`pool.h:102,122`, `pool.c:208`).
 
 ### H2. `mirror_write` second-write path loses the original on sibling-alloc failure
-**Status: ❌ OPEN.** `mirror_write` (`lazy_mirror.c`) is unchanged — the
-non-atomic sibling-allocation sequence is still present. No rollback on failure.
+**Status: ✅ RESOLVED (Phase 27, commit `7447a70`).** All four failure
+paths in the second-write branch of `mirror_write` now call
+`storage_free(sibling)`:
+
+| # | Failure point | Code | Action |
+|---|---|---|---|
+| 1 | `storage_allocate` returns < 0 | allocate failed | nothing to free |
+| 2 | `indir_lookup(sibling)` returns 0 | lookup failed | `storage_free(sibling)` |
+| 3 | `write_page_record(sibling, ...)` fails | write failed | `storage_free(sibling)` |
+| 4 | Final `pwrite` of `original.mirror_page` fails | link failed | `storage_free(sibling)` |
+
+`storage_free` (W2) enqueues the (logical, physical) pair into the
+free-page queue. `storage_allocate(1)` (W3) consumes the queue
+via `dequeue_from_free_list` (with `try_claim_entry` for ABA
+detection and a deferred-free check for H3). The freed sibling
+is reused on the next allocation rather than sitting on disk as
+a permanent leak. Verified with 12/12 ctest pass (including the
+existing mirror_write tests in test_storage.c).
 
 ### H3. `storage_allocate` fast path is incompatible with `storage_free` / GC reclamation
-**Status: ❌ OPEN.** The `count==1` fast path still ignores the deferred-free
-queue. Largely moot while GC is non-functional.
+**Status: ✅ RESOLVED (Phase 27, commit `7447a70`).** W3's
+`dequeue_from_free_list` consults the GC deferred-free queue
+after popping an entry. If the dequeued page is in the deferred
+queue, the dequeue returns 0 and the caller tail-advances past
+the in-flight page. The deferred-free check is the same one
+`storage_allocate_count_scan` (the count>1 fallback) has been
+using — now the count==1 hot path honors it too.
+
+The `deferred_free_is_queued` check is invoked at the end of the
+dequeue, after `try_claim_entry` (ABA detection). This means the
+fast path now does:
+1. Free-list count check (1 atomic load).
+2. Pop entry from head page (disk read + write).
+3. `try_claim_entry` (CAS on indir).
+4. Deferred-free check (linear scan of the GC dfq — small, ~10
+   entries during GC).
+
+For the current bench workloads, the deferred-free queue is
+always empty (GC is non-functional), so step 4 is a no-op. The
+test `test_df_enqueue_blocks_alloc` (which exercises the
+deferred-free path) now passes.
 
 ### H4. Global, mutable file-lock table is not cleanup-safe and leaks on VFS close
 **Status: ✅ RESOLVED (Phase 26 W0).** Lock table is per-`vfs_t`

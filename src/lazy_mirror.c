@@ -153,12 +153,35 @@ int mirror_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payloa
     }
 
     if (ph.mirror_page == -1) {
-        /* --- Second write: allocate mirror sibling --- */
+        /* --- Second write: allocate mirror sibling ---
+         *
+         * Phase 27 H2 fix: all four failure paths below now call
+         * storage_free(sibling) to release the allocated page back
+         * to the free-list queue.  Without this, the sibling would
+         * be a permanent on-disk leak (allocated but unreachable).
+         *
+         * Failure paths:
+         *   1. storage_allocate failure — nothing allocated, no free.
+         *   2. indir_lookup failure — sibling allocated, indir set,
+         *      no data yet on disk.  Free it.
+         *   3. write_page_record failure — sibling allocated, indir
+         *      set, partial data on disk.  Free it (the new caller
+         *      will overwrite).
+         *   4. pwrite (link) failure — sibling allocated, indir set,
+         *      full data on disk, NOT linked to original.  Free it.
+         *
+         * The free-list is consumed by storage_allocate(1) (W3), so
+         * the freed sibling is reused on the next allocation rather
+         * than sitting on disk. */
         int64_t sibling = storage_allocate(sb, 1);
-        if (sibling < 0) return -1;
+        if (sibling < 0) return -1;  /* path 1: no free needed */
 
         int64_t sib_off = indir_lookup(sb, sibling);
-        if (sib_off == 0) return -1;
+        if (sib_off == 0) {
+            /* path 2: sibling allocated, indir_lookup failed */
+            storage_free(sb, sibling);
+            return -1;
+        }
 
         PageHeader ph_sib;
         memset(&ph_sib, 0, sizeof(ph_sib));
@@ -167,13 +190,22 @@ int mirror_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payloa
         ph_sib.generation  = ph.generation + 1;
         ph_sib.mirror_page = (int32_t)logical_page;
 
-        if (write_page_record(sb, sib_off, &ph_sib, payload) != 0) return -1;
+        if (write_page_record(sb, sib_off, &ph_sib, payload) != 0) {
+            /* path 3: write to sibling failed */
+            storage_free(sb, sibling);
+            return -1;
+        }
 
         /* Link original → sibling */
         ph.mirror_page = (int32_t)sibling;
         ssize_t n = pwrite(sb->fd, &ph.mirror_page, 4,
                            offset + offsetof(PageHeader, mirror_page));
-        return (n == 4) ? 0 : -1;
+        if (n != 4) {
+            /* path 4: link pwrite failed */
+            storage_free(sb, sibling);
+            return -1;
+        }
+        return 0;
     }
 
     /* --- Subsequent write: alternate between the two pages --- */
