@@ -65,14 +65,19 @@ int64_t phys_record_size(StorageBackend* sb) {
  * 40   int64_t  entries[inline_count]
  * --------------------------------------------------------------------------- */
 
-#define HDR_OFF_TOTAL_PAGES     0
-#define HDR_OFF_PAGE_SIZE       8
-#define HDR_OFF_SEGMENT_SIZE    16
-#define HDR_OFF_PHYS_TAIL       24
-#define HDR_OFF_INDIR_HEAD      32
-#define HDR_OFF_ENTRIES         40
+#define HDR_OFF_TOTAL_PAGES       0
+#define HDR_OFF_PAGE_SIZE         8
+#define HDR_OFF_SEGMENT_SIZE      16
+#define HDR_OFF_PHYS_TAIL         24
+#define HDR_OFF_INDIR_HEAD        32
+#define HDR_OFF_FREE_LIST_HEAD    40
+#define HDR_OFF_FREE_LIST_TAIL    48
+#define HDR_OFF_FREE_LIST_COUNT   56
+#define HDR_OFF_ENTRIES           64
 
-/* Number of inline indirection entries in the header page. */
+/* Number of inline indirection entries in the header page.
+   Reduced by 3 in Phase 27 to make room for the free-list header
+   at offsets 40/48/56. */
 int inline_entry_count(int64_t page_size) {
     return (int)((page_size - HDR_OFF_ENTRIES) / 8);
 }
@@ -94,6 +99,14 @@ static int bootstrap_new(StorageBackend* sb) {
     vfs_wr4_s(sb->header_buf, HDR_OFF_SEGMENT_SIZE,  1024, sb->page_size);
     vfs_wr8_s(sb->header_buf, HDR_OFF_PHYS_TAIL,     (int64_t)(2LL * (ps + PAGE_HEADER_SIZE)), sb->page_size);
     vfs_wr8_s(sb->header_buf, HDR_OFF_INDIR_HEAD,    0, sb->page_size);
+
+    /* Phase 27: free-page queue header.  A fresh VFS has no free
+       pages, so all three fields are 0.  The W2 (enqueue) and W3
+       (dequeue) workloads will populate these as storage_free is
+       called. */
+    vfs_wr8_s(sb->header_buf, HDR_OFF_FREE_LIST_HEAD,  0, sb->page_size);
+    vfs_wr8_s(sb->header_buf, HDR_OFF_FREE_LIST_TAIL,  0, sb->page_size);
+    vfs_wr8_s(sb->header_buf, HDR_OFF_FREE_LIST_COUNT, 0, sb->page_size);
 
     /* Indirection entries: page 0 at physical 0, page 1 at physical (ps+16) */
     int ic = inline_entry_count(ps);
@@ -192,6 +205,14 @@ static int mount_existing(StorageBackend* sb) {
     sb->physical_tail    = vfs_rd8_s(hdr, HDR_OFF_PHYS_TAIL, sb->page_size);
     sb->indirection_head = vfs_rd8_s(hdr, HDR_OFF_INDIR_HEAD, sb->page_size);
     sb->header_buf       = hdr;
+
+    /* Phase 27: load free-page queue header.  The 3 fields were
+       zero-initialized by bootstrap_new, so a freshly-created VFS
+       has free_list_count=0 (queue empty).  W1 doesn't populate
+       the queue — that's W2.  W1 just preserves the on-disk
+       layout so W2/W3 can read it back. */
+    /* (W2/W3 will read these from the header via
+       vfs_atomic_load_i64 on the in-memory header_buf.) */
 
     /* Sync in-memory lazy mirror tracking from on-disk PageHeader */
 

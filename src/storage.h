@@ -30,7 +30,17 @@ typedef struct {
 #define HDR_OFF_SEGMENT_SIZE    16
 #define HDR_OFF_PHYS_TAIL       24
 #define HDR_OFF_INDIR_HEAD      32
-#define HDR_OFF_ENTRIES         40
+
+/* Phase 27 free-page queue (spec: impl/phase-27-free-page-queue.md).
+   Three 8-byte fields live in the first 3 inline indirection entries
+   (offsets 40, 48, 56). The inline indirection table shifts from
+   offset 40 to offset 64; inline_count is reduced by 3. */
+#define HDR_OFF_FREE_LIST_HEAD  40
+#define HDR_OFF_FREE_LIST_TAIL  48
+#define HDR_OFF_FREE_LIST_COUNT 56
+
+/* Inline indirection table starts AFTER the free-list header */
+#define HDR_OFF_ENTRIES         64
 
 /* Flush priorities (stored in flags bits 0–1) */
 #define FLUSH_PRIO_DATA        0

@@ -291,13 +291,15 @@ void test_indir_ensure_capacity_growth(void) {
 
     int inline_count = inline_entry_count(page_size);
     int entries_per_overflow = (int)(page_size / 8) - 1;
-    CHECK(inline_count == 11);
+    /* Phase 27: inline_count reduced by 3 (the free-list header
+       takes offsets 40/48/56).  For page_size=128, old=11, new=8. */
+    CHECK(inline_count == 8);
     CHECK(entries_per_overflow == 15);
 
-    /* Sanity: inline area covers 11 pages.  storage_open already
+    /* Sanity: inline area covers 8 pages.  storage_open already
        allocated pages 0 (header) and 1 (superblock), so
-       sb->total_pages = 2 and we have 11 entries for pages 0..10
-       (page 0 = header, page 1 = superblock, pages 2..10 = 9 free
+       sb->total_pages = 2 and we have 8 entries for pages 0..7
+       (page 0 = header, page 1 = superblock, pages 2..7 = 6 free
        inline slots). */
     CHECK_EQ(sb->total_pages, 2);
 
@@ -310,25 +312,27 @@ void test_indir_ensure_capacity_growth(void) {
     CHECK_EQ(rc, 0);
     CHECK(sb->indir.overflow_count == 1);
 
-    /* Post-state: the new overflow page covers pages 11..25 (15 entries,
-       of which 0 is its own self-reference).  Total indirection
-       capacity is 11 (inline) + 15 (1 overflow) = 26, covering
-       pages 0..25. */
+    /* Post-state: the new overflow page covers pages inline_count
+       .. inline_count + entries_per_overflow - 1.  Total indirection
+       capacity is inline_count + entries_per_overflow (1 overflow).
+       Phase 27: inline_count is 8 (was 11 before the free-list
+       header took 3 entries). */
     int64_t total_entries_after = (int64_t)inline_count +
         (int64_t)sb->indir.overflow_count * entries_per_overflow;
-    CHECK_EQ(total_entries_after, 26);
+    CHECK_EQ(total_entries_after, (int64_t)inline_count + entries_per_overflow);
 
     /* Phase 27 C6 followup: self-ref of overflow[K] lives in the
        LAST entry of overflow[K-1] (or inline[inline_count-1] for K=0).
        The indirection table uses logicals, not physicals, in the
        chain so GC can move pages later without breaking the chain.
-       For K=0, the self-ref is at inline[inline_count-1] = inline[10]
-       (logical 10).  indirection_head points to this self-ref so
-       indir_init can find overflow[0] on mount. */
+       For K=0, the self-ref is at inline[inline_count-1] (logical
+       7 with the new layout; was 10 before Phase 27).
+       indirection_head points to this self-ref so indir_init can
+       find overflow[0] on mount. */
     int64_t new_overflow_logical = sb->indir.overflow_logical[0];
-    CHECK_EQ(new_overflow_logical, 10);
+    CHECK_EQ(new_overflow_logical, (int64_t)inline_count - 1);
     CHECK_EQ(sb->total_pages, 2);  /* NOT bumped by indir_ensure_capacity */
-    CHECK_EQ(sb->indirection_head, 10);
+    CHECK_EQ(sb->indirection_head, (int64_t)inline_count - 1);
 
     int64_t self_phys = indir_lookup(sb, new_overflow_logical);
     CHECK(self_phys > 0);
@@ -341,15 +345,19 @@ void test_indir_ensure_capacity_growth(void) {
     CHECK_EQ(inline_self, new_overflow_phys);
 
     /* overflow[0] contents: 14 data slots at eidx 0..13 (logicals
-       11..24), all 0.  The LAST entry (eidx 14, buf[15], logical
-       25) is the self-ref of overflow[1] — also 0 (overflow[1]
-       not yet added).  Chain link buf[0] = 0 (no next overflow). */
+       inline_count..inline_count+13), all 0.  The LAST entry
+       (eidx 14, buf[15], logical inline_count - 1 +
+       entries_per_overflow) is the self-ref of overflow[1] — also
+       0 (overflow[1] not yet added).  Chain link buf[0] = 0 (no
+       next overflow).
+       Phase 27: with inline_count=8, these are logicals 8..21 for
+       the data slots and 22 for the overflow[1] self-ref. */
     int64_t* new_buf = sb->indir.overflow_pages[0];
     CHECK(new_buf != NULL);
     int64_t buf_entry_0 = vfs_rd8_s((const uint8_t*)new_buf, 1 * 8, page_size);
-    CHECK_EQ(buf_entry_0, 0);  /* logical 11 (first data) not yet allocated */
+    CHECK_EQ(buf_entry_0, 0);  /* first data slot not yet allocated */
     int64_t buf_entry_14 = vfs_rd8_s((const uint8_t*)new_buf, 15 * 8, page_size);
-    CHECK_EQ(buf_entry_14, 0); /* logical 25 (self-ref of overflow[1]) — set later */
+    CHECK_EQ(buf_entry_14, 0); /* overflow[1] self-ref slot — set later */
     int64_t buf_chain = vfs_rd8_s((const uint8_t*)new_buf, 0, page_size);
     CHECK_EQ(buf_chain, 0);    /* chain next — set later */
 
@@ -362,30 +370,41 @@ void test_indir_ensure_capacity_growth(void) {
     CHECK_EQ(rc, 0);
     CHECK(sb->indir.overflow_count >= 6);
 
-    /* Self-ref logicals for overflows 1..6: 25, 40, 55, 70, 85, 100
-       (= inline_count - 1 + K*15 for K = 1..6). */
-    CHECK_EQ(sb->indir.overflow_logical[1], 25);
-    CHECK_EQ(sb->indir.overflow_logical[2], 40);
-    CHECK_EQ(sb->indir.overflow_logical[3], 55);
-    CHECK_EQ(sb->indir.overflow_logical[4], 70);
-    CHECK_EQ(sb->indir.overflow_logical[5], 85);
-    CHECK_EQ(sb->indir.overflow_logical[6], 100);
+    /* Self-ref logicals for overflows 1..6:
+       = inline_count - 1 + K*entries_per_overflow for K = 1..6.
+       Phase 27: with inline_count=8 and entries_per_overflow=15,
+       these are 22, 37, 52, 67, 82, 97. */
+    CHECK_EQ(sb->indir.overflow_logical[1],
+             (int64_t)inline_count - 1 + 1 * entries_per_overflow);
+    CHECK_EQ(sb->indir.overflow_logical[2],
+             (int64_t)inline_count - 1 + 2 * entries_per_overflow);
+    CHECK_EQ(sb->indir.overflow_logical[3],
+             (int64_t)inline_count - 1 + 3 * entries_per_overflow);
+    CHECK_EQ(sb->indir.overflow_logical[4],
+             (int64_t)inline_count - 1 + 4 * entries_per_overflow);
+    CHECK_EQ(sb->indir.overflow_logical[5],
+             (int64_t)inline_count - 1 + 5 * entries_per_overflow);
+    CHECK_EQ(sb->indir.overflow_logical[6],
+             (int64_t)inline_count - 1 + 6 * entries_per_overflow);
 
     /* sb->total_pages is still 2 — indir_ensure_capacity does not
        consume data slots, only the chain links. */
     CHECK_EQ(sb->total_pages, 2);
 
     /* overflow[0]'s chain link now points to overflow[1]'s self-ref
-       (logical 25), and overflow[0]'s last entry (buf[15], logical
-       25) holds overflow[1]'s physical. */
-    int64_t overflow_1_phys = indir_lookup(sb, 25);
+       (logical inline_count - 1 + entries_per_overflow), and
+       overflow[0]'s last entry (buf[15], logical inline_count - 1 +
+       entries_per_overflow) holds overflow[1]'s physical. */
+    int64_t overflow_1_logical = (int64_t)inline_count - 1 + entries_per_overflow;
+    int64_t overflow_1_phys = indir_lookup(sb, overflow_1_logical);
     buf_chain = vfs_rd8_s((const uint8_t*)new_buf, 0, page_size);
-    CHECK_EQ(buf_chain, 25);
+    CHECK_EQ(buf_chain, overflow_1_logical);
     buf_entry_14 = vfs_rd8_s((const uint8_t*)new_buf, 15 * 8, page_size);
     CHECK_EQ(buf_entry_14, overflow_1_phys);
 
     /* Phase 3: round-trip via storage_allocate.  The do-while in
-       storage_allocate skips self-ref slots (logical 10, 25, 40, ...)
+       storage_allocate skips self-ref slots (logical
+       inline_count-1, then inline_count-1+entries_per_overflow, ...)
        and claims the next data slot.  Under contention, the exact
        path depends on which slots are claimed in which order, so
        we only assert >= initial_total + 10 (not ==). */
