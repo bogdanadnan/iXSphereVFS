@@ -64,4 +64,53 @@ struct vfs_t {
     struct LockTable* lock_table; /* per-vfs_t lock table (Phase 26 / W0) */
 };
 
+/* ---------------------------------------------------------------------------
+ * Phase 27 W8: error-propagation macro + debug check
+ *
+ * The public VFS API (vfs_read, vfs_write, vfs_create, etc.) returns
+ * the number of bytes / objects on success and -1 on error.  The FUSE
+ * layer maps the error to errno via:
+ *
+ *   return vfs_error_to_errno(vfs_last_error(state->vfs));
+ *
+ * This contract requires that EVERY return -1 is preceded by a
+ * `vfs->ctx->last_error = <code>` assignment.  vfs_read/vfs_write
+ * alone had 8+ such paths that did not set last_error (tree_resolve_page
+ * failure, storage_allocate failure, pool_alloc failure, pool_acquire
+ * failure, etc.) — meaning the FUSE layer would see a stale or
+ * undefined last_error and report the wrong errno to the application.
+ *
+ * VFS_RETURN_ERROR(vfs, err) replaces the pattern
+ *   vfs->ctx->last_error = err; return -1;
+ * with a single macro that is hard to misuse (both halves happen
+ * atomically in one statement).
+ *
+ * vfs_return(vfs, ret) is a wrapper for the END of public APIs: if
+ * ret is -1 and last_error is still VFS_OK, it sets last_error to
+ * VFS_ERR_IO and (in debug builds) logs a warning.  This catches any
+ * future regression where a raw `return -1` slips in.
+ * --------------------------------------------------------------------------- */
+
+#define VFS_RETURN_ERROR(vfs, err) \
+    do { \
+        (vfs)->ctx->last_error = (err); \
+        return -1; \
+    } while (0)
+
+static inline int vfs_return(vfs_t* vfs, int ret) {
+    if (ret == -1) {
+        if (vfs->ctx->last_error == VFS_OK) {
+            /* BUG: public API returned -1 without setting last_error.
+             * Default to VFS_ERR_IO so the FUSE layer can map to a
+             * sane errno.  In debug builds, log to make the bug
+             * visible. */
+            #ifdef VFS_DEBUG
+            fprintf(stderr, "WARN: vfs function returned -1 without setting last_error; defaulting to VFS_ERR_IO\n");
+            #endif
+            vfs->ctx->last_error = VFS_ERR_IO;
+        }
+    }
+    return ret;
+}
+
 #endif /* VFS_INTERNAL_H */

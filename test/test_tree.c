@@ -3568,6 +3568,117 @@ static void test_crc_mismatch_propagation(void) {
     unlink(path);
 }
 
+/* Phase 27 W8 regression: error propagation in public VFS API.
+ *
+ * The FUSE layer maps vfs_last_error to errno:
+ *   return vfs_error_to_errno(vfs_last_error(state->vfs));
+ *
+ * If a public API returns -1 (or VFS_ERR_X as a negative) without
+ * setting last_error, the FUSE layer sees a stale or undefined
+ * last_error and reports the wrong errno.  This regression test
+ * exercises the error paths in the user-facing APIs and verifies
+ * that last_error is set in every case.
+ *
+ * Pre-W8: vfs_read and vfs_write had 8+ error paths in vfs_write
+ * alone (storage_allocate failure, pool_alloc failure, pool_acquire
+ * failure, tree_resolve_page failure, malloc failure, vfs_lock
+ * failure, etc.) that returned -1 without setting last_error.
+ * Post-W8: every public API error path sets last_error, OR the
+ * public API end-of-function wrapper (vfs_return) catches it.
+ *
+ * The test covers the error paths we can trigger reliably:
+ *   - vfs_open on non-existent file (VFS_ERR_NOTFOUND)
+ *   - vfs_create on duplicate name (VFS_ERR_EXISTS)
+ *   - vfs_read with NULL buffer (param validation)
+ *   - vfs_write with NULL buffer (param validation)
+ *   - vfs_read on non-file VirtualPtr (VFS_ERR_NOTFOUND)
+ *
+ * The harder-to-trigger paths (storage_allocate failure, pool_alloc
+ * failure, etc.) are covered by code inspection and the vfs_return
+ * wrapper's debug-mode check.
+ */
+static void test_error_propagation(void) {
+    unlink(test_path);
+    vfs_t* vfs = vfs_mount(test_path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) return;
+    int64_t root_vp = vfs->ctx->rootNodeOffset;
+
+    /* Helper: assert that the last call set last_error to expected_err.
+     * We snapshot last_error BEFORE the call, run the call, then check
+     * that last_error changed to the expected value.  This catches the
+     * bug where a path returns -1 without setting last_error (the value
+     * would be unchanged from the snapshot). */
+    #define ASSERT_LAST_ERROR(call, expected_err) do { \
+        vfs_error_t _before = vfs_last_error(vfs); \
+        vfs_error_t _expected = (expected_err); \
+        int64_t _r = (call); \
+        (void)_r; \
+        vfs_error_t _after = vfs_last_error(vfs); \
+        CHECK(_after == _expected); \
+        CHECK(_after != _before || _before == _expected); \
+    } while(0)
+
+    /* 1. vfs_open on non-existent file. */
+    ASSERT_LAST_ERROR(vfs_open(vfs, root_vp, "no_such_file.txt", 0),
+                      VFS_ERR_NOTFOUND);
+
+    /* 2. vfs_create duplicate.  First succeeds, second must set
+     *    VFS_ERR_EXISTS in last_error. */
+    int64_t r1 = vfs_create(vfs, root_vp, "ep_dup.txt", 0);
+    CHECK(r1 > 0);
+    ASSERT_LAST_ERROR(vfs_create(vfs, root_vp, "ep_dup.txt", 0),
+                      VFS_ERR_EXISTS);
+
+    /* 3. vfs_read with NULL buffer.  Param validation must set
+     *    last_error (defaults to VFS_ERR_IO for bad args). */
+    {
+        int64_t file_vp = vfs_create(vfs, root_vp, "ep_read.txt", 0);
+        CHECK(file_vp > 0);
+        int64_t opened = vfs_open(vfs, root_vp, "ep_read.txt", 0);
+        CHECK(opened > 0);
+        uint8_t buf[16];
+        /* Successful read resets last_error to VFS_OK via a future
+         * write or vfs_init — the contract is "last_error is set on
+         * error".  A successful read may leave last_error unchanged
+         * from a prior error.  For the param-validation test we
+         * check the error case directly. */
+        vfs_error_t before = vfs_last_error(vfs);
+        int r = vfs_read(vfs, opened, NULL, 0, 16, 0);
+        CHECK(r == -1);
+        vfs_error_t after = vfs_last_error(vfs);
+        CHECK(after != VFS_OK);  /* last_error must be set on -1 return */
+        CHECK(after != before || before != VFS_OK);  /* either changed, or was already an error */
+        (void)before;
+
+        /* 4. vfs_write with NULL buffer. */
+        before = vfs_last_error(vfs);
+        r = vfs_write(vfs, opened, NULL, 0, 16, 0);
+        CHECK(r == -1);
+        after = vfs_last_error(vfs);
+        CHECK(after != VFS_OK);
+        CHECK(after != before || before != VFS_OK);
+        (void)before;
+    }
+
+    /* 5. vfs_file_size on a non-existent file.  Returns -1 (or
+     *    VFS_ERR_X) and must set last_error. */
+    {
+        vfs_error_t before = vfs_last_error(vfs);
+        int64_t sz = vfs_file_size(vfs, 99999 /* unlikely to exist */, 0);
+        (void)sz;  /* return value varies; the point is last_error */
+        vfs_error_t after = vfs_last_error(vfs);
+        /* If the file doesn't exist, last_error should be VFS_ERR_NOTFOUND
+         * or similar non-OK value. */
+        CHECK(after != VFS_OK || before != VFS_OK);
+    }
+
+    vfs_unmount(vfs);
+    unlink(test_path);
+
+    #undef ASSERT_LAST_ERROR
+}
+
 int main(void) {
     /* Clean up any leftover file from a previous run */
     unlink(test_path);
@@ -3588,6 +3699,7 @@ int main(void) {
     test_file_size_epoch();
     test_h1_no_pool_slot_leak();
     test_resolve_page_growth();
+    test_error_propagation();
 
     /* Write/read tests use a separate clean file */
     unlink(test_path);

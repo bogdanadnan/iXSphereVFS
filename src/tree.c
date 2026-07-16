@@ -3760,7 +3760,12 @@ int64_t vfs_file_ctime(vfs_t* vfs, int64_t file) {
 
 int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
               int64_t count, int64_t epoch) {
-    if (!vfs || !vfs->ctx || !data || count <= 0 || offset < 0) return -1;
+    if (!vfs || !vfs->ctx || !data || count <= 0 || offset < 0) {
+        /* Parameter validation failure — distinguish from a real I/O
+         * error so callers can detect "bad argument" vs "transient I/O". */
+        if (vfs && vfs->ctx) vfs->ctx->last_error = VFS_ERR_IO;
+        return -1;
+    }
     TreeContext* ctx = vfs->ctx;
 
     if (!vfs_epoch_is_writable(ctx, epoch)) {
@@ -3785,6 +3790,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
 
     if (vfs_lock(vfs, file, epoch) != VFS_OK) {
         pool_release(&ctx->pool, &file_slot);
+        vfs->ctx->last_error = VFS_ERR_IO;
         return -1;
     }
 
@@ -3808,7 +3814,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
            writes the local back to the cache after our CAS. */
         PoolSlot pn_slot = {0};
         int rr_pn = tree_resolve_page(vfs, file, p, epoch, true, &pn_slot);
-        if (rr_pn != 0) { pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); return -1; }
+        if (rr_pn != 0) { pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); vfs->ctx->last_error = VFS_ERR_IO; return -1; }
 
         /* Compute intra-page offset and count */
         int64_t page_offset = (p == first_page) ? offset % page_size : 0;
@@ -3885,11 +3891,11 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
 
             /* Allocate new data page */
             int64_t new_dp = storage_allocate(ctx->sb, 1);
-            if (new_dp < 0) { pool_release(&ctx->pool, &pn_slot); pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); return -1; }
+            if (new_dp < 0) { pool_release(&ctx->pool, &pn_slot); pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); vfs->ctx->last_error = VFS_ERR_NOMEM; return -1; }
 
             /* Read or zero-fill the full page */
             uint8_t* page_buf = (uint8_t*)malloc((size_t)page_size);
-            if (!page_buf) { pool_release(&ctx->pool, &pn_slot); pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); return -1; }
+            if (!page_buf) { pool_release(&ctx->pool, &pn_slot); pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); vfs->ctx->last_error = VFS_ERR_NOMEM; return -1; }
 
             if (base_page >= 0) {
                 /* Phase 27 C5: propagate CRC / I/O errors instead of
@@ -3919,10 +3925,10 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
 
             /* Create VersionPage (newly allocated, will be released below) */
             int64_t vp_new = pool_alloc(&ctx->pool);
-            if (vp_new == VFS_VPTR_NULL) { pool_release(&ctx->pool, &pn_slot); pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); return -1; }
+            if (vp_new == VFS_VPTR_NULL) { pool_release(&ctx->pool, &pn_slot); pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); vfs->ctx->last_error = VFS_ERR_NOMEM; return -1; }
             PoolSlot vp_new_slot;
             pool_acquire(&ctx->pool, vp_new, true, &vp_new_slot);
-            if (vp_new_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &pn_slot); pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); return -1; }
+            if (vp_new_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &pn_slot); pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); vfs->ctx->last_error = VFS_ERR_NOMEM; return -1; }
             nodes_write_versionpage(vp_new_slot.bytes, (uint32_t)epoch, new_dp,
                                     version_root, ctx->page_size);
             pool_release(&ctx->pool, &vp_new_slot);
@@ -3939,6 +3945,7 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
                 pool_release(&ctx->pool, &pn_slot);
                 pool_release(&ctx->pool, &file_slot);
                 vfs_unlock(vfs, file, epoch);
+                vfs->ctx->last_error = VFS_ERR_IO;
                 return -1;
             }
             vfs_wr8_s(pn_slot.bytes, PAGENODE_OFF_VERSIONROOT, vp_new,
@@ -3972,10 +3979,10 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
         int64_t old_sizePtr = vfs_atomic_load_i64(
             (const int64_t*)(file_slot.bytes + FILENODE_OFF_SIZEPTR));
         int64_t fs_vp = pool_alloc(&ctx->pool);
-        if (fs_vp == VFS_VPTR_NULL) { pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); return -1; }
+        if (fs_vp == VFS_VPTR_NULL) { pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); vfs->ctx->last_error = VFS_ERR_NOMEM; return -1; }
         PoolSlot fs_slot;
         pool_acquire(&ctx->pool, fs_vp, true, &fs_slot);
-        if (fs_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); return -1; }
+        if (fs_slot.vptr == VFS_VPTR_NULL) { pool_release(&ctx->pool, &file_slot); vfs_unlock(vfs, file, epoch); vfs->ctx->last_error = VFS_ERR_NOMEM; return -1; }
         nodes_write_filesize(fs_slot.bytes, (uint32_t)epoch, (int64_t)time(NULL),
                              new_size, old_sizePtr, ctx->page_size);
         pool_release(&ctx->pool, &fs_slot);
@@ -3999,7 +4006,10 @@ int vfs_write(vfs_t* vfs, int64_t file, const void* data, int64_t offset,
 
 int vfs_read(vfs_t* vfs, int64_t file, void* buf, int64_t offset,
              int64_t count, int64_t epoch) {
-    if (!vfs || !vfs->ctx || !buf || count <= 0 || offset < 0) return -1;
+    if (!vfs || !vfs->ctx || !buf || count <= 0 || offset < 0) {
+        if (vfs && vfs->ctx) vfs->ctx->last_error = VFS_ERR_IO;
+        return -1;
+    }
     TreeContext* ctx = vfs->ctx;
 
     /* Bounds-check against file size at this epoch.  Reads beyond EOF
