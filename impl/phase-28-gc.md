@@ -118,13 +118,13 @@ by one afterwards, following the template in §5.
 |---|--------------|-----------|--------------|
 | 1 | Free pages (orphaned data pages) | 6 paths: `mirror_write` failure, GC pool remap, GC data reclamation, file delete, truncate (shrink), snapshot delete | Identify dead pages via chain walks, call `storage_free` |
 | 2 | Tombstones in dir chains | `vfs_delete`, `vfs_rename` | Drop tombstone entries during pool rebuild |
-| 3 | Soft-deleted mapper entries | `vfs_delete_snapshot`, `vfs_rollback` | Drop the soft-delete mapper entry during mapper rebuild |
+| 3 | Soft-deleted mapper entries | `vfs_delete_snapshot` | Drop the soft-delete mapper entry during mapper rebuild |
 | 4 | Committed mapper entries + chain rewriting | `vfs_commit` | Rewrite chain S→E during chain walk, drop the committed mapper entry |
 | 5 | Future pool compaction | (not a current path) | Move slots to new pages, free old pages |
 
 **7 public operations** leave garbage: `vfs_delete`,
 `vfs_truncate` (shrink), `vfs_delete_snapshot`,
-`vfs_rollback`, `vfs_rename`, `vfs_commit`,
+`vfs_rename`, `vfs_commit`,
 `mirror_write` (rare failure path).
 
 The framework spec does not enumerate how each of these is
@@ -238,8 +238,10 @@ spec documents the high-level structure):
  * entries (processed by the trigger handler, which pushes
  * WORK entries and deletes the trigger). Entries with type
  * >= BIN_TYPE_WORK_THRESHOLD are WORK entries (processed
- * directly by the work handler). */
-#define BIN_TYPE_WORK_THRESHOLD  0x10000
+ * directly by the work handler). The threshold is 0x100
+ * (256), leaving 24 bits in the type field for flags or
+ * sub-types if future bin jobs need them. */
+#define BIN_TYPE_WORK_THRESHOLD  0x100
 
 /* TRIGGER types (initial) */
 typedef enum {
@@ -351,6 +353,105 @@ a lock). The framework provides the CAS primitive
 primitives (the existing `vfs_lock` per-file, the
 `tree_lock` per-tree); per-bin-job specs choose.
 
+### Framework-level concurrency contract
+
+The framework's contract for how the GC thread
+coordinates with concurrent tree readers (FUSE worker
+threads running `vfs_read`, `vfs_write`,
+`dirchain_find_child`, etc.):
+
+1. **The framework is correct as-is for the 4
+   framework-only workloads (W1-W4)**, because:
+   - W1 (Bin infrastructure) adds no public-operation
+     callers
+   - W2 (GC thread) starts the thread but processes
+     no entries
+   - W3 (producer integration) adds `bin_push` calls
+     to public operations, but the GC thread does
+     NOOP processing (just deletes the entry)
+   - W4 (end-to-end test) verifies the framework's
+     behavior with NOOP entries
+   No tree mutation happens during W1-W4. No
+   coordination with readers is needed.
+
+2. **For the first real bin job** (added in a
+   subsequent spec, NOT in the framework spec), the
+   bin job's spec section MUST commit to a specific
+   mechanism for coordinating with concurrent
+   readers of the affected tree region. The
+   framework does NOT prescribe a single mechanism
+   — each bin job's requirements are different.
+
+3. **The framework provides the following primitives**
+   that per-bin-job specs MAY use (none is
+   mandatory; the bin job spec picks what it needs):
+
+   - `vfs_lock(vfs, file, epoch)` /
+     `vfs_unlock(vfs, file, epoch)` — per-file lock.
+     Excludes concurrent writers to the same file;
+     does NOT exclude readers. Useful for
+     chain-modification bin jobs that modify a
+     file's chains, if readers can be excluded by
+     other means (e.g., CAS).
+   - `tree_lock_acquire_shared(ctx)` /
+     `tree_lock_release_shared(ctx)` — per-tree
+     shared lock. Currently UNUSED per ISSUES.md C3
+     (no read path takes it). **Wiring this lock to
+     all read paths is a significant cross-cutting
+     change that affects every public operation.**
+     A bin job that needs to exclude all readers
+     globally would need to either (a) wire this
+     lock up as a prerequisite, or (b) use a
+     narrower lock.
+   - `tree_lock_acquire_exclusive(ctx)` /
+     `tree_lock_release_exclusive(ctx)` — per-tree
+     exclusive lock. For GC use. Currently unused.
+   - `vfs_cas_i32` / `vfs_cas_i64` — atomic CAS
+     primitives. Useful for in-place entry rewrites
+     (e.g., commit's chain S→E rewrite). Readers
+     see either old or new state; no torn
+     half-rewritten entries.
+
+4. **The per-bin-job spec template's §5
+   (Subsection 5: Lock model)** requires each bin
+   job to specify which primitive (or combination)
+   it uses, for how long, and what state the lock
+   guarantees. The framework's implementation review
+   for the first real bin job will verify this
+   commitment.
+
+5. **The framework does NOT add a new per-chain or
+   per-subtree reader-writer lock.** If a bin job
+   needs such a lock, the bin job's spec adds it
+   (and reviews the addition). The framework
+   deliberately avoids committing to a new lock
+   type because:
+   - The framework is generic; it doesn't know
+     which chains bin jobs will modify
+   - A generic per-resource lock (e.g., hash-keyed)
+     is a significant addition that the per-bin-job
+     spec can make if needed
+   - The first real bin job (e.g., file deletion's
+     chain walk) can pick the narrowest lock that
+     works for its case
+
+**The framework's position**: the framework is
+correct and complete for NOOP-only processing
+(W1-W4). The first real bin job's spec is where
+the coordination mechanism is committed. The
+framework does not pre-solve the coordination
+problem because each bin job's requirements are
+different.
+
+**This is the framework's biggest open design
+question.** The reviewer's H2 is a correct
+observation: the framework provides primitives but
+not a coordination strategy. The framework's
+contract is that the per-bin-job spec template
+forces the choice to be made per bin job, and the
+per-bin-job review verifies the choice is
+correct.
+
 ### Producer / GC separation of concerns
 
 The framework's clean separation:
@@ -382,7 +483,9 @@ The Bin adds 3 new 8-byte fields to the header page,
 following the free-page queue's pattern (Phase 27 W1).
 The fields are placed at the start of the inline
 indirection area. The inline indirection table shifts
-back, and `inline_count` is reduced by 3.
+back, and `inline_count` is reduced by 4 (the
+32-byte shift from offset 64 to offset 96 is 4
+entries).
 
 | Offset | Size | Field | Notes |
 |--------|------|-------|-------|
@@ -399,12 +502,13 @@ back, and `inline_count` is reduced by 3.
 | 72     | 8    | `bin_tail`            | **NEW** — VP of last Bin page (0 = empty) |
 | 80     | 8    | `bin_count`           | **NEW** — total entries across all Bin pages |
 | 88     | 8    | (padding / future)    | reserved for one more 8-byte field (e.g., GC thread state) |
-| 96     | 8*N  | inline indirection entries | shifted from offset 64; N = inline_count - 3 |
+| 96     | 8*N  | inline indirection entries | shifted from offset 64; N = inline_count - 4 |
 
 For an 8 KB page, `inline_count` goes from 1016 (post-Phase-27)
-to 1013. For 4 KB: 504 → 501. The overflow chain takes over
-beyond `inline_count`, so this only delays overflow allocation
-by 3 page writes.
+to 1012 (delta −4: 32-byte shift from offset 64 to offset 96
+= 4 entries). For 4 KB: 504 → 500. The overflow chain takes
+over beyond `inline_count`, so this only delays overflow
+allocation by 4 page writes.
 
 **Why an extra 8 bytes of padding at offset 88?** To leave
 room for a future 8-byte field without re-shifting the
@@ -422,7 +526,8 @@ The new offsets are added to `src/storage.h`:
    An 8-byte padding at offset 88 is reserved for one
    future 8-byte field. The inline indirection table
    shifts from offset 64 to offset 96; inline_count is
-   reduced by 3. */
+   reduced by 4 (the 32-byte shift from offset 64 to
+   offset 96 is 4 entries, not 3). */
 #define HDR_OFF_BIN_HEAD     64
 #define HDR_OFF_BIN_TAIL     72
 #define HDR_OFF_BIN_COUNT    80
@@ -612,18 +717,25 @@ int bin_push(StorageBackend* sb, int32_t type,
 }
 ```
 
-**Failure modes** (all → the Bin push is dropped, the
-operation that called `bin_push` still succeeds — the
-garbage is just delayed):
+**Failure modes** (all → the Bin push is dropped after
+bounded retry, the operation that called `bin_push`
+still succeeds):
 
-- `storage_allocate_bin_page` fails (disk full) → return
-  `VFS_ERR_FULL`. The push is dropped. (The page that the
-  operation already wrote is not freed; it will be
-  reclaimed on the next GC cycle when the Bin eventually
-  catches up via a different mechanism, e.g., a full
-  VFS walk.)
-- CAS contention exceeds retry limit → return
-  `VFS_ERR_FULL`. Same as above.
+- `storage_allocate_bin_page` fails (disk full) → retry
+  with short backoff (10ms × 3 attempts). If all 3
+  attempts fail, the push is dropped. (The page that
+  the operation already wrote is not freed; the garbage
+  is left on disk. The next operation that successfully
+  pushes a related trigger can re-trigger the analysis;
+  the analysis is idempotent and will re-identify the
+  unrecorded garbage. **A full VFS walk to find
+  garbage not in the Bin is documented as a future
+  enhancement, not part of this spec.**)
+- CAS contention exceeds retry limit (1000 CAS attempts
+  on the per-page count) → return `VFS_ERR_FULL`. The
+  push is dropped. (CAS contention is rare; the
+  retry limit is high enough to be effectively
+  unbounded under normal workloads.)
 - `read_bin_page_count` returns 0 (head page was just
   drained) → retry with the new head.
 
@@ -688,10 +800,7 @@ int bin_pop(StorageBackend* sb, BinEntry* out_entry) {
     //    head to head->next (same as step 2). Free the
     //    drained head page.
 
-    // 7. Invalidate the cache entry for the Bin page (so
-    //    subsequent pops see fresh data).
-
-    // 8. Copy the entry to the caller's buffer.
+    // 7. Copy the entry to the caller's buffer.
     *out_entry = entry;
     return VFS_OK;
 }
@@ -786,22 +895,28 @@ at `vfs_mount`. The Bin is persistent, so no work is lost.
 static void* gc_thread_main(void* arg) {
     vfs_t* vfs = (vfs_t*)arg;
     TreeContext* ctx = vfs->ctx;
+    int empty_count = 0;  /* tracks consecutive empty pops */
 
     while (!vfs_atomic_load_i32(&ctx->gc_shutdown)) {
         BinEntry entry;
         int rc = bin_pop(ctx->sb, &entry);
         if (rc == VFS_OK) {
             /* Got a job — process it immediately, no sleep. */
+            empty_count = 0;  /* reset backoff tier */
             gc_process_entry(vfs, &entry);
         } else if (rc == VFS_ERR_NOTFOUND) {
             /* Bin is empty — back off for a bit, then check
              * again. The backoff is a sleep; see §7.3. */
-            usleep(GC_BACKOFF_US);
+            empty_count++;
+            int backoff = (empty_count <= 5)
+                ? GC_BACKOFF_US_INITIAL  /* 100ms */
+                : GC_BACKOFF_US_STEADY;  /* 1000ms */
+            usleep(backoff);
         } else {
             /* I/O error or other failure. Log and back off
              * to avoid busy-looping on persistent errors. */
             log_gc_error(rc);
-            usleep(GC_BACKOFF_US);
+            usleep(GC_BACKOFF_US_STEADY);
         }
     }
 
@@ -811,32 +926,51 @@ static void* gc_thread_main(void* arg) {
 
 **If there's work, we don't sleep** — we process as fast
 as the Bin delivers entries. If the Bin is empty, we
-sleep for `GC_BACKOFF_US` (initial: 100 ms; see §7.3 for
-the backoff strategy) and check again.
+sleep for the tier-appropriate backoff (see §7.3) and
+check again. The `empty_count` counter tracks
+consecutive empty pops; when it crosses 5, the
+backoff transitions from initial (100ms) to steady
+(1000ms) — keeping idle wakeups at 1/sec for
+battery-friendly operation.
 
 The "intelligent scheduling" is the simple **try-then-backoff**
 pattern: the Bin is the queue, the thread is the consumer,
-the backoff is a constant sleep. No priorities, no
+the backoff is a tier-based sleep. No priorities, no
 fairness, no starvation handling — these are out of scope
 for the framework and can be added later as
 per-bin-job-spec extensions if needed.
 
 ### Backoff strategy
 
-The framework's initial implementation uses **constant
-backoff** (`GC_BACKOFF_US = 100ms`):
+The framework's initial implementation uses a
+**two-tier hybrid backoff**:
 
-- Constant backoff is simple and correct
-- For the expected workload (occasional frees; the Bin
-  drains quickly), the constant backoff is fine
-- Adaptive backoff (exponential on continued empty, reset
-  on first non-empty) is documented as a known post-MVP
-  improvement
+- `GC_BACKOFF_US_INITIAL = 100ms` — used for the
+  first few backoff cycles after the Bin was last
+  non-empty (responsive to new work)
+- `GC_BACKOFF_US_STEADY = 1000ms` — used after the
+  Bin has been empty for an extended period
+  (battery-friendly for laptop/server workloads)
 
-A more sophisticated backoff (e.g., busy-wait for the
-first few ms, then sleep) is left for a future
-optimization. The framework spec commits to constant
-backoff for the initial implementation.
+The transition from initial to steady is triggered
+after 5 consecutive empty-bin backoff cycles (so 5 ×
+100ms = 500ms after the last work, then steady at
+1 wakeup/sec). The transition back to initial is
+triggered by any non-empty pop (the GC thread resets
+its counter and uses initial backoff again).
+
+The constant 100ms backoff would wake the thread 10
+times per second when idle — too aggressive for
+battery-powered devices. The 1000ms steady backoff
+limits idle wakeups to 1/sec, which is acceptable for
+a background GC thread (garbage collection latency
+of up to 1 second is acceptable for any real
+workload).
+
+Adaptive backoff (exponential on continued empty,
+reset on first non-empty) is documented as a known
+post-MVP improvement. The framework's two-tier
+hybrid is sufficient for the initial implementation.
 
 ### Shutdown
 
@@ -1284,7 +1418,8 @@ For 10k Bin entries (a heavy workload): 320 KB. Negligible.
 
 **Header page growth**: +32 bytes (3 × 8 bytes for the
 Bin fields + 8 bytes reserved padding). Inline
-indirection count drops by 3.
+indirection count drops by 4 (the 32-byte shift
+from offset 64 to offset 96 is 4 entries).
 
 **GC thread**: 1 thread, ~8 MB stack (default pthread
 stack size). The thread is idle when the Bin is empty
@@ -1367,11 +1502,20 @@ probability.
 still in the Bin (it was not yet deleted). On remount,
 the GC pops the same trigger and re-runs the analysis.
 The analysis is idempotent — it pushes the same set of
-work entries (the missing ones from the prior run, plus
-the already-pushed ones which are deduped by the
-per-entry deduplication check, e.g., a set of in-flight
-work contexts). The trigger is deleted at the end of
-the re-run.
+work entries as the original run would have. If the
+original run had partially pushed some work entries
+before the crash, the re-run pushes those same work
+entries AGAIN (the framework has no in-flight dedup
+mechanism). Duplicate processing is safe because the
+work handler is required to be idempotent (per §5.4 and
+§7.6). The work handler re-doing already-completed
+work is a no-op (e.g., freeing an already-free page is
+a no-op; rewriting an already-rewritten entry is a
+no-op). The cost is wasted CPU for the duplicate
+processing, not data corruption. **A per-entry dedup
+mechanism (e.g., a per-type "last processed context"
+field) is documented as a future optimization, not
+part of this spec.**
 
 **Edge case 4**: crash during work handler (mid-chain
 modification, mid-page-free, etc.). The work entry is
@@ -1400,7 +1544,8 @@ and benched.
   `bin_count`) at offsets 64, 72, 80, plus the 8-byte
   reserved padding at offset 88
 - Shift the inline indirection table from offset 64 to
-  offset 96 (inline count drops by 3)
+  offset 96 (inline count drops by 4: the 32-byte
+  shift is 4 entries)
 - Define the `BinEntry` struct (16 bytes)
 - Define the Bin page layout (`next_bin_page`,
   `count`, `capacity`, `entries[]`)
@@ -1498,8 +1643,19 @@ and benched.
   `vfs_gc` API will return `VFS_ERR_NOTIMPL` until
   the per-bin-job work functions are added in
   subsequent phases)
+- Add `VFS_ERR_NOTIMPL = -11` to the `vfs_error_t`
+  enum in `include/ixsphere/vfs.h` (the existing
+  enum is full at `VFS_ERR_NAMETOOLONG = -10`;
+  `-11` is the next available code)
 - Update `include/ixsphere/vfs.h` to document the
   new `vfs_gc` behavior
+- Update `test/test_gc.c` to tolerate
+  `VFS_ERR_NOTIMPL` in place of `VFS_ERR_FULL`
+  (10 call sites currently expect `VFS_ERR_FULL`;
+  all must be updated; the test file's header
+  comment about "GC returns VFS_ERR_FULL on small
+  test files" must be updated to reflect the new
+  return code)
 
 **Test gate**:
 
@@ -1520,10 +1676,12 @@ and benched.
     (the framework correctly handles the
     shutdown-mid-processing case)
 - New test `test_gc_thread_empty`:
-  - Mount, wait for 1 second (10 backoff cycles),
-    verify the thread is still running but idle
+  - Mount, wait for 1.5 seconds (5 initial backoff
+    cycles × 100ms = 500ms, then transition to steady
+    1000ms backoff), verify the thread is still
+    running but idle
   - Push 1 entry, verify the thread processes it
-    within 1 backoff cycle
+    within 1 backoff cycle (resets to initial tier)
 - Bench delta: 0 (the GC thread is idle in the
   bench's workload; the thread overhead is in noise
   for the bench's per-op measurements)
@@ -1556,8 +1714,6 @@ and benched.
     shrink FileSize entry
   - `vfs_delete_snapshot` (src/epoch.c) — push after
     the soft-delete mapper entry
-  - `vfs_rollback` (src/epoch.c) — push after the
-    soft-delete mapper entry
   - `vfs_rename` (src/tree.c) — push after the
     tombstone is added
   - `vfs_commit` (src/epoch.c) — push after the
@@ -1610,7 +1766,7 @@ and benched.
 - `src/tree.c` — add `bin_push` calls in
   `vfs_delete`, `vfs_truncate` (shrink), `vfs_rename`
 - `src/epoch.c` — add `bin_push` calls in
-  `vfs_delete_snapshot`, `vfs_rollback`, `vfs_commit`
+  `vfs_delete_snapshot`, `vfs_commit`
 - `src/lazy_mirror.c` — add `bin_push` call in
   `mirror_write` failure path
 - `src/gc_dispatch.c` (new) — the dispatch switch
@@ -1780,18 +1936,13 @@ exercise the Bin heavily.
 
 ## Open questions for reviewer
 
-The framework spec has **5 open design questions**.
+The framework spec has **4 open design questions**
+(1 was resolved by the review: the two-tier hybrid
+backoff replaces the original constant 100ms backoff).
 Per-bin-job specs may have additional open questions
 (per the §5.9 template).
 
-1. **Backoff strategy**. The spec uses constant
-   backoff (`GC_BACKOFF_US = 100ms`). Is constant
-   sufficient for the expected workload, or should
-   the spec commit to adaptive backoff
-   (exponential on continued empty, reset on
-   first non-empty)?
-
-2. **Shutdown drain vs stop-and-leave**. The spec
+1. **Shutdown drain vs stop-and-leave**. The spec
    uses stop-and-leave (the GC thread exits on the
    shutdown signal; unprocessed entries are left
    for the next mount). Is stop-and-leave
@@ -1799,25 +1950,35 @@ Per-bin-job specs may have additional open questions
    shutdown drain (wait for the Bin to drain
    before exiting)?
 
-3. **Bin page capacity**. The spec uses a fixed
+2. **Bin page capacity**. The spec uses a fixed
    `BIN_PAGE_CAPACITY = 510` (for 8 KB pages) or
    `255` (for 4 KB pages), computed from the page
    size. Is this acceptable, or should the spec
    support a configurable capacity (e.g., for
    testing)?
 
-4. **`bin_count` cache-line contention**. The spec
+3. **`bin_count` cache-line contention**. The spec
    documents this as a known post-MVP concern.
    Should the spec commit to padding
    `bin_count` to a separate cache line as part
    of W1, or defer to a future optimization?
 
-5. **Per-bin-job work function file layout**. The
+4. **Per-bin-job work function file layout**. The
    spec proposes `src/gc_trigger_*.c` and
    `src/gc_work_*.c` files. Is this layout
    acceptable, or should the spec commit to a
    different layout (e.g., one file per bin job
    with both trigger and work handlers)?
+
+5. **Per-bin-job template enforcement** (L4 from
+   review). The §5 template (10 subsections per bin
+   job) is the spec's strongest feature, but it's
+   currently a convention — a future bin-job author
+   could skip subsections. Should the spec commit
+   to a machine-checkable lint (e.g., a CI script
+   that greps the bin-job spec for the required
+   subsection headers), or leave enforcement to
+   the review process?
 
 ## Risk assessment
 
