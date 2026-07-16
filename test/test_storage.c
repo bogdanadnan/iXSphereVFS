@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <fcntl.h>
 
 static int tests_run    = 0;
 static int tests_passed = 0;
@@ -430,21 +431,26 @@ void test_indir_ensure_capacity_growth(void) {
  * pairs.
  */
 
-/* Helper: read a free-list entry directly.  Mirrors the in-storage.c
-   internal helper, exposed here for the test. */
+/* Helper: read a free-list entry via the page cache.  Mirrors the
+   in-storage.c internal helper, exposed here for the test.  Reads
+   via `storage_read_with_status` (which returns the cached payload)
+   and uses `vfs_rd8_s` for field access — matches the production
+   read path so the test sees what the dequeue sees.
+
+   The free-list page payload layout (relative to payload start):
+     offset  0:   8 bytes  next_page
+     offset  8:   4 bytes  count
+     offset 12:   4 bytes  padding
+     offset 16+idx*16:  8 bytes  entry[idx].logical
+     offset 24+idx*16:  8 bytes  entry[idx].physical
+   Total: 16 + N*16 bytes. */
 static int64_t read_free_list_entry_helper(StorageBackend* sb, int64_t fl_page,
                                             int idx, int64_t* out_phys) {
-    int64_t fl_off = indir_lookup(sb, fl_page);
-    if (fl_off == 0) return 0;
-    /* fl_off is the start of the PageHeader.  The payload starts
-       at fl_off + PAGE_HEADER_SIZE.  The first entry is at
-       payload + 16 (after next_page + count + padding). */
-    int64_t payload_off = fl_off + 16 + 16 + (int64_t)idx * 16;
-    uint8_t buf[16];
-    if (pread(sb->fd, buf, 16, payload_off) != 16) return 0;
-    int64_t logical;
-    memcpy(&logical, buf, 8);
-    memcpy(out_phys, buf + 8, 8);
+    StorageReadStatus st;
+    uint8_t* payload = storage_read_with_status(sb, fl_page, &st);
+    if (!payload || st != STORAGE_OK) return 0;
+    int64_t logical = vfs_rd8_s(payload, 16 + (int64_t)idx * 16,     sb->page_size);
+    *out_phys        = vfs_rd8_s(payload, 16 + (int64_t)idx * 16 + 8, sb->page_size);
     return logical;
 }
 
@@ -592,6 +598,102 @@ void test_free_list_dequeue(void) {
     cleanup(path);
 }
 
+/* Phase 27 W5 regression: mount-time free-list count validation.
+ *
+ * After a crash in the CAS-to-flush window, the on-disk
+ * `free_list_count` may be ahead of the actual valid entries.
+ * On remount, the validation walk should:
+ *   1. Walk the free-list page chain.
+ *   2. Count valid entries (non-zero phys within file size).
+ *   3. Compare to the global count.  Correct if off.
+ *
+ * Test 1 (no corruption): close + reopen should preserve the
+ * global count exactly.  No "validation" warning.
+ * Test 2 (corrupted global count): after writing a wrong value
+ * to the header, the validation walk should correct it on mount.
+ */
+void test_free_list_mount_validation(void) {
+    printf("9. free-list mount validation (W5)...\n");
+    const char* path = "/tmp/test_storage_freelist_mv.vfs";
+    cleanup(path);
+
+    /* === Test 1: clean close+reopen (no corruption) === */
+    {
+        StorageBackend* sb = storage_open(path, 8192);
+        CHECK(sb != NULL);
+        if (!sb) { cleanup(path); return; }
+
+        /* Allocate 20 pages, free 5 to populate the free-list. */
+        int64_t vps[20];
+        for (int i = 0; i < 20; i++) vps[i] = storage_allocate(sb, 1);
+        for (int i = 0; i < 5; i++) storage_free(sb, vps[i]);
+
+        int64_t* fl_count = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_COUNT);
+        CHECK_EQ(*fl_count, 5);
+        storage_close(sb);
+    }
+
+    /* Reopen — the validation walk should see a valid chain and
+       leave the count unchanged. */
+    {
+        StorageBackend* sb = storage_open(path, 8192);
+        CHECK(sb != NULL);
+        if (sb) {
+            int64_t* fl_count = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_COUNT);
+            CHECK_EQ(*fl_count, 5);
+            storage_close(sb);
+        }
+    }
+
+    /* === Test 2: corrupt the global count to a wrong value === */
+    {
+        /* The free_list_count is at payload offset 56.  The payload
+           starts at file offset PAGE_HEADER_SIZE.  So the file
+           offset is PAGE_HEADER_SIZE + HDR_OFF_FREE_LIST_COUNT.
+
+           Note: a direct pwrite to the header payload would break
+           the CRC, causing mount_existing to reject the file.  We
+           also recompute and rewrite the CRC (in the PageHeader
+           at file offset 4) so the file remains mountable.  The
+           validation walk should then detect the wrong count
+           and correct it. */
+        int fd = open(path, O_RDWR);
+        CHECK(fd >= 0);
+        if (fd >= 0) {
+            int64_t wrong = 999;
+            off_t off = PAGE_HEADER_SIZE + HDR_OFF_FREE_LIST_COUNT;
+            ssize_t n = pwrite(fd, &wrong, 8, off);
+            CHECK_EQ(n, 8);
+
+            /* Recompute CRC over the (now-corrupted) payload and
+               rewrite the PageHeader's checksum field at offset 4. */
+            uint8_t* payload = malloc(8192);
+            if (payload) {
+                ssize_t r = pread(fd, payload, 8192, PAGE_HEADER_SIZE);
+                if (r == 8192) {
+                    uint32_t new_crc = vfs_crc32c(payload, 8192);
+                    pwrite(fd, &new_crc, 4, 4);  /* offset 4 in PageHeader */
+                }
+                free(payload);
+            }
+            close(fd);
+        }
+    }
+
+    /* Reopen — the validation walk should correct the count. */
+    {
+        StorageBackend* sb = storage_open(path, 8192);
+        CHECK(sb != NULL);
+        if (sb) {
+            int64_t* fl_count = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_COUNT);
+            CHECK_EQ(*fl_count, 5);
+            storage_close(sb);
+        }
+    }
+
+    cleanup(path);
+}
+
 /* ========================================================================== */
 
 int main(void) {
@@ -606,6 +708,7 @@ int main(void) {
     test_indir_ensure_capacity_growth();
     test_free_list_enqueue();
     test_free_list_dequeue();
+    test_free_list_mount_validation();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

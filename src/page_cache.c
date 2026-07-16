@@ -510,36 +510,131 @@ void cache_evict_all(StorageBackend* sb) {
 void cache_flush_all(StorageBackend* sb) {
     PageCache* cache = &sb->cache;
 
-    /* Flush in priority order: 0 (data) first, 3 (superblock) last.
-       Per-page disk I/O goes through mirror_write, which transparently
-       handles the lazy mirror lifecycle (first write = single copy, second
-       = allocate mirror sibling, subsequent = alternate).  The mirror is a
-       property of the on-disk page state, not the cache. */
-    for (int prio = 0; prio <= 3; prio++) {
-        for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
-            spin_lock(&cache->bucket_locks[bkt]);
+    /* Phase 27 W5: refactored to a collect-then-flush pattern.
+       The old code held the per-bucket spinlock during mirror_write.
+       That's a re-entrancy bug: mirror_write (second-write path)
+       calls storage_allocate(1) to allocate a mirror sibling, which
+       on the free-list path calls dequeue_from_free_list, which
+       reads the head free-list page via the cache — and takes the
+       same bucket lock the flush is holding.  DEADLOCK.
 
-            CacheEntry* e = cache->buckets[bkt];
-            while (e) {
-                CacheEntry* next = e->hash_next;
-                uint32_t dirty_now = vfs_atomic_load_u32((uint32_t*)&e->dirty);
-                uint32_t prio_now  = vfs_atomic_load_u32((uint32_t*)&e->priority);
-                if (dirty_now && prio_now == prio) {
-                    /* Indirection must have an entry for this page (allocated
-                       by pool_alloc) — otherwise skip; we don't know where to
-                       write it. */
-                    if (indir_lookup(sb, e->logical_page) != 0) {
+       The fix: collect the list of dirty pages for the current
+       priority under the lock (Phase 1), release the lock, then
+       flush each page (Phase 2).  The flush calls mirror_write
+       with NO lock held, so it can safely recurse into the cache.
+       After the flush, we re-acquire the bucket lock briefly to
+       mark the entry clean (Phase 3).
+
+       Re-entrancy notes (single-threaded today, defensive for
+       future multi-threaded callers):
+         - Between Phase 1 and Phase 2, the entry's dirty/priority
+           may have changed.  Phase 2 re-reads them.
+         - Between Phase 1 and Phase 2, the entry may have been
+           invalidated (cache_invalidate).  Phase 2 re-finds the
+           entry; if it's gone, skip.
+         - mirror_write is called with no lock held, so any cache
+           access it does (e.g., storage_allocate → dequeue) is
+           safe.
+
+       Flush order: 0 (data) first, 3 (superblock) last. */
+    for (int prio = 0; prio <= 3; prio++) {
+        /* Phase 1: collect dirty pages for this priority.  The
+           bucket lock is held only long enough to walk the chain
+           and copy the logical_page values.  The payload buffers
+           stay owned by their CacheEntry (entries are never
+           evicted — only explicitly invalidated — so the pointer
+           is stable as long as the entry is in the cache). */
+        size_t collect_cap = 1024;
+        int64_t* dirty_pages = malloc(collect_cap * sizeof(int64_t));
+        int n_dirty = 0;
+        if (!dirty_pages) {
+            /* Alloc failure: fall back to per-bucket flush under
+               the lock.  This path has the deadlock risk for
+               free-list pages, but it's better than silently
+               skipping the flush. */
+            for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
+                spin_lock(&cache->bucket_locks[bkt]);
+                CacheEntry* e = cache->buckets[bkt];
+                while (e) {
+                    CacheEntry* next = e->hash_next;
+                    uint32_t dirty_now = vfs_atomic_load_u32((uint32_t*)&e->dirty);
+                    uint32_t prio_now  = vfs_atomic_load_u32((uint32_t*)&e->priority);
+                    if (dirty_now && prio_now == prio &&
+                        indir_lookup(sb, e->logical_page) != 0) {
                         if (mirror_write(sb, e->logical_page, e->payload,
                                          prio_now) == 0) {
                             vfs_atomic_store_u32((uint32_t*)&e->dirty, 0);
                             cache->dirty_count--;
                         }
                     }
+                    e = next;
                 }
-                e = next;
+                spin_unlock(&cache->bucket_locks[bkt]);
             }
-
+            continue;
+        }
+        for (int bkt = 0; bkt < cache->bucket_count; bkt++) {
+            spin_lock(&cache->bucket_locks[bkt]);
+            CacheEntry* e = cache->buckets[bkt];
+            while (e) {
+                uint32_t dirty_now = vfs_atomic_load_u32((uint32_t*)&e->dirty);
+                uint32_t prio_now  = vfs_atomic_load_u32((uint32_t*)&e->priority);
+                if (dirty_now && prio_now == prio &&
+                    indir_lookup(sb, e->logical_page) != 0) {
+                    if ((size_t)n_dirty >= collect_cap) {
+                        size_t new_cap = collect_cap * 2;
+                        int64_t* grown = realloc(dirty_pages, new_cap * sizeof(int64_t));
+                        if (grown) {
+                            dirty_pages = grown;
+                            collect_cap = new_cap;
+                        } else {
+                            /* realloc failed — keep the existing
+                               pages and skip the rest.  They'll
+                               be flushed in the next round. */
+                            spin_unlock(&cache->bucket_locks[bkt]);
+                            goto phase2;
+                        }
+                    }
+                    dirty_pages[n_dirty++] = e->logical_page;
+                }
+                e = e->hash_next;
+            }
             spin_unlock(&cache->bucket_locks[bkt]);
         }
+phase2:
+        /* Phase 2: flush the collected pages.  No lock is held, so
+           mirror_write can safely recurse into the cache (e.g.,
+           for free-list pages that allocate mirror siblings via
+           storage_allocate(1) → dequeue → cache_find on the
+           free-list head page). */
+        for (int i = 0; i < n_dirty; i++) {
+            int64_t vp = dirty_pages[i];
+            /* Re-find the entry (briefly takes the bucket lock).
+               It may have been invalidated between Phase 1 and now. */
+            CacheEntry* e = cache_find(cache, vp);
+            if (!e) continue;                /* invalidated */
+            if (!e->dirty) continue;          /* already flushed */
+            if (e->priority != prio) continue; /* priority changed; next round */
+            if (mirror_write(sb, vp, e->payload, e->priority) == 0) {
+                /* Phase 3: mark clean.  Re-acquire the bucket
+                   lock briefly.  The entry may have been
+                   invalidated between cache_find and now. */
+                int bkt = bucket_index(cache, vp);
+                spin_lock(&cache->bucket_locks[bkt]);
+                CacheEntry* e2 = cache->buckets[bkt];
+                while (e2) {
+                    if (e2->logical_page == vp) {
+                        if (e2->dirty) {
+                            vfs_atomic_store_u32((uint32_t*)&e2->dirty, 0);
+                            cache->dirty_count--;
+                        }
+                        break;
+                    }
+                    e2 = e2->hash_next;
+                }
+                spin_unlock(&cache->bucket_locks[bkt]);
+            }
+        }
+        free(dirty_pages);
     }
 }

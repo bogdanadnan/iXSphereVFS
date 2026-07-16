@@ -228,6 +228,100 @@ static int mount_existing(StorageBackend* sb) {
  * storage_open / storage_close  (W2.6)
  * --------------------------------------------------------------------------- */
 
+/* Phase 27 W5: validate the free-list count after mount.  Called
+ * from storage_open AFTER indir_init and cache_init, so the
+ * indirection table can resolve free-list page physicals.
+ *
+ * After a crash in the CAS-to-flush window (a free-list page's
+ * `count` was CAS'd from N to N+1, the entry was written, but the
+ * dirty mark hadn't been flushed to disk), the on-disk global
+ * `free_list_count` may be ahead of the actual valid entries.
+ * We walk the chain (using raw pread — NOT the cache, to avoid
+ * putting free-list pages in the cache and triggering a flush
+ * during the walk that would allocate a mirror sibling and
+ * consume a free entry) and:
+ *   - Sum the valid entries (non-zero phys within file size).
+ *   - If the stored free_list_count differs, correct the
+ *     in-memory header_buf, pwrite the new value to disk, and
+ *     refresh the header's CRC.
+ *
+ * Note: per-page count validation is intentionally NOT done here.
+ * The dequeue's try_claim_entry is a final guard against returning
+ * a page with stale indir, and a separate per-page walk would
+ * require updating the free-list page's CRC (and would also risk
+ * the flush recursion).  Per-page count is checked lazily on
+ * dequeue. */
+static void validate_free_list_on_mount(StorageBackend* sb) {
+    if (!sb || !sb->header_buf) return;
+    int64_t* fl_head_ptr  = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_HEAD);
+    int64_t* fl_count_ptr = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_COUNT);
+    int64_t head  = vfs_atomic_load_i64(fl_head_ptr);
+    int64_t file_size = lseek(sb->fd, 0, SEEK_END);
+    if (file_size < 0) file_size = 0;
+    int64_t total_valid = 0;
+    int64_t cur = head;
+    int page_walked = 0;
+    /* Safety limit: a cycle or corrupted chain could loop forever.
+       10000 pages = ~80 MB of free-list metadata, which is many
+       times more than any realistic VFS. */
+    while (cur != 0 && page_walked < 10000) {
+        int64_t fl_off = indir_lookup(sb, cur);
+        if (fl_off == 0) break;
+        /* Read the count (payload offset 8) via raw pread. */
+        int64_t payload_off = fl_off + PAGE_HEADER_SIZE;
+        uint8_t buf[4];
+        if (pread(sb->fd, buf, 4, payload_off + 8) != 4) break;
+        int32_t stored_count;
+        memcpy(&stored_count, buf, 4);
+        int max_per_page = (int)((sb->page_size - 16) / 16);
+        int scan = (stored_count >= 0 && stored_count <= max_per_page)
+                   ? stored_count : max_per_page;
+        int valid_count = 0;
+        for (int i = 0; i < scan; i++) {
+            int64_t eoff = payload_off + 16 + (int64_t)i * 16 + 8;
+            uint8_t pbuf[8];
+            if (pread(sb->fd, pbuf, 8, eoff) != 8) break;
+            int64_t phys;
+            memcpy(&phys, pbuf, 8);
+            if (phys != 0 && (file_size == 0 || phys < file_size)) {
+                valid_count++;
+            }
+        }
+        total_valid += valid_count;
+        /* Read next_page (payload offset 0) via raw pread. */
+        uint8_t nbuf[8];
+        if (pread(sb->fd, nbuf, 8, payload_off) != 8) break;
+        memcpy(&cur, nbuf, 8);
+        page_walked++;
+    }
+    int64_t stored_global = vfs_atomic_load_i64(fl_count_ptr);
+    if (total_valid != stored_global) {
+        vfs_atomic_store_i64(fl_count_ptr, total_valid);
+        /* Update on-disk header: rewrite the count and refresh
+           the CRC.  Read the entire header payload, modify the
+           count, recompute CRC, write CRC back to the PageHeader. */
+        uint8_t* payload = malloc((size_t)sb->page_size);
+        if (payload) {
+            if (pread(sb->fd, payload, (size_t)sb->page_size,
+                      PAGE_HEADER_SIZE) == sb->page_size) {
+                /* Rewrite the count in the payload. */
+                vfs_wr8_s(payload, HDR_OFF_FREE_LIST_COUNT, total_valid, sb->page_size);
+                /* Recompute and write the new CRC. */
+                uint32_t new_crc = vfs_crc32c(payload, (size_t)sb->page_size);
+                PageHeader ph;
+                if (pread(sb->fd, &ph, PAGE_HEADER_SIZE, 0) == PAGE_HEADER_SIZE) {
+                    ph.checksum = new_crc;
+                    pwrite(sb->fd, &ph, PAGE_HEADER_SIZE, 0);
+                }
+            }
+            free(payload);
+        }
+        fprintf(stderr,
+            "free-list validation: global count %lld -> %lld\n",
+            (long long)stored_global, (long long)total_valid);
+    }
+}
+
 StorageBackend* storage_open(const char* path, int64_t page_size) {
     StorageBackend* sb = calloc(1, sizeof(StorageBackend));
     if (!sb) return NULL;
@@ -267,6 +361,10 @@ StorageBackend* storage_open(const char* path, int64_t page_size) {
 
     /* Initialize page cache */
     cache_init(&sb->cache, sb, sb->page_size);
+
+    /* Phase 27 W5: validate the free-list count after mount.  Must
+       run after indir_init (need indir_lookup for free-list pages). */
+    validate_free_list_on_mount(sb);
 
     return sb;
 }
@@ -369,8 +467,9 @@ static int64_t storage_allocate_tail_advance(StorageBackend* sb, int count);
 
 /* Forward declarations for the free-list helpers (defined below
    alongside enqueue_free_page). */
-static int  read_free_list_count(StorageBackend* sb, int64_t fl_page);
-static void write_free_list_count(StorageBackend* sb, int64_t fl_page, int count);
+static int     read_free_list_count(StorageBackend* sb, int64_t fl_page);
+static int64_t read_free_list_next(StorageBackend* sb, int64_t fl_page);
+static void    write_free_list_count(StorageBackend* sb, int64_t fl_page, int count);
 static int64_t read_free_list_entry(StorageBackend* sb, int64_t fl_page, int idx,
                                      int64_t* out_phys);
 
@@ -399,15 +498,7 @@ static int64_t dequeue_from_free_list(StorageBackend* sb) {
            dirty issue (M12 residual) applies — the next
            storage_free on this VP will re-enqueue and the eventual
            flush catches the change. */
-        int64_t next = 0;
-        int64_t fl_off = indir_lookup(sb, head);
-        if (fl_off != 0) {
-            int64_t payload_off = fl_off + 16;
-            uint8_t buf[8];
-            if (pread(sb->fd, buf, 8, payload_off) == 8) {
-                memcpy(&next, buf, 8);
-            }
-        }
+        int64_t next = read_free_list_next(sb, head);
         vfs_atomic_store_i64(fl_head_ptr, next);
         indir_set(sb, head, 0);
         return 0;  /* caller tail-advances */
@@ -425,15 +516,7 @@ static int64_t dequeue_from_free_list(StorageBackend* sb) {
 
     /* If head_count was 1, the head is now empty.  Advance and free. */
     if (head_count == 1) {
-        int64_t next = 0;
-        int64_t fl_off = indir_lookup(sb, head);
-        if (fl_off != 0) {
-            int64_t payload_off = fl_off + 16;
-            uint8_t buf[8];
-            if (pread(sb->fd, buf, 8, payload_off) == 8) {
-                memcpy(&next, buf, 8);
-            }
-        }
+        int64_t next = read_free_list_next(sb, head);
         vfs_atomic_store_i64(fl_head_ptr, next);
         indir_set(sb, head, 0);
     }
@@ -801,42 +884,38 @@ static int free_list_max_per_page(StorageBackend* sb) {
     return (int)((sb->page_size - 16) / 16);
 }
 
-/* Read the count field of a free-list page (via its indir entry). */
+/* Read the count field of a free-list page (via the cache). */
 static int read_free_list_count(StorageBackend* sb, int64_t fl_page) {
-    int64_t fl_off = indir_lookup(sb, fl_page);
-    if (fl_off == 0) return -1;
-    /* The count is at offset 8 in the page payload (after PageHeader). */
-    uint8_t hdr[PAGE_HEADER_SIZE];
-    if (pread(sb->fd, hdr, PAGE_HEADER_SIZE, fl_off) != PAGE_HEADER_SIZE) return -1;
-    int64_t payload_off = fl_off + PAGE_HEADER_SIZE;
-    uint8_t buf[8];
-    if (pread(sb->fd, buf, 8, payload_off + 8) != 8) return -1;
-    int32_t count;
-    memcpy(&count, buf, 4);
+    StorageReadStatus st;
+    uint8_t* payload = storage_read_with_status(sb, fl_page, &st);
+    if (!payload || st != STORAGE_OK) return -1;
+    int32_t count = (int32_t)vfs_rd4_s(payload, 8, sb->page_size);
     return (int)count;
 }
 
-/* Write the next_page field of a free-list page. */
+/* Read the next_page field of a free-list page (via the cache). */
+static int64_t read_free_list_next(StorageBackend* sb, int64_t fl_page) {
+    StorageReadStatus st;
+    uint8_t* payload = storage_read_with_status(sb, fl_page, &st);
+    if (!payload || st != STORAGE_OK) return 0;
+    return vfs_rd8_s(payload, 0, sb->page_size);
+}
+
+/* Write the next_page field of a free-list page (via the cache). */
 static void write_free_list_next(StorageBackend* sb, int64_t fl_page, int64_t next) {
-    int64_t fl_off = indir_lookup(sb, fl_page);
-    if (fl_off == 0) return;
-    int64_t payload_off = fl_off + PAGE_HEADER_SIZE;
-    uint8_t buf[8];
-    memcpy(buf, &next, 8);
-    pwrite(sb->fd, buf, 8, payload_off);  /* next_page at offset 0 */
-    /* Mark the page dirty so the change is flushed. */
+    StorageReadStatus st;
+    uint8_t* payload = storage_read_with_status(sb, fl_page, &st);
+    if (!payload || st != STORAGE_OK) return;
+    vfs_wr8_s(payload, 0, next, sb->page_size);  /* next_page at offset 0 */
     cache_mark_dirty(&sb->cache, fl_page, FLUSH_PRIO_POOL);
 }
 
-/* Write the count field of a free-list page. */
+/* Write the count field of a free-list page (via the cache). */
 static void write_free_list_count(StorageBackend* sb, int64_t fl_page, int count) {
-    int64_t fl_off = indir_lookup(sb, fl_page);
-    if (fl_off == 0) return;
-    int64_t payload_off = fl_off + PAGE_HEADER_SIZE;
-    uint8_t buf[4];
-    int32_t c = (int32_t)count;
-    memcpy(buf, &c, 4);
-    pwrite(sb->fd, buf, 4, payload_off + 8);
+    StorageReadStatus st;
+    uint8_t* payload = storage_read_with_status(sb, fl_page, &st);
+    if (!payload || st != STORAGE_OK) return;
+    vfs_wr4_s(payload, 8, (int32_t)count, sb->page_size);
     cache_mark_dirty(&sb->cache, fl_page, FLUSH_PRIO_POOL);
 }
 
@@ -844,14 +923,11 @@ static void write_free_list_count(StorageBackend* sb, int64_t fl_page, int count
    logical VP and physical offset.  Returns 0 on failure. */
 static int64_t read_free_list_entry(StorageBackend* sb, int64_t fl_page, int idx,
                                      int64_t* out_phys) {
-    int64_t fl_off = indir_lookup(sb, fl_page);
-    if (fl_off == 0) return 0;
-    int64_t payload_off = fl_off + PAGE_HEADER_SIZE + 16 + (int64_t)idx * 16;
-    uint8_t buf[16];
-    if (pread(sb->fd, buf, 16, payload_off) != 16) return 0;
-    int64_t logical, phys;
-    memcpy(&logical, buf, 8);
-    memcpy(&phys, buf + 8, 8);
+    StorageReadStatus st;
+    uint8_t* payload = storage_read_with_status(sb, fl_page, &st);
+    if (!payload || st != STORAGE_OK) return 0;
+    int64_t logical = vfs_rd8_s(payload, 16 + (int64_t)idx * 16,     sb->page_size);
+    int64_t phys     = vfs_rd8_s(payload, 16 + (int64_t)idx * 16 + 8, sb->page_size);
     *out_phys = phys;
     return logical;
 }
@@ -859,27 +935,40 @@ static int64_t read_free_list_entry(StorageBackend* sb, int64_t fl_page, int idx
 /* Write an entry at index `idx` in the free-list page. */
 static void write_free_list_entry(StorageBackend* sb, int64_t fl_page, int idx,
                                     int64_t logical, int64_t phys) {
-    int64_t fl_off = indir_lookup(sb, fl_page);
-    if (fl_off == 0) return;
-    int64_t payload_off = fl_off + PAGE_HEADER_SIZE + 16 + (int64_t)idx * 16;
-    uint8_t buf[16];
-    memcpy(buf, &logical, 8);
-    memcpy(buf + 8, &phys, 8);
-    pwrite(sb->fd, buf, 16, payload_off);
+    StorageReadStatus st;
+    uint8_t* payload = storage_read_with_status(sb, fl_page, &st);
+    if (!payload || st != STORAGE_OK) return;
+    vfs_wr8_s(payload, 16 + (int64_t)idx * 16,     logical, sb->page_size);
+    vfs_wr8_s(payload, 16 + (int64_t)idx * 16 + 8, phys,    sb->page_size);
     cache_mark_dirty(&sb->cache, fl_page, FLUSH_PRIO_POOL);
 }
 
 /* Allocate a new free-list page via the tail-advance path.  The
    new page's count is initialized to 1 and entry[0] = (logical, phys).
-   Returns the new page's logical VP, or 0 on error. */
+   Returns the new page's logical VP, or 0 on error.
+
+   The new free-list page is brand-new — its on-disk content is
+   uninitialized, so a `storage_read_with_status` call would fail
+   the CRC check and return NULL.  We pre-populate the cache with
+   a fresh zero-initialized buffer (dirty) so the subsequent
+   `write_free_list_*` calls can find the page in the cache and
+   write directly to the in-memory payload.  The buffer is
+   flushed to disk on the next `cache_flush_all`.  This is safe
+   because the cache_flush_all refactor (W5) makes the flush
+   re-entrant — mirror_write can recurse into the cache without
+   deadlocking. */
 static int64_t alloc_free_list_page(StorageBackend* sb, int64_t logical, int64_t phys) {
-    /* Use the tail-advance to get a new VP.  The tail-advance will
-       claim the slot (try_claim_entry sets indir[new_vp] = physical_offset
-       on the success path), but we need to write free-list metadata
-       (next, count, entry[0]) to the new page. */
     int64_t new_vp = storage_allocate_tail_advance(sb, 1);
     if (new_vp < 0) return 0;
-    /* Initialize the new free-list page's metadata. */
+
+    /* Pre-populate the cache with a fresh zero buffer.  The cache
+       owns its own copy (dirty=1 path: malloc + memcpy, caller frees). */
+    uint8_t* fresh = calloc(1, (size_t)sb->page_size);
+    if (!fresh) return 0;
+    cache_insert(&sb->cache, new_vp, fresh, FLUSH_PRIO_POOL, 1);
+    free(fresh);
+
+    /* Now the writes will find the cached entry and write to it. */
     write_free_list_next(sb, new_vp, 0);  /* no next */
     write_free_list_count(sb, new_vp, 1);
     write_free_list_entry(sb, new_vp, 0, logical, phys);
