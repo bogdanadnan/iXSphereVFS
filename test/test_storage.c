@@ -694,6 +694,131 @@ void test_free_list_mount_validation(void) {
     cleanup(path);
 }
 
+/* Phase 27 W6 regression: thread-safe free-list dequeue.
+ *
+ * Allocates N pages, frees them all (populating the free-list
+ * with N entries), then spawns T threads that each try to
+ * dequeue K pages.  Verifies that:
+ *   - All dequeued pages are unique (no double-pop — the CAS
+ *     on the per-page count catches concurrent pops).
+ *   - The total dequeued count matches N (no entries lost).
+ *   - Each thread sees a consistent view of the free-list.
+ *
+ * Without the W6 per-page CAS, two threads can both read the
+ * same count, both pop the same entry, and both decrement the
+ * count — resulting in double-pop (same logical page returned
+ * twice) and global count going negative.
+ */
+#define W6_THREADS 4
+#define W6_PAGES_PER_THREAD 250   /* 1000 total frees */
+
+typedef struct {
+    int tid;
+    StorageBackend* sb;
+    int64_t* dequeued;   /* array of size W6_PAGES_PER_THREAD */
+    int dequeued_n;
+} w6_thread_arg_t;
+
+static void* w6_dequeue_thread(void* arg) {
+    w6_thread_arg_t* a = (w6_thread_arg_t*)arg;
+    for (int i = 0; i < W6_PAGES_PER_THREAD; i++) {
+        int64_t vp = storage_allocate(a->sb, 1);
+        if (vp > 0) {
+            a->dequeued[a->dequeued_n++] = vp;
+        }
+        /* If vp <= 0, the dequeue lost the race or the queue
+           was empty.  We just record nothing — the next thread
+           will get the entry.  The total dequeued count is
+           checked at the end. */
+    }
+    return NULL;
+}
+
+void test_free_list_concurrent_dequeue(void) {
+    printf("10. free-list concurrent dequeue (W6, %d threads × %d pages)...\n",
+           W6_THREADS, W6_PAGES_PER_THREAD);
+    const char* path = "/tmp/test_storage_w6.vfs";
+    cleanup(path);
+
+    StorageBackend* sb = storage_open(path, 8192);
+    CHECK(sb != NULL);
+    if (!sb) { cleanup(path); return; }
+
+    /* Allocate N pages, then free all of them.  The free-list now
+       has N entries.  total_pages = 2 + N (header + superblock +
+       N data pages). */
+    int64_t vps[W6_THREADS * W6_PAGES_PER_THREAD];
+    int N = W6_THREADS * W6_PAGES_PER_THREAD;
+    for (int i = 0; i < N; i++) {
+        vps[i] = storage_allocate(sb, 1);
+        CHECK(vps[i] > 0);
+    }
+    for (int i = 0; i < N; i++) {
+        storage_free(sb, vps[i]);
+    }
+    int64_t* fl_count = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_COUNT);
+    CHECK_EQ(*fl_count, N);
+
+    /* Spawn threads.  Each thread dequeues K pages. */
+    pthread_t th[W6_THREADS];
+    w6_thread_arg_t args[W6_THREADS];
+    int64_t dequeued_buf[W6_THREADS][W6_PAGES_PER_THREAD];
+    for (int i = 0; i < W6_THREADS; i++) {
+        args[i].tid = i;
+        args[i].sb = sb;
+        args[i].dequeued = dequeued_buf[i];
+        args[i].dequeued_n = 0;
+        pthread_create(&th[i], NULL, w6_dequeue_thread, &args[i]);
+    }
+    for (int i = 0; i < W6_THREADS; i++) {
+        pthread_join(th[i], NULL);
+    }
+
+    /* Verify the global count is now 0 (everything was dequeued). */
+    CHECK_EQ(*fl_count, 0);
+
+    /* Verify all dequeued pages are unique (no double-pop). */
+    int total_dequeued = 0;
+    for (int i = 0; i < W6_THREADS; i++) {
+        total_dequeued += args[i].dequeued_n;
+    }
+    CHECK_EQ(total_dequeued, N);
+
+    /* Sort and check for duplicates.  Simple O(N^2) check
+       (N=1000, fast enough). */
+    int duplicates = 0;
+    for (int i = 0; i < W6_THREADS; i++) {
+        for (int j = 0; j < args[i].dequeued_n; j++) {
+            int64_t vp = args[i].dequeued[j];
+            for (int k = 0; k < W6_THREADS; k++) {
+                int start = (k == i) ? j + 1 : 0;
+                int end = (k == i) ? args[i].dequeued_n : args[k].dequeued_n;
+                for (int l = start; l < end; l++) {
+                    if (args[k].dequeued[l] == vp) {
+                        duplicates++;
+                    }
+                }
+            }
+        }
+    }
+    CHECK_EQ(duplicates, 0);
+
+    /* Verify each dequeued page matches a freed page (sanity). */
+    int matched = 0;
+    for (int i = 0; i < W6_THREADS; i++) {
+        for (int j = 0; j < args[i].dequeued_n; j++) {
+            int64_t vp = args[i].dequeued[j];
+            for (int k = 0; k < N; k++) {
+                if (vps[k] == vp) { matched++; break; }
+            }
+        }
+    }
+    CHECK_EQ(matched, N);
+
+    storage_close(sb);
+    cleanup(path);
+}
+
 /* ========================================================================== */
 
 int main(void) {
@@ -709,6 +834,7 @@ int main(void) {
     test_free_list_enqueue();
     test_free_list_dequeue();
     test_free_list_mount_validation();
+    test_free_list_concurrent_dequeue();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

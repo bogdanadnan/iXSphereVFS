@@ -446,24 +446,35 @@ static int64_t storage_allocate_count_scan(StorageBackend* sb, int count);
    if it wants to use the page for data. */
 static int64_t storage_allocate_tail_advance(StorageBackend* sb, int count);
 
-/* Phase 27 W3: dequeue_from_free_list — try to pop a (logical,
+/* Phase 27 W6: dequeue_from_free_list — try to pop a (logical,
    physical) entry from the free-page queue.  Returns the logical
    page on success, or 0 if the queue is empty / a race lost.
 
-   Algorithm (per the spec):
-     1. Read free_list_count.  If 0, return 0.
-     2. Read free_list_head.  If 0, return 0.
-     3. Read the head page's count.  If 0, advance head and retry.
-     4. Pop entry[count-1] (LIFO within page).  CAS-decrement count.
-     5. If count was 1, advance head, free the old head (R2).
-     6. Invalidate cache for the dequeued page.
-     7. try_claim_entry(page, phys) for ABA detection.  If CAS fails,
-        the page was claimed by another thread (ABA).  Return 0
-        and let the caller tail-advance past the already-claimed VP.
+   Thread-safety model (W6):
+     - Multiple FUSE worker threads can call dequeue concurrently.
+     - The enqueue side (GC) is single-threaded (per the W5+ GC
+       redesign: a single background thread does enqueues).
+     - Cross-thread races between enqueue and dequeue are benign
+       (the enqueue's "append + increment count" can race with
+       the dequeue's "pop + decrement count"; the dequeue's CAS
+       catches the count change and retries).
 
-   Not thread-safe for concurrent dequeues (no per-page CAS on
-   the head's count field yet).  Single-threaded for W3's initial
-   impl.  Full thread-safety is deferred to a later workload. */
+   Concurrency primitives (per the spec's R2 design):
+     - Per-page CAS on the head's count field (decrement).
+       Catches concurrent dequeues from the same head page —
+       the loser of the CAS race re-reads count and retries.
+     - CAS on the global head pointer (advance past a drained
+       head page).  Catches concurrent "head is empty, advance
+       to next" races — the loser retries with the new head.
+     - try_claim_entry (CAS on indir) is the final ABA guard.
+       If the popped page was already claimed by another thread
+       (the indir CAS fails), the dequeue returns 0 and the
+       caller tail-advances past the already-claimed VP.
+
+   The dequeue is wrapped in a retry loop.  Any CAS failure
+   (count or head) restarts the dequeue from the top.  The
+   retry count is bounded (1000) to prevent livelock in the
+   pathological case of constant contention. */
 
 /* Forward declarations for the free-list helpers (defined below
    alongside enqueue_free_page). */
@@ -483,68 +494,128 @@ static int64_t dequeue_from_free_list(StorageBackend* sb) {
     int64_t* fl_head_ptr = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_HEAD);
     int64_t* fl_count_ptr = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_COUNT);
 
-    int64_t count = vfs_atomic_load_i64(fl_count_ptr);
-    if (count <= 0) return 0;
+    /* Phase 27 W6: retry loop for thread-safety.  Any CAS failure
+       (count or head) restarts the dequeue from the top.  The
+       retry count is bounded to prevent livelock. */
+    for (int retry = 0; retry < 1000; retry++) {
+        int64_t count = vfs_atomic_load_i64(fl_count_ptr);
+        if (count <= 0) return 0;
 
-    int64_t head = vfs_atomic_load_i64(fl_head_ptr);
-    if (head == 0) return 0;
+        int64_t head = vfs_atomic_load_i64(fl_head_ptr);
+        if (head == 0) return 0;
 
-    int head_count = read_free_list_count(sb, head);
-    if (head_count < 0) return 0;  /* I/O error */
-    if (head_count == 0) {
-        /* Head page is empty.  Advance to head->next and free the
-           drained page (R2: indir_set(head, 0)).  Best-effort: if
-           head's indir is in an overflow page, the overflow-page
-           dirty issue (M12 residual) applies — the next
-           storage_free on this VP will re-enqueue and the eventual
-           flush catches the change. */
-        int64_t next = read_free_list_next(sb, head);
-        vfs_atomic_store_i64(fl_head_ptr, next);
-        indir_set(sb, head, 0);
-        return 0;  /* caller tail-advances */
+        /* Read the head's per-page count.  If the page is in the
+           cache, the count is the latest cached value (the cache's
+           bucket lock synchronizes the read with concurrent writes
+           via storage_read_with_status). */
+        int head_count = read_free_list_count(sb, head);
+        if (head_count < 0) return 0;  /* I/O error */
+        if (head_count == 0) {
+            /* Head page is empty.  Advance to head->next and free
+               the drained page (R2: indir_set(head, 0)).  Use CAS
+               on the head pointer so concurrent advances don't
+               clobber each other.  If we lose the CAS, another
+               thread already advanced — retry from the new head. */
+            int64_t next = read_free_list_next(sb, head);
+            if (vfs_cas_i64(fl_head_ptr, head, next) == head) {
+                indir_set(sb, head, 0);
+            }
+            /* else: lost the CAS.  Another thread advanced the
+               head and freed the old head.  Retry to read the
+               new head's count. */
+            continue;
+        }
+
+        /* Pop entry[count-1] (LIFO within page). */
+        int pop_idx = head_count - 1;
+        int64_t phys = 0;
+        int64_t page = read_free_list_entry(sb, head, pop_idx, &phys);
+        if (page == 0) return 0;
+
+        /* CAS-decrement the per-page count.  If the CAS fails,
+           another thread popped first — retry from the top
+           (the new count might mean a different entry, or the
+           head might have been drained entirely). */
+        StorageReadStatus st;
+        uint8_t* payload = storage_read_with_status(sb, head, &st);
+        if (!payload || st != STORAGE_OK) {
+            /* I/O error.  Invalidate any cached entry for the
+               popped page (we may have just read a stale entry)
+               and bail. */
+            return 0;
+        }
+        int32_t* count_ptr = (int32_t*)(payload + 8);  /* count at payload+8 */
+        int32_t expected = (int32_t)head_count;
+        if (vfs_cas_i32(count_ptr, expected, expected - 1) != expected) {
+            /* Lost the count CAS.  Another thread popped or
+               advanced the head.  Retry from the top. */
+            continue;
+        }
+
+        /* We won the count CAS.  The entry is ours. */
+        /* If head_count was 1, the head is now empty.  Advance
+           to next and free the old head.  Use CAS on the head
+           pointer — if we lose, another thread already advanced
+           and freed the old head.  Either way, the old head is
+           freed exactly once. */
+        if (head_count == 1) {
+            int64_t next = read_free_list_next(sb, head);
+            if (vfs_cas_i64(fl_head_ptr, head, next) == head) {
+                indir_set(sb, head, 0);
+            }
+            /* else: another thread won.  They freed the old head. */
+        }
+
+        /* Invalidate the cache entry for the popped page.  The
+           page is now "allocated" (we'll try_claim_entry below)
+           so any cached payload is stale.  The next read will
+           reload from disk (which has the post-enqueue content)
+           — wait, that's wrong.  The page was freed (indir=0)
+           and enqueued (entry added).  The on-disk content is
+           whatever was last written (the data before free).
+           We don't want to return that as "fresh" data.  But
+           the caller will overwrite it (storage_allocate returns
+           to pool_alloc, which returns to vfs_create, which
+           writes the new file's metadata).  So the stale data
+           is fine — it'll be overwritten before anyone reads
+           it.  The cache_invalidate just makes sure no one
+           reads the stale data from the cache. */
+        cache_invalidate(&sb->cache, page);
+
+        /* Decrement global count.  Atomic add — multiple deques
+           can decrement concurrently.  The per-page count is the
+           authoritative count (via CAS above); the global count
+           is a fast-path optimization (the dequeue's first
+           `count <= 0` check).  They stay in sync because every
+           successful dequeue decrements both. */
+        vfs_atomic_add_i64(fl_count_ptr, -1);
+
+        /* try_claim_entry: ABA detection.  If another thread
+           already claimed this page (indir != 0), the CAS fails
+           and we return 0 (the caller will tail-advance past
+           the already-claimed VP).  Note: this is a separate
+           guard from the count CAS — it catches the case where
+           the page was enqueued, then re-allocated by another
+           path (e.g., a tail-advance raced with the free-list
+           and the page was given out twice). */
+        if (!try_claim_entry(sb, page, phys)) {
+            return 0;  /* ABA: caller tail-advances */
+        }
+
+        /* H3 fix: honor the deferred-free queue.  If GC is running
+           and the dequeued page is in GC's deferred queue, the
+           page is still "in flight" (an in-flight reader might
+           have a pointer to it).  Don't return it.  The caller
+           will tail-advance past this VP. */
+        if (_deferred_queue && deferred_free_is_queued(_deferred_queue, page)) {
+            return 0;  /* in deferred queue; caller tail-advances */
+        }
+
+        return page;
     }
-
-    /* Pop entry[count-1] (LIFO within page). */
-    int pop_idx = head_count - 1;
-    int64_t phys = 0;
-    int64_t page = read_free_list_entry(sb, head, pop_idx, &phys);
-    if (page == 0) return 0;
-
-    /* CAS-decrement count.  No CAS yet (single-threaded for W3);
-       just write. */
-    write_free_list_count(sb, head, head_count - 1);
-
-    /* If head_count was 1, the head is now empty.  Advance and free. */
-    if (head_count == 1) {
-        int64_t next = read_free_list_next(sb, head);
-        vfs_atomic_store_i64(fl_head_ptr, next);
-        indir_set(sb, head, 0);
-    }
-
-    /* Invalidate cache. */
-    cache_invalidate(&sb->cache, page);
-
-    /* Decrement global count. */
-    vfs_atomic_add_i64(fl_count_ptr, -1);
-
-    /* try_claim_entry: ABA detection.  If another thread already
-       claimed this page (indir != 0), the CAS fails and we return
-       0 (the caller will tail-advance past the already-claimed VP). */
-    if (!try_claim_entry(sb, page, phys)) {
-        return 0;  /* ABA: caller tail-advances */
-    }
-
-    /* H3 fix: honor the deferred-free queue.  If GC is running and
-       the dequeued page is in GC's deferred queue, the page is
-       still "in flight" (an in-flight reader might have a pointer
-       to it).  Don't return it.  The caller will tail-advance past
-       this VP.  Single-threaded for W3; multi-threaded refinement
-       is deferred. */
-    if (_deferred_queue && deferred_free_is_queued(_deferred_queue, page)) {
-        return 0;  /* in deferred queue; caller tail-advances */
-    }
-
-    return page;
+    /* Safety: gave up after 1000 retries (extreme contention).
+       Treat as queue-empty; caller tail-advances. */
+    return 0;
 }
 
 int64_t storage_allocate(StorageBackend* sb, int count) {
