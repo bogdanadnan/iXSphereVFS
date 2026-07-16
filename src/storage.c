@@ -348,6 +348,122 @@ static int64_t storage_allocate_count_scan(StorageBackend* sb, int count);
    if it wants to use the page for data. */
 static int64_t storage_allocate_tail_advance(StorageBackend* sb, int count);
 
+/* Phase 27 W3: dequeue_from_free_list — try to pop a (logical,
+   physical) entry from the free-page queue.  Returns the logical
+   page on success, or 0 if the queue is empty / a race lost.
+
+   Algorithm (per the spec):
+     1. Read free_list_count.  If 0, return 0.
+     2. Read free_list_head.  If 0, return 0.
+     3. Read the head page's count.  If 0, advance head and retry.
+     4. Pop entry[count-1] (LIFO within page).  CAS-decrement count.
+     5. If count was 1, advance head, free the old head (R2).
+     6. Invalidate cache for the dequeued page.
+     7. try_claim_entry(page, phys) for ABA detection.  If CAS fails,
+        the page was claimed by another thread (ABA).  Return 0
+        and let the caller tail-advance past the already-claimed VP.
+
+   Not thread-safe for concurrent dequeues (no per-page CAS on
+   the head's count field yet).  Single-threaded for W3's initial
+   impl.  Full thread-safety is deferred to a later workload. */
+
+/* Forward declarations for the free-list helpers (defined below
+   alongside enqueue_free_page). */
+static int  read_free_list_count(StorageBackend* sb, int64_t fl_page);
+static void write_free_list_count(StorageBackend* sb, int64_t fl_page, int count);
+static int64_t read_free_list_entry(StorageBackend* sb, int64_t fl_page, int idx,
+                                     int64_t* out_phys);
+
+/* Forward declaration for the deferred-free check (defined in gc.c).
+   Used by the dequeue to honor GC's deferred-free queue. */
+struct DeferredFreeQueue;
+bool deferred_free_is_queued(struct DeferredFreeQueue* queue, int64_t logical_page);
+extern struct DeferredFreeQueue* _deferred_queue;
+
+static int64_t dequeue_from_free_list(StorageBackend* sb) {
+    int64_t* fl_head_ptr = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_HEAD);
+    int64_t* fl_count_ptr = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_COUNT);
+
+    int64_t count = vfs_atomic_load_i64(fl_count_ptr);
+    if (count <= 0) return 0;
+
+    int64_t head = vfs_atomic_load_i64(fl_head_ptr);
+    if (head == 0) return 0;
+
+    int head_count = read_free_list_count(sb, head);
+    if (head_count < 0) return 0;  /* I/O error */
+    if (head_count == 0) {
+        /* Head page is empty.  Advance to head->next and free the
+           drained page (R2: indir_set(head, 0)).  Best-effort: if
+           head's indir is in an overflow page, the overflow-page
+           dirty issue (M12 residual) applies — the next
+           storage_free on this VP will re-enqueue and the eventual
+           flush catches the change. */
+        int64_t next = 0;
+        int64_t fl_off = indir_lookup(sb, head);
+        if (fl_off != 0) {
+            int64_t payload_off = fl_off + 16;
+            uint8_t buf[8];
+            if (pread(sb->fd, buf, 8, payload_off) == 8) {
+                memcpy(&next, buf, 8);
+            }
+        }
+        vfs_atomic_store_i64(fl_head_ptr, next);
+        indir_set(sb, head, 0);
+        return 0;  /* caller tail-advances */
+    }
+
+    /* Pop entry[count-1] (LIFO within page). */
+    int pop_idx = head_count - 1;
+    int64_t phys = 0;
+    int64_t page = read_free_list_entry(sb, head, pop_idx, &phys);
+    if (page == 0) return 0;
+
+    /* CAS-decrement count.  No CAS yet (single-threaded for W3);
+       just write. */
+    write_free_list_count(sb, head, head_count - 1);
+
+    /* If head_count was 1, the head is now empty.  Advance and free. */
+    if (head_count == 1) {
+        int64_t next = 0;
+        int64_t fl_off = indir_lookup(sb, head);
+        if (fl_off != 0) {
+            int64_t payload_off = fl_off + 16;
+            uint8_t buf[8];
+            if (pread(sb->fd, buf, 8, payload_off) == 8) {
+                memcpy(&next, buf, 8);
+            }
+        }
+        vfs_atomic_store_i64(fl_head_ptr, next);
+        indir_set(sb, head, 0);
+    }
+
+    /* Invalidate cache. */
+    cache_invalidate(&sb->cache, page);
+
+    /* Decrement global count. */
+    vfs_atomic_add_i64(fl_count_ptr, -1);
+
+    /* try_claim_entry: ABA detection.  If another thread already
+       claimed this page (indir != 0), the CAS fails and we return
+       0 (the caller will tail-advance past the already-claimed VP). */
+    if (!try_claim_entry(sb, page, phys)) {
+        return 0;  /* ABA: caller tail-advances */
+    }
+
+    /* H3 fix: honor the deferred-free queue.  If GC is running and
+       the dequeued page is in GC's deferred queue, the page is
+       still "in flight" (an in-flight reader might have a pointer
+       to it).  Don't return it.  The caller will tail-advance past
+       this VP.  Single-threaded for W3; multi-threaded refinement
+       is deferred. */
+    if (_deferred_queue && deferred_free_is_queued(_deferred_queue, page)) {
+        return 0;  /* in deferred queue; caller tail-advances */
+    }
+
+    return page;
+}
+
 int64_t storage_allocate(StorageBackend* sb, int count) {
     if (count <= 0) return -1;
     if (count > 1) {
@@ -358,9 +474,11 @@ int64_t storage_allocate(StorageBackend* sb, int count) {
            with the same tail-advance pattern once count>1 is needed. */
         return storage_allocate_count_scan(sb, count);
     }
-    /* Phase 27: count==1 fast path is now just the tail-advance.
-       The free-list dequeue check (W3) will be added at the top of
-       this function in the next workload. */
+    /* Phase 27 W3: try the free-list first.  If the queue is empty
+       (the common case — no GC = no frees), the load is in L1 and
+       the fall-through to tail-advance is immediate. */
+    int64_t page = dequeue_from_free_list(sb);
+    if (page > 0) return page;
     return storage_allocate_tail_advance(sb, count);
 }
 
