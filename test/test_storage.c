@@ -292,15 +292,17 @@ void test_indir_ensure_capacity_growth(void) {
 
     int inline_count = inline_entry_count(page_size);
     int entries_per_overflow = (int)(page_size / 8) - 1;
-    /* Phase 27: inline_count reduced by 3 (the free-list header
-       takes offsets 40/48/56).  For page_size=128, old=11, new=8. */
-    CHECK(inline_count == 8);
+    /* Phase 28: inline_count reduced by 4 from the original
+       (offset 40 -> 96).  For page_size=128, the original was
+       11; after Phase 27 (offset 64) it was 8; after Phase 28
+       (offset 96) it is 4. */
+    CHECK(inline_count == 4);
     CHECK(entries_per_overflow == 15);
 
-    /* Sanity: inline area covers 8 pages.  storage_open already
+    /* Sanity: inline area covers 4 pages.  storage_open already
        allocated pages 0 (header) and 1 (superblock), so
-       sb->total_pages = 2 and we have 8 entries for pages 0..7
-       (page 0 = header, page 1 = superblock, pages 2..7 = 6 free
+       sb->total_pages = 2 and we have 4 entries for pages 0..3
+       (page 0 = header, page 1 = superblock, pages 2..3 = 2 free
        inline slots). */
     CHECK_EQ(sb->total_pages, 2);
 

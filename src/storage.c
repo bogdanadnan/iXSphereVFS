@@ -1,6 +1,7 @@
 #include "storage.h"
 #include "page_buf.h"
 #include "gc.h"
+#include "bin.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -73,11 +74,16 @@ int64_t phys_record_size(StorageBackend* sb) {
 #define HDR_OFF_FREE_LIST_HEAD    40
 #define HDR_OFF_FREE_LIST_TAIL    48
 #define HDR_OFF_FREE_LIST_COUNT   56
-#define HDR_OFF_ENTRIES           64
+#define HDR_OFF_BIN_HEAD          64
+#define HDR_OFF_BIN_TAIL          72
+#define HDR_OFF_BIN_COUNT         80
+/* offset 88 is reserved (8 bytes for one future field) */
+#define HDR_OFF_ENTRIES           96
 
 /* Number of inline indirection entries in the header page.
-   Reduced by 3 in Phase 27 to make room for the free-list header
-   at offsets 40/48/56. */
+   Reduced by 3 in Phase 27 (free-list at 40/48/56), then by 4
+   more in Phase 28 (Bin at 64/72/80 + reserved at 88).  Total
+   reduction from original (offset 40) is 7 entries. */
 int inline_entry_count(int64_t page_size) {
     return (int)((page_size - HDR_OFF_ENTRIES) / 8);
 }
@@ -107,6 +113,18 @@ static int bootstrap_new(StorageBackend* sb) {
     vfs_wr8_s(sb->header_buf, HDR_OFF_FREE_LIST_HEAD,  0, sb->page_size);
     vfs_wr8_s(sb->header_buf, HDR_OFF_FREE_LIST_TAIL,  0, sb->page_size);
     vfs_wr8_s(sb->header_buf, HDR_OFF_FREE_LIST_COUNT, 0, sb->page_size);
+
+    /* Phase 28: Bin header (offsets 64, 72, 80).  A fresh VFS has
+       no Bin entries, so all three fields are 0.  The W1 (push/pop)
+       implementation populates these as bin_push is called.
+       Offset 88 is reserved padding (8 bytes for one future
+       8-byte field; must remain zero in this phase). */
+    vfs_wr8_s(sb->header_buf, HDR_OFF_BIN_HEAD,  0, sb->page_size);
+    vfs_wr8_s(sb->header_buf, HDR_OFF_BIN_TAIL,  0, sb->page_size);
+    vfs_wr8_s(sb->header_buf, HDR_OFF_BIN_COUNT, 0, sb->page_size);
+    /* Zero the reserved padding field too (so the header's CRC
+       is deterministic for a fresh VFS). */
+    vfs_wr8_s(sb->header_buf, HDR_OFF_RESERVED, 0, sb->page_size);
 
     /* Indirection entries: page 0 at physical 0, page 1 at physical (ps+16) */
     int ic = inline_entry_count(ps);
@@ -213,6 +231,12 @@ static int mount_existing(StorageBackend* sb) {
        layout so W2/W3 can read it back. */
     /* (W2/W3 will read these from the header via
        vfs_atomic_load_i64 on the in-memory header_buf.) */
+
+    /* Phase 28: Bin header fields (offsets 64, 72, 80) are now
+       in the header buffer (read above).  They were zero-initialized
+       by bootstrap_new.  W1 (bin_push/bin_pop) reads/writes these
+       via vfs_atomic_load_i64 / vfs_atomic_store_i64 on the
+       in-memory header_buf.  No additional setup needed here. */
 
     /* Sync in-memory lazy mirror tracking from on-disk PageHeader */
 
@@ -366,6 +390,13 @@ StorageBackend* storage_open(const char* path, int64_t page_size) {
        run after indir_init (need indir_lookup for free-list pages). */
     validate_free_list_on_mount(sb);
 
+    /* Phase 28 W1: validate the Bin count after mount.  Must run
+       after indir_init (need indir_lookup for Bin pages).  The Bin
+       validation walk uses raw pread (NOT the cache) for the same
+       reason as the free-list validation: avoid putting Bin pages
+       in the cache and triggering the W5-style cache interaction. */
+    validate_bin_on_mount(sb);
+
     return sb;
 }
 
@@ -441,10 +472,13 @@ static int64_t storage_allocate_count_scan(StorageBackend* sb, int count);
        pages when the tail is full; bypasses the free-list check
        to avoid the producer-consumer cycle described in the spec's
        R6 fix)
+     - alloc_bin_page()     (Phase 28 W1 — to allocate Bin pages
+       when the Bin tail is full; same producer-consumer cycle
+       rationale)
    The function returns the new logical page index, or -1 on error.
    The caller is responsible for claiming the slot via try_claim_entry
    if it wants to use the page for data. */
-static int64_t storage_allocate_tail_advance(StorageBackend* sb, int count);
+int64_t storage_allocate_tail_advance(StorageBackend* sb, int count);
 
 /* Phase 27 W6: dequeue_from_free_list — try to pop a (logical,
    physical) entry from the free-page queue.  Returns the logical
@@ -638,7 +672,7 @@ int64_t storage_allocate(StorageBackend* sb, int count) {
 
 /* storage_allocate_tail_advance — see comment above.
    The body is the original count==1 tail-advance fast path. */
-static int64_t storage_allocate_tail_advance(StorageBackend* sb, int count) {
+int64_t storage_allocate_tail_advance(StorageBackend* sb, int count) {
     /* Tail-advance fast path.  Assumption: every newly allocated page
        gets the next available index at the tail of the indirection
        table, so the first free slot is exactly sb->total_pages.  This

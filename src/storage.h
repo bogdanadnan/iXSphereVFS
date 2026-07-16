@@ -39,8 +39,20 @@ typedef struct {
 #define HDR_OFF_FREE_LIST_TAIL  48
 #define HDR_OFF_FREE_LIST_COUNT 56
 
-/* Inline indirection table starts AFTER the free-list header */
-#define HDR_OFF_ENTRIES         64
+/* Phase 28 Bin (spec: impl/phase-28-gc.md).
+   Three 8-byte fields live at offsets 64, 72, 80.
+   An 8-byte padding at offset 88 is reserved for one
+   future 8-byte field. The inline indirection table
+   shifts from offset 64 to offset 96; inline_count is
+   reduced by 4 (the 32-byte shift from offset 64 to
+   offset 96 is 4 entries, not 3). */
+#define HDR_OFF_BIN_HEAD     64
+#define HDR_OFF_BIN_TAIL     72
+#define HDR_OFF_BIN_COUNT    80
+#define HDR_OFF_RESERVED     88
+
+/* Inline indirection table starts AFTER the Bin header */
+#define HDR_OFF_ENTRIES         96
 
 /* Flush priorities (stored in flags bits 0–1) */
 #define FLUSH_PRIO_DATA        0
@@ -141,6 +153,12 @@ void            storage_close(StorageBackend* sb);
 int64_t         storage_allocate(StorageBackend* sb, int count);
 int             storage_acquire(StorageBackend* sb, int64_t logical_page);
 void            storage_free(StorageBackend* sb, int64_t logical_page);
+
+/* Internal: tail-advance-only allocation (bypasses the free-list
+   check).  Used by the Bin (Phase 28 W1) and the free-list (Phase 27
+   W3) to allocate metadata pages without the producer-consumer
+   cycle.  Not part of the public API. */
+int64_t         storage_allocate_tail_advance(StorageBackend* sb, int count);
 
 /* Status of a storage_read attempt.  Phase 27 C5: distinguishes
    "page not allocated" (sparse-file semantics: zero-fill) from

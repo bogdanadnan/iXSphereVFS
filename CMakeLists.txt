@@ -34,6 +34,7 @@ add_library(ixsphere_vfs STATIC
     src/var_array.c
     src/hash_map.c
     src/fuse_dir_cache.c
+    src/bin.c
 )
 
 set_source_files_properties(src/var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -fno-strict-aliasing")
@@ -55,6 +56,9 @@ add_test(NAME vfs_test COMMAND vfs_test)
 add_executable(test_storage test/test_storage.c)
 target_link_libraries(test_storage ixsphere_vfs pthread)
 add_test(NAME test_storage COMMAND test_storage)
+add_executable(test_bin test/test_bin.c)
+target_link_libraries(test_bin ixsphere_vfs pthread)
+add_test(NAME test_bin COMMAND test_bin)
 
 add_executable(test_c6_debug test/test_c6_debug.c)
 target_link_libraries(test_c6_debug ixsphere_vfs pthread)
