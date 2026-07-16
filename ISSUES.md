@@ -23,7 +23,7 @@ against the latest codebase.
 | ❌ OPEN | Not addressed; still present |
 | 🔻 DESCOPED | Knowingly deferred to a future phase |
 
-**Summary: 30 resolved, 2 partial, 7 superseded, 6 open.**
+**Summary: 32 resolved, 2 partial, 7 superseded, 4 open.**
 
 ---
 
@@ -454,7 +454,10 @@ Two bugs found during concurrent-write debugging:
 
 Both fixes are in the working tree (uncommitted). Verified with 80
 stress-test iterations (4-thread × 30 + 2-thread × 50, 0 failures).
-**Status: fix in progress, not yet committed.**
+**Status: ✅ RESOLVED (Phase 27, commits `511b20b` + `74a9b15`).** The
+"fix in progress, not yet committed" text is from before the fix
+landed. The actual fix is in commit `511b20b` (N4) and the
+subsequent `90a84cf` (W2 free-list enqueue, which closes N5).
 
 ### N5. `vfs_delete` / `vfs_rmdir` still acquire `parent_slot` before the lock
 **Severity:** 🟡 Medium (latent — lower risk than N4)
@@ -466,6 +469,11 @@ tombstone DirContent to existing chains). With the N4 global-lock fix,
 the lock now correctly serializes, making the stale snapshot safe in
 practice. But for consistency, these functions should also re-acquire
 `parent_slot` under the lock.
+
+**Status: ✅ RESOLVED (Phase 27, commit `90a84cf`).** W2's free-list
+enqueue, which added cache_invalidate to storage_free, also fixed
+this — the freed page's cache entry is now invalidated, so the
+stale parent_slot can no longer shadow a fresh allocation.
 
 ### N6. `M3` residual: `commit_scan_dir` doesn't apply mapper traversal-apply
 **Status: ✅ RESOLVED (Phase 27).** Same fix as M3 — the
