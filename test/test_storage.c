@@ -421,6 +421,96 @@ void test_indir_ensure_capacity_growth(void) {
     cleanup(path);
 }
 
+/* Phase 27 W2 regression: free-list enqueue.
+ *
+ * Allocate some pages, free them, verify the free-list header
+ * fields are updated correctly.  Verifies that the tail pointer
+ * points at a free-list page, the count matches the number of
+ * frees, and the entries contain the expected (logical, physical)
+ * pairs.
+ */
+
+/* Helper: read a free-list entry directly.  Mirrors the in-storage.c
+   internal helper, exposed here for the test. */
+static int64_t read_free_list_entry_helper(StorageBackend* sb, int64_t fl_page,
+                                            int idx, int64_t* out_phys) {
+    int64_t fl_off = indir_lookup(sb, fl_page);
+    if (fl_off == 0) return 0;
+    /* fl_off is the start of the PageHeader.  The payload starts
+       at fl_off + PAGE_HEADER_SIZE.  The first entry is at
+       payload + 16 (after next_page + count + padding). */
+    int64_t payload_off = fl_off + 16 + 16 + (int64_t)idx * 16;
+    uint8_t buf[16];
+    if (pread(sb->fd, buf, 16, payload_off) != 16) return 0;
+    int64_t logical;
+    memcpy(&logical, buf, 8);
+    memcpy(out_phys, buf + 8, 8);
+    return logical;
+}
+
+void test_free_list_enqueue(void) {
+    printf("7. free-list enqueue (W2)...\n");
+    const char* path = "/tmp/test_storage_freelist.vfs";
+    cleanup(path);
+
+    StorageBackend* sb = storage_open(path, 8192);
+    CHECK(sb != NULL);
+    if (!sb) { cleanup(path); return; }
+
+    /* Allocate 10 pages. */
+    int64_t vps[10];
+    int64_t phys[10];
+    for (int i = 0; i < 10; i++) {
+        vps[i] = storage_allocate(sb, 1);
+        CHECK(vps[i] > 0);
+        phys[i] = indir_lookup(sb, vps[i]);
+        CHECK(phys[i] > 0);
+    }
+
+    /* Free the first 5 pages.  The free-list should grow to 5. */
+    for (int i = 0; i < 5; i++) {
+        storage_free(sb, vps[i]);
+    }
+
+    /* Read the free-list header from the in-memory header_buf. */
+    int64_t* fl_head = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_HEAD);
+    int64_t* fl_tail = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_TAIL);
+    int64_t* fl_count = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_COUNT);
+    CHECK_EQ(*fl_count, 5);
+    CHECK(*fl_head != 0);
+    CHECK(*fl_tail != 0);
+    CHECK_EQ(*fl_head, *fl_tail);  /* only one free-list page used for 5 entries */
+
+    /* Verify the entries in the tail page.  Enqueue appends to
+       position [count], so:
+         entry[0] = first appended = first freed = vps[0]
+         entry[4] = last appended = last freed = vps[4]
+       The dequeue (W3) pops the LAST entry (entry[4]) for LIFO
+       within page. */
+    int64_t phys_check = 0;
+    int64_t entry0 = read_free_list_entry_helper(sb, *fl_tail, 0, &phys_check);
+    CHECK_EQ(entry0, vps[0]);
+    CHECK_EQ(phys_check, phys[0]);
+    int64_t entry4 = read_free_list_entry_helper(sb, *fl_tail, 4, &phys_check);
+    CHECK_EQ(entry4, vps[4]);
+    CHECK_EQ(phys_check, phys[4]);
+
+    /* Free 5 more — should fill the current tail page (510 entries
+       for 8KB) and stay within one page.  Count should now be 10. */
+    for (int i = 5; i < 10; i++) {
+        storage_free(sb, vps[i]);
+    }
+    CHECK_EQ(*fl_count, 10);
+
+    /* Indir should now be 0 for all freed pages. */
+    for (int i = 0; i < 10; i++) {
+        CHECK_EQ(indir_lookup(sb, vps[i]), 0);
+    }
+
+    storage_close(sb);
+    cleanup(path);
+}
+
 /* ========================================================================== */
 
 int main(void) {
@@ -433,6 +523,7 @@ int main(void) {
     test_flush_order();
     test_concurrent();
     test_indir_ensure_capacity_growth();
+    test_free_list_enqueue();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

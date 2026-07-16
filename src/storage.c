@@ -336,6 +336,18 @@ static int try_claim_entry(StorageBackend* sb, int64_t logical_page, int64_t phy
 /* Forward declaration for the count>1 fallback below. */
 static int64_t storage_allocate_count_scan(StorageBackend* sb, int count);
 
+/* Phase 27: storage_allocate_tail_advance — extracted from the
+   original storage_allocate(1) tail-advance code.  Used by:
+     - storage_allocate(1)  (the public API — the hot path)
+     - enqueue_free_page()  (W2 — to allocate free-list metadata
+       pages when the tail is full; bypasses the free-list check
+       to avoid the producer-consumer cycle described in the spec's
+       R6 fix)
+   The function returns the new logical page index, or -1 on error.
+   The caller is responsible for claiming the slot via try_claim_entry
+   if it wants to use the page for data. */
+static int64_t storage_allocate_tail_advance(StorageBackend* sb, int count);
+
 int64_t storage_allocate(StorageBackend* sb, int count) {
     if (count <= 0) return -1;
     if (count > 1) {
@@ -346,7 +358,15 @@ int64_t storage_allocate(StorageBackend* sb, int count) {
            with the same tail-advance pattern once count>1 is needed. */
         return storage_allocate_count_scan(sb, count);
     }
+    /* Phase 27: count==1 fast path is now just the tail-advance.
+       The free-list dequeue check (W3) will be added at the top of
+       this function in the next workload. */
+    return storage_allocate_tail_advance(sb, count);
+}
 
+/* storage_allocate_tail_advance — see comment above.
+   The body is the original count==1 tail-advance fast path. */
+static int64_t storage_allocate_tail_advance(StorageBackend* sb, int count) {
     /* Tail-advance fast path.  Assumption: every newly allocated page
        gets the next available index at the tail of the indirection
        table, so the first free slot is exactly sb->total_pages.  This
@@ -524,7 +544,7 @@ int64_t storage_allocate(StorageBackend* sb, int count) {
     } while (1);
 
     return logical;
-}
+}  /* end of storage_allocate_tail_advance */
 
 /* ---------------------------------------------------------------------------
  * storage_allocate_count_scan — slow fallback for count > 1.
@@ -643,9 +663,163 @@ int storage_acquire(StorageBackend* sb, int64_t logical_page) {
     return 1;
 }
 
+/* ---------------------------------------------------------------------------
+ * Phase 27 free-page queue: enqueue / dequeue helpers
+ * --------------------------------------------------------------------------- */
+
+/* Free-list page format (per-page_size bytes, when interpreted as
+   a free-list metadata page):
+     offset 0:  8 bytes  next_page  (logical VP of next free-list page; 0 = end)
+     offset 8:  4 bytes  count      (number of valid entries; 0..MAX_PER_PAGE)
+     offset 12: 4 bytes  padding    (8-byte alignment for the entry array)
+     offset 16: 16*N bytes  entries[N]  (each: 8-byte logical + 8-byte physical)
+
+   MAX_PER_PAGE = (page_size - 16) / 16.
+*/
+
+/* The MAX_PER_PAGE constant depends on page_size; this helper gives
+   us the right value at runtime. */
+static int free_list_max_per_page(StorageBackend* sb) {
+    return (int)((sb->page_size - 16) / 16);
+}
+
+/* Read the count field of a free-list page (via its indir entry). */
+static int read_free_list_count(StorageBackend* sb, int64_t fl_page) {
+    int64_t fl_off = indir_lookup(sb, fl_page);
+    if (fl_off == 0) return -1;
+    /* The count is at offset 8 in the page payload (after PageHeader). */
+    uint8_t hdr[PAGE_HEADER_SIZE];
+    if (pread(sb->fd, hdr, PAGE_HEADER_SIZE, fl_off) != PAGE_HEADER_SIZE) return -1;
+    int64_t payload_off = fl_off + PAGE_HEADER_SIZE;
+    uint8_t buf[8];
+    if (pread(sb->fd, buf, 8, payload_off + 8) != 8) return -1;
+    int32_t count;
+    memcpy(&count, buf, 4);
+    return (int)count;
+}
+
+/* Write the next_page field of a free-list page. */
+static void write_free_list_next(StorageBackend* sb, int64_t fl_page, int64_t next) {
+    int64_t fl_off = indir_lookup(sb, fl_page);
+    if (fl_off == 0) return;
+    int64_t payload_off = fl_off + PAGE_HEADER_SIZE;
+    uint8_t buf[8];
+    memcpy(buf, &next, 8);
+    pwrite(sb->fd, buf, 8, payload_off);  /* next_page at offset 0 */
+    /* Mark the page dirty so the change is flushed. */
+    cache_mark_dirty(&sb->cache, fl_page, FLUSH_PRIO_POOL);
+}
+
+/* Write the count field of a free-list page. */
+static void write_free_list_count(StorageBackend* sb, int64_t fl_page, int count) {
+    int64_t fl_off = indir_lookup(sb, fl_page);
+    if (fl_off == 0) return;
+    int64_t payload_off = fl_off + PAGE_HEADER_SIZE;
+    uint8_t buf[4];
+    int32_t c = (int32_t)count;
+    memcpy(buf, &c, 4);
+    pwrite(sb->fd, buf, 4, payload_off + 8);
+    cache_mark_dirty(&sb->cache, fl_page, FLUSH_PRIO_POOL);
+}
+
+/* Read an entry at index `idx` in the free-list page.  Returns
+   logical VP and physical offset.  Returns 0 on failure. */
+static int64_t read_free_list_entry(StorageBackend* sb, int64_t fl_page, int idx,
+                                     int64_t* out_phys) {
+    int64_t fl_off = indir_lookup(sb, fl_page);
+    if (fl_off == 0) return 0;
+    int64_t payload_off = fl_off + PAGE_HEADER_SIZE + 16 + (int64_t)idx * 16;
+    uint8_t buf[16];
+    if (pread(sb->fd, buf, 16, payload_off) != 16) return 0;
+    int64_t logical, phys;
+    memcpy(&logical, buf, 8);
+    memcpy(&phys, buf + 8, 8);
+    *out_phys = phys;
+    return logical;
+}
+
+/* Write an entry at index `idx` in the free-list page. */
+static void write_free_list_entry(StorageBackend* sb, int64_t fl_page, int idx,
+                                    int64_t logical, int64_t phys) {
+    int64_t fl_off = indir_lookup(sb, fl_page);
+    if (fl_off == 0) return;
+    int64_t payload_off = fl_off + PAGE_HEADER_SIZE + 16 + (int64_t)idx * 16;
+    uint8_t buf[16];
+    memcpy(buf, &logical, 8);
+    memcpy(buf + 8, &phys, 8);
+    pwrite(sb->fd, buf, 16, payload_off);
+    cache_mark_dirty(&sb->cache, fl_page, FLUSH_PRIO_POOL);
+}
+
+/* Allocate a new free-list page via the tail-advance path.  The
+   new page's count is initialized to 1 and entry[0] = (logical, phys).
+   Returns the new page's logical VP, or 0 on error. */
+static int64_t alloc_free_list_page(StorageBackend* sb, int64_t logical, int64_t phys) {
+    /* Use the tail-advance to get a new VP.  The tail-advance will
+       claim the slot (try_claim_entry sets indir[new_vp] = physical_offset
+       on the success path), but we need to write free-list metadata
+       (next, count, entry[0]) to the new page. */
+    int64_t new_vp = storage_allocate_tail_advance(sb, 1);
+    if (new_vp < 0) return 0;
+    /* Initialize the new free-list page's metadata. */
+    write_free_list_next(sb, new_vp, 0);  /* no next */
+    write_free_list_count(sb, new_vp, 1);
+    write_free_list_entry(sb, new_vp, 0, logical, phys);
+    return new_vp;
+}
+
+/* Append (logical, phys) to the free-page queue.  Allocates a new
+   free-list page if the tail is null or full.  This is W2's enqueue.
+   Note: not thread-safe yet (single-threaded assumption for the W2
+   initial impl; the spec acknowledges storage_free is currently only
+   called by GC, which is single-threaded). */
+static void enqueue_free_page(StorageBackend* sb, int64_t logical, int64_t phys) {
+    int max_per_page = free_list_max_per_page(sb);
+
+    /* Read current tail. */
+    int64_t* fl_head_ptr = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_HEAD);
+    int64_t* fl_tail_ptr = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_TAIL);
+    int64_t* fl_count_ptr = (int64_t*)(sb->header_buf + HDR_OFF_FREE_LIST_COUNT);
+
+    int64_t tail = vfs_atomic_load_i64(fl_tail_ptr);
+    int tail_count = (tail != 0) ? read_free_list_count(sb, tail) : 0;
+
+    int64_t new_tail;
+    if (tail == 0 || tail_count < 0 || tail_count >= max_per_page) {
+        /* Empty queue or tail is full.  Allocate a new free-list page. */
+        new_tail = alloc_free_list_page(sb, logical, phys);
+        if (new_tail == 0) return;  /* OOM; the logical free still happened
+                                       (indir=0 was set by storage_free) */
+
+        if (tail != 0) {
+            /* Queue was non-empty; link the new page as the next after tail. */
+            write_free_list_next(sb, tail, new_tail);
+        }
+    } else {
+        /* Append to existing tail. */
+        write_free_list_entry(sb, tail, tail_count, logical, phys);
+        write_free_list_count(sb, tail, tail_count + 1);
+        new_tail = tail;
+    }
+
+    /* Update tail and head pointers + global count. */
+    vfs_atomic_store_i64(fl_tail_ptr, new_tail);
+    if (vfs_atomic_load_i64(fl_head_ptr) == 0) {
+        vfs_atomic_store_i64(fl_head_ptr, new_tail);
+    }
+    vfs_atomic_add_i64(fl_count_ptr, 1);
+}
+
 void storage_free(StorageBackend* sb, int64_t logical_page) {
     if (logical_page < 2) return;  /* don't free header or superblock */
+    int64_t phys = indir_lookup(sb, logical_page);
+    if (phys == 0) return;  /* already free */
     indir_set(sb, logical_page, 0);
+    /* Invalidate the cache entry — the data is now stale (the page
+       is free; the new indir=0 means reads should return NOT_FOUND). */
+    cache_invalidate(&sb->cache, logical_page);
+    /* Phase 27: enqueue (logical, phys) into the free-page queue. */
+    enqueue_free_page(sb, logical_page, phys);
 }
 
 /* ---------------------------------------------------------------------------

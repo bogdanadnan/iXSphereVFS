@@ -91,6 +91,43 @@ void cache_destroy(PageCache* cache) {
 }
 
 /* ---------------------------------------------------------------------------
+ * cache_invalidate — remove a specific entry from the cache.
+ *
+ * Phase 27: used by the free-page queue (storage_free) to evict
+ * stale cache entries when a page is freed, and by storage_allocate
+ * when a dequeued page is returned to the caller (the old data in
+ * the cache is stale; the caller will write new data).
+ *
+ * Lock-free: takes the per-bucket spinlock, walks the chain, unlinks
+ * the matching entry, frees its payload. Returns 1 if an entry was
+ * removed, 0 if no entry was found.
+ * --------------------------------------------------------------------------- */
+
+int cache_invalidate(PageCache* cache, int64_t logical_page) {
+    int bkt = bucket_index(cache, logical_page);
+    spin_lock(&cache->bucket_locks[bkt]);
+
+    CacheEntry** prev = &cache->buckets[bkt];
+    CacheEntry* e = *prev;
+    while (e) {
+        if (e->logical_page == logical_page) {
+            *prev = e->hash_next;
+            if (e->dirty) cache->dirty_count--;
+            cache->entry_count--;
+            free(e->payload);
+            free(e);
+            spin_unlock(&cache->bucket_locks[bkt]);
+            return 1;
+        }
+        prev = &e->hash_next;
+        e = e->hash_next;
+    }
+
+    spin_unlock(&cache->bucket_locks[bkt]);
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
  * cache_find
  * --------------------------------------------------------------------------- */
 
