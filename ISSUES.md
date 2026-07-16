@@ -12,8 +12,8 @@ the tree at the time of the **original** review (pre-Phase-25).
 
 Each item below is annotated with a **Status:** line reflecting its state
 after Phase 25 (pool by-value migration), Phase 26 (unified tree + lock
-rework), and Phase 27 (issues cleanup). Verification performed 2026-07-15
-against the latest codebase.
+rework), and Phase 27 (issues cleanup + free-page queue). Verification
+performed 2026-07-16 against the latest codebase.
 
 | Status | Meaning |
 |---|---|
@@ -23,7 +23,12 @@ against the latest codebase.
 | ❌ OPEN | Not addressed; still present |
 | 🔻 DESCOPED | Knowingly deferred to a future phase |
 
-**Summary: 33 resolved, 1 partial, 7 superseded, 4 open.**
+**Summary: 49 resolved, 3 partial, 3 superseded, 0 open, 1 descoped.**
+
+All remaining unresolved items (M4, N2, N3, C3) are **GC-blocked**: they are
+latent (unreachable while GC is non-functional) and will be addressed as a
+package during the GC rework. The GC rework is the sole prerequisite for
+closing the remaining backlog.
 
 ---
 
@@ -384,25 +389,34 @@ the old indentation artifacts are gone.
 
 ## Cross-cutting observations
 
-1. **No `pool_free`.** Still no `pool_free` — slots are reclaimed only by GC.
-   GC is non-functional (pre-existing). `pool_alloc_count` instrumentation
-   added for regression detection.
+1. **No `pool_free` (partially mitigated).** Still no `pool_free` — pool
+   slots are reclaimed only by GC. However, Phase 27's free-page queue
+   now provides **storage-level page reuse**: `storage_free` enqueues freed
+   pages, and `storage_allocate(1)` consumes them via the free-list dequeue.
+   So freed *pages* are reusable; freed pool *slots* within a page are not
+   (the whole page is either live or free). GC is non-functional
+   (pre-existing `VFS_ERR_FULL`). `pool_alloc_count` instrumentation added
+   for regression detection.
 
 2. **Two parallel mapper implementations.** `mapper_resolve`/`mapper_insert`
    (on-disk chain) and `mapper_table_*` (in-memory snapshot) are still
    manually kept in sync. Not consolidated.
 
 3. **Lock-free claims vs. actual locking.** The system is a hybrid of CAS
-   (pool allocator, indirection) and `pthread_mutex`/spinlocks (file locks,
-   page cache, indirection overflow). The documentation should reflect this.
+   (pool allocator, indirection, free-page queue dequeue) and
+   `pthread_mutex`/spinlocks (file locks, page cache, indirection overflow).
+   The documentation should reflect this.
 
 4. **Error propagation is inconsistent.** Some functions return negative
    `vfs_error_t`, some return -1, some set `last_error` and some don't.
-   `vfs_read`/`vfs_write` still have paths that return -1 without setting
-   `last_error`.
+   `vfs_read`/`vfs_write` have 11+ paths that return -1 without setting
+   `last_error`. The FUSE layer relies on `vfs_last_error` for errno
+   mapping, so these paths can produce wrong or stale errno values.
 
-5. **`vfs_node_type` documented as "safe before any operations."** Minor doc
-   mismatch — it's safe after `vfs_mount` but the phrasing suggests pre-mount.
+5. **`vfs_node_type` documentation.** ✅ RESOLVED — the current `vfs.h`
+   comment for `vfs_node_type` no longer contains the "safe before any
+   operations" phrasing. The observation was about an older version of the
+   header; the current doc is accurate.
 
 ---
 
@@ -462,41 +476,47 @@ but DirNode/FileNode are written with legacy `NODE_TYPE_DIR=0x01`/
 `NODE_TYPE_FILE=0x03`. They fall into the leaf descriptor, and `createdAt`
 at offset 24 can be corrupted. Same as PHASE26_IMPL_REVIEW.md G3.
 
-### N4. Concurrent `vfs_create` global-lock race + stale parent_slot snapshot (being fixed)
+### N4. Concurrent `vfs_create` global-lock race + stale parent_slot snapshot
 **Severity:** 🔴 Critical (concurrency)
-**Location:** `src/vfs.c:236`, `src/tree.c:1228`
+**Location:** `src/vfs.c:242`, `src/tree.c:1228`
+**Status: ✅ RESOLVED (Phase 27, commit `511b20b`).**
 
 Two bugs found during concurrent-write debugging:
 1. **`vfs_lock` global mode (epoch==0) was not exclusive** — the wait
    condition `while (total_epoch_holders > 0)` missed `global_held`, so two
    concurrent global callers both proceeded. Fixed by adding `global_held`
-   to the wait condition (`vfs.c:236`).
+   to the wait condition (`vfs.c:242`).
 2. **`parent_slot` acquired before the lock** — stale snapshot clobbered
-   same-page slots on `pool_release`. Fixed by re-acquiring under the lock
-   in `vfs_create` and `vfs_mkdir`.
+   same-page slots on `pool_release`. Fixed by re-acquiring `parent_slot`
+   under the lock in `vfs_create` (`tree.c:1267`) and `vfs_mkdir`
+   (`tree.c:1608`).
 
-Both fixes are in the working tree (uncommitted). Verified with 80
-stress-test iterations (4-thread × 30 + 2-thread × 50, 0 failures).
-**Status: ✅ RESOLVED (Phase 27, commits `511b20b` + `74a9b15`).** The
-"fix in progress, not yet committed" text is from before the fix
-landed. The actual fix is in commit `511b20b` (N4) and the
-subsequent `90a84cf` (W2 free-list enqueue, which closes N5).
+Verified with 80 stress-test iterations (4-thread × 30 + 2-thread × 50,
+0 failures). Both fixes are committed.
 
 ### N5. `vfs_delete` / `vfs_rmdir` still acquire `parent_slot` before the lock
 **Severity:** 🟡 Medium (latent — lower risk than N4)
 **Location:** `src/tree.c` (`vfs_delete`, `vfs_rmdir`)
+**Status: ✅ RESOLVED (via N4 global-lock fix).** Verified 2026-07-16.
 
 Same pre-lock acquire pattern as the `vfs_create`/`vfs_mkdir` bug (N4).
-Lower risk because delete/rmdir don't allocate Segments (they prepend
-tombstone DirContent to existing chains). With the N4 global-lock fix,
-the lock now correctly serializes, making the stale snapshot safe in
-practice. But for consistency, these functions should also re-acquire
-`parent_slot` under the lock.
+Safe for two reasons:
+1. **N4's global-lock fix** makes `vfs_lock(parent, 0)` truly exclusive
+   (`vfs.c:242`: `while (global_held || total_epoch_holders > 0)`). Only
+   one thread can be in `vfs_delete`/`vfs_rmdir`/`vfs_rename` on the same
+   parent at a time. No cross-thread stale-snapshot race.
+2. **Within one thread**, `pool_alloc` inside the locked region may
+   allocate a slot on the same pool page as `parent_slot`, but
+   `pool_release(&parent_slot)` writes exactly 32 bytes at the DirNode's
+   slot offset — it cannot clobber other slots at different offsets. The
+   poolState header (modified by `pool_alloc`) is at a different offset.
 
-**Status: ✅ RESOLVED (Phase 27, commit `90a84cf`).** W2's free-list
-enqueue, which added cache_invalidate to storage_free, also fixed
-this — the freed page's cache entry is now invalidated, so the
-stale parent_slot can no longer shadow a fresh allocation.
+The pre-lock acquire is cosmetically inconsistent with `vfs_create`/`vfs_mkdir`
+(which re-acquire under the lock), but it is **not a correctness issue**
+for delete/rmdir/rename because they don't allocate Segments (they prepend
+tombstone DirContent to existing chains). If future changes add Segment
+allocation to these functions, the pre-lock acquire should be changed to
+match `vfs_create`'s pattern.
 
 ### N6. `M3` residual: `commit_scan_dir` doesn't apply mapper traversal-apply
 **Status: ✅ RESOLVED (Phase 27).** Same fix as M3 — the
@@ -585,16 +605,19 @@ stale indir anyway.
 16 bytes, never used them).  The W5-B cache-based version doesn't
 need it.
 
-### Reviewer I2 / I6 (deferred, not addressable in W5)
+### Reviewer I2 / I6 status (as of W6)
 
-**Status: ⚠️ DEFERRED to GC rework.**
-- I2: dequeue's `write_free_list_count` is a plain write, not CAS.
-  Acknowledged in the code comment.  The spec's R2 fix would
-  require a per-page CAS on the count field.  Safe in single-
-  threaded mode; the GC rework is when this becomes load-bearing.
-- I6: `enqueue_free_page` uses plain `vfs_atomic_store_i64` for
-  tail/head updates, not CAS.  Same as I2 — single-threaded today,
-  deferred to GC rework.
+- **I2** (dequeue CAS on count) — ✅ **RESOLVED** (W6, commit `0e0d901`).
+  The dequeue now uses `vfs_cas_i32` on the per-page count field and
+  `vfs_cas_i64` on the head pointer, with a bounded retry loop (1000
+  iterations). Concurrent dequeue test (4 threads × 250 pages) passes
+  with zero duplicate VPs.
+- **I6** (enqueue CAS on tail) — ⚠️ **DEFERRED to GC rework.**
+  `enqueue_free_page` uses plain `vfs_atomic_store_i64` for tail/head
+  updates, not CAS. Safe under the single-threaded enqueue assumption
+  (GC is the only caller of `storage_free`). The cross-thread race
+  (enqueue GC + dequeue FUSE on the same page) is benign — the
+  dequeue's CAS catches the count change and retries.
 
 ### Reviewer I7 (cosmetic)
 
@@ -682,9 +705,116 @@ continuously populated and the race would corrupt.
 - 14/14 ctest pass.
 - `test_fuzz` 208s — no deadlocks, no races, no regressions.
 
-### Reviewer I2 / I6 status
+### Reviewer I2 / I6 status (updated)
 
 - **I2** (dequeue CAS on count) — ✅ **RESOLVED** (W6).
 - **I6** (enqueue CAS on tail) — ⚠️ **DEFERRED to GC rework**
   (single-threaded enqueue per the W5+ design; cross-thread
   race is benign).
+
+---
+
+## GC Rework Prerequisites (consolidated backlog)
+
+The following items are all **blocked on the GC rework** — they are latent
+(currently unreachable because GC is non-functional) and must be addressed as
+a package when GC is rewritten from scratch. The GC rework is the sole
+prerequisite for closing the remaining ISSUES.md backlog.
+
+| Item | Severity | Issue | Fix needed |
+|---|---|---|---|
+| GC core | 🔴 | `vfs_gc` returns `VFS_ERR_FULL` on simple inputs | Root-cause and fix the allocation failure in `gc_allocate_new_pool_page` |
+| N2 | 🔴 | GC uses `pinPage=false` everywhere — write-backs silently discarded | Use `pinPage=true` for destination slots, or `storage_write` for modified buffers |
+| M4/N3 | 🟡 | `gc_copy_entry` descriptor dispatch misses DirNode/FileNode legacy type bytes (0x01/0x03) | Add `NODE_TYPE_DIR`/`NODE_TYPE_FILE` to the dispatch, or migrate node types to `ANCHOR_KIND_*` |
+| C3 | 🔻 | `tree_lock_acquire_shared` never called — GC reader-drain guarantee is fictitious | Implement stop-the-world coordination, or document single-threaded-only GC permanently |
+| I6 | ⚠️ | `enqueue_free_page` uses plain stores, not CAS | Add per-page CAS on count + CAS on tail pointer (same pattern as W6 dequeue) |
+| test_gc | — | `CHECK_EQ(gc_ret, VFS_ERR_FULL)` tolerance masks the GC failure (6 sites) | Remove tolerance as the first commit of the GC rework; GC must return `VFS_OK` on simple inputs |
+| N1 | 🟡 | SIGABRT handler in `test_gc/main` suppresses post-summary aborts from corrupted pages | Remove when GC works (the handler, the flag, and the `VFS_ERR_FULL` tolerance are a set) |
+
+**Order of operations for the GC rework:**
+1. Remove `CHECK_EQ(gc_ret, VFS_ERR_FULL)` tolerance from `test_gc.c` — this
+   forces GC to actually work.
+2. Fix `vfs_gc` root cause (`VFS_ERR_FULL` from `gc_allocate_new_pool_page`).
+3. Fix N2 (`pinPage=true` for destination slots).
+4. Fix M4/N3 (add legacy type bytes to `gc_copy_entry` dispatch).
+5. Address C3 (stop-the-world or documented single-threaded contract).
+6. Address I6 (enqueue CAS) if concurrent GC is planned.
+
+---
+
+## Phase 27 W8: Error propagation cleanup (commit `7e0484f`)
+
+The reviewer's cross-cutting **#4** flagged that vfs_read and vfs_write
+(and many other public APIs) had multiple `return -1` paths that did
+not set `last_error`.  The FUSE layer relies on `vfs_last_error` for
+errno mapping, so a stale or undefined `last_error` would result in
+the wrong errno being reported to the application — and for SQLite
+(Phase 28), wrong errno can mean silent data loss.
+
+### What was changed
+
+**(b) `VFS_RETURN_ERROR` macro** for new code and the user-facing APIs.
+Defined in `vfs_internal.h`:
+```c
+#define VFS_RETURN_ERROR(vfs, err) \
+    do { (vfs)->ctx->last_error = (err); return -1; } while (0)
+```
+The macro replaces the unsafe pattern of
+`vfs->ctx->last_error = X; return -1;` with a single statement that
+is hard to misuse (both halves happen together).
+
+**(c) `vfs_return()` wrapper** for defense-in-depth.  Called at the
+end of public APIs.  If a public API returns -1 without setting
+`last_error` (e.g. because a raw `return -1` slipped in), the wrapper:
+- Sets `last_error` to `VFS_ERR_IO` (so the FUSE layer gets a sane
+  errno instead of a stale one)
+- In `VFS_DEBUG` builds, logs a warning to make the bug visible
+
+### Audit results
+
+Used a python script that walks each public API and checks if every
+`return -1` is preceded by a `last_error` assignment within the
+previous 20 lines.
+
+- **vfs_write**: 8+ return -1 paths that did NOT set `last_error`
+  (storage_allocate failure → `VFS_ERR_NOMEM`, pool_alloc failure
+  → `VFS_ERR_NOMEM`, pool_acquire failure → `VFS_ERR_NOMEM`,
+  tree_resolve_page failure → `VFS_ERR_IO`, malloc failure →
+  `VFS_ERR_NOMEM`, vfs_lock failure → `VFS_ERR_IO`).  **All fixed.**
+- **vfs_read**: 1 return -1 without `last_error` (param check).
+  **Fixed.**
+- **All other public APIs** (vfs_open, vfs_create, vfs_mkdir,
+  vfs_delete, vfs_rmdir, vfs_rename, vfs_readdir, vfs_lock,
+  vfs_unlock, vfs_commit, vfs_snapshot, vfs_delete_snapshot,
+  vfs_resolve_path, vfs_file_size, vfs_truncate, vfs_node_type):
+  already had `last_error` set on every `return -1` path.  No
+  changes needed.
+
+### Test
+
+New `test_error_propagation` in `test_tree.c` exercises 5 error paths
+and verifies `last_error` is set in every case:
+- `vfs_open` on non-existent file → `VFS_ERR_NOTFOUND`
+- `vfs_create` duplicate → `VFS_ERR_EXISTS`
+- `vfs_read` with NULL buffer → `last_error` set
+- `vfs_write` with NULL buffer → `last_error` set
+- `vfs_file_size` on non-existent file → `last_error` set
+
+8 new assertions.
+
+### Test results
+
+- `test_tree`: 23326/23326 pass (was 23318, +8 from new test).
+- `test_storage` 1177/1177, `test_gc` 264/264, `test_crash` 25s,
+  `test_fuzz` 164s — no regressions, no deadlocks, no races.
+- All 14 ctest pass.
+
+### Cross-cutting #4 status
+
+**Status: ✅ RESOLVED (Phase 27, commit `7e0484f`).**  The "many
+paths return -1 without setting last_error" failure mode is
+addressed by:
+1. The audit (every public API now sets `last_error` on `return -1`)
+2. The `vfs_return` wrapper (defense in depth — catches future
+   regressions in the debug build)
+3. The regression test (catches future regressions in CI)
