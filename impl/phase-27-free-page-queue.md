@@ -1,11 +1,14 @@
 # Phase 27 (Follow-up): Free-Page Queue (H2 + H3 Fix)
 
-**Revision:** 2 (addresses the review in `PHASE27_FREEPAGE_REVIEW.md`).
-Changes from revision 1: R1 (header layout), R2 (internal_free),
-R3 (ABA approach), R4 (crash validation), R5 (all 4 mirror_write
-failure paths), R6 (storage_allocate_tail_advance), R7 (head==tail
-explicit), R8 (contention note), R9 (naming), R10 (line numbers),
-R11 (cache_invalidate added to W3 file changes).
+**Revision:** 3 (addresses the review in `PHASE27_FREEPAGE_REVIEW_V2.md`).
+Changes from revision 2: Q1 (remove the stale "tagged pointer"
+ABA text in the Concurrency section), Q2 (ABA detection now uses
+`try_claim_entry` inside `dequeue_from_free_list`, not caller-side
+check), Q3 (document the overflow-page dirty issue as best-effort).
+
+Changes from revision 1 are summarized at the bottom of this spec
+for the curious reader; the V2 review is the canonical iteration
+artifact.
 
 ## Goal
 
@@ -313,6 +316,17 @@ static int64_t dequeue_from_free_list(StorageBackend* sb) {
             // free; indir_set(head, 0) marks it reusable. Note:
             // this happens at most once per 510 dequeues, so the
             // cost is negligible.
+            //
+            // Q3 caveat: if `head`'s indir entry lives in an
+            // overflow page, indir_set does not mark the overflow
+            // page dirty (the overflow path in indirection.c
+            // does an atomic store without cache_mark_dirty — a
+            // pre-existing M12 residual). The indir=0 write is
+            // best-effort in that case; the drained page won't
+            // be reused until the next storage_free re-enqueues
+            // it. Acceptable: the next re-enqueue triggers an
+            // indir_set on the same slot (still 0), and the
+            // eventual flush catches the change.
             indir_set(sb, head, 0);
         }
         return 0;  // caller falls through to tail-advance
@@ -343,11 +357,23 @@ static int64_t dequeue_from_free_list(StorageBackend* sb) {
     //    invalidation prevents serving stale data on a subsequent
     //    read before the caller's write completes.
 
-    // 7. Set indir[page] = phys (the dequeued physical offset).
-    //    This re-establishes the indirection. The caller is
-    //    expected to overwrite the page via storage_write shortly
-    //    after; until then, reads return the (stale) data at phys
-    //    from the cache or disk.
+    // 7. CLAIM the page by CASing indir[page] from 0 to phys.
+    //    This is the ABA detection: if another thread already
+    //    claimed this page (indir is non-zero), the CAS fails.
+    //    We return 0 to the caller, who retries storage_allocate(1);
+    //    the retry will tail-advance past this VP (it's still in
+    //    indir from the other thread's claim) and get a fresh VP.
+    //
+    //    try_claim_entry is the existing helper used by
+    //    storage_allocate(1)'s tail-advance (storage.c:442). It
+    //    does a CAS of indir[vp] from 0 to physical_offset. The
+    //    same primitive, same atomicity guarantees.
+    if (!try_claim_entry(sb, page, phys)) {
+        // ABA: another thread already claimed this page. The
+        // entry was already removed from the queue (count
+        // decremented). The caller will retry and tail-advance.
+        return 0;
+    }
 
     return page;
 }
@@ -387,20 +413,20 @@ and then become the head again — a very narrow window. The cost
 of a successful ABA is "duplicate VP allocation" (two callers get
 the same logical page from the queue).
 
-**Mitigation**: caller-side ABA detection. The caller of
-`storage_allocate(1)` (typically `pool_alloc`) verifies the
-returned page is actually free before claiming it:
-```c
-int64_t vp = storage_allocate(sb, 1);
-if (vp > 0 && indir_lookup(sb, vp) != 0) {
-    // ABA: another thread already claimed this page. Retry.
-    vp = storage_allocate(sb, 1);
-}
-```
+**Mitigation**: ABA detection inside `dequeue_from_free_list` via
+the existing `try_claim_entry` helper. After popping the entry
+from the queue, the dequeue CASes `indir[page]` from 0 to the
+recorded physical offset. If another thread already claimed this
+page (the ABA case), the CAS fails — `indir` is non-zero because
+the other thread's claim set it. The dequeue returns 0; the
+caller's `storage_allocate(1)` retry will tail-advance past this
+VP (it's still in indir from the other thread's claim) and get a
+fresh VP.
 
-This is a 1-2 instruction check on the hot path, with retry only
-on the rare ABA. **No 16-byte CAS required**, no portability
-concerns.
+This is the same CAS-based claim that the existing tail-advance
+path uses (`try_claim_entry` at `storage.c:442`), so it's
+consistent with the rest of the allocator. No 16-byte CAS, no
+caller-side check race.
 
 **Recursion guard (R2)**: the dequeue's "advance head when drained"
 step calls `indir_set(head, 0)` (the "internal_free" — sets
@@ -545,33 +571,22 @@ free). The spec fixes it as a side effect.
 - Global counters (`free_list_count`, `free_list_head`,
   `free_list_tail`) are CAS-modified.
 
-**ABA risk** on the global counters:
-- `free_list_head` could theoretically ABA (head goes A→B→A).
-  Mitigation: a 64-bit generation counter alongside each pointer
-  (16 bytes total per pointer), or a "next_page" check inside the
-  CAS loop.
-- `free_list_count` is monotonic-ish (only enqueue/dequeue modify
-  it; both are +1/-1). ABA is not a concern for a simple counter.
+**ABA on `free_list_head`**: the spec uses a single 8-byte head
+pointer (no tagged/generation). The chain is forward-only (new
+free-list pages are appended at the tail; the head only advances
+toward newer pages). The head pointer is monotonic, so classic
+ABA (H1 → H2 → H1) requires H1 to be completely drained, removed
+from the chain, recycled as a data page or a new free-list page,
+and then become the head again — a very narrow window. The cost
+of a successful ABA is "duplicate VP allocation" (two callers get
+the same logical page from the queue). The dequeue detects this
+via `try_claim_entry` (see the dequeue function above) — if the
+CAS fails, the dequeue returns 0 and the caller retries
+storage_allocate(1), which tail-advances past the already-claimed
+VP. No 16-byte CAS, no caller-side check race.
 
-**ABA on `free_list_head`**: the spec uses a tagged pointer
-(16 bytes: 8-byte page index + 8-byte generation). The generation
-is bumped on every head advance. CAS is on the full 16-byte
-structure. The cost: one extra 8-byte atomic load on the hot path.
-
-**Alternative: skip ABA protection on the head pointer**, since the
-free-list page that's being dequeued is itself a regular storage
-page — even if the head ABA's, the dequeued page is just some
-regular storage page (whose data doesn't matter, since the caller
-will overwrite it). The risk: in the rare ABA case, we might dequeue
-the same page twice, returning the same logical VP to two different
-callers. The first caller's `storage_write` sets `indir[page] = new_phys`.
-The second caller's `storage_write` does the same, overwriting.
-No data corruption (both writes are independent), but the page is
-allocated twice in the logical space (two different cache entries
-for the same logical page).
-
-This is a real (if rare) bug. The spec uses the tagged pointer to
-avoid it. The cost is small (~1 ns extra per dequeue).
+**`free_list_count`** is monotonic-ish (only enqueue/dequeue modify
+it; both are +1/-1). ABA is not a concern for a simple counter.
 
 ### Hot-path performance
 
@@ -906,10 +921,11 @@ resolved (per the review):
 
 2. **Tag bits for ABA on the head pointer** — resolved: single
    8-byte head pointer (no tagged/generation). The chain is
-   forward-only, so classic ABA is rare. Caller-side ABA
-   detection: `pool_alloc` verifies `indir_lookup(returned_page)
-   == 0` after a dequeue; if non-zero, retry. Avoids 16-byte CAS
-   portability issues (R3).
+   forward-only, so classic ABA is rare. ABA detection inside
+   `dequeue_from_free_list` via `try_claim_entry` (CAS indir
+   from 0 to phys on the dequeued page). If the CAS fails, the
+   dequeue returns 0 and the caller retries. Avoids 16-byte CAS
+   portability issues and the caller-side check race (Q2).
 
 3. **Crash-safety mitigation** — resolved: rebuild-count walk
    on mount, validating the **stored physical offset** (not
@@ -929,7 +945,7 @@ resolved (per the review):
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| ABA on `free_list_head` causes duplicate VP allocation | Very low (forward-only chain) | Caller-visible: two `vfs_create` get the same VP | Caller-side check (`indir_lookup == 0`); retry on mismatch |
+| ABA on `free_list_head` causes duplicate VP allocation | Very low (forward-only chain) | Caller-visible: two `vfs_create` get the same VP | In-dequeue `try_claim_entry` CAS detects the ABA; caller retries and tail-advances past the already-claimed VP |
 | Crash leaves `free_list_count` ahead of disk | Very low (microsecond window between CAS and flush) | Mount-time recovery: re-walk and rebuild | Rebuild-count walk in W1; validates stored physical offset, not `indir` |
 | Hot path slower than baseline | Negligible (+1-2 ns when queue is empty) | Bench "in noise" | Workload-gated commit; rollback if regressed > 5% |
 | Header layout collisions (overlap with inline indirection entries) | None (R1 fixed: 3 entries reserved for free-list header, inline_count reduced by 3) | N/A | Verified: offsets 40-56 are now the free-list header; entries shift to offset 64+ |
