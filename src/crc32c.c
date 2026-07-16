@@ -15,7 +15,15 @@
  *
  * Initialized at library load time via __attribute__((constructor)) on
  * GCC/Clang, or on first call (double-checked with an atomic flag) on MSVC.
+ *
+ * The table is only compiled when no hardware CRC32C path is available
+ * (i.e. not on x86_64 + GCC, and not on aarch64).  On those platforms
+ * the HW CRC32C path is taken unconditionally and the table would
+ * never be consulted — skipping it saves ~1KB of .rodata plus the
+ * 1KB load-time init pass.
  * --------------------------------------------------------------------------- */
+
+#if !((VFS_ARCH_X86_64 && VFS_COMPILER_GCC) || VFS_ARCH_AARCH64)
 
 static uint32_t s_crc32c_table[256];
 
@@ -30,12 +38,7 @@ static void vfs_crc32c_init_table(void) {
 }
 
 #if VFS_COMPILER_GCC
-    /* Run once before main() — no threading concern.
-     * NOTE: on x86_64 the HW CRC32C path is taken unconditionally
-     * (see crc32c() below), so this table is computed but never
-     * used.  It's harmless (~1KB of .rodata + 1024-byte init at
-     * load time) and keeps the fallback path ready if the HW
-     * path is ever disabled at runtime. */
+    /* Run once before main() — no threading concern. */
     __attribute__((constructor))
     static void vfs_crc32c_ctor(void) {
         vfs_crc32c_init_table();
@@ -53,6 +56,8 @@ static void vfs_crc32c_init_table(void) {
         while (s_table_ready != 2) { YieldProcessor(); }
     }
 #endif
+
+#endif /* !((VFS_ARCH_X86_64 && VFS_COMPILER_GCC) || VFS_ARCH_AARCH64) */
 
 /* ---------------------------------------------------------------------------
  * x86_64 hardware path  (SSE4.2 CRC32C intrinsics)
