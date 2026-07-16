@@ -505,3 +505,106 @@ traversal-apply before comparing `v_epoch` to `s_epoch` (and to
 the `> s_epoch, even` live-side check). N6 was a duplicate filing
 of the M3 residual; both are now closed. See M3 entry above for
 the full fix description and regression tests.
+
+---
+
+## Phase 27 W5: Post-impl-review fixes (commits `136658d`)
+
+The W4 implementation review (PHASE27_FREEPAGE_IMPL_REVIEW.md, NOT
+committed per spec workflow) flagged 7 issues.  The reviewer's
+proposed I1 fix (use the cache for free-list helpers) exposed a
+latent re-entrancy bug in `cache_flush_all` that would also affect
+any user-data page whose flush recurses into the cache.  The full
+fix is bigger than the review's scope.
+
+### W5-A. `cache_flush_all` re-entrancy (the real bug, not in the review)
+
+**Status: ✅ RESOLVED (Phase 27, commit `136658d`).** The old
+`cache_flush_all` held the per-bucket spinlock during `mirror_write`.
+`mirror_write`'s second-write path calls `storage_allocate(1)` for
+the mirror sibling, which calls `dequeue_from_free_list`, which
+reads the head free-list page via `cache_find` — taking the SAME
+bucket lock.  **Deadlock.**
+
+Refactored to a collect-then-flush pattern:
+- **Phase 1**: walk buckets, collect dirty pages (lock held briefly)
+- **Phase 2**: flush collected pages (NO lock held; `mirror_write`
+  can safely recurse into the cache)
+- **Phase 3**: re-acquire the bucket lock, mark the entry clean
+
+This is a **latent bug** that would have affected any page once
+the free-list is non-empty (post-GC).  Today, with the free-list
+always empty (GC is non-functional), the bug is dormant.
+
+### W5-B. Free-list helpers use the cache (reviewer I1, but with W5-A first)
+
+**Status: ✅ RESOLVED (Phase 27, commit `136658d`).** The 4 helpers
+(`read_free_list_count`, `write_free_list_count`, `read_free_list_entry`,
+`write_free_list_entry`) now go through `storage_read_with_status` +
+`vfs_rd*_s` / `vfs_wr*_s` + `cache_mark_dirty`.  The dequeue is
+cache-resident — no disk I/O on the hot path.
+
+Required for the planned background-GC architecture (continuous
+frees during regular use would otherwise mean 2-4 raw pread/pwrite
+on every `vfs_create`).
+
+`alloc_free_list_page` pre-populates the cache with a fresh
+zero-buffer (dirty) so the first `write_free_list_*` call finds
+the page in the cache (avoids the CRC failure on a fresh page).
+Safe because W5-A makes the flush re-entrant.
+
+### W5-C. `read_free_list_next` helper + dequeue I5 refactor
+
+**Status: ✅ RESOLVED (Phase 27, commit `136658d`).** New helper
+`read_free_list_next` reads the `next_page` field via the cache.
+Replaces the 2 raw `pread` blocks in `dequeue_from_free_list` (for
+the head-empty-advance and head-was-last-popped cases).  Same code
+path as the rest of the W5-B refactor.
+
+### W5-D. Mount-time free-list count validation (reviewer I3)
+
+**Status: ✅ RESOLVED (Phase 27, commit `136658d`).** New
+`validate_free_list_on_mount()` runs from `storage_open` after
+`indir_init` and `cache_init`.  Walks the chain via raw `pread`
+(NOT the cache, to avoid the flush recursion that would consume
+a free entry as a mirror sibling), counts valid entries, and
+corrects the global `free_list_count` if it disagrees with the
+walk's sum.  Updates both the in-memory `header_buf` AND the
+on-disk count + CRC.
+
+Closes the CAS-to-flush crash window the spec acknowledged (R4).
+Per-page count validation is intentionally NOT done here — would
+require updating the free-list page's CRC, and the dequeue's
+`try_claim_entry` is a final guard against returning a page with
+stale indir anyway.
+
+### W5-E. I4 cleanup
+
+**Status: ✅ RESOLVED (Phase 27, commit `136658d`).** The W4
+`read_free_list_count` did a dead pread of `PageHeader` (read
+16 bytes, never used them).  The W5-B cache-based version doesn't
+need it.
+
+### Reviewer I2 / I6 (deferred, not addressable in W5)
+
+**Status: ⚠️ DEFERRED to GC rework.**
+- I2: dequeue's `write_free_list_count` is a plain write, not CAS.
+  Acknowledged in the code comment.  The spec's R2 fix would
+  require a per-page CAS on the count field.  Safe in single-
+  threaded mode; the GC rework is when this becomes load-bearing.
+- I6: `enqueue_free_page` uses plain `vfs_atomic_store_i64` for
+  tail/head updates, not CAS.  Same as I2 — single-threaded today,
+  deferred to GC rework.
+
+### Reviewer I7 (cosmetic)
+
+**Status: ✅ NOTED (carry-over from M3 inconsistency in the spec
+text).** Code uses `storage_allocate_tail_advance` correctly; the
+spec's W2 scope text was the only stale reference.  No code change.
+
+### Bench result
+
+W5 vs W4: 15-18k create ops/sec vs 13k baseline (Release, count
+1000).  **In noise**, slight improvement from the cache-resident
+dequeue (even with the empty free-list, the helper call cost is
+slightly lower).  The real win is for the planned GC workload.
