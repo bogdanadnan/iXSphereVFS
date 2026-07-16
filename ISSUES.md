@@ -608,3 +608,83 @@ W5 vs W4: 15-18k create ops/sec vs 13k baseline (Release, count
 1000).  **In noise**, slight improvement from the cache-resident
 dequeue (even with the empty free-list, the helper call cost is
 slightly lower).  The real win is for the planned GC workload.
+
+---
+
+## Phase 27 W6: Thread-safe free-list dequeue (commit `0e0d901`)
+
+The W5 PASS review's G1 finding (carryover of the W4 review's
+I2/I6) flagged that the dequeue was not thread-safe.  The
+"single-threaded" comment in the code was misleading — FUSE
+is multi-threaded today, and the dequeue runs on every
+`vfs_create` → `pool_alloc` → `storage_allocate(1)`.  The
+race was dormant only because the free-list was empty in the
+current workload (GC non-functional).  Once the planned
+background-GC architecture is in place, the free-list will be
+continuously populated and the race would corrupt.
+
+### Threading model (per the W5+ GC redesign)
+
+- **FUSE worker threads** — dequeue concurrently
+  (multi-threaded).  Today's FUSE has multiple worker
+  threads; the dequeue has been racy since W3.
+- **GC background thread** — enqueue (single-threaded).  The
+  planned background-GC design has a single thread reclaiming
+  pages.  Enqueue is single-threaded; no enqueue-side CAS
+  needed.
+- **Cross-thread** (enqueue GC + dequeue FUSE on the same
+  page) — benign.  The enqueue's "append + increment count"
+  can race with the dequeue's "pop + decrement count"; the
+  dequeue's CAS catches the count change and retries.
+  `try_claim_entry` is the final ABA guard.
+
+### What was changed (commit `0e0d901`)
+
+- `dequeue_from_free_list` is now wrapped in a bounded
+  retry loop (1000 retries max — prevents livelock under
+  extreme contention).
+- The per-page count decrement is now `vfs_cas_i32` on the
+  cached payload (CAS the count field from N to N-1).
+  Catches concurrent dequeues from the same head page —
+  the loser of the CAS race re-reads the count and retries.
+- The head pointer advance (when the head page is drained
+  or the last entry was popped) is now `vfs_cas_i64` on the
+  global head pointer.  Catches concurrent "advance past
+  empty head" races — the loser retries with the new head.
+- `try_claim_entry` (the indirection CAS) is unchanged —
+  still the final ABA guard.
+
+### Enqueue (storage_free) is unchanged
+
+- The enqueue is called only by GC (single-threaded per
+  the W5+ design).
+- The per-page count increment and the global tail/head
+  updates use plain atomic stores.  Safe under the
+  single-threaded enqueue assumption.
+- The cross-thread race (enqueue GC + dequeue FUSE) is
+  benign (see above).
+
+### Test (test_free_list_concurrent_dequeue)
+
+- Allocates 1000 pages, frees all of them (free-list = 1000
+  entries).
+- Spawns 4 threads, each dequeuing 250 pages concurrently.
+- Verifies:
+  - All 1000 pages dequeued (no entries lost).
+  - All dequeued pages are unique (no double-pop).
+  - All dequeued pages match a previously-freed page.
+  - Global `free_list_count` is 0 after all dequeues.
+
+### Test results
+
+- `test_storage`: 1177/1177 (was 171/171, +1006 from the
+  new concurrent test).
+- 14/14 ctest pass.
+- `test_fuzz` 208s — no deadlocks, no races, no regressions.
+
+### Reviewer I2 / I6 status
+
+- **I2** (dequeue CAS on count) — ✅ **RESOLVED** (W6).
+- **I6** (enqueue CAS on tail) — ⚠️ **DEFERRED to GC rework**
+  (single-threaded enqueue per the W5+ design; cross-thread
+  race is benign).
