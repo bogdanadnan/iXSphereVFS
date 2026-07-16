@@ -1,14 +1,13 @@
 # Phase 27 (Follow-up): Free-Page Queue (H2 + H3 Fix)
 
-**Revision:** 3 (addresses the review in `PHASE27_FREEPAGE_REVIEW_V2.md`).
-Changes from revision 2: Q1 (remove the stale "tagged pointer"
-ABA text in the Concurrency section), Q2 (ABA detection now uses
-`try_claim_entry` inside `dequeue_from_free_list`, not caller-side
-check), Q3 (document the overflow-page dirty issue as best-effort).
-
-Changes from revision 1 are summarized at the bottom of this spec
-for the curious reader; the V2 review is the canonical iteration
-artifact.
+**Revision:** 4 (addresses the review in `PHASE27_FREEPAGE_REVIEW_V3.md`).
+Changes from revision 3: M1 (W1 scope text corrected from
+"48, 56, 64" to "40, 48, 56"), M2 (inline_count math corrected
+from "1022 → 1019" / "510 → 507" to "1019 → 1016" / "507 → 504"),
+M3 (W2 scope text corrected from `storage_allocate(1)` to
+`storage_allocate_tail_advance`). All are copy-paste inconsistencies
+in the workload-scope text — the design text was correct. Spec
+is now green-lit for implementation.
 
 ## Goal
 
@@ -171,8 +170,8 @@ Offset  Size  Field
 64      8*N   indirection inline entries     (SHIFTED from offset 40; N = inline_count - 3)
 ```
 
-For an 8 KB page, `inline_count` goes from 1022 to 1019 (3 fewer
-inline entries). For 4 KB: 510 → 507. Negligible — the overflow
+For an 8 KB page, `inline_count` goes from 1019 to 1016 (3 fewer
+inline entries). For 4 KB: 507 → 504. Negligible — the overflow
 chain takes over beyond `inline_count`, so this only delays overflow
 allocation by 3 page writes.
 
@@ -757,7 +756,7 @@ testable, benched change.
 
 **Scope**:
 - Add the 3 new fields to the header page (`free_list_head`,
-  `free_list_tail`, `free_list_count`) at fixed offsets 48, 56, 64.
+  `free_list_tail`, `free_list_count`) at fixed offsets 40, 48, 56.
 - Add a `FreeListPage` struct (or just in-line offsets) for the
   free-list page format.
 - Update `bootstrap_new` (set new fields to 0) and `mount_existing`
@@ -794,8 +793,9 @@ testable, benched change.
   - Set `indir[page] = 0`.
   - Append `(page, phys_offset)` to the free list.
   - On rare paths (queue empty, page full), allocate a new
-    free-list page via `storage_allocate(1)` (using the
-    existing tail-advance).
+    free-list page via `storage_allocate_tail_advance` (the
+    internal tail-advance-only helper that avoids the
+    producer-consumer cycle — see R6).
 - Storage_free is still called only by GC, but the free list
   is now populated.
 
