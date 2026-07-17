@@ -168,7 +168,6 @@ int bin_push(StorageBackend* sb, int32_t type,
     if (!sb || !sb->header_buf) return BIN_ERR_IO;
     BinEntry entry = { .type = type, .context = context, .context2 = context2 };
 
-    int* hdr_bin_tail_count = (int*)(sb->header_buf + HDR_OFF_BIN_TAIL);
     int64_t* hdr_bin_head = (int64_t*)(sb->header_buf + HDR_OFF_BIN_HEAD);
     int64_t* hdr_bin_count = (int64_t*)(sb->header_buf + HDR_OFF_BIN_COUNT);
 
@@ -314,10 +313,14 @@ int bin_pop(StorageBackend* sb, BinEntry* out_entry) {
         int head_count = read_bin_page_count(sb, head);
         if (head_count < 0) return BIN_ERR_IO;
         if (head_count == 0) {
-            /* Head drained — advance to next and free the old head. */
+            /* Head drained — advance to next and free the old head.
+             * Use storage_free (not indir_set) so the page is
+             * enqueued into the free-page queue and reused by
+             * future allocations, rather than permanently leaked.
+             * (Phase 28 W4 review B1 fix.) */
             int64_t next = read_bin_page_next(sb, head);
             if (vfs_cas_i64(hdr_bin_head, head, next) == head) {
-                indir_set(sb, head, 0);  /* frees the drained Bin page */
+                storage_free(sb, head);  /* enqueues drained page for reuse */
             }
             /* Retry with the new head (or 0 if Bin is now empty). */
             continue;
@@ -348,12 +351,13 @@ int bin_pop(StorageBackend* sb, BinEntry* out_entry) {
         vfs_atomic_add_i64(hdr_bin_count, -1);
 
         /* If the head is now empty, advance to next and free the
-           old head.  (After the CAS-decrement, the page's count is
-           0; we want to remove it from the Bin chain.) */
+           old head.  Use storage_free so the page is enqueued
+           into the free-page queue (not leaked).  (Phase 28 W4
+           review B1 fix.) */
         if (head_count == 1) {
             int64_t next = read_bin_page_next(sb, head);
             if (vfs_cas_i64(hdr_bin_head, head, next) == head) {
-                indir_set(sb, head, 0);  /* frees the drained Bin page */
+                storage_free(sb, head);  /* enqueues drained page for reuse */
             }
         }
 
@@ -474,12 +478,24 @@ void validate_bin_on_mount(StorageBackend* sb) {
                accepted as a recovery cost. */
             vfs_atomic_store_i64(hdr_bin_tail, last_valid_page);
         }
-        /* Update on-disk header: rewrite the count and refresh CRC. */
+        /* Update on-disk header: rewrite the count, write the
+         * corrected payload back to disk, and refresh CRC.
+         * (Phase 28 W4 review B2 fix: previously we only wrote
+         * the new CRC to the PageHeader, leaving the on-disk
+         * payload inconsistent with the header — would cause
+         * mount failure on next boot.) */
         uint8_t* payload = malloc((size_t)sb->page_size);
         if (payload) {
             if (pread(sb->fd, payload, (size_t)sb->page_size,
                       PAGE_HEADER_SIZE) == sb->page_size) {
                 vfs_wr8_s(payload, HDR_OFF_BIN_COUNT, total_valid, sb->page_size);
+                /* Write the corrected payload back to disk BEFORE
+                 * writing the new CRC, so the on-disk state is
+                 * always consistent (payload matches its CRC). */
+                if (pwrite(sb->fd, payload, (size_t)sb->page_size,
+                           PAGE_HEADER_SIZE) != sb->page_size) {
+                    fprintf(stderr, "bin validation: pwrite payload failed\n");
+                }
                 uint32_t new_crc = vfs_crc32c(payload, (size_t)sb->page_size);
                 PageHeader ph;
                 if (pread(sb->fd, &ph, PAGE_HEADER_SIZE, 0) == PAGE_HEADER_SIZE) {

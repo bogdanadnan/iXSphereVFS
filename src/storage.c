@@ -321,15 +321,25 @@ static void validate_free_list_on_mount(StorageBackend* sb) {
     int64_t stored_global = vfs_atomic_load_i64(fl_count_ptr);
     if (total_valid != stored_global) {
         vfs_atomic_store_i64(fl_count_ptr, total_valid);
-        /* Update on-disk header: rewrite the count and refresh
-           the CRC.  Read the entire header payload, modify the
-           count, recompute CRC, write CRC back to the PageHeader. */
+        /* Update on-disk header: rewrite the count, write the
+         * corrected payload back to disk, and refresh CRC.
+         * (Phase 28 W4 review B2 fix: previously we only wrote
+         * the new CRC to the PageHeader, leaving the on-disk
+         * payload inconsistent with the header — would cause
+         * mount failure on next boot.) */
         uint8_t* payload = malloc((size_t)sb->page_size);
         if (payload) {
             if (pread(sb->fd, payload, (size_t)sb->page_size,
                       PAGE_HEADER_SIZE) == sb->page_size) {
                 /* Rewrite the count in the payload. */
                 vfs_wr8_s(payload, HDR_OFF_FREE_LIST_COUNT, total_valid, sb->page_size);
+                /* Write the corrected payload back to disk BEFORE
+                 * writing the new CRC, so the on-disk state is
+                 * always consistent (payload matches its CRC). */
+                if (pwrite(sb->fd, payload, (size_t)sb->page_size,
+                           PAGE_HEADER_SIZE) != sb->page_size) {
+                    fprintf(stderr, "free-list validation: pwrite payload failed\n");
+                }
                 /* Recompute and write the new CRC. */
                 uint32_t new_crc = vfs_crc32c(payload, (size_t)sb->page_size);
                 PageHeader ph;

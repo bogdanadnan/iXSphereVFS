@@ -342,6 +342,7 @@ const char* vfs_error_string(vfs_error_t err) {
         case VFS_ERR_NOMEM:        return "Out of memory";
         case VFS_ERR_EPOCH:        return "Epoch not writable";
         case VFS_ERR_NAMETOOLONG:  return "Name too long";
+        case VFS_ERR_NOTIMPL:      return "Not implemented";
         default:                   return "Unknown error";
     }
 }
