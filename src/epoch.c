@@ -3,6 +3,7 @@
 #include "ixsphere/vfs_internal.h"
 #include "tree.h"
 #include "nodes.h"
+#include "bin.h"
 #include <stdlib.h>
 
 bool vfs_epoch_is_writable(TreeContext* ctx, int64_t epoch) {
@@ -358,8 +359,17 @@ int vfs_commit(vfs_t* vfs, int64_t snapshot_epoch) {
 
     /* Flush superblock to persist the mapper change */
     ret = tree_superblock_write(ctx);
+    if (ret != VFS_OK) return ret;
 
-    return ret;
+    /* Phase 28 W3: push a NOOP trigger to the Bin.  Future bin-job
+       specs will replace this with BIN_TRIGGER_EPOCH_COMMITTED, which
+       the GC's analysis converts to BIN_WORK_REWRITE_CHAIN_ENTRY
+       (for each VersionPage at the committed epoch, rewrite to
+       currentEpoch) + BIN_WORK_DROP_COMMITTED_MAPPER (drop the
+       committed mapper entry).  For W3, the NOOP trigger is a
+       placeholder.  context = the snapshot epoch. */
+    bin_push(ctx->sb, BIN_TRIGGER_NOOP, snapshot_epoch, current);
+    return VFS_OK;
 }
 
 int vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch) {
@@ -399,6 +409,14 @@ int vfs_delete_snapshot(vfs_t* vfs, int64_t snapshot_epoch) {
 
     /* Flush superblock */
     ret = tree_superblock_write(ctx);
+    if (ret != VFS_OK) return ret;
 
-    return ret;
+    /* Phase 28 W3: push a NOOP trigger to the Bin.  Future bin-job
+       specs will replace this with BIN_TRIGGER_EPOCH_SOFT_DELETED,
+       which the GC's analysis converts to BIN_WORK_DROP_SOFT_DELETE
+       (drop the soft-delete mapper entry) + BIN_WORK_FREE_PAGES
+       (for the snap-only data pages).  For W3, the NOOP trigger is
+       a placeholder.  context = the snapshot epoch. */
+    bin_push(ctx->sb, BIN_TRIGGER_NOOP, snapshot_epoch, (int64_t)toEpoch);
+    return VFS_OK;
 }

@@ -4,6 +4,7 @@
 #include "var_array.h"
 #include "hash_map.h"
 #include "gc.h"
+#include "bin.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -1890,6 +1891,15 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     pool_release(&ctx->pool, &dc_slot);
     pool_release(&ctx->pool, &parent_slot);
     vfs_unlock(vfs, (int64_t)found_childId, epoch);
+
+    /* Phase 28 W3: push a NOOP trigger to the Bin.  Future bin-job
+       specs will replace this with BIN_TRIGGER_FILE_DELETED, which
+       the GC's analysis converts to BIN_WORK_REMOVE_TOMBSTONE +
+       BIN_WORK_FREE_PAGES.  For W3, the NOOP trigger is a
+       placeholder that lets us verify the framework end-to-end
+       (producers push, GC thread processes, Bin is drained) without
+       any real GC work. */
+    bin_push(ctx->sb, BIN_TRIGGER_NOOP, (int64_t)found_childPtr, 0);
     return VFS_OK;
 }
 
@@ -2855,6 +2865,13 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         pool_release(&ctx->pool, &dst_slot);
         pool_release(&ctx->pool, &src_slot);
     }
+
+    /* Phase 28 W3: push a NOOP trigger to the Bin.  Future bin-job
+       specs will replace this with BIN_TRIGGER_TOMBSTONE_ADDED, which
+       the GC's analysis converts to BIN_WORK_REMOVE_TOMBSTONE (for
+       the old-name tombstone at src).  For W3, the NOOP trigger is
+       a placeholder.  context = the file VP (rn_childPtr). */
+    bin_push(ctx->sb, BIN_TRIGGER_NOOP, (int64_t)rn_childPtr, 0);
     return VFS_OK;
 }
 
@@ -3699,6 +3716,14 @@ int vfs_truncate(vfs_t* vfs, int64_t file, int64_t new_size, int64_t epoch) {
         ctx->last_error = VFS_OK;
         pool_release(&ctx->pool, &file_slot);
         vfs_unlock(vfs, file, epoch);
+
+        /* Phase 28 W3: push a NOOP trigger to the Bin.  Future
+           bin-job specs will replace this with BIN_TRIGGER_FILE_TRUNCATED,
+           which the GC's analysis converts to BIN_WORK_FREE_PAGES
+           (for the data pages past the new size).  For W3, the
+           NOOP trigger is a placeholder.  context2 = new_size so
+           future bin jobs can identify the truncation size. */
+        bin_push(ctx->sb, BIN_TRIGGER_NOOP, file, new_size);
         return VFS_OK;
     }
 

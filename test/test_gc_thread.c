@@ -160,12 +160,88 @@ void test_gc_thread_empty(void) {
     cleanup(path);
 }
 
+/* ========================================================================== */
+
+/* Phase 28 W3: producer integration.  Verify that a real public
+   operation (vfs_delete) pushes a NOOP trigger to the Bin, and
+   the GC thread processes it. */
+void test_gc_producer_integration(void) {
+    printf("4. GC producer integration (vfs_delete pushes NOOP trigger)...\n");
+    const char* path = "/tmp/test_gc_producer.vfs";
+    cleanup(path);
+
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    /* Create a file to delete. */
+    int64_t root = vfs_root(vfs);
+    int64_t file = vfs_create(vfs, root, "test.txt", 0);
+    CHECK(file > 0);
+    if (file <= 0) { vfs_unmount(vfs); cleanup(path); return; }
+
+    /* Verify Bin is empty (no producers have pushed yet). */
+    CHECK_EQ(read_bin_count(vfs), 0);
+
+    /* Delete the file.  This should push a NOOP trigger. */
+    int rc = vfs_delete(vfs, root, "test.txt", 0);
+    CHECK_EQ(rc, VFS_OK);
+
+    /* The push is concurrent with the GC thread, so bin_count
+       can be 0 (already processed) or 1 (just pushed).  We
+       wait up to 500ms for the thread to process. */
+    int drained = 0;
+    for (int i = 0; i < 50; i++) {
+        if (read_bin_count(vfs) == 0) { drained = 1; break; }
+        usleep(10000);  /* 10ms */
+    }
+    CHECK(drained);
+    CHECK_EQ(read_bin_count(vfs), 0);
+
+    vfs_unmount(vfs);
+    cleanup(path);
+}
+
+/* Phase 28 W3: vfs_commit pushes a NOOP trigger.  Snapshot + commit
+   is a multi-step operation; we verify the commit pushes a trigger. */
+void test_gc_producer_commit(void) {
+    printf("5. GC producer integration (vfs_commit pushes NOOP trigger)...\n");
+    const char* path = "/tmp/test_gc_producer_commit.vfs";
+    cleanup(path);
+
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    /* Take a snapshot. */
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK(snap > 0);
+    if (snap <= 0) { vfs_unmount(vfs); cleanup(path); return; }
+
+    /* Commit the snapshot.  This should push a NOOP trigger. */
+    int rc = vfs_commit(vfs, snap);
+    CHECK_EQ(rc, VFS_OK);
+
+    /* Wait for the GC thread to process. */
+    int drained = 0;
+    for (int i = 0; i < 50; i++) {
+        if (read_bin_count(vfs) == 0) { drained = 1; break; }
+        usleep(10000);
+    }
+    CHECK(drained);
+
+    vfs_unmount(vfs);
+    cleanup(path);
+}
+
 int main(void) {
-    printf("=== GC Thread Tests (Phase 28 W2) ===\n\n");
+    printf("=== GC Thread Tests (Phase 28 W2 + W3) ===\n\n");
 
     test_gc_thread_lifecycle();
     test_gc_thread_shutdown();
     test_gc_thread_empty();
+    test_gc_producer_integration();
+    test_gc_producer_commit();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

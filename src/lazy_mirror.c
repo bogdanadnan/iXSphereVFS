@@ -1,5 +1,6 @@
 #include "storage.h"
 #include "page_buf.h"
+#include "bin.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -180,6 +181,10 @@ int mirror_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payloa
         if (sib_off == 0) {
             /* path 2: sibling allocated, indir_lookup failed */
             storage_free(sb, sibling);
+            /* Phase 28 W3: push a NOOP trigger for the freed
+               orphan.  Future bin-job specs will convert this to
+               BIN_WORK_FREE_PAGES. */
+            bin_push(sb, BIN_TRIGGER_NOOP, sibling, 0);
             return -1;
         }
 
@@ -193,6 +198,9 @@ int mirror_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payloa
         if (write_page_record(sb, sib_off, &ph_sib, payload) != 0) {
             /* path 3: write to sibling failed */
             storage_free(sb, sibling);
+            /* Phase 28 W3: push a NOOP trigger for the freed
+               orphan. */
+            bin_push(sb, BIN_TRIGGER_NOOP, sibling, 0);
             return -1;
         }
 
@@ -203,6 +211,9 @@ int mirror_write(StorageBackend* sb, int64_t logical_page, const uint8_t* payloa
         if (n != 4) {
             /* path 4: link pwrite failed */
             storage_free(sb, sibling);
+            /* Phase 28 W3: push a NOOP trigger for the freed
+               orphan. */
+            bin_push(sb, BIN_TRIGGER_NOOP, sibling, 0);
             return -1;
         }
         return 0;

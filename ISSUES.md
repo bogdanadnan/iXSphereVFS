@@ -8,12 +8,13 @@ Findings are grouped by severity. Each item lists a location (`file:line`),
 what is wrong, why it matters, and a suggested direction. Line numbers refer to
 the tree at the time of the **original** review (pre-Phase-25).
 
-## Resolution status (post-Phase-25 / 26 / 27)
+## Resolution status (post-Phase-25 / 26 / 27 / 28)
 
 Each item below is annotated with a **Status:** line reflecting its state
 after Phase 25 (pool by-value migration), Phase 26 (unified tree + lock
-rework), and Phase 27 (issues cleanup + free-page queue). Verification
-performed 2026-07-16 against the latest codebase.
+rework), Phase 27 (issues cleanup + free-page queue), and Phase 28
+(GC framework: Bin + background thread + producer integration).
+Verification performed 2026-07-17 against the latest codebase.
 
 | Status | Meaning |
 |---|---|
@@ -25,10 +26,23 @@ performed 2026-07-16 against the latest codebase.
 
 **Summary: 49 resolved, 3 partial, 3 superseded, 0 open, 1 descoped.**
 
-All remaining unresolved items (M4, N2, N3, C3) are **GC-blocked**: they are
-latent (unreachable while GC is non-functional) and will be addressed as a
-package during the GC rework. The GC rework is the sole prerequisite for
-closing the remaining backlog.
+All remaining unresolved items (M4, N2, N3) are **GC-coupled**:
+they are latent (unreachable while the GC framework is empty —
+the new GC is just a NOOP-trigger processor in W2/W3) and will
+be addressed when the per-bin-job work functions are added
+(each bin-job spec independently addresses some of these).
+
+Phase 28 status:
+- W1 (Bin infrastructure) — committed `21781f4`
+- W2 (GC thread infrastructure) — committed `e12ff2d`
+- W3 (producer integration with NOOP trigger) — committed
+- W4 (framework end-to-end test) — pending
+- Per-bin-job work functions (Type 1-5 garbage processing) —
+  pending separate specs
+
+The new GC is intentionally a no-op framework at this stage.
+The actual garbage processing (the per-bin-job work functions)
+is added in subsequent phases, one bin job per spec.
 
 ---
 
@@ -818,3 +832,81 @@ addressed by:
 2. The `vfs_return` wrapper (defense in depth — catches future
    regressions in the debug build)
 3. The regression test (catches future regressions in CI)
+
+---
+
+## Phase 28 W1-W3: GC framework foundation (commits `21781f4`, `e12ff2d`, ...)
+
+### What was added
+
+The new GC is a Bin + background thread + per-bin-job dispatch
+framework. The framework itself does no real garbage processing
+— it only delivers Bin entries from producers to a single
+consumer thread via a dispatch switch.
+
+The framework consists of:
+
+1. **W1 — Bin infrastructure** (commit `21781f4`):
+   - 3 new header fields at offsets 64/72/80 + 8-byte reserved
+     padding at 88 (inline indirection shifts from 64 to 96)
+   - `bin_push` / `bin_pop` / `bin_peek` API (src/bin.h, src/bin.c)
+   - Per-page CAS on count + global CAS on head/tail/count
+   - Mount-time validation walk (validates bin_count vs per-page
+     sum, rebuilds if mismatched)
+   - 5 Bin tests, 505564 assertions, all pass
+
+2. **W2 — GC thread infrastructure** (commit `e12ff2d`):
+   - `pthread_t gc_thread` + condvar-based wakeup
+   - Two-tier hybrid backoff (100ms initial, 1000ms steady)
+   - Started at `vfs_mount`, stopped at `vfs_unmount`
+   - `vfs_gc` stubbed to return `VFS_ERR_NOTIMPL`
+   - Added `VFS_ERR_NOTIMPL = -11` to `vfs_error_t`
+   - 3 GC thread tests, 115 assertions, all pass
+
+3. **W3 — Producer integration** (this commit):
+   - 6 garbage-producing public operations now call `bin_push`
+     with `BIN_TRIGGER_NOOP` after their primary work:
+     - `vfs_delete` (src/tree.c) — context = file VP
+     - `vfs_truncate` shrink path (src/tree.c) — context = file VP,
+       context2 = new size
+     - `vfs_rename` (src/tree.c) — context = file VP
+     - `vfs_commit` (src/epoch.c) — context = snapshot epoch
+     - `vfs_delete_snapshot` (src/epoch.c) — context = snapshot epoch
+     - `mirror_write` failure paths (src/lazy_mirror.c) — context = sibling VP
+   - Each push is followed by the GC thread's `gc_process_entry`
+     which dispatches the NOOP trigger to a no-op handler (just
+     deletes the entry, no actual work)
+   - 2 new producer integration tests, 10 assertions, all pass
+
+### What's NOT in this phase
+
+- The per-bin-job work functions (Type 1-5 garbage processing).
+  Each is a separate spec following the per-bin-job template
+  (impl/phase-28-gc.md §5).
+- The first real bin job (Type 1: free pages from file deletion)
+  is the recommended next spec — it exercises the full trigger/
+  work split, the per-bin-job lock model, and the crash safety.
+
+### What this means for the existing ISSUES.md items
+
+- **M4** (gc_copy_entry dispatch): still GC-coupled. Unblocked
+  when the first real bin job that uses gc_copy_entry is added
+  (Type 1 or Type 4).
+- **N2** (pinPage=true for GC): still GC-coupled. Unblocked
+  when the first real bin job's chain-walking work function is
+  added.
+- **N3** (gc_copy_entry type dispatch): same as M4.
+- **C3** (tree_lock shared/exclusive unused): unchanged. The
+  per-bin-job spec template requires each bin job to commit to
+  a coordination mechanism; the first real bin job that needs
+  the tree_lock will wire it up.
+
+### Test results
+
+- All 16 ctest suites pass (98.7s total)
+- test_gc_thread: 125/125 assertions (5 tests)
+- test_bin: 505564/505564 assertions
+- test_storage: 1177/1177
+- test_tree: 23326/23326
+- test_fuzz: 10000 iterations in 98.7s (no deadlocks, no regressions)
+- test_crash: 16/16 scenarios in 12s
