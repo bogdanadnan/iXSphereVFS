@@ -6,6 +6,13 @@
 #include "pool.h"
 #include "page_array.h"
 #include "mapper.h"
+#include "bin.h"
+
+#if VFS_OS_WINDOWS
+    #include <windows.h>
+#else
+    #include <pthread.h>
+#endif
 
 typedef struct SegmentArray SegmentArray;
 
@@ -24,6 +31,25 @@ typedef struct {
     uint32_t nextNodeId;         /* next available node identifier */
     int64_t  treeLockState;      /* bit 63 = GC exclusive lock, bits 32-62 = reader count */
     int64_t  gc_generation;       /* incremented after each GC compaction, atomically loaded */
+
+    /* Phase 28 W2: GC thread infrastructure.  The thread is
+       spawned at vfs_mount, stopped at vfs_unmount.  The shutdown
+       flag is atomic; the main thread sets it to signal the GC
+       thread to exit.  The thread is joined with a bounded
+       timeout (1 second); on timeout, the thread is detached.
+
+       The thread is the single consumer of the Bin (bin_pop).
+       Producers (public operations) call bin_push concurrently
+       from FUSE worker threads.  See impl/phase-28-gc.md §7. */
+    pthread_t gc_thread;
+    volatile int gc_shutdown;
+    volatile int gc_thread_done;  /* set by thread right before return */
+    /* Condvar + mutex for shutdown wakeup.  The thread waits
+       on gc_cond with a timeout during backoff.  The shutdown
+       signal broadcasts on gc_cond to wake the thread
+       immediately. */
+    pthread_mutex_t gc_mutex;
+    pthread_cond_t  gc_cond;
 
     /* Pool list head — lives here so pool.list_head points into TreeContext */
     int64_t  pool_list_head_value;

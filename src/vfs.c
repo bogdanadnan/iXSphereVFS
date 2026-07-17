@@ -2,6 +2,7 @@
 #include "platform.h"
 #include "ixsphere/vfs_internal.h"
 #include "tree.h"
+#include "gc.h"
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
@@ -398,11 +399,32 @@ vfs_t* vfs_mount(const char* path, int64_t page_size) {
         free(vfs);
         return NULL;
     }
+
+    /* Phase 28 W2: start the GC thread.  The thread begins
+       processing Bin entries immediately.  Spawn AFTER all vfs
+       state is initialized (lock table, mapper table, etc.) so
+       the thread sees a fully-constructed vfs_t. */
+    int err_gc = gc_thread_start(vfs);
+    if (err_gc != VFS_OK) {
+        /* Non-fatal: the VFS works without the GC thread, just
+           with garbage accumulating.  Log and continue. */
+        fprintf(stderr, "vfs_mount: GC thread start failed (%d), continuing without it\n",
+                err_gc);
+    }
     return vfs;
 }
 
 void vfs_unmount(vfs_t* vfs) {
     if (!vfs) return;
+
+    /* Phase 28 W2: stop the GC thread FIRST, before tearing down
+       the vfs state.  The thread reads sb->header_buf and the
+       cache, both of which are owned by the vfs.  Stopping the
+       thread first ensures it doesn't access freed memory. */
+    if (vfs->ctx) {
+        gc_thread_stop(vfs);
+    }
+
     /* Phase 26 / W0: destroy the per-vfs_t lock table (fixes H4) */
     vfs_lock_destroy(vfs);
     if (vfs->ctx) {

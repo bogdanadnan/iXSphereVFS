@@ -1281,34 +1281,229 @@ int live_page_set_contains(LivePageSet* lps, int64_t page) {
 }
 
 int vfs_gc(vfs_t* vfs) {
+    /* Phase 28 W2: the old stop-the-world GC is dropped.  The
+       Bin + background thread framework replaces it.  The new
+       per-bin-job work functions are added in subsequent phases.
+       Until then, vfs_gc is a stub that returns VFS_ERR_NOTIMPL.
+
+       The background GC thread (started at vfs_mount) handles
+       garbage processing asynchronously.  Callers that want
+       synchronous GC should call vfs_flush (which triggers the
+       thread to wake up and drain the Bin) and then wait for the
+       thread to be idle.  A future "synchronous GC" API could be
+       added on top of this primitive. */
+    (void)vfs;
+    return VFS_ERR_NOTIMPL;
+}
+
+/* ---------------------------------------------------------------------------
+ * Phase 28 W2: GC thread infrastructure
+ *
+ * A single background thread per VFS instance.  The thread pops Bin
+ * entries (via bin_pop from src/bin.c) and dispatches them to
+ * per-bin-job work functions via gc_process_entry.
+ *
+ * Thread model (per spec impl/phase-28-gc.md §7):
+ *   - One thread per VFS instance
+ *   - Thread is the single consumer of the Bin (bin_pop is
+ *     single-threaded; multiple producers can push concurrently)
+ *   - Start: at vfs_mount (after storage_open succeeds)
+ *   - Stop: at vfs_unmount (set shutdown flag, join with 1s
+ *     timeout, detach on timeout)
+ *   - Scheduling: try-then-backoff, two-tier (100ms initial for
+ *     first 5 empty cycles, 1000ms steady after)
+ *
+ * Dispatch model (per spec §7.5):
+ *   - gc_process_entry branches on entry->type relative to
+ *     BIN_TYPE_WORK_THRESHOLD
+ *   - TRIGGER entries go to gc_handle_trigger (analysis pushes
+ *     WORK entries, then deletes the trigger)
+ *   - WORK entries go to gc_handle_work (per-bin-job work)
+ *   - W2 only handles BIN_TRIGGER_NOOP; future bin-job specs
+ *     add their trigger and work types
+ * --------------------------------------------------------------------------- */
+
+#include "bin.h"
+
+#if VFS_OS_WINDOWS
+    #include <windows.h>
+    #define GC_BACKOFF_US_INITIAL  100000   /* 100ms */
+    #define GC_BACKOFF_US_STEADY   1000000  /* 1000ms */
+    #define gc_usleep(us) Sleep((us) / 1000)
+#else
+    #include <pthread.h>
+    #include <unistd.h>
+    #include <fcntl.h>
+    #include <poll.h>
+    #define GC_BACKOFF_US_INITIAL  100000   /* 100ms */
+    #define GC_BACKOFF_US_STEADY   1000000  /* 1000ms */
+    #define gc_usleep(us) usleep(us)
+#endif
+
+/* Number of empty pop cycles before transitioning from initial to
+   steady backoff.  Initial backoff is more responsive; steady
+   backoff is battery-friendly. */
+#define GC_INITIAL_CYCLES   5
+
+/* GC thread main loop (per spec §7.2).  Uses a condvar so the
+   shutdown signal can wake the thread immediately from any
+   backoff sleep, instead of waiting for the sleep to expire. */
+static void* gc_thread_main(void* arg) {
+    vfs_t* vfs = (vfs_t*)arg;
+    TreeContext* ctx = vfs->ctx;
+    int empty_count = 0;  /* tracks consecutive empty pops */
+
+    /* Lock the mutex before entering the loop.  pthread_cond_wait
+       unlocks it atomically before sleeping. */
+    pthread_mutex_lock(&ctx->gc_mutex);
+
+    while (!vfs_atomic_load_i32(&ctx->gc_shutdown)) {
+        BinEntry entry;
+        int rc = bin_pop(ctx->sb, &entry);
+        if (rc == BIN_OK) {
+            /* Got a job — process immediately, no sleep. */
+            empty_count = 0;  /* reset backoff tier */
+            gc_process_entry(vfs, &entry);
+        } else if (rc == BIN_ERR_EMPTY) {
+            /* Bin is empty — back off, but wake on shutdown.
+               Use pthread_cond_timedwait with a timeout equal
+               to the backoff. */
+            empty_count++;
+            int backoff_ms = (empty_count <= GC_INITIAL_CYCLES)
+                ? (GC_BACKOFF_US_INITIAL / 1000)
+                : (GC_BACKOFF_US_STEADY / 1000);
+
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec  += backoff_ms / 1000;
+            ts.tv_nsec += (backoff_ms % 1000) * 1000000L;
+            if (ts.tv_nsec >= 1000000000L) {
+                ts.tv_sec++;
+                ts.tv_nsec -= 1000000000L;
+            }
+            (void)pthread_cond_timedwait(&ctx->gc_cond, &ctx->gc_mutex, &ts);
+        } else {
+            /* I/O error or other failure.  Log and back off. */
+            pthread_mutex_unlock(&ctx->gc_mutex);
+            fprintf(stderr, "gc: bin_pop error %d, backing off\n", rc);
+            gc_usleep(GC_BACKOFF_US_STEADY);
+            pthread_mutex_lock(&ctx->gc_mutex);
+        }
+    }
+
+    pthread_mutex_unlock(&ctx->gc_mutex);
+
+    /* Set the "thread done" flag BEFORE returning, so the main
+       thread can detect our exit quickly.  The main thread's
+       pthread_join will reap us (clean up the stack, etc.). */
+    vfs_atomic_store_i32(&ctx->gc_thread_done, 1);
+    return NULL;
+}
+
+int gc_thread_start(vfs_t* vfs) {
     if (!vfs || !vfs->ctx) return VFS_ERR_IO;
     TreeContext* ctx = vfs->ctx;
 
-    /* Acquire exclusive tree lock — waits for all readers to drain */
-    tree_lock_acquire_exclusive(ctx);
+    /* Reset the shutdown flag and the done flag (in case the
+       vfs is being re-used after a previous mount). */
+    ctx->gc_shutdown = 0;
+    ctx->gc_thread_done = 0;
 
-    /* Initialize the deferred-free queue */
-    DeferredFreeQueue queue;
-    int err = deferred_free_init(&queue, 256);
-    if (err != VFS_OK) {
-        ctx->last_error = err;
-        tree_lock_release_exclusive(ctx);
-        return err;
+    /* Initialize the condvar and mutex. */
+    if (pthread_mutex_init(&ctx->gc_mutex, NULL) != 0) {
+        fprintf(stderr, "gc: pthread_mutex_init failed\n");
+        return VFS_ERR_IO;
+    }
+    if (pthread_cond_init(&ctx->gc_cond, NULL) != 0) {
+        fprintf(stderr, "gc: pthread_cond_init failed\n");
+        pthread_mutex_destroy(&ctx->gc_mutex);
+        return VFS_ERR_IO;
     }
 
-    /* Tell the storage allocator to skip pages in our deferred queue */
-    storage_set_deferred_queue(&queue);
+    int rc = pthread_create(&ctx->gc_thread, NULL, gc_thread_main, vfs);
+    if (rc != 0) {
+        fprintf(stderr, "gc: pthread_create failed: %d\n", rc);
+        pthread_cond_destroy(&ctx->gc_cond);
+        pthread_mutex_destroy(&ctx->gc_mutex);
+        return VFS_ERR_IO;
+    }
+    return VFS_OK;
+}
 
-    /* Run shadow-compaction */
-    err = gc_shadow_compact(ctx, &queue);
+int gc_thread_stop(vfs_t* vfs) {
+    if (!vfs || !vfs->ctx) return VFS_ERR_IO;
+    TreeContext* ctx = vfs->ctx;
 
-    /* Release queued pages to storage and clean up */
-    deferred_free_confirm_and_release(&queue, ctx->sb);
-    storage_set_deferred_queue(NULL);
+    /* Signal the thread to exit.  The thread checks this at the
+       top of its loop, AND the condvar signal wakes the thread
+       from any in-progress timed wait. */
+    pthread_mutex_lock(&ctx->gc_mutex);
+    vfs_atomic_store_i32(&ctx->gc_shutdown, 1);
+    pthread_cond_broadcast(&ctx->gc_cond);
+    pthread_mutex_unlock(&ctx->gc_mutex);
 
-    /* Release the exclusive lock */
-    tree_lock_release_exclusive(ctx);
+    /* Wait for the thread to set gc_thread_done (which happens
+       right before the thread's main function returns).  Polled
+       at 1ms intervals; the thread typically exits within
+       microseconds of the condvar signal.  Total timeout: 1s. */
+    for (int i = 0; i < 1000; i++) {
+        if (vfs_atomic_load_i32(&ctx->gc_thread_done)) break;
+        gc_usleep(1000);  /* 1ms */
+    }
 
-    if (err != VFS_OK) ctx->last_error = err;
-    return err;
+    /* Detach the thread (the OS will reap it automatically when
+       it exits).  This is faster than pthread_join because we
+       don't block on the reaping — we just hand off cleanup to
+       the OS.  The thread's main function has already returned
+       (gc_thread_done is set), so the thread is no longer
+       accessing the vfs. */
+    pthread_detach(ctx->gc_thread);
+
+    /* Destroy the condvar and mutex.  The thread no longer
+       holds the mutex and is not waiting on the condvar
+       (gc_thread_done is set), so these are safe to destroy. */
+    pthread_cond_destroy(&ctx->gc_cond);
+    pthread_mutex_destroy(&ctx->gc_mutex);
+
+    if (!vfs_atomic_load_i32(&ctx->gc_thread_done)) {
+        fprintf(stderr, "gc: thread join timeout, proceeding anyway\n");
+    }
+    return VFS_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * Per-entry dispatcher (per spec §7.5)
+ * --------------------------------------------------------------------------- */
+
+static int gc_handle_trigger(vfs_t* vfs, const BinEntry* entry) {
+    /* W2: only BIN_TRIGGER_NOOP is handled.  Future per-bin-job
+       specs add their trigger handlers here. */
+    switch (entry->type) {
+    case BIN_TRIGGER_NOOP:
+        /* No-op: just delete the entry, do nothing else.  The
+           framework does NOT push any work entries; the trigger
+           is gone after the dispatch returns. */
+        return VFS_OK;
+    default:
+        fprintf(stderr, "gc: unknown trigger type %d, skipping\n",
+                entry->type);
+        return VFS_ERR_IO;  /* unknown type, skip */
+    }
+}
+
+static int gc_handle_work(vfs_t* vfs, const BinEntry* entry) {
+    /* W2: no work types are defined.  Any unknown type is logged
+       and skipped.  Future per-bin-job specs add their work
+       handlers here. */
+    fprintf(stderr, "gc: unknown work type %d, skipping\n", entry->type);
+    return VFS_ERR_IO;
+}
+
+int gc_process_entry(vfs_t* vfs, const BinEntry* entry) {
+    if (!vfs || !entry) return VFS_ERR_IO;
+    if (entry->type < BIN_TYPE_WORK_THRESHOLD) {
+        return gc_handle_trigger(vfs, entry);
+    } else {
+        return gc_handle_work(vfs, entry);
+    }
 }

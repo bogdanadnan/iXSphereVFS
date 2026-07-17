@@ -12,22 +12,17 @@
 #include <signal.h>
 
 /* ---------------------------------------------------------------------------
- * SIGABRT suppression (N1, phase-27)
+ * SIGABRT suppression (N1, phase-27) — kept for safety, but should be
+ * removable in a future phase once we're confident no test leaves
+ * corrupted state on disk.
  *
- * The GC integration tests tolerate VFS_ERR_FULL because GC is currently
- * non-functional (it returns VFS_ERR_FULL on small test files).  When GC
- * partially runs and leaves a corrupted pool page behind, the C5 fix
- * (storage_read_with_status) correctly reports it as STORAGE_CRC_ERROR.
- * A subsequent test that re-reads that page through the bounds-checked
- * vfs_rd*_s helpers trips the VFS_BOUNDS_CHECK_S assert because the
- * corrupted page_size metadata is smaller than the requested read.
- *
- * All test assertions complete BEFORE this assert fires (in the cleanup
- * path).  We install a handler that swallows SIGABRT only after the
- * summary line has been printed — so any real assert failure during the
- * test body still aborts as usual.  When GC is reworked, this whole
- * block (the SIGABRT handler, the flag, and the CHECK_EQ(VFS_ERR_FULL)
- * tolerances throughout the GC tests) should be removed.
+ * Phase 28 W2: the GC integration tests now tolerate VFS_ERR_NOTIMPL
+ * (the vfs_gc stub's return code) instead of VFS_ERR_FULL.  The
+ * old stop-the-world GC is dropped; the new Bin + background
+ * thread framework replaces it.  The background thread doesn't
+ * run the old shadow-compaction logic, so no corrupted pages
+ * are produced — but the test file's SIGABRT handler is kept as
+ * a safety net for any pre-existing corrupted state on disk.
  * --------------------------------------------------------------------------- */
 static volatile sig_atomic_t _test_gc_summary_printed = 0;
 
@@ -581,8 +576,9 @@ static void test_gc_pool_compaction(void) {
         CHECK_EQ(vfs_read(vfs, file_vps[0], rbuf, 0, 3, 2), 3);
         CHECK_EQ(strncmp(rbuf, "NEW", 3), 0);
     } else {
-        /* GC may fail with VFS_ERR_FULL in small test files — verify state preserved */
-        CHECK_EQ(gc_ret, VFS_ERR_FULL);
+        /* Phase 28 W2: vfs_gc is a stub that returns VFS_ERR_NOTIMPL
+           (the per-bin-job work functions are added in later phases). */
+        CHECK_EQ(gc_ret, VFS_ERR_NOTIMPL);
         CHECK_EQ(count_pool_pages(ctx), pages_before);
         CHECK_EQ(vfs_file_size(vfs, file_vps[0], 0), f0_size_before);
         CHECK_EQ(vfs_file_size(vfs, file_vps[0], 2), f0_size_after_2);
@@ -725,7 +721,7 @@ static void test_gc_vptr_remapping(void) {
         CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 8, 0), 8);
         CHECK_EQ(strncmp(rbuf, "VERSION0", 8), 0);
     } else {
-        CHECK_EQ(gc_ret, VFS_ERR_FULL);
+        CHECK_EQ(gc_ret, VFS_ERR_NOTIMPL);
         /* Pre-GC chain already verified — data must still be readable */
         char rbuf[16];
         CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 8, 0), 8);
@@ -828,7 +824,7 @@ static void test_gc_dircontent_survival(void) {
         /* "doomed.txt" was deleted at epoch 2 — open at epoch 2 should fail */
         CHECK_EQ(vfs_open(vfs, root_vp, "doomed.txt", 2), VFS_ERR_NOTFOUND);
     } else {
-        CHECK_EQ(gc_ret, VFS_ERR_FULL);
+        CHECK_EQ(gc_ret, VFS_ERR_NOTIMPL);
     }
 
     vfs_unmount(vfs);
@@ -864,7 +860,7 @@ static void test_gc_nonstd_page_size(void) {
         CHECK_EQ(vfs_read(vfs, file_vp, rbuf, 0, 7, 0), 7);
         CHECK_EQ(strncmp(rbuf, "4K_DATA", 7), 0);
     } else {
-        CHECK_EQ(gc_ret, VFS_ERR_FULL);
+        CHECK_EQ(gc_ret, VFS_ERR_NOTIMPL);
     }
 
     vfs_unmount(vfs);
@@ -903,7 +899,7 @@ static void test_gc_data_page_reclaim(void) {
 
     int gc_ret = vfs_gc(vfs);
     if (gc_ret != VFS_OK) {
-        CHECK_EQ(gc_ret, VFS_ERR_FULL);
+        CHECK_EQ(gc_ret, VFS_ERR_NOTIMPL);
         vfs_unmount(vfs);
         return;
     }
@@ -1032,7 +1028,7 @@ static void test_gc_commit_then_gc(void) {
         /* Mapper entry for epoch 1 should be removed (committed then GC'd) */
         CHECK(mapper_resolve(&ctx->mapper, snap) == snap);  /* identity = no entry */
     } else {
-        CHECK_EQ(gc_ret, VFS_ERR_FULL);  /* expected failure in small files */
+        CHECK_EQ(gc_ret, VFS_ERR_NOTIMPL);  /* expected failure in small files */
     }
 
     vfs_unmount(vfs);

@@ -34,6 +34,8 @@ typedef enum {
     VFS_ERR_NOMEM     = -8,
     VFS_ERR_EPOCH     = -9,
     VFS_ERR_NAMETOOLONG = -10,  /* M10: name > 255 bytes (FUSE dirent limit) */
+    VFS_ERR_NOTIMPL     = -11,  /* Phase 28 W2: vfs_gc is a stub until
+                                   per-bin-job work functions are added */
 } vfs_error_t;
 
 /* Return a human-readable string for an error code. */

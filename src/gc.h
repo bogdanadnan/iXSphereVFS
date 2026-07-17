@@ -198,4 +198,35 @@ int gc_build_new_superblock(TreeContext* ctx, int64_t new_epochMapperPtr,
  * Returns VFS_OK on success. */
 int vfs_gc(vfs_t* vfs);
 
+/* ---------------------------------------------------------------------------
+ * Phase 28 W2: GC thread infrastructure
+ *
+ * A single background thread per VFS instance.  The thread pops Bin
+ * entries (via bin_pop) and dispatches them to per-bin-job work
+ * functions via gc_process_entry.
+ *
+ * Lifecycle:
+ *   - gc_thread_start(vfs) is called from vfs_mount after
+ *     storage_open succeeds.  It creates the thread; the thread
+ *     begins processing Bin entries immediately.
+ *   - gc_thread_stop(vfs) is called from vfs_unmount.  It sets
+ *     the shutdown flag, then joins with a 1-second timeout.  If
+ *     the timeout expires, the thread is detached (continues
+ *     running until the Bin drains, but the VFS is considered
+ *     closed).
+ *
+ * The thread is the single consumer of the Bin.  Producers (FUSE
+ * worker threads, called via bin_push) run concurrently.
+ * --------------------------------------------------------------------------- */
+
+int gc_thread_start(vfs_t* vfs);
+int gc_thread_stop(vfs_t* vfs);
+
+/* Per-entry dispatcher.  Called by the GC thread for each Bin
+ * entry.  Returns VFS_OK on success, or a negative error code.
+ * The Bin entry is already popped (ownership transferred to the
+ * work function).  W2 only handles BIN_TRIGGER_NOOP; future
+ * bin-job specs add their trigger and work types here. */
+int gc_process_entry(vfs_t* vfs, const BinEntry* entry);
+
 #endif /* VFS_GC_H */
