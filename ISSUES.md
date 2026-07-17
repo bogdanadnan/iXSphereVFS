@@ -910,3 +910,54 @@ The framework consists of:
 - test_tree: 23326/23326
 - test_fuzz: 10000 iterations in 98.7s (no deadlocks, no regressions)
 - test_crash: 16/16 scenarios in 12s
+
+### Phase 28 W4: framework end-to-end (this commit)
+
+The framework is verified end-to-end:
+
+**Tests added** (in `test/test_gc_thread.c`):
+- `test_bin_end_to_end` — 4 producer threads, each performing a
+  mix of `vfs_create`, `vfs_write`, `vfs_delete`, `vfs_commit`
+  (100 ops/thread = 400 ops total).  After producers finish, wait
+  for the GC thread to drain the Bin.  Verifies the framework
+  handles concurrent producers + GC consumer correctly.
+- `test_bin_crash_safety` — use `fork()` to simulate a process
+  crash mid-processing.  Child mounts, pushes 100 NOOPs,
+  signals parent, then `_exit` (no unmount, no thread cleanup).
+  Parent remounts, verifies the Bin entries are still on disk,
+  waits for the new mount's GC thread to drain.
+- `test_bin_performance` — measure `bin_push` (10000 ops in
+  tight loop) and `bin_pop` throughput.  Output: push is
+  ~600-1300 ns/op (the GC thread is concurrently processing,
+  so contention is real), pop is ~250-300 ns/op.  Spec
+  target was 10-20 ns (cache-hit only); actual is 30-130x
+  slower due to per-page CAS contention with the GC thread
+  and the spec's "no global lock" constraint.
+
+**Bench workload added** (in `bench/bench.c`):
+- `bench_bin` (`--workload=bin --count=N`) — measures
+  push and pop throughput end-to-end.  Same numbers as
+  `test_bin_performance`.
+
+**Test results**:
+- All 16 ctest suites pass (99.9s total)
+- test_gc_thread: 144/144 assertions (was 125 in W3, +19 from
+  the 3 new W4 tests)
+- No regressions in test_storage, test_tree, test_fuzz,
+  test_crash, etc.
+
+**Framework status**:
+The Bin + background thread + per-bin-job dispatch framework
+is now complete.  The framework itself does no real garbage
+processing — it only delivers Bin entries from producers to
+the GC thread.  The actual garbage processing is added by
+per-bin-job specs, one bin job per spec, each following the
+per-bin-job template (impl/phase-28-gc.md §5).
+
+**Recommended next phase**:
+The first per-bin-job spec is **Type 1: Free pages from file
+deletion** (per the brainstorming doc's recommendation).  It
+exercises the full trigger/work split, the per-bin-job lock
+model, and the per-bin-job crash safety.  This is when M4,
+N2, and N3 ISSUES.md items can be addressed (each bin job
+addresses the bugs in its own work function).

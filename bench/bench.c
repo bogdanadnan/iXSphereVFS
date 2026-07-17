@@ -11,6 +11,7 @@
  *   dir      — create/list/delete cycles on N subdirectories, measure directory-operation throughput
  *   seqwrite — sequential page writes to a single large file
  *   randread — random page reads from a pre-populated file
+ *   bin     — Phase 28 W4: measure Bin push/pop throughput
  */
 
 /* Simple fail-on-error macro for benchmark setup */
@@ -21,6 +22,7 @@
 #include "ixsphere/vfs.h"
 #include "ixsphere/vfs_internal.h"
 #include "nodes.h"
+#include "bin.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,7 +60,7 @@ static void usage(void) {
     fprintf(stderr,
         "Usage: vfs_bench --workload=<name> --count=N [options]\n"
         "Options:\n"
-        "  --workload=<name>   create, small_create, write, read, scan, mixed, dir, seqwrite, randread, seqread, sparse_rand_write (default: create)\n"
+        "  --workload=<name>   create, small_create, write, read, scan, mixed, dir, seqwrite, randread, seqread, sparse_rand_write, bin (default: create)\n"
         "  --count=N           number of files/operations (default: 1000)\n"
         "  --threads=N         number of threads (default: 1)\n"
         "  --page-size=N       VFS page size in bytes (default: 8192)\n"
@@ -969,6 +971,89 @@ static int bench_seqread(vfs_t* vfs, int count, int threads, const char* path,
 }
 
 /* ---------------------------------------------------------------------------
+ * Workload: bin — measure Bin push/pop throughput (Phase 28 W4).
+ *
+ * Pushes `count` entries via bin_push, then pops them all via bin_pop.
+ * Measures push and pop independently.  The GC thread is concurrently
+ * processing entries (NOOP, so processing is fast), which adds
+ * some realistic contention to the push.
+ *
+ * Spec target: ~10-20 ns per push/pop.  Actual numbers depend on
+ * hardware and the GC thread's processing load.  The bench prints
+ * the numbers but doesn't assert (it's a measurement, not a test).
+ * --------------------------------------------------------------------------- */
+
+static int bench_bin(vfs_t* vfs, int count, int threads, const char* path) {
+    (void)threads;
+    (void)path;
+    StorageBackend* sb = vfs->ctx->sb;
+
+    /* --- Push phase --- */
+    printf("\n=== bin_push (%d entries) ===\n", count);
+    double t0 = now_sec();
+    int ok = 0;
+    for (int i = 0; i < count; i++) {
+        if (bin_push(sb, BIN_TRIGGER_NOOP, (int64_t)(i + 1), 0) == 0) ok++;
+    }
+    double t1 = now_sec();
+    double push_sec = t1 - t0;
+    double push_ops = (double)ok / push_sec;
+    double push_ns = (push_sec / ok) * 1e9;
+    printf("  push: %d/%d ok  elapsed=%.3fs  ops/sec=%.0f  ~%.0f ns/op\n",
+           ok, count, push_sec, push_ops, push_ns);
+
+    /* Wait for GC thread to drain so pop has work to do.  Bin count
+       is atomic; the GC thread processes concurrently. */
+    int64_t* bin_count_ptr = (int64_t*)(sb->header_buf + HDR_OFF_BIN_COUNT);
+    int drained = 0;
+    for (int i = 0; i < 10000 && !drained; i++) {
+        if (vfs_atomic_load_i64(bin_count_ptr) == 0) drained = 1;
+        else usleep(1000);
+    }
+    if (!drained) {
+        printf("  warning: Bin not fully drained after 10s; "
+               "Bin count = %lld\n", (long long)vfs_atomic_load_i64(bin_count_ptr));
+    }
+
+    /* --- Pop phase ---
+     * Push `count` more entries, then pop them all in a tight loop.
+     * Some entries may have been processed by the GC thread, but
+     * the count is high enough that the pop loop has work to do. */
+    for (int i = 0; i < count; i++) {
+        bin_push(sb, BIN_TRIGGER_NOOP, (int64_t)(i + 1 + count), 0);
+    }
+    usleep(100000);  /* 100ms — let GC drain some */
+
+    printf("\n=== bin_pop (%d entries) ===\n", count);
+    double t2 = now_sec();
+    int popped = 0;
+    for (int i = 0; i < count * 2; i++) {
+        BinEntry entry;
+        if (bin_pop(sb, &entry) == 0) popped++;
+        if (popped >= count) break;
+    }
+    double t3 = now_sec();
+    double pop_sec = t3 - t2;
+    double pop_ops = (double)popped / pop_sec;
+    double pop_ns = (pop_sec / popped) * 1e9;
+    printf("  pop:  %d/%d ok  elapsed=%.3fs  ops/sec=%.0f  ~%.0f ns/op\n",
+           popped, count, pop_sec, pop_ops, pop_ns);
+
+    /* Wait for full drain. */
+    drained = 0;
+    for (int i = 0; i < 10000 && !drained; i++) {
+        if (vfs_atomic_load_i64(bin_count_ptr) == 0) drained = 1;
+        else usleep(1000);
+    }
+    if (!drained) {
+        printf("  warning: Bin not fully drained after pop; "
+               "Bin count = %lld\n", (long long)vfs_atomic_load_i64(bin_count_ptr));
+    }
+
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
  * Main — dispatch to workload
  * --------------------------------------------------------------------------- */
 
@@ -1029,6 +1114,8 @@ int main(int argc, char** argv) {
         const char* ph = strchr(opts.workload, ':');
         ok = bench_seqread(vfs, opts.count, opts.threads, opts.output,
                            ph ? ph + 1 : NULL);
+    } else if (strcmp(opts.workload, "bin") == 0) {
+        ok = bench_bin(vfs, opts.count, opts.threads, opts.output);
     } else {
         fprintf(stderr, "Unknown workload: %s\n", opts.workload);
         usage();
