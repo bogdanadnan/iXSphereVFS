@@ -27,11 +27,25 @@
  * Capacity: 510 entries per 8KB page, 255 per 4KB page.
  * --------------------------------------------------------------------------- */
 
-/* BinEntry: 16-byte typed entry in the Bin. */
+/* BinEntry: 24-byte typed entry in the Bin.
+ *
+ * Phase 28 Type 1: file-deletion bin job needs two int64 contexts
+ * (file_vp + tombstone_vp).  The 16-byte layout (8+4+4) only fits
+ * one int64 + two int32 — too small.  Layout expanded to 24 bytes
+ * (8+4+4+8) for full int64 support.  Capacity drops from 510 to
+ * 340 entries per 8KB page (still ample; the Bin is a transient
+ * queue, not a storage backbone).
+ *
+ * On-disk layout per entry (at offset 16 + idx * 24 in a Bin page):
+ *   offset  0: int64_t context
+ *   offset  8: int32_t type
+ *   offset 12: int32_t reserved (zero)
+ *   offset 16: int64_t context2 */
 typedef struct {
     int64_t context;   /* type-specific identifier (8 bytes) */
     int32_t type;      /* bin_entry_type_t — trigger or work tag (4 bytes) */
-    int32_t context2;  /* second type-specific field (4 bytes) */
+    int32_t rsvd;      /* reserved for alignment (4 bytes) */
+    int64_t context2;  /* second type-specific identifier (8 bytes) */
 } BinEntry;
 
 /* Type tag threshold.  Entries with type < THRESHOLD are TRIGGER
@@ -44,8 +58,22 @@ typedef struct {
  * specs.) */
 typedef enum {
     BIN_TRIGGER_NOOP               = 0,   /* placeholder: no analysis, just delete */
-    /* Future: BIN_TRIGGER_FILE_DELETED, BIN_TRIGGER_FILE_TRUNCATED, ... */
+    BIN_TRIGGER_FILE_DELETED       = 1,   /* Phase 28 Type 1: file-deletion bin job
+                                            (spec: impl/phase-28-bin-job-file-deletion.md).
+                                            context = file VP, context2 = tombstone VP. */
+    /* Future: BIN_TRIGGER_FILE_TRUNCATED, BIN_TRIGGER_EPOCH_COMMITTED, ... */
 } bin_trigger_type_t;
+
+/* Work types (Phase 28 Type 1: file-deletion bin job). */
+typedef enum {
+    /* BIN_TYPE_WORK_THRESHOLD + 0 = 0x100.  context = head of per-batch
+       linked list (pool-allocated), context2 = pages count.
+       The work handler (src/gc_bin_free_pages.c) iterates the list,
+       calls storage_free on each logical page, and reads the PageHeader
+       to find + free the mirror sibling. */
+    BIN_WORK_FREE_PAGES            = 0x100,
+    /* Future: BIN_WORK_REMOVE_TOMBSTONE, BIN_WORK_DROP_SOFT_DELETE, ... */
+} bin_work_type_t;
 
 /* Return values */
 #define BIN_OK              0   /* success */
@@ -58,9 +86,9 @@ typedef enum {
 #define BIN_PUSH_MAX_RETRIES  1000
 
 /* Maximum number of entries in a Bin page (depends on page_size).
-   Computed as (page_size - 16) / 16. */
+   Computed as (page_size - 16) / sizeof(BinEntry). */
 static inline int bin_page_capacity(int64_t page_size) {
-    return (int)((page_size - 16) / 16);
+    return (int)((page_size - 16) / (int)sizeof(BinEntry));
 }
 
 /* ---------------------------------------------------------------------------

@@ -72,9 +72,11 @@ static int read_bin_page_entry(StorageBackend* sb, int64_t bin_page, int idx,
     StorageReadStatus st;
     uint8_t* payload = storage_read_with_status(sb, bin_page, &st);
     if (!payload || st != STORAGE_OK) return -1;
-    out->context  = vfs_rd8_s(payload, 16 + (int64_t)idx * 16,     sb->page_size);
-    out->type     = vfs_rd4_s(payload, 16 + (int64_t)idx * 16 + 8, sb->page_size);
-    out->context2 = vfs_rd4_s(payload, 16 + (int64_t)idx * 16 + 12, sb->page_size);
+    int64_t off = 16 + (int64_t)idx * (int64_t)sizeof(BinEntry);
+    out->context  = vfs_rd8_s(payload, off,      sb->page_size);
+    out->type     = vfs_rd4_s(payload, off + 8,  sb->page_size);
+    out->rsvd     = vfs_rd4_s(payload, off + 12, sb->page_size);
+    out->context2 = vfs_rd8_s(payload, off + 16, sb->page_size);
     return 0;
 }
 
@@ -84,9 +86,11 @@ static void write_bin_page_entry(StorageBackend* sb, int64_t bin_page, int idx,
     StorageReadStatus st;
     uint8_t* payload = storage_read_with_status(sb, bin_page, &st);
     if (!payload || st != STORAGE_OK) return;
-    vfs_wr8_s(payload, 16 + (int64_t)idx * 16,     entry->context,  sb->page_size);
-    vfs_wr4_s(payload, 16 + (int64_t)idx * 16 + 8, entry->type,     sb->page_size);
-    vfs_wr4_s(payload, 16 + (int64_t)idx * 16 + 12, entry->context2, sb->page_size);
+    int64_t off = 16 + (int64_t)idx * (int64_t)sizeof(BinEntry);
+    vfs_wr8_s(payload, off,      entry->context,  sb->page_size);
+    vfs_wr4_s(payload, off + 8,  entry->type,     sb->page_size);
+    vfs_wr4_s(payload, off + 12, entry->rsvd,     sb->page_size);
+    vfs_wr8_s(payload, off + 16, entry->context2, sb->page_size);
     cache_mark_dirty(&sb->cache, bin_page, FLUSH_PRIO_POOL);
 }
 
@@ -197,9 +201,11 @@ int bin_push(StorageBackend* sb, int32_t type,
 
         /* We won the count CAS.  Now write the entry at position [count].
            The payload is still in cache; write to it and mark dirty. */
-        vfs_wr8_s(payload, 16 + (int64_t)expected * 16,     entry.context,  sb->page_size);
-        vfs_wr4_s(payload, 16 + (int64_t)expected * 16 + 8, entry.type,     sb->page_size);
-        vfs_wr4_s(payload, 16 + (int64_t)expected * 16 + 12, entry.context2, sb->page_size);
+        int64_t eoff = 16 + (int64_t)expected * (int64_t)sizeof(BinEntry);
+        vfs_wr8_s(payload, eoff,      entry.context,  sb->page_size);
+        vfs_wr4_s(payload, eoff + 8,  entry.type,     sb->page_size);
+        vfs_wr4_s(payload, eoff + 12, 0,              sb->page_size);  /* rsvd */
+        vfs_wr8_s(payload, eoff + 16, entry.context2, sb->page_size);
         cache_mark_dirty(&sb->cache, tail, FLUSH_PRIO_POOL);
 
         /* Increment global count. */
@@ -269,9 +275,11 @@ int bin_push(StorageBackend* sb, int32_t type,
         }
 
         /* We won the count CAS.  Write the entry at position [count]. */
-        vfs_wr8_s(payload, 16 + (int64_t)count * 16,     entry.context,  sb->page_size);
-        vfs_wr4_s(payload, 16 + (int64_t)count * 16 + 8, entry.type,     sb->page_size);
-        vfs_wr4_s(payload, 16 + (int64_t)count * 16 + 12, entry.context2, sb->page_size);
+        int64_t eoff = 16 + (int64_t)count * (int64_t)sizeof(BinEntry);
+        vfs_wr8_s(payload, eoff,      entry.context,  sb->page_size);
+        vfs_wr4_s(payload, eoff + 8,  entry.type,     sb->page_size);
+        vfs_wr4_s(payload, eoff + 12, 0,              sb->page_size);  /* rsvd */
+        vfs_wr8_s(payload, eoff + 16, entry.context2, sb->page_size);
         cache_mark_dirty(&sb->cache, tail, FLUSH_PRIO_POOL);
 
         vfs_atomic_add_i64(hdr_bin_count, 1);
@@ -443,17 +451,33 @@ void validate_bin_on_mount(StorageBackend* sb) {
         int scan = (stored_pc >= 0 && stored_pc <= cap) ? stored_pc : cap;
         int valid_count = 0;
         for (int i = 0; i < scan; i++) {
-            int64_t eoff = payload_off + 16 + (int64_t)i * 16;
-            uint8_t ebuf[16];
-            if (pread(sb->fd, ebuf, 16, eoff) != 16) { chain_broken = 1; break; }
-            int64_t ctx; int32_t tp, ctx2;
-            memcpy(&ctx, ebuf, 8);
-            memcpy(&tp,  ebuf + 8, 4);
-            memcpy(&ctx2, ebuf + 12, 4);
-            /* Basic sanity: type in [0, cap*2] is plausible.  Context
-               non-zero is a weak signal of a real entry (NOOP pushes
-               use context=0 too, so this is just a check that the
-               entry isn't garbage bytes). */
+            int64_t eoff = payload_off + 16 + (int64_t)i * (int64_t)sizeof(BinEntry);
+            /* Read each field via separate pread into distinct local
+               buffers.  The compiler may otherwise alias the source
+               and destination stack slots, tripping __chk_fail_overflow
+               on macOS (the i * 24 stride in particular can confuse
+               alias analysis).  Using distinct buffers per field
+               sidesteps the aliasing. */
+            uint8_t  ctx_raw[8]  __attribute__((aligned(8)));
+            uint8_t  ctx2_raw[8] __attribute__((aligned(8)));
+            uint8_t  tp_raw[4];
+            ssize_t r1 = pread(sb->fd, ctx_raw,  8, eoff);
+            ssize_t r2 = pread(sb->fd, tp_raw,   4, eoff + 8);
+            ssize_t r3 = pread(sb->fd, ctx2_raw, 8, eoff + 16);
+            if (r1 != 8 || r2 != 4 || r3 != 8) { chain_broken = 1; break; }
+            /* Use vfs_rd helpers via a fake payload view, but since
+               we have raw bytes, decode manually with explicit
+               unaligned-safe access.  For little-endian (all
+               supported targets) we can just memcpy to the
+               destination type.  The 8-byte alignment on ctx_raw
+               and ctx2_raw ensures no UB on platforms that
+               require aligned int64 loads. */
+            int64_t ctx;
+            int32_t tp;
+            int64_t ctx2;
+            memcpy(&ctx,  ctx_raw,  8);
+            memcpy(&tp,   tp_raw,   4);
+            memcpy(&ctx2, ctx2_raw, 8);
             if (ctx != 0 && (uint32_t)tp < (uint32_t)(BIN_TYPE_WORK_THRESHOLD * 2)) {
                 valid_count++;
             }

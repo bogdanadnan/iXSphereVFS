@@ -1892,14 +1892,23 @@ int vfs_delete(vfs_t* vfs, int64_t parent, const char* name, int64_t epoch) {
     pool_release(&ctx->pool, &parent_slot);
     vfs_unlock(vfs, (int64_t)found_childId, epoch);
 
-    /* Phase 28 W3: push a NOOP trigger to the Bin.  Future bin-job
-       specs will replace this with BIN_TRIGGER_FILE_DELETED, which
-       the GC's analysis converts to BIN_WORK_REMOVE_TOMBSTONE +
-       BIN_WORK_FREE_PAGES.  For W3, the NOOP trigger is a
-       placeholder that lets us verify the framework end-to-end
-       (producers push, GC thread processes, Bin is drained) without
-       any real GC work. */
-    bin_push(ctx->sb, BIN_TRIGGER_NOOP, (int64_t)found_childPtr, 0);
+    /* Phase 28 Type 1 (spec: impl/phase-28-bin-job-file-deletion.md):
+       push BIN_TRIGGER_FILE_DELETED to the Bin.  The GC's analysis
+       handler will:
+         1. Walk the file's chain, classify data pages as live/dead
+            per current reference points.
+         2. Walk the parent dir's chain, determine if the file is
+            referenced by any reference point.
+         3. If dead data pages exist, push BIN_WORK_FREE_PAGES
+            (the work handler frees the pages via storage_free +
+            mirror handling).
+         4. If the file is not referenced, inline drop the create +
+            tombstone from the parent dir's chain (CAS-based).
+       context = file VP (found_childPtr).
+       context2 = tombstone VP (dc_vp — the slot allocated earlier
+                  in this vfs_delete and prepended to the SlotNode). */
+    bin_push(ctx->sb, BIN_TRIGGER_FILE_DELETED,
+             (int64_t)found_childPtr, (int64_t)dc_vp);
     return VFS_OK;
 }
 
