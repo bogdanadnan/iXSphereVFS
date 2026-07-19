@@ -521,8 +521,127 @@ void test_bin_performance(void) {
     cleanup(path);
 }
 
+/* ---------------------------------------------------------------------------
+ * Phase 28 Type 1: file-deletion bin job tests
+ *
+ * These tests exercise the trigger analysis + work handler via the
+ * GC thread.  vfs_delete pushes BIN_TRIGGER_FILE_DELETED; the GC
+ * thread processes it (classifies data pages, drops the dir entries
+ * if the file is not referenced).
+ * --------------------------------------------------------------------------- */
+
+static void sleep_ms(int ms) {
+    struct timespec ts = { .tv_sec = ms / 1000,
+                          .tv_nsec = (ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
+/* Test 9: file-deletion bin job — create + write + delete, GC drops
+ * the create + tombstone from the parent dir's chain, file is gone. */
+void test_file_deletion_bin_job(void) {
+    printf("9. File-deletion bin job (create+write+delete, GC drops)...\n");
+    const char* path = "/tmp/test_file_deletion_bin_job.vfs";
+    cleanup(path);
+
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    int64_t root = vfs->ctx->rootNodeOffset;
+    int64_t fvp = vfs_create(vfs, root, "to_delete.dat", 0);
+    CHECK(fvp > 0);
+    if (fvp <= 0) { vfs_unmount(vfs); cleanup(path); return; }
+
+    /* Write some data so data pages exist. */
+    uint8_t buf[4096];
+    memset(buf, 0xAB, sizeof(buf));
+    for (int i = 0; i < 4; i++) {
+        int wrc = vfs_write(vfs, fvp, buf, i * 4096, sizeof(buf), 0);
+        CHECK_EQ(wrc, (int)sizeof(buf));
+    }
+    vfs_flush(vfs);
+
+    /* Delete — pushes BIN_TRIGGER_FILE_DELETED. */
+    int drc = vfs_delete(vfs, root, "to_delete.dat", 0);
+    CHECK_EQ(drc, VFS_OK);
+
+    vfs_flush(vfs);
+    /* Give the GC thread time to process the trigger. */
+    sleep_ms(200);
+
+    /* Reopen and verify the file is gone. */
+    vfs_unmount(vfs);
+    vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    int64_t vp = vfs_open(vfs, vfs->ctx->rootNodeOffset, "to_delete.dat", 0);
+    int ok = (vp <= 0);
+    CHECK(ok);
+    if (!ok) fprintf(stderr, "    FAIL: file still exists\n");
+
+    vfs_unmount(vfs);
+    cleanup(path);
+}
+
+/* Test 10: file-deletion with active snapshot — file is not removed
+ * from the parent dir's chain because the snapshot still references it. */
+void test_file_deletion_with_snapshot(void) {
+    printf("10. File-deletion with active snapshot (no drop, snapshot holds file)...\n");
+    const char* path = "/tmp/test_file_deletion_with_snapshot.vfs";
+    cleanup(path);
+
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    int64_t root = vfs->ctx->rootNodeOffset;
+    int64_t fvp = vfs_create(vfs, root, "snap_held.dat", 0);
+    CHECK(fvp > 0);
+    if (fvp <= 0) { vfs_unmount(vfs); cleanup(path); return; }
+
+    /* Take a snapshot BEFORE deleting. */
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK(snap > 0 && (snap & 1) == 1);
+
+    /* Note: epoch=-1 means "current head" per the spec, but the
+     * existing vfs_open/dirchain_find_child pass epoch directly to
+     * the read rule without translating -1.  So we use the actual
+     * currentEpoch.  After vfs_snapshot, currentEpoch is snap+1. */
+    int64_t head_epoch = vfs->ctx->currentEpoch;
+    CHECK(head_epoch == snap + 1);
+
+    /* Delete in the head (currentEpoch = snap + 1).  The snapshot at
+     * snap still references the file, so the analysis should NOT drop
+     * the dir entries. */
+    int drc = vfs_delete(vfs, root, "snap_held.dat", head_epoch);
+    CHECK_EQ(drc, VFS_OK);
+
+    vfs_flush(vfs);
+    sleep_ms(200);
+
+    /* Reopen and verify: at the head, the file is hidden.  But at
+     * the snapshot epoch, the file is visible. */
+    vfs_unmount(vfs);
+    vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    /* At head: file is hidden (deletion visible at H > D). */
+    int64_t vp_h = vfs_open(vfs, vfs->ctx->rootNodeOffset, "snap_held.dat", head_epoch);
+    CHECK(vp_h <= 0);  /* file is hidden at the head */
+
+    /* At the snapshot epoch: file is visible (no deletion at S, since
+     * the deletion happened at the head epoch > S). */
+    int64_t vp_s = vfs_open(vfs, vfs->ctx->rootNodeOffset, "snap_held.dat", snap);
+    CHECK(vp_s > 0);  /* file is visible at the snapshot */
+
+    vfs_unmount(vfs);
+    cleanup(path);
+}
+
 int main(void) {
-    printf("=== GC Thread Tests (Phase 28 W2 + W3 + W4) ===\n\n");
+    printf("=== GC Thread Tests (Phase 28 W2 + W3 + W4 + W5 = file deletion bin job) ===\n\n");
 
     test_gc_thread_lifecycle();
     test_gc_thread_shutdown();
@@ -532,6 +651,8 @@ int main(void) {
     test_bin_end_to_end();
     test_bin_crash_safety();
     test_bin_performance();
+    test_file_deletion_bin_job();
+    test_file_deletion_with_snapshot();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
