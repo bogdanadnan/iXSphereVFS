@@ -1476,7 +1476,9 @@ int gc_thread_stop(vfs_t* vfs) {
  * --------------------------------------------------------------------------- */
 
 static int gc_handle_trigger(vfs_t* vfs, const BinEntry* entry) {
-    /* W2: only BIN_TRIGGER_NOOP is handled.  Future per-bin-job
+    /* Phase 28 W2: BIN_TRIGGER_NOOP placeholder.  Phase 28 Type 1
+       (file deletion): BIN_TRIGGER_FILE_DELETED → gc_handle_file_deleted
+       (defined in src/gc_bin_file_deleted.c).  Future per-bin-job
        specs add their trigger handlers here. */
     switch (entry->type) {
     case BIN_TRIGGER_NOOP:
@@ -1484,6 +1486,8 @@ static int gc_handle_trigger(vfs_t* vfs, const BinEntry* entry) {
            framework does NOT push any work entries; the trigger
            is gone after the dispatch returns. */
         return VFS_OK;
+    case BIN_TRIGGER_FILE_DELETED:
+        return gc_handle_file_deleted(vfs, entry);
     default:
         fprintf(stderr, "gc: unknown trigger type %d, skipping\n",
                 entry->type);
@@ -1492,11 +1496,16 @@ static int gc_handle_trigger(vfs_t* vfs, const BinEntry* entry) {
 }
 
 static int gc_handle_work(vfs_t* vfs, const BinEntry* entry) {
-    /* W2: no work types are defined.  Any unknown type is logged
-       and skipped.  Future per-bin-job specs add their work
-       handlers here. */
-    fprintf(stderr, "gc: unknown work type %d, skipping\n", entry->type);
-    return VFS_ERR_IO;
+    /* Phase 28 Type 1 (file deletion): BIN_WORK_FREE_PAGES →
+       gc_handle_free_pages (defined in src/gc_bin_free_pages.c).
+       Future per-bin-job specs add their work handlers here. */
+    switch (entry->type) {
+    case BIN_WORK_FREE_PAGES:
+        return gc_handle_free_pages(vfs, entry);
+    default:
+        fprintf(stderr, "gc: unknown work type %d, skipping\n", entry->type);
+        return VFS_ERR_IO;
+    }
 }
 
 int gc_process_entry(vfs_t* vfs, const BinEntry* entry) {

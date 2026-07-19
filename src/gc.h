@@ -229,4 +229,29 @@ int gc_thread_stop(vfs_t* vfs);
  * bin-job specs add their trigger and work types here. */
 int gc_process_entry(vfs_t* vfs, const BinEntry* entry);
 
+/* ---------------------------------------------------------------------------
+ * Phase 28 Type 1: file-deletion bin job
+ * (spec: impl/phase-28-bin-job-file-deletion.md)
+ *
+ * Analysis handler: BIN_TRIGGER_FILE_DELETED
+ *   context  = file VP (FileNode)
+ *   context2 = tombstone VP (DirContent with namePtr=0)
+ *   Walks the file's chain, classifies data pages as live/dead
+ *   per the current reference points (H + each active snapshot).
+ *   Pushes BIN_WORK_FREE_PAGES with the dead data pages (batched
+ *   in a pool-allocated linked list).  If the file is not
+ *   referenced by any reference point, performs the inline
+ *   dir-entry drop (create + tombstone) via CAS.
+ *
+ * Work handler: BIN_WORK_FREE_PAGES
+ *   context  = head of per-batch linked list (pool-allocated)
+ *   context2 = pages count
+ *   Iterates the batch, calls storage_free on each logical page
+ *   AND its mirror sibling (read from PageHeader).  The batch
+ *   slots themselves are NOT freed (TODO-12 — pool_free is a
+ *   stub for now).
+ * --------------------------------------------------------------------------- */
+int gc_handle_file_deleted(vfs_t* vfs, const BinEntry* entry);
+int gc_handle_free_pages(vfs_t* vfs, const BinEntry* entry);
+
 #endif /* VFS_GC_H */
