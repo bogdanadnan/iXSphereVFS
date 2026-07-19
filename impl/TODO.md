@@ -115,9 +115,60 @@ abort the commit.
 
 ---
 
-## TODO-11 — storage_allocate Tail-Advance vs. GC Mid-Table Freeing
+## TODO-12 — Pool Slot Freeing (deferred from Phase 28 first bin job)
 
 ### Problem
+
+The current pool allocator (`src/pool.c::pool_alloc`) only supports
+allocation; there is no `pool_free` operation. Individual pool slots
+are never freed back to the pool. The existing stop-the-world GC
+handles this implicitly by shadow-compacting the entire pool into
+new pages and freeing the old pool pages wholesale.
+
+The new per-bin-job GC (Phase 28) frees individual slots (chain
+slots — FileNode, FileContent, PageNode, FileSize, DirContent for
+the create + tombstone removal) without rebuilding pool pages. We
+need a way to return freed slots to the pool's free list.
+
+### Proposed Solution
+
+Add a `pool_free(Pool* pool, int64_t slot_vp)` operation that:
+- Pushes the slot onto the page's free list (use slot's bytes 0-1
+  to store the next free index, same layout as the freshly-allocated
+  page per SPEC §5.3).
+- Atomically updates the page's `poolState` (freeCount / firstFreeSlot)
+  via CAS to reflect the new free count.
+- Thread-safe (matches the existing `pool_alloc` per-page CAS pattern).
+
+Required by the Phase 28 file-deletion bin job (and subsequent bin
+jobs: snapshot delete, commit, truncate, etc.). Until this lands,
+the file-deletion bin job's spec uses a stub `pool_free` that
+returns success without doing anything (a leak — pool slots are
+recovered only on next shadow-compaction by an out-of-band GC pass).
+
+### Impact
+
+- Pool memory: 32 bytes per freed slot returned to the free list
+  (small vs. the data pages being freed, but a real win for
+  delete-heavy workloads that create and delete many small files).
+- `pool_free`: O(1) per-page CAS (same cost as `pool_alloc`).
+- Crashes: free-list is in-memory only (matches `pool_alloc`); on
+  remount, the free-list is rebuilt from `poolState` per page.
+  Slots freed in a crash window are leaked — same semantics as
+  the existing stop-the-world GC's behavior under crash.
+
+### Files Affected
+- `src/pool.c`, `src/pool.h` — add `pool_free`
+- `src/gc.c` (or per-bin-job files) — call `pool_free` for each
+  chain slot identified as freeable by the bin job
+- `test/test_pool.c` — add a test: allocate, free, re-allocate
+  (the same slot should be returned)
+
+---
+
+## TODO-11 — storage_allocate Tail-Advance vs. GC Mid-Table Freeing [RESOLVED]
+
+### Problem (historical)
 `storage_allocate` was redesigned (Phase 18 optimization) to use a tail-advance
 fast path: `sb->total_pages` is atomically incremented and the new page is
 returned. The fast path assumes the next free slot is always at the current
@@ -129,30 +180,31 @@ After GC runs (`vfs_gc`), however, mid-table slots become free (`storage_free`
 sets their indirection entry to 0). The tail-advance path then skips over
 those holes — they become permanently leaked physical space.
 
-### Required Fix
-When GC reclaims mid-table slots, either:
-  (a) **Rewrite GC to compact logically**: after VFS_ERR_FULL GC, scan the
-      indirection table and physically copy surviving data pages into the
-      unallocated tail, updating their indirection entries and advancing
-      `total_pages` only as needed.  This pairs with TODO-4 (physical
-      compaction) and TODO-5 (physical offset reuse stack).
-  (b) **Switch to a free-list alloc policy**: maintain a bitmap / heap of free
-      indirection slots, populate it on mount from the inline + overflow
-      indirection table, push entries onto it as `storage_free` runs, pop in
-      `storage_allocate`.  Falls back to tail-advance when empty.
+### Resolution (Phase 27 W3 / W5 / W6)
 
-Until one of these lands, do NOT run `vfs_gc` while expecting `storage_allocate`
-to recover the freed slots — they will be leaked.
+Option (b) was implemented by the Phase 27 free-page queue (W3 initial,
+W5 enqueue, W6 dequeue):
 
-### Files Affected
-- `src/storage.c` — `storage_allocate` and storage_free currently; free-list
-  would land here
-- `src/gc.c` — `vfs_gc` shadow-compaction: avoid leaving holes (TODO-4),
-  or trigger free-list repopulation before returning
-- `test/test_gc.c` — add a test: run GC, verify `storage_allocate` returns
-  non-leaked page indices
+- **W3:** `storage_allocate` now tries the free-list first
+  (`dequeue_from_free_list`) before falling through to
+  `storage_allocate_tail_advance`.
+- **W5:** `storage_free` enqueues `(logical, phys)` into the free-list
+  via `enqueue_free_page` (and validates on mount via
+  `validate_free_list_on_mount`).
+- **W6:** `dequeue_from_free_list` is retry-safe (1000-iteration cap)
+  with CAS on the per-page count and the head/tail pointers.
 
-### Status
-**Active TODO** — deferred to be done alongside TODO-4 and TODO-5.  Until
-then, the tail-advance optimization in `storage_allocate` is correct
-because nothing frees slots during the hot path.
+The free-list is on-disk (linked pages chained via
+`HDR_OFF_FREE_LIST_HEAD` / `_TAIL` / `_COUNT` in the storage header),
+crash-safe (Phase 27 W5 payload CRC repair + free-list validator), and
+thread-safe (CAS-based).
+
+After `storage_free`, the indirection entry is 0 and the (logical, old_phys)
+is on the free-list. The next `storage_allocate` pops it via
+`dequeue_from_free_list` and returns the same logical page; the next
+writer claims it via `try_claim_entry` (which writes a new physical offset
+into the cleared indirection entry).
+
+**Status:** RESOLVED. The free-list alloc policy is in production. No
+rework needed for the Phase 28 per-bin-job GC; `storage_free` is the
+correct primitive for freeing data pages.
