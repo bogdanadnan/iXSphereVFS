@@ -961,3 +961,120 @@ exercises the full trigger/work split, the per-bin-job lock
 model, and the per-bin-job crash safety.  This is when M4,
 N2, and N3 ISSUES.md items can be addressed (each bin job
 addresses the bugs in its own work function).
+
+---
+
+## Phase 28 W5-W7: File-deletion bin job implementation (commits `4a569c1`, `ed18f35`, `2bc2539`)
+
+The first per-bin-job spec landed: **Type 1 — Free pages from
+file deletion** (per the brainstorming doc's recommendation).
+
+### What was added
+
+1. **Spec** (`impl/phase-28-bin-job-file-deletion.md`, 1197 lines):
+   - Trigger: `BIN_TRIGGER_FILE_DELETED = 1`
+     (context = file VP, context2 = tombstone VP)
+   - Work: `BIN_WORK_FREE_PAGES = 0x100`
+     (context = batch head, context2 = page count)
+   - Inline dir-entry drop in the analysis handler (per the
+     review's H1 finding — eliminates parent_dir_vp lookup
+     overhead)
+   - CAS-only lock model, no per-file / tree locks
+   - "act now based on current state" semantics — the bin job
+     is snapshot-agnostic; commit/soft-delete bin jobs handle
+     the snapshot-resolution cases separately
+   - Reviewed and approved by external reviewer
+     (`PHASE28_BINJOB_FILEDEL_REVIEW_V2`)
+
+2. **BinEntry layout expansion** (commit `4a569c1`):
+   - BinEntry grew from 16 to 24 bytes (8+4+4+8) to support two
+     full int64 contexts (file_vp + tombstone_vp) on the trigger.
+   - Bin page capacity: 510 → 340 entries per 8KB page.  Still
+     ample; the Bin is a transient queue.
+   - Fixed a `__chk_fail_overflow` in `validate_bin_on_mount`
+     caused by the compiler aliasing the source/destination
+     stack slots.  Sidestepped with per-field local buffers.
+
+3. **Implementation** (commits `ed18f35`, `2bc2539`):
+   - `src/gc_bin_file_deleted.c` (~800 LOC): analysis handler
+     + helpers (`collect_active_snapshots`, `classify_data_pages`,
+     `find_parent_dir`, `find_slotnode_in_dir`,
+     `read_rule_pick_first_dc`, `check_file_referenced`,
+     `find_create_in_slot`, `drop_dir_entries`,
+     `batch_dead_pages_into_pool_list`, `read_mirror_page`)
+   - `src/gc_bin_free_pages.c` (~80 LOC): work handler
+     (iterates the batch, calls `storage_free` on logical +
+     mirror; per the §6.2 finding, `storage_free` doesn't
+     free mirrors — the work handler does it explicitly)
+   - `src/gc.c`: dispatch cases for `BIN_TRIGGER_FILE_DELETED`
+     and `BIN_WORK_FREE_PAGES`
+   - `src/tree.c:1899-1904`: `vfs_delete` producer push changed
+     from `BIN_TRIGGER_NOOP` to `BIN_TRIGGER_FILE_DELETED`
+   - `src/gc.h`: declared `gc_handle_file_deleted` and
+     `gc_handle_free_pages`
+   - `CMakeLists.txt`: added the new sources to `ixsphere_vfs`
+
+4. **Tests** (commit `2bc2539`):
+   - `test_file_deletion_bin_job`: create+write+delete, GC
+     drops the create+tombstone, file is gone on remount.
+   - `test_file_deletion_with_snapshot`: create, take snapshot,
+     delete at the head.  Verify the snapshot still sees the
+     file; the head sees the file as deleted.
+
+5. **TODO.md updates**:
+   - TODO-11 marked `[RESOLVED]` (Phase 27 W3/W5/W6 free-page
+     queue fully addresses the tail-advance-skips-mid-table-holes
+     problem; `storage_free` enqueues, `storage_allocate` dequeues).
+   - TODO-12 added: pool slot freeing deferred (chain slots
+     leak per-process at the rate of ~160 MB per 1000-file
+     delete workload; pre-MVP acceptable; should land before
+     delete-heavy production use).
+
+### Key design decisions
+
+- **Drop order**: the analysis drops the **CREATE first, then
+  the tombstone**.  Between the two CAS operations, the
+  intermediate chain has only the tombstone (file hidden).  The
+  opposite order would leave the file visible in the
+  intermediate state.  Caught by `test_crash::Scenario 2`
+  (`delete_verify`) which was failing intermittently before
+  the order was fixed.
+- **find_create_in_slot**: walks the SlotNode's chain directly
+  to find the create entry by `namePtr != 0`.  Needed because
+  `check_file_referenced` only finds a live entry when it's
+  the visible entry at some reference point — but the create
+  is often shadowed by the tombstone, in which case the
+  read-rule walk doesn't pick it.
+- **No re-push on unresolved**: the bin job is single-shot.
+  Snapshot-resolution cases are handled by the (future)
+  commit/soft-delete bin jobs, not by re-pushing the file
+  deletion trigger.
+- **No index update yet**: `dircontentindex_remove` requires
+  the parent dir's index root + the entry's name hash.  The
+  current implementation skips the index update; the next
+  dir chain walk rebuilds it lazily.  Documented as a
+  follow-up (option-a from the M3 review).
+
+### Test results
+
+- 15/15 ctest pass (51.5s sequential)
+- `test_gc_thread`: 160/160 assertions (was 144 in W4, +16
+  from 2 new file-deletion tests)
+- `test_crash`: 16/16 scenarios (16.8s)
+- No regressions in test_storage, test_tree, test_fuzz, etc.
+
+### What's next
+
+- The other bin-job specs (Type 2 tombstones from other
+  sources, Type 3 soft-deleted mapper entries, Type 4
+  committed mapper rewrites, file truncate, mirror write
+  failure, snapshot delete).  Each is a separate spec
+  following the per-bin-job template.
+- TODO-12: pool_free implementation.  Required before
+  delete-heavy production use.
+- ISSUES.md items unblocked by this bin job:
+  - **N2** (pinPage=true for GC): the file-deletion bin job
+    uses `pool_acquire(..., pinPage=false, ...)` for chain
+    walks (read-only, by-value) and `pinPage=true` for chain
+    modifications (drop_dir_entries, batch_pages_into_pool_list).
+    The same pattern is recommended for the other bin jobs.
