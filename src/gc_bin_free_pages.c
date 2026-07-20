@@ -54,17 +54,31 @@ int gc_handle_free_pages(vfs_t* vfs, const BinEntry* entry) {
         int64_t next    = vfs_rd8_s(bs.bytes, 0, ctx->page_size);
         pool_release(&ctx->pool, &bs);
 
-        /* Free the logical page.  storage_free is idempotent
-           (checks indir_lookup before acting). */
+        /* B1 fix (PHASE28_BINJOB_FILEDEL_IMPL_REVIEW): read the
+           mirror BEFORE freeing the logical page.
+
+           Why order matters:
+             storage_free() calls indir_set(logical, 0) which
+             zeroes the indirection entry.  read_mirror_page()
+             then calls indir_lookup() to resolve the page's
+             physical offset (so it can pread() the PageHeader
+             to find the mirror_page field).  If the indir entry
+             is already 0, indir_lookup returns 0, pread() never
+             runs, and the mirror is never freed.
+
+           Correct order:
+             1. Read the PageHeader to find the mirror_page.
+             2. Free the logical page (zeroes its indir entry).
+             3. Free the mirror (if any).
+           This matches the existing deferred_free_enqueue()
+           pattern in src/gc.c.
+
+           The pre-fix code did (2) then (1)+(3), which always
+           missed the mirror — the mirror page leaked on every
+           deletion. */
+        int64_t mirror = read_mirror_page(ctx->sb, (int64_t)logical);
         storage_free(ctx->sb, (int64_t)logical);
         processed++;
-
-        /* Find and free the mirror sibling, if any.  The current
-           storage_free does NOT free mirrors (per §6.2 finding in
-           the spec).  The work handler reads the PageHeader to
-           find the mirror, matching the existing
-           deferred_free_enqueue pattern in src/gc.c. */
-        int64_t mirror = read_mirror_page(ctx->sb, (int64_t)logical);
         if (mirror >= 0) {
             storage_free(ctx->sb, mirror);
         }

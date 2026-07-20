@@ -52,7 +52,7 @@ typedef struct {
 
 /* Forward decls (in this file). */
 static int collect_active_snapshots(TreeContext* ctx, ref_points_t* rp);
-static int classify_data_pages(TreeContext* ctx, int64_t file_vp,
+static int classify_data_pages(TreeContext* ctx, int64_t file_vp, int64_t slot_vp,
                                 const ref_points_t* rp,
                                 int64_t* out_dead_logicals, int max_dead,
                                 int* out_num_dead);
@@ -62,6 +62,8 @@ static int find_slotnode_in_dir(TreeContext* ctx, int64_t dir_vp,
                                  uint32_t child_id, int64_t* out_slot_vp);
 static int read_rule_pick_first_dc(TreeContext* ctx, int64_t slot_vp,
                                     int64_t read_epoch, int64_t* out_dc_vp);
+static int file_visible_at_R(TreeContext* ctx, int64_t slot_vp,
+                              int64_t R, int64_t file_vp);
 static int check_file_referenced(TreeContext* ctx, int64_t file_vp,
                                   int64_t slot_vp, const ref_points_t* rp,
                                   int* out_referenced,
@@ -69,15 +71,26 @@ static int check_file_referenced(TreeContext* ctx, int64_t file_vp,
 static int64_t find_create_in_slot(TreeContext* ctx, int64_t slot_vp,
                                      int64_t file_vp);
 static int drop_dir_entries(TreeContext* ctx, int64_t slot_vp,
-                             int64_t create_vp, int64_t tombstone_vp);
+                             int64_t file_vp, int64_t create_vp,
+                             int64_t tombstone_vp, const ref_points_t* rp);
 static int batch_dead_pages_into_pool_list(TreeContext* ctx,
                                             const int64_t* dead_logicals,
                                             int num_dead,
                                             int64_t* out_batch_head);
 static int64_t alloc_pool_slot_32(TreeContext* ctx, uint8_t* out_bytes,
                                    int64_t* out_vp);
-static int64_t read_mirror_page(StorageBackend* sb, int64_t logical);
-static int free_logical_with_mirror(StorageBackend* sb, int64_t logical);
+
+/* B3 fix (PHASE28_BINJOB_FILEDEL_IMPL_REVIEW): helpers for CAS on
+   the live cache payload (not on a stack-local copy).  Matches
+   the pattern in pool_free (pool.c:368,398) and dequeue_from_free_list
+   (storage.c:574). */
+static uint8_t* live_pool_page(StorageBackend* sb, int64_t slot_vp,
+                                 StorageReadStatus* out_status);
+static int      pool_slot_data_offset(int slot_index);
+static int      cas_head_ptr_live(TreeContext* ctx, int64_t slot_vp,
+                                    int64_t expected, int64_t desired);
+static int      cas_next_ptr_live(TreeContext* ctx, int64_t slot_vp,
+                                    int64_t expected, int64_t desired);
 
 /* ---------------------------------------------------------------------------
  * gc_handle_file_deleted — main analysis entry point (called by GC thread)
@@ -89,12 +102,18 @@ int gc_handle_file_deleted(vfs_t* vfs, const BinEntry* entry) {
     int64_t tombstone_vp = entry->context2;
 
     /* 1. Sanity check: the file slot still exists.  If not, a prior
-          run already processed this trigger (idempotency). */
+          run already processed this trigger (idempotency).  Also
+          read the file_child_id here so we can reuse it for
+          find_slotnode_in_dir (B2 reorder: this is now done before
+          classify_data_pages, which needs slot_vp). */
     PoolSlot file_slot = {0};
     pool_acquire(&ctx->pool, file_vp, false, &file_slot);
     if (file_slot.vptr == VFS_VPTR_NULL) {
         return VFS_OK;
     }
+    uint32_t file_child_id = (uint32_t)vfs_rd4_s(file_slot.bytes,
+                                                  FILENODE_OFF_NODEID,
+                                                  ctx->page_size);
     pool_release(&ctx->pool, &file_slot);
 
     /* 2. Determine reference points. */
@@ -104,39 +123,39 @@ int gc_handle_file_deleted(vfs_t* vfs, const BinEntry* entry) {
         return VFS_ERR_IO;
     }
 
-    /* 3. Classify data pages as live/dead. */
-    int64_t dead_logicals[1024];
-    int num_dead = 0;
-    int err = classify_data_pages(ctx, file_vp, &rp,
-                                   dead_logicals,
-                                   (int)(sizeof(dead_logicals) /
-                                         sizeof(dead_logicals[0])),
-                                   &num_dead);
-    if (err != VFS_OK) return err;
-
-    /* 4. Find the parent dir (walk from root). */
+    /* 3. Find the parent dir (walk from root).  This is the
+          B2-reorder move: previously step 4, now step 3 so that
+          slot_vp is available to classify_data_pages. */
     int64_t parent_dir_vp = 0;
     if (find_parent_dir(ctx, file_vp, &parent_dir_vp) != VFS_OK) {
         /* Parent not found — the file is not in any dir (e.g., the
            tombstone was the only entry and we already removed it
            on a prior run).  Skip the dir-entry drop.  Still push
-           the BIN_WORK_FREE_PAGES for the dead data pages. */
+           the BIN_WORK_FREE_PAGES for the dead data pages (and
+           the file-visible-at-R check below will return 0 for
+           every R, so every VP is classified dead — the safe
+           default). */
         parent_dir_vp = 0;
     }
 
-    /* 5. Find the SlotNode for the file in the parent dir. */
+    /* 4. Find the SlotNode for the file in the parent dir. */
     int64_t slot_vp = 0;
     if (parent_dir_vp != 0) {
-        PoolSlot fs = {0};
-        pool_acquire(&ctx->pool, file_vp, false, &fs);
-        uint32_t file_child_id = (uint32_t)vfs_rd4_s(fs.bytes,
-                                                     FILENODE_OFF_NODEID,
-                                                     ctx->page_size);
-        pool_release(&ctx->pool, &fs);
         if (find_slotnode_in_dir(ctx, parent_dir_vp, file_child_id, &slot_vp) != VFS_OK) {
             slot_vp = 0;
         }
     }
+
+    /* 5. Classify data pages as live/dead.  Now takes slot_vp
+          for the B2 file-visible-at-R check. */
+    int64_t dead_logicals[1024];
+    int num_dead = 0;
+    int err = classify_data_pages(ctx, file_vp, slot_vp, &rp,
+                                   dead_logicals,
+                                   (int)(sizeof(dead_logicals) /
+                                         sizeof(dead_logicals[0])),
+                                   &num_dead);
+    if (err != VFS_OK) return err;
 
     /* 6. Determine file visibility at each reference point.  Also
           find the create entry's VP by walking the SlotNode's chain
@@ -202,7 +221,8 @@ int gc_handle_file_deleted(vfs_t* vfs, const BinEntry* entry) {
             }
         }
 
-        int drc = drop_dir_entries(ctx, slot_vp, create_vp, tombstone_vp);
+        int drc = drop_dir_entries(ctx, slot_vp, file_vp, create_vp,
+                                     tombstone_vp, &rp);
 
         /* Free the create + tombstone slots ONLY if the drop actually
            removed entries.  drop_dir_entries returns 1 (no-op) if the
@@ -313,12 +333,37 @@ static int collect_active_snapshots(TreeContext* ctx, ref_points_t* rp) {
  * simplicity, we don't cache here; the per-VersionPage cost is
  * small (the SlotNode chain walk is short, typically 1-2 entries).
  * --------------------------------------------------------------------------- */
-static int classify_data_pages(TreeContext* ctx, int64_t file_vp,
+static int classify_data_pages(TreeContext* ctx, int64_t file_vp, int64_t slot_vp,
                                 const ref_points_t* rp,
                                 int64_t* out_dead, int max_dead,
                                 int* out_num_dead) {
     if (!ctx || !file_vp || !rp || !out_dead || !out_num_dead) return VFS_ERR_IO;
     *out_num_dead = 0;
+    /* slot_vp is allowed to be 0 (e.g., parent dir not found); in
+       that case file_visible_at_R always returns 0, so every VP is
+       classified dead.  This is the safe default. */
+
+    /* B2 fix (PHASE28_BINJOB_FILEDEL_IMPL_REVIEW): pre-compute file
+       visibility at each reference point.  Without this, the
+       classification only checked the VersionPage epoch — so for
+       a head delete with no active snapshots (the common case),
+       every VP at an even epoch < H was marked live, and no data
+       pages were ever freed.  The file's data pages leaked.
+
+       file_visible_at_R[ri] is 1 if the FILE is visible at the
+       ri-th reference point (H for ri=0, rp->active[i] otherwise).
+       We compute it once per R, not once per VP. */
+    int num_r = rp->num_active + 1;
+    int file_visible[MAX_ACTIVE_SNAPSHOTS + 1] = {0};
+    if (slot_vp != 0) {
+        for (int ri = 0; ri < num_r; ri++) {
+            int64_t R = (ri == 0) ? rp->H : rp->active[ri - 1];
+            file_visible[ri] = file_visible_at_R(ctx, slot_vp, R, file_vp);
+        }
+    }
+    /* If slot_vp == 0, file_visible[] stays all-zero — every R
+       reports the file as not visible, so every VP is classified
+       dead.  This is the conservative default. */
 
     /* Read the FileNode to get the head FileContent VP. */
     PoolSlot file_slot = {0};
@@ -348,7 +393,8 @@ static int classify_data_pages(TreeContext* ctx, int64_t file_vp,
             pool_release(&ctx->pool, &pn_slot);
 
             /* Walk the VersionPage chain.  For each VP, check
-               visibility per the read rule at each reference point. */
+               visibility per the read rule at each reference point,
+               gated by the (pre-computed) file visibility at R. */
             int64_t vp_vp = vr_head;
             while (vp_vp != 0) {
                 PoolSlot vp_slot = {0};
@@ -365,9 +411,13 @@ static int classify_data_pages(TreeContext* ctx, int64_t file_vp,
                                              ctx->page_size);
                 pool_release(&ctx->pool, &vp_slot);
 
-                /* Check visibility at each reference point. */
+                /* B2 fix: gate the per-R check on file visibility.
+                   If the FILE is not visible at R, no VP at R can
+                   be live for this file (the reader can't reach the
+                   VP through the dir chain).  Skip R entirely. */
                 int live = 0;
-                for (int ri = 0; ri <= rp->num_active; ri++) {
+                for (int ri = 0; ri < num_r; ri++) {
+                    if (!file_visible[ri]) continue;  /* B2 fix: file not visible at R */
                     int64_t R = (ri == 0) ? rp->H : rp->active[ri - 1];
                     /* Apply per-entry read rule: if traversalApply
                        is true for vp_epoch, replace vp_epoch with
@@ -598,6 +648,56 @@ static int read_rule_pick_first_dc(TreeContext* ctx, int64_t slot_vp,
 }
 
 /* ---------------------------------------------------------------------------
+ * file_visible_at_R — B2 fix (PHASE28_BINJOB_FILEDEL_IMPL_REVIEW).
+ *
+ * Returns 1 iff the file is visible at the read epoch R; 0 otherwise.
+ *
+ * "Visible" means: applying the read rule at R to the SlotNode's
+ * DirContent chain picks a DirContent whose namePtr != 0 (i.e., a
+ * create, not a tombstone) AND whose childPtr == file_vp (i.e., the
+ * right file, not a sibling).
+ *
+ * The previous classify_data_pages only checked the VersionPage
+ * epoch against R.  This missed the file-visibility check entirely.
+ * For a head delete with no active snapshots (the common case),
+ * every VersionPage at an even epoch < H was marked live — so no
+ * data pages were ever classified dead, and BIN_WORK_FREE_PAGES
+ * was never pushed.  The file's data pages leaked.
+ *
+ * This helper is the missing "is the FILE visible at R" check.  The
+ * spec's §3.4 already documented this check (the comment in
+ * classify_data_pages says "if file is visible at R (...) AND E_VP
+ * is visible at R"); the implementation just never had the file-
+ * visible part.
+ *
+ * Cost: one SlotNode chain walk (typically 1-2 entries).  We cache
+ * the per-R result in classify_data_pages to avoid re-walking for
+ * every VersionPage.
+ * --------------------------------------------------------------------------- */
+static int file_visible_at_R(TreeContext* ctx, int64_t slot_vp,
+                              int64_t R, int64_t file_vp) {
+    if (!ctx || !slot_vp || !file_vp) return 0;
+
+    int64_t dc_vp = 0;
+    if (read_rule_pick_first_dc(ctx, slot_vp, R, &dc_vp) != VFS_OK) {
+        return 0;  /* I/O error: conservative — not visible */
+    }
+    if (dc_vp == 0) return 0;  /* no entry at R */
+
+    PoolSlot dc = {0};
+    pool_acquire(&ctx->pool, dc_vp, false, &dc);
+    if (dc.vptr == VFS_VPTR_NULL) return 0;
+
+    int64_t namePtr  = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_NAMEPTR,  ctx->page_size);
+    int64_t childPtr = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_CHILDPTR, ctx->page_size);
+    pool_release(&ctx->pool, &dc);
+
+    if (namePtr == 0)     return 0;  /* tombstone — file hidden at R */
+    if (childPtr != file_vp) return 0;  /* different file's entry picked */
+    return 1;
+}
+
+/* ---------------------------------------------------------------------------
  * check_file_referenced — determine if the file is "visible" at any
  * reference point, and find the create entry's VP.
  *
@@ -681,12 +781,91 @@ static int64_t find_create_in_slot(TreeContext* ctx, int64_t slot_vp,
 }
 
 /* ---------------------------------------------------------------------------
+ * live_pool_page — get a live cache pointer to a pool slot's
+ * containing page.  Returns the cache payload (live, mutable) on
+ * success; NULL on error with *out_status set.
+ *
+ * B3 fix: the previous drop_dir_entries used pool_acquire to get a
+ * stack-local copy, then CAS'd on the local — which was a no-op
+ * for cross-thread synchronization.  This helper provides the live
+ * cache pointer instead, matching the pattern in pool_free
+ * (pool.c:368) and dequeue_from_free_list (storage.c:574).
+ *
+ * After this call, the page is guaranteed to be in the cache (a
+ * cache miss inserts it).  The returned pointer is the same memory
+ * other threads see — CAS on it provides real cross-thread atomicity.
+ * --------------------------------------------------------------------------- */
+static uint8_t* live_pool_page(StorageBackend* sb, int64_t slot_vp,
+                                 StorageReadStatus* out_status) {
+    if (out_status) *out_status = STORAGE_NOT_FOUND;
+    if (!sb || slot_vp == VFS_VPTR_NULL) return NULL;
+    int64_t page_index = VFS_VPTR_PAGE(slot_vp);
+    if (page_index < 2) return NULL;  /* header + superblock never */
+    return storage_read_with_status(sb, page_index, out_status);
+}
+
+/* Compute the byte offset of a slot's data within its pool page. */
+static int pool_slot_data_offset(int slot_index) {
+    return VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
+}
+
+/* CAS the SlotNode's headPtr field on the live cache payload.
+   slot_vp is the SlotNode's VP.  On CAS success: marks the page
+   dirty and returns 1.  On CAS loss: returns 0 (caller may retry).
+   On I/O error: returns -1. */
+static int cas_head_ptr_live(TreeContext* ctx, int64_t slot_vp,
+                              int64_t expected, int64_t desired) {
+    StorageReadStatus pst;
+    uint8_t* payload = live_pool_page(ctx->sb, slot_vp, &pst);
+    if (payload == NULL) {
+        if (pst == STORAGE_IO_ERROR || pst == STORAGE_CRC_ERROR) {
+            fprintf(stderr, "vfs: drop_dir_entries: slot %lld I/O error (status=%d)\n",
+                    (long long)slot_vp, (int)pst);
+        }
+        return -1;
+    }
+    int slot_offset = pool_slot_data_offset(VFS_VPTR_SLOT(slot_vp));
+    int64_t* field = (int64_t*)(payload + slot_offset + ANCHOR_OFF_HEADPTR);
+    int64_t prev = vfs_cas_i64(field, expected, desired);
+    if (prev == expected) {
+        cache_mark_dirty(&ctx->sb->cache, VFS_VPTR_PAGE(slot_vp), FLUSH_PRIO_POOL);
+        return 1;
+    }
+    return 0;
+}
+
+/* CAS a DirContent's nextPtr field on the live cache payload.
+   slot_vp is the DirContent's VP.  Same return contract as
+   cas_head_ptr_live. */
+static int cas_next_ptr_live(TreeContext* ctx, int64_t slot_vp,
+                              int64_t expected, int64_t desired) {
+    StorageReadStatus pst;
+    uint8_t* payload = live_pool_page(ctx->sb, slot_vp, &pst);
+    if (payload == NULL) {
+        if (pst == STORAGE_IO_ERROR || pst == STORAGE_CRC_ERROR) {
+            fprintf(stderr, "vfs: drop_dir_entries: slot %lld I/O error (status=%d)\n",
+                    (long long)slot_vp, (int)pst);
+        }
+        return -1;
+    }
+    int slot_offset = pool_slot_data_offset(VFS_VPTR_SLOT(slot_vp));
+    int64_t* field = (int64_t*)(payload + slot_offset + DIRCONTENT_OFF_NEXTPTR);
+    int64_t prev = vfs_cas_i64(field, expected, desired);
+    if (prev == expected) {
+        cache_mark_dirty(&ctx->sb->cache, VFS_VPTR_PAGE(slot_vp), FLUSH_PRIO_POOL);
+        return 1;
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
  * drop_dir_entries — inline CAS-based removal of create + tombstone
  * from the SlotNode's DirContent chain.
  *
  * Returns:
  *   0  = at least one entry was removed
- *   1  = no-op (entries already gone, e.g. from a prior run)
+ *   1  = no-op (entries already gone, e.g. from a prior run; OR
+ *        file is now referenced by some R after Phase A re-check)
  *   -1 = I/O error
  *
  * The caller uses the return value to decide whether to free the
@@ -701,10 +880,47 @@ static int64_t find_create_in_slot(TreeContext* ctx, int64_t slot_vp,
  *
  * Idempotent: if entries are already gone, the walk finds nothing
  * and the function is a no-op.
+ *
+ * B3 fix: the CAS operations are performed on the live cache payload
+ * (via live_pool_page + cas_*_ptr_live), not on stack-local copies.
+ * The previous code did pool_acquire(pin=true) to get a local copy,
+ * CAS'd on the local (which always "succeeded" on the caller's
+ * snapshot), and then pool_release memcpy'd the local back.  Under
+ * a concurrent prepend, the memcpy would clobber the new entry.
+ * B3 matches the cross-thread-safe pattern used by pool_free
+ * (pool.c:368,398) and dequeue_from_free_list (storage.c:574).
+ *
+ * B4 fix: Phase A re-checks file visibility at each reference point
+ * before the chain walk.  A concurrent vfs_create may have re-added
+ * a live entry between the analysis's check_file_referenced and this
+ * drop.  If the file is now visible at any R, the drop is aborted
+ * (returns 1, no entries removed).  The next GC pass will see the
+ * new state.
  * --------------------------------------------------------------------------- */
 static int drop_dir_entries(TreeContext* ctx, int64_t slot_vp,
-                             int64_t create_vp, int64_t tombstone_vp) {
+                             int64_t file_vp, int64_t create_vp,
+                             int64_t tombstone_vp, const ref_points_t* rp) {
     if (!ctx || !slot_vp || !tombstone_vp) return VFS_ERR_IO;
+    /* file_vp and rp are used by the Phase A re-check.  rp == NULL
+       is treated as "no re-check" (skip Phase A).  This is
+       defensive — callers should always pass rp. */
+    (void)file_vp;
+
+    /* Phase A: re-check file visibility at each reference point.
+       If the file is now visible at any R, abort. */
+    if (rp != NULL && file_vp != 0) {
+        for (int ri = 0; ri <= rp->num_active; ri++) {
+            int64_t R = (ri == 0) ? rp->H : rp->active[ri - 1];
+            if (file_visible_at_R(ctx, slot_vp, R, file_vp)) {
+                /* The file is now visible at R — a concurrent
+                   vfs_create or vfs_rename added a live entry.
+                   Abort the drop.  Caller will retry on a future
+                   GC pass (or the file's deletion will be canceled
+                   if the new entry is a permanent restore). */
+                return 1;
+            }
+        }
+    }
 
     /* Phase A: walk the chain to find the predecessor of the
        tombstone and (if applicable) the create.  The create's
@@ -785,7 +1001,7 @@ static int drop_dir_entries(TreeContext* ctx, int64_t slot_vp,
         }
     }
 
-    /* Phase C: CAS-based removal.
+    /* Phase C: CAS-based removal (B3 fix: CAS on live cache payload).
        Order matters for race safety: drop the CREATE first, then
        the tombstone.  Reasoning: between the two CAS operations,
        a concurrent reader walking the chain may see the chain in
@@ -795,10 +1011,11 @@ static int drop_dir_entries(TreeContext* ctx, int64_t slot_vp,
        has only the create (file visible, BAD).
        So: create first, then tombstone. */
 
-    /* Get the create's nextPtr (its successor). */
+    /* Get the create's nextPtr (its successor).  Read-only, so
+       stack-local is fine. */
     int64_t cre_next = 0;
     int64_t cre_remove_ok = 0;
-    if (create_vp != 0 && create_vp != tombstone_vp && cre_pred != 0) {
+    if (create_vp != 0 && create_vp != tombstone_vp) {
         PoolSlot c = {0};
         pool_acquire(&ctx->pool, create_vp, false, &c);
         if (c.vptr != VFS_VPTR_NULL) {
@@ -806,31 +1023,33 @@ static int drop_dir_entries(TreeContext* ctx, int64_t slot_vp,
         }
         pool_release(&ctx->pool, &c);
 
+        /* CAS-remove the create.  B3 fix: CAS on live cache. */
         if (cre_pred == 0) {
-            /* Create is the head.  Update SlotNode's headPtr. */
-            PoolSlot s = {0};
-            pool_acquire(&ctx->pool, slot_vp, true, &s);
-            if (s.vptr != VFS_VPTR_NULL) {
-                int64_t* head_ptr_field = (int64_t*)(s.bytes + ANCHOR_OFF_HEADPTR);
-                if (vfs_cas_i64(head_ptr_field, create_vp, cre_next) == create_vp) {
-                    cre_remove_ok = 1;
-                }
-                pool_release(&ctx->pool, &s);
+            /* Create is the head.  CAS-update SlotNode's headPtr. */
+            int rc = cas_head_ptr_live(ctx, slot_vp, create_vp, cre_next);
+            if (rc == 1) {
+                cre_remove_ok = 1;
+            } else if (rc < 0) {
+                return VFS_ERR_IO;
             }
+            /* rc == 0: CAS loss (concurrent prepend) — the chain
+               has changed.  Re-walk to find tom_pred fresh in the
+               next phase.  For the create removal, this is a
+               genuine loss; we don't retry.  The next GC pass
+               will re-process the trigger. */
         } else {
-            PoolSlot p = {0};
-            pool_acquire(&ctx->pool, cre_pred, true, &p);
-            if (p.vptr != VFS_VPTR_NULL) {
-                int64_t* next_ptr_field = (int64_t*)(p.bytes + DIRCONTENT_OFF_NEXTPTR);
-                if (vfs_cas_i64(next_ptr_field, create_vp, cre_next) == create_vp) {
-                    cre_remove_ok = 1;
-                }
-                pool_release(&ctx->pool, &p);
+            /* Create is in the middle.  CAS-update cre_pred's
+               nextPtr. */
+            int rc = cas_next_ptr_live(ctx, cre_pred, create_vp, cre_next);
+            if (rc == 1) {
+                cre_remove_ok = 1;
+            } else if (rc < 0) {
+                return VFS_ERR_IO;
             }
         }
     }
 
-    /* Get the tombstone's nextPtr (its successor). */
+    /* Get the tombstone's nextPtr (its successor).  Read-only. */
     int64_t tom_next = 0;
     PoolSlot tom = {0};
     pool_acquire(&ctx->pool, tombstone_vp, false, &tom);
@@ -841,15 +1060,13 @@ static int drop_dir_entries(TreeContext* ctx, int64_t slot_vp,
 
     /* CAS-remove the tombstone.  The SlotNode's headPtr may have
        changed if cre_remove_ok set it (if create was the head).
-       Re-read the headPtr in that case. */
+       Re-walk to find tom_pred fresh in that case. */
     if (tom_pred == 0 && cre_remove_ok) {
         /* The create was the head and was just removed.  The
            SlotNode's headPtr is now cre_next.  The tombstone
            (which was after the create) is at cre_next, NOT at
-           the SlotNode's head.  We need to find the tombstone's
-           predecessor in the chain, which is just whatever points
-           to the tombstone now.  This is complex — for simplicity,
-           walk the chain to find tom_pred fresh. */
+           the SlotNode's head.  Walk the chain to find
+           tom_pred fresh. */
         tom_pred = 0;
         int64_t cur = cre_next;
         while (cur != 0) {
@@ -863,24 +1080,16 @@ static int drop_dir_entries(TreeContext* ctx, int64_t slot_vp,
         }
     }
 
+    /* B3 fix: CAS-remove the tombstone on the live cache. */
     if (tom_pred == 0) {
         /* Update SlotNode's headPtr. */
-        PoolSlot s = {0};
-        pool_acquire(&ctx->pool, slot_vp, true, &s);
-        if (s.vptr != VFS_VPTR_NULL) {
-            int64_t* head_ptr_field = (int64_t*)(s.bytes + ANCHOR_OFF_HEADPTR);
-            vfs_cas_i64(head_ptr_field, tombstone_vp, tom_next);
-            pool_release(&ctx->pool, &s);
-        }
+        int rc = cas_head_ptr_live(ctx, slot_vp, tombstone_vp, tom_next);
+        if (rc < 0) return VFS_ERR_IO;
+        /* rc == 0: CAS loss.  The next GC pass will retry. */
     } else {
         /* CAS-update tom_pred's nextPtr. */
-        PoolSlot p = {0};
-        pool_acquire(&ctx->pool, tom_pred, true, &p);
-        if (p.vptr != VFS_VPTR_NULL) {
-            int64_t* next_ptr_field = (int64_t*)(p.bytes + DIRCONTENT_OFF_NEXTPTR);
-            vfs_cas_i64(next_ptr_field, tombstone_vp, tom_next);
-            pool_release(&ctx->pool, &p);
-        }
+        int rc = cas_next_ptr_live(ctx, tom_pred, tombstone_vp, tom_next);
+        if (rc < 0) return VFS_ERR_IO;
     }
 
     /* Phase D: chain index update.  Per the spec §3.8 (M3 fix),
@@ -957,32 +1166,6 @@ static int batch_dead_pages_into_pool_list(TreeContext* ctx,
         }
         prev = cur;
     }
-    return VFS_OK;
-}
-
-/* ---------------------------------------------------------------------------
- * read_mirror_page — read the PageHeader of a logical page and return
- * its mirror sibling's logical page index (-1 if none).
- * --------------------------------------------------------------------------- */
-static int64_t read_mirror_page(StorageBackend* sb, int64_t logical) {
-    if (!sb || logical < 2) return -1;
-    int64_t phys = indir_lookup(sb, logical);
-    if (phys == 0) return -1;
-    PageHeader ph;
-    ssize_t n = pread(sb->fd, &ph, PAGE_HEADER_SIZE, phys);
-    if (n != PAGE_HEADER_SIZE) return -1;
-    return (int64_t)ph.mirror_page;
-}
-
-/* ---------------------------------------------------------------------------
- * free_logical_with_mirror — free a logical page AND its mirror sibling.
- * Idempotent.  Used by the work handler (§4.1).
- * --------------------------------------------------------------------------- */
-static int free_logical_with_mirror(StorageBackend* sb, int64_t logical) {
-    if (!sb || logical < 2) return VFS_OK;
-    int64_t mirror = read_mirror_page(sb, logical);
-    storage_free(sb, logical);
-    if (mirror >= 0) storage_free(sb, mirror);
     return VFS_OK;
 }
 
