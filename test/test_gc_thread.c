@@ -537,9 +537,10 @@ static void sleep_ms(int ms) {
 }
 
 /* Test 9: file-deletion bin job — create + write + delete, GC drops
- * the create + tombstone from the parent dir's chain, file is gone. */
+ * the create + tombstone from the parent dir's chain, file is gone.
+ * Also verifies the dircontentindex is updated (per spec §3.8). */
 void test_file_deletion_bin_job(void) {
-    printf("9. File-deletion bin job (create+write+delete, GC drops)...\n");
+    printf("9. File-deletion bin job (create+write+delete, GC drops + index update)...\n");
     const char* path = "/tmp/test_file_deletion_bin_job.vfs";
     cleanup(path);
 
@@ -579,6 +580,19 @@ void test_file_deletion_bin_job(void) {
     int ok = (vp <= 0);
     CHECK(ok);
     if (!ok) fprintf(stderr, "    FAIL: file still exists\n");
+
+    /* Verify the dircontentindex is updated: re-create a file with
+     * the same name.  If the index had a stale link, the new
+     * create would see a phantom collision.  With the index
+     * updated, the new create succeeds.  Also verify vfs_open
+     * finds the new file (index fast path is correct). */
+    int64_t new_fvp = vfs_create(vfs, root, "to_delete.dat", 0);
+    CHECK(new_fvp > 0);
+    if (new_fvp > 0) {
+        /* The new file should be findable. */
+        int64_t new_vp = vfs_open(vfs, root, "to_delete.dat", 0);
+        CHECK_EQ(new_vp, new_fvp);
+    }
 
     vfs_unmount(vfs);
     cleanup(path);

@@ -529,17 +529,45 @@ int drop_dir_entries(ctx, slot_vp, create_vp, tombstone_vp) {
 
 Per the review's M3 finding, the chain index is **updated**
 (via `dircontentindex_remove`, the existing
-`src/tree.c:3147` function), not invalidated. This is one
+`src/tree.c:3178` function), not invalidated. This is one
 CAS per dropped entry, not a full index rebuild.
 
-The analysis calls `dircontentindex_remove` after
-`drop_dir_entries` removes the entries. The remove is keyed
-on the name hash and the SlotNode VP (the same key used by
-`vfs_create` / `vfs_delete` when they add to the index).
+The analysis (in `gc_handle_file_deleted`, `src/gc_bin_file_deleted.c`):
+1. **Before the drop:** reads the create entry's `namePtr`
+   field and uses `nodes_read_name_hash`
+   (`src/nodes.c:434`) to get the cached FNV-1a hash from
+   the first NameEntry slot. O(1) read (the hash is stored
+   at offset 0 of the first slot — no name-byte walk, no
+   recomputation).
+2. **Drops the create + tombstone** from the SlotNode's chain
+   (CAS-based, see §3.7).
+3. **After the drop:** reads the parent dir's `indexHeadPtr`
+   from the DirNode (already found by `find_parent_dir` in
+   step 4 of §3.3) and calls `dircontentindex_remove` with
+   `(indexHeadPtr, name_hash, slot_vp)`.
 
-If `drop_dir_entries` is a no-op (create + tombstone
-already removed by a prior run), the index is also already
-clean — no update needed.
+The remove zeroes the matching link's `dirContentVP` field
+(the M8 design), turning the link into a "tree-tombstone"
+that lookups skip. The DirContentLink slot itself is not
+freed (TODO-12: no `pool_free`). Future lookups in the
+parent dir take the chain walk (which is now empty for this
+child) — same as before the index existed, but with the
+correct skip via the radix path for other children.
+
+If the create + tombstone were already removed by a prior
+run, the SlotNode's chain is empty; the index link (if any)
+still points at the SlotNode but is harmless (the lookup
+chain walk finds no entry). The post-drop `dircontentindex_remove`
+makes the link zeroed for a future-orphan SlotNode, which
+keeps the radix path clean.
+
+**Why the name hash lookup is O(1) not O(name_len):** the
+first NameEntry slot in the chain stores the FNV-1a hash at
+offset 0 (8 bytes). `nodes_read_name_hash` reads that field
+directly. We don't need to walk the NameSlot chain or
+recompute the hash. This keeps the index update O(1) per
+drop (plus the O(D) parent dir lookup that's already done
+for the SlotNode search).
 
 ### 3.9 Implementation note on parent dir lookup
 

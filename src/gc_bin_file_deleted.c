@@ -174,10 +174,58 @@ int gc_handle_file_deleted(vfs_t* vfs, const BinEntry* entry) {
     }
 
     /* 8. If the file is not referenced by any reference point,
-          perform the inline dir-entry drop.  No separate work entry. */
+          perform the inline dir-entry drop.  No separate work entry.
+          Also update the parent dir's dircontentindex to remove the
+          stale link pointing at the SlotNode (per spec §3.8 / M3 review
+          option (a)).  The name hash is read from the create entry's
+          namePtr BEFORE the drop (the create slot is still in the
+          pool after the drop, but the parent-child relationship is
+          most clearly read pre-drop). */
     if (!file_referenced && slot_vp != 0) {
+        /* Read the create entry's namePtr to get the cached hash.
+           nodes_read_name_hash reads the FNV-1a hash from offset 0
+           of the first NameEntry slot (which is what's stored in the
+           index lookup).  O(1) read. */
+        int64_t  create_name_ptr = 0;
+        uint64_t name_hash        = 0;
+        if (create_vp != 0) {
+            PoolSlot cs = {0};
+            pool_acquire(&ctx->pool, create_vp, false, &cs);
+            if (cs.vptr != VFS_VPTR_NULL) {
+                create_name_ptr = vfs_rd8_s(cs.bytes,
+                                              DIRCONTENT_OFF_NAMEPTR,
+                                              ctx->page_size);
+            }
+            pool_release(&ctx->pool, &cs);
+            if (create_name_ptr != 0) {
+                name_hash = nodes_read_name_hash(&ctx->pool, create_name_ptr);
+            }
+        }
+
         int drc = drop_dir_entries(ctx, slot_vp, create_vp, tombstone_vp);
-        (void)drc;  /* best-effort; partial drops are recovered on next run */
+
+        /* After the drop, the SlotNode has no live entry for this
+           child.  Remove the radix-tree link so future lookups in
+           this dir take the fast path.  Best-effort: a partial or
+           failed remove leaves the link as a "tree-tombstone"
+           (dcVP=0) per the M8 design — lookups skip zeroed links
+           and fall through to the chain walk (which is empty, so
+           the lookup correctly returns NOTFOUND). */
+        if (drc == VFS_OK && parent_dir_vp != 0 && name_hash != 0) {
+            PoolSlot ps = {0};
+            pool_acquire(&ctx->pool, parent_dir_vp, false, &ps);
+            int64_t index_head = 0;
+            if (ps.vptr != VFS_VPTR_NULL) {
+                index_head = vfs_rd8_s(ps.bytes,
+                                        DIRNODE_OFF_INDEXHEADPTR,
+                                        ctx->page_size);
+            }
+            pool_release(&ctx->pool, &ps);
+            if (index_head != 0) {
+                dircontentindex_remove(&ctx->pool, index_head, name_hash,
+                                        slot_vp, ctx->page_size);
+            }
+        }
     }
 
     return VFS_OK;
