@@ -2416,6 +2416,14 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
     PoolSlot src_slot = {0};
     PoolSlot dst_slot = {0};
 
+    /* Phase 28 Type 2 (spec: impl/phase-28-bin-job-rename-tombstone.md):
+       tombstone DC at src (allocated below, in the cross_dir branch).
+       Hoisted to function scope so the bin_push at the end can pass
+       it as context2 = src_dc_vp (or 0 for same-dir renames, where
+       no tombstone was inserted).  The GC's analysis uses this to
+       identify the tombstone in the src SlotNode's chain. */
+    int64_t src_dc_vp = 0;
+
     /* N5 (post-N4): verify both parents are DirNodes with read-only
      * snapshots, then drop them.  Pinned snapshots taken before the
      * lock would let the eventual pool_release clobber other slots
@@ -2786,7 +2794,7 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
 
     /* Create tombstone at src (cross-directory only) */
     if (cross_dir) {
-        int64_t src_dc_vp = pool_alloc(&ctx->pool);
+        src_dc_vp = pool_alloc(&ctx->pool);
         if (src_dc_vp == VFS_VPTR_NULL) {
             vfs_unlock(vfs, (int64_t)rn_childId, epoch);
             vfs->ctx->last_error = VFS_ERR_FULL;
@@ -2875,12 +2883,22 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         pool_release(&ctx->pool, &src_slot);
     }
 
-    /* Phase 28 W3: push a NOOP trigger to the Bin.  Future bin-job
-       specs will replace this with BIN_TRIGGER_TOMBSTONE_ADDED, which
-       the GC's analysis converts to BIN_WORK_REMOVE_TOMBSTONE (for
-       the old-name tombstone at src).  For W3, the NOOP trigger is
-       a placeholder.  context = the file VP (rn_childPtr). */
-    bin_push(ctx->sb, BIN_TRIGGER_NOOP, (int64_t)rn_childPtr, 0);
+    /* Phase 28 Type 2 (spec: impl/phase-28-bin-job-rename-tombstone.md):
+       push BIN_TRIGGER_TOMBSTONE_ADDED to the Bin.  The GC's analysis
+       handler will:
+         1. Find the src SlotNode via the file's childId.
+         2. Walk the chain to find the tombstone (cross-dir) and the
+            create (always).
+         3. Determine which are freeable based on active snapshots.
+         4. If freeable: CAS-remove from chain, pool_free the DC
+            slots + the OLD NameEntry.
+       context  = file VP (rn_childPtr).
+       context2 = src_dc_vp (the tombstone vfs_rename just prepended
+                  for cross-dir renames).  0 for same-dir renames
+                  (no tombstone; the analysis falls through to
+                  create-only cleanup). */
+    bin_push(ctx->sb, BIN_TRIGGER_TOMBSTONE_ADDED,
+             (int64_t)rn_childPtr, (int64_t)src_dc_vp);
     return VFS_OK;
 }
 
