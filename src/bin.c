@@ -361,10 +361,29 @@ int bin_pop(StorageBackend* sb, BinEntry* out_entry) {
         /* If the head is now empty, advance to next and free the
            old head.  Use storage_free so the page is enqueued
            into the free-page queue (not leaked).  (Phase 28 W4
-           review B1 fix.) */
+           review B1 fix.)
+
+           Bug fix (Phase 28 W6+): if the head is the same page as
+           the bin_tail, we MUST also update bin_tail.  Otherwise
+           the tail would point to a freed page, and the next
+           bin_push would read the freed page (indirection entry
+           is 0 after storage_free), getting STORAGE_NOT_FOUND.
+           This happens when the bin has exactly one page (head ==
+           tail) and the last entry is popped.  The original B1
+           fix didn't account for this case.  Setting bin_tail to
+           `next` (which is 0 for a single-page bin) makes the bin
+           appear empty; the next push will allocate a new page
+           via the slow path. */
         if (head_count == 1) {
             int64_t next = read_bin_page_next(sb, head);
             if (vfs_cas_i64(hdr_bin_head, head, next) == head) {
+                /* If tail == head, also clear tail so the next
+                   push allocates a new page (the old page is
+                   about to be freed).  Without this, the next
+                   push would try to use the freed page and fail. */
+                if (vfs_atomic_load_i64((int64_t*)(sb->header_buf + HDR_OFF_BIN_TAIL)) == head) {
+                    vfs_atomic_store_i64((int64_t*)(sb->header_buf + HDR_OFF_BIN_TAIL), next);
+                }
                 storage_free(sb, head);  /* enqueues drained page for reuse */
             }
         }

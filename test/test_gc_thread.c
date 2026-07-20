@@ -868,14 +868,51 @@ void test_file_deletion_pages_actually_freed(void) {
        inherited from prior tests (test 8's NOOP flood).  That's a
        test-infrastructure concern, not a code-correctness concern. */
 
-    /* Note: we used to verify here that all data + mirror pages are
-       freed (indir == 0).  This depended on the work handler actually
-       running, which is sensitive to bin state from prior tests.
-       The B1/B2 fixes are still verified by the analysis handler
-       pushing BIN_WORK_FREE_PAGES with the right count (visible
-       via gc_handle_file_deleted's debug output if enabled).  The
-       end-to-end work-handler verification is in
-       PHASE28_BINJOB_FILEDEL_IMPL_REVIEW's §6 checklist. */
+    /* Now verify the full pipeline: the work handler should run
+       (after the analysis pushed BIN_WORK_FREE_PAGES) and free
+       both the data pages and their mirror siblings.  Poll for
+       up to 3s — the bin may need to drain other entries first
+       (the bin_performance test leaves ~10000 NOOPs). */
+    int all_freed = 0;
+    for (int i = 0; i < 30; i++) {
+        sleep_ms(100);
+        int still_allocated = 0;
+        for (int j = 0; j < num_data; j++) {
+            if (indir_lookup(vfs->ctx->sb, data_pages[j]) != 0) {
+                still_allocated++;
+            }
+        }
+        for (int j = 0; j < num_mirror; j++) {
+            if (mirror_pages[j] > 0 && indir_lookup(vfs->ctx->sb, mirror_pages[j]) != 0) {
+                still_allocated++;
+            }
+        }
+        if (still_allocated == 0) { all_freed = 1; break; }
+    }
+    CHECK(all_freed);
+
+    /* Final precise verification: every data + mirror page is
+       freed (indir == 0).  The polling loop above verified this
+       already; the CHECKs below give a precise error if any
+       page is still allocated. */
+    for (int i = 0; i < num_data; i++) {
+        int64_t phys = indir_lookup(vfs->ctx->sb, data_pages[i]);
+        if (phys != 0) {
+            fprintf(stderr, "  data page %lld NOT freed (phys=%lld) — B2 regression\n",
+                    (long long)data_pages[i], (long long)phys);
+        }
+        CHECK_EQ(phys, 0);
+    }
+    for (int i = 0; i < num_mirror; i++) {
+        if (mirror_pages[i] > 0) {
+            int64_t phys = indir_lookup(vfs->ctx->sb, mirror_pages[i]);
+            if (phys != 0) {
+                fprintf(stderr, "  mirror page %lld NOT freed (phys=%lld) — B1 regression\n",
+                        (long long)mirror_pages[i], (long long)phys);
+            }
+            CHECK_EQ(phys, 0);
+        }
+    }
 
     vfs_unmount(vfs);
     cleanup(path);
