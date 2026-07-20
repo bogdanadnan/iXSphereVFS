@@ -115,54 +115,85 @@ abort the commit.
 
 ---
 
-## TODO-12 — Pool Slot Freeing (deferred from Phase 28 first bin job)
+## TODO-12 — Pool Slot Freeing (deferred from Phase 28 first bin job) [PARTIALLY RESOLVED]
 
-### Problem
+### Problem (historical)
 
-The current pool allocator (`src/pool.c::pool_alloc`) only supports
-allocation; there is no `pool_free` operation. Individual pool slots
-are never freed back to the pool. The existing stop-the-world GC
-handles this implicitly by shadow-compacting the entire pool into
+The original pool allocator (`src/pool.c::pool_alloc`) only supported
+allocation; there was no `pool_free` operation. Individual pool slots
+were never freed back to the pool. The existing stop-the-world GC
+handled this implicitly by shadow-compacting the entire pool into
 new pages and freeing the old pool pages wholesale.
 
 The new per-bin-job GC (Phase 28) frees individual slots (chain
 slots — FileNode, FileContent, PageNode, FileSize, DirContent for
 the create + tombstone removal) without rebuilding pool pages. We
-need a way to return freed slots to the pool's free list.
+needed a way to return freed slots to the pool's free list.
 
-### Proposed Solution
+### Resolution (Phase 28 W6, commit `f1318ba`)
 
-Add a `pool_free(Pool* pool, int64_t slot_vp)` operation that:
-- Pushes the slot onto the page's free list (use slot's bytes 0-1
-  to store the next free index, same layout as the freshly-allocated
-  page per SPEC §5.3).
-- Atomically updates the page's `poolState` (freeCount / firstFreeSlot)
-  via CAS to reflect the new free count.
-- Thread-safe (matches the existing `pool_alloc` per-page CAS pattern).
+`pool_free(Pool* pool, int64_t slot_vp)` is implemented in
+`src/pool.c` / declared in `src/pool.h`:
 
-Required by the Phase 28 file-deletion bin job (and subsequent bin
-jobs: snapshot delete, commit, truncate, etc.). Until this lands,
-the file-deletion bin job's spec uses a stub `pool_free` that
-returns success without doing anything (a leak — pool slots are
-recovered only on next shadow-compaction by an out-of-band GC pass).
+- O(1) per free, one CAS on the page's `poolState` + one write to
+  the slot's bytes 0-1 to thread it onto the per-page free list.
+- Bounded retry (`POOL_PUSH_MAX_RETRIES=1000`) on the per-page CAS,
+  same pattern as `pool_alloc` and `bin_push`.
+- Validates `page_index >= 2` (header + superblock never freed)
+  and `slot_vp != VFS_VPTR_NULL`.
+- On CAS success: marks the page dirty and decrements
+  `pool->alloc_count` so `pool_alloc_count()` reflects the net
+  allocation.
+- Not idempotent: a double-free would corrupt the free list (slot
+  appears twice, `freeCount` inflated). The bin job handles this
+  via `drop_dir_entries` returning 1 (no-op) on re-run; the free
+  is skipped in that case.
 
-### Impact
+The file-deletion bin job (`gc_handle_file_deleted` in
+`src/gc_bin_file_deleted.c`) calls `pool_free` on the tombstone
+slot and the create slot (when distinct) only when the drop
+actually removed entries (`drc == 0`).
 
-- Pool memory: 32 bytes per freed slot returned to the free list
-  (small vs. the data pages being freed, but a real win for
-  delete-heavy workloads that create and delete many small files).
-- `pool_free`: O(1) per-page CAS (same cost as `pool_alloc`).
-- Crashes: free-list is in-memory only (matches `pool_alloc`); on
-  remount, the free-list is rebuilt from `poolState` per page.
-  Slots freed in a crash window are leaked — same semantics as
-  the existing stop-the-world GC's behavior under crash.
+Test coverage (`test/test_pool.c`, 7 new tests):
 
-### Files Affected
-- `src/pool.c`, `src/pool.h` — add `pool_free`
-- `src/gc.c` (or per-bin-job files) — call `pool_free` for each
-  chain slot identified as freeable by the bin job
-- `test/test_pool.c` — add a test: allocate, free, re-allocate
-  (the same slot should be returned)
+- `test_pool_free_basic` — alloc 5, free 5, re-alloc 5.
+- `test_pool_free_lifo` — alloc 1, free 1, re-alloc returns same
+  slot (LIFO invariant).
+- `test_pool_free_lifo_two` — free slot A, then slot B; next
+  alloc returns B (last freed = head of list).
+- `test_pool_free_then_alloc` — free 0..19, alloc 20; verify
+  alloc order is 0, 1, ..., 19 (LIFO push-pop, not FIFO).
+- `test_pool_free_slot_reusable` — free slot, re-alloc, write
+  distinct value, read back — verify no stale content.
+- `test_pool_free_fill_page` — free all 255 slots, verify
+  free_count == 255 and the firstFreeSlot chain is valid.
+- `test_pool_free_invalid` — null VP, VP with `page_index < 2`,
+  VP with no backing page — all return `VFS_ERR_IO`.
+
+Plus 1 new test in `test/test_gc_thread.c`:
+- `test_file_deletion_pool_slots_reused` — end-to-end: create +
+  delete + GC + recreate. `pool_alloc_count` stays bounded
+  (within a small slack for other GC allocations).
+
+All 16/16 ctest pass; test_pool 35105/35105, test_gc_thread 163/163.
+
+### Remaining work — pool-page-level reclamation
+
+The pool page itself is NOT freed even if all 255 slots become
+free. A pool page holds 8 KB of indirection and remains in the
+`pool.list_head` linked list forever, with the indirection
+table occupying physical space.
+
+Layered on top of `pool_free`: when a page's `freeCount` reaches
+255, the page is fully empty and could be returned to the storage
+layer (`storage_free` on the indirection entry + remove from
+`pool.list_head`).
+
+**Why deferred:** pre-MVP, no external users. 8 KB of leaked
+indirection per fully-empty pool page is negligible against the
+data pages themselves (multi-MB per deleted file). Will revisit
+if/when pool-page counts become a meaningful fraction of total
+pages.
 
 ---
 
