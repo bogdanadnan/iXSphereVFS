@@ -1478,8 +1478,11 @@ int gc_thread_stop(vfs_t* vfs) {
 static int gc_handle_trigger(vfs_t* vfs, const BinEntry* entry) {
     /* Phase 28 W2: BIN_TRIGGER_NOOP placeholder.  Phase 28 Type 1
        (file deletion): BIN_TRIGGER_FILE_DELETED → gc_handle_file_deleted
-       (defined in src/gc_bin_file_deleted.c).  Future per-bin-job
-       specs add their trigger handlers here. */
+       (defined in src/gc_bin_file_deleted.c).  Phase 28 Type 2
+       (rename tombstone): BIN_TRIGGER_TOMBSTONE_ADDED →
+       gc_handle_rename_done (defined in
+       src/gc_bin_rename_tombstone.c).  Future per-bin-job specs add
+       their trigger handlers here. */
     switch (entry->type) {
     case BIN_TRIGGER_NOOP:
         /* No-op: just delete the entry, do nothing else.  The
@@ -1488,6 +1491,8 @@ static int gc_handle_trigger(vfs_t* vfs, const BinEntry* entry) {
         return VFS_OK;
     case BIN_TRIGGER_FILE_DELETED:
         return gc_handle_file_deleted(vfs, entry);
+    case BIN_TRIGGER_TOMBSTONE_ADDED:
+        return gc_handle_rename_done(vfs, entry);
     default:
         fprintf(stderr, "gc: unknown trigger type %d, skipping\n",
                 entry->type);
@@ -1498,10 +1503,15 @@ static int gc_handle_trigger(vfs_t* vfs, const BinEntry* entry) {
 static int gc_handle_work(vfs_t* vfs, const BinEntry* entry) {
     /* Phase 28 Type 1 (file deletion): BIN_WORK_FREE_PAGES →
        gc_handle_free_pages (defined in src/gc_bin_free_pages.c).
-       Future per-bin-job specs add their work handlers here. */
+       Phase 28 Type 2 (rename tombstone): BIN_WORK_REMOVE_TOMBSTONE →
+       gc_handle_remove_tombstone (defined in
+       src/gc_bin_rename_tombstone.c).  Future per-bin-job specs add
+       their work handlers here. */
     switch (entry->type) {
     case BIN_WORK_FREE_PAGES:
         return gc_handle_free_pages(vfs, entry);
+    case BIN_WORK_REMOVE_TOMBSTONE:
+        return gc_handle_remove_tombstone(vfs, entry);
     default:
         fprintf(stderr, "gc: unknown work type %d, skipping\n", entry->type);
         return VFS_ERR_IO;

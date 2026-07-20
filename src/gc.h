@@ -254,4 +254,47 @@ int gc_process_entry(vfs_t* vfs, const BinEntry* entry);
 int gc_handle_file_deleted(vfs_t* vfs, const BinEntry* entry);
 int gc_handle_free_pages(vfs_t* vfs, const BinEntry* entry);
 
+/* ---------------------------------------------------------------------------
+ * Phase 28 Type 2: rename-tombstone bin job
+ * (spec: impl/phase-28-bin-job-rename-tombstone.md)
+ *
+ * Analysis handler: BIN_TRIGGER_TOMBSTONE_ADDED
+ *   context  = file VP (FileNode of the renamed file)
+ *   context2 = tombstone VP at src (the DirContent vfs_rename just
+ *              prepended to the src SlotNode's chain for cross-dir
+ *              renames; 0 for same-dir renames — the analysis
+ *              detects this and falls through to create-only
+ *              cleanup, no tombstone branch).
+ *   Finds the src SlotNode via the file's childId.  Walks the
+ *   chain to find the tombstone (cross-dir only) and the create
+ *   (always).  Determines which are freeable based on active
+ *   snapshots:
+ *     - Tombstone: freeable when no R >= tombstone_epoch is
+ *       referenceable
+ *     - Create: freeable when no R in [create_epoch, tombstone_epoch)
+ *       is referenceable (empty range for same-epoch rename = always
+ *       freeable)
+ *   Builds a per-trigger batch list and pushes BIN_WORK_REMOVE_TOMBSTONE.
+ *   Also frees the OLD NameEntry (referenced by the create) when the
+ *   create is freeable.  Each vfs_create allocates its own NameEntry
+ *   via pool_alloc (no sharing), so the OLD NameEntry is only
+ *   referenced by the create being freed.  Multi-slot NameEntries
+ *   (name > 16 bytes) walk the chain to free all slots.
+ *
+ * Work handler: BIN_WORK_REMOVE_TOMBSTONE
+ *   context  = head of per-trigger batch list (heterogeneous:
+ *              BATCH_ENTRY_DC for DC slots to CAS-remove from
+ *              chains; BATCH_ENTRY_NAME for NameEntry slots to
+ *              pool_free; BATCH_ENTRY_SLOT for empty SlotNode
+ *              removal)
+ *   context2 = count
+ *   Iterates the list.  For DC: CAS-remove from chain (B3 fix,
+ *   CAS on live cache payload), update dircontentindex, pool_free
+ *   the slot.  For NameEntry: pool_free (chain slots in reverse
+ *   order).  For SlotNode: unlink from DirSegment's SlotNode
+ *   chain, pool_free.
+ * --------------------------------------------------------------------------- */
+int gc_handle_rename_done(vfs_t* vfs, const BinEntry* entry);
+int gc_handle_remove_tombstone(vfs_t* vfs, const BinEntry* entry);
+
 #endif /* VFS_GC_H */

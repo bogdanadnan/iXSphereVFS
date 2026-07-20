@@ -37,6 +37,7 @@ add_library(ixsphere_vfs STATIC
     src/bin.c
     src/gc_bin_file_deleted.c
     src/gc_bin_free_pages.c
+    src/gc_bin_rename_tombstone.c
 )
 
 set_source_files_properties(src/var_array.c PROPERTIES COMPILE_FLAGS "-DVFS_VAR_ARRAY_TESTING -Wno-pedantic -fno-strict-aliasing")

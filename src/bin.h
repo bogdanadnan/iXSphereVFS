@@ -61,10 +61,16 @@ typedef enum {
     BIN_TRIGGER_FILE_DELETED       = 1,   /* Phase 28 Type 1: file-deletion bin job
                                             (spec: impl/phase-28-bin-job-file-deletion.md).
                                             context = file VP, context2 = tombstone VP. */
+    BIN_TRIGGER_TOMBSTONE_ADDED   = 2,   /* Phase 28 Type 2: rename-tombstone bin job
+                                            (spec: impl/phase-28-bin-job-rename-tombstone.md).
+                                            context = file VP, context2 = tombstone VP at src
+                                            (0 for same-dir renames — no tombstone was
+                                            inserted; the analysis falls through to
+                                            create-only cleanup). */
     /* Future: BIN_TRIGGER_FILE_TRUNCATED, BIN_TRIGGER_EPOCH_COMMITTED, ... */
 } bin_trigger_type_t;
 
-/* Work types (Phase 28 Type 1: file-deletion bin job). */
+/* Work types (Phase 28 Type 1 + 2: file-deletion + rename-tombstone bin jobs). */
 typedef enum {
     /* BIN_TYPE_WORK_THRESHOLD + 0 = 0x100.  context = head of per-batch
        linked list (pool-allocated), context2 = pages count.
@@ -72,7 +78,14 @@ typedef enum {
        calls storage_free on each logical page, and reads the PageHeader
        to find + free the mirror sibling. */
     BIN_WORK_FREE_PAGES            = 0x100,
-    /* Future: BIN_WORK_REMOVE_TOMBSTONE, BIN_WORK_DROP_SOFT_DELETE, ... */
+    /* Phase 28 Type 2: rename-tombstone removal.  context = head of
+       per-trigger batch list (heterogeneous: DC slots to CAS-remove +
+       NameEntry slots to free), context2 = count.  The work handler
+       (src/gc_bin_rename_tombstone.c) iterates the list, CAS-removes
+       the DCs from their chains (with B3 CAS-on-live-payload), updates
+       the radix-tree index, and pool_frees the slots. */
+    BIN_WORK_REMOVE_TOMBSTONE      = 0x101,
+    /* Future: BIN_WORK_DROP_SOFT_DELETE, BIN_WORK_REWRITE_CHAIN, ... */
 } bin_work_type_t;
 
 /* Return values */
