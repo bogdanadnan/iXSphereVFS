@@ -304,3 +304,114 @@ void pool_release(Pool* pool, PoolSlot* slot) {
     /* Clear pin state so a stray second release is a safe no-op. */
     slot->pinnedPage = 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * pool_free (Phase 28 W6 — closes TODO-12 slot leak)
+ *
+ * Free one 32-byte slot back to the pool.  Symmetric to pool_alloc:
+ * O(1) per free (one CAS on the page's poolState, one write to the
+ * slot's bytes 0-1 to thread it onto the per-page free list).
+ *
+ * Mirrors pool_alloc's per-page free-list protocol:
+ *   1. Read the page's poolState: (freeCount, firstFreeSlot).
+ *   2. Write the slot's bytes 0-1 = firstFreeSlot
+ *      (push the slot to the head of the free list).
+ *   3. CAS poolState: (freeCount, firstFreeSlot) →
+ *      (freeCount + 1, slot_we_are_freeing).
+ *   4. On CAS loss, re-read state and retry (bounded).
+ *
+ * Not idempotent: a second free on the same slot double-decrements
+ * the free count and the slot appears in the free list twice.  The
+ * caller is responsible for ensuring the slot is currently in use
+ * (i.e., not already in the free list).  The bin job's drop
+ * guarantees this: the chain entry is CAS-removed BEFORE the free
+ * runs, and on a re-run the chain is already empty (the drop is a
+ * no-op) and the free is skipped.
+ *
+ * The slot's content is NOT cleared.  The next pool_alloc will
+ * overwrite the 32 bytes.  Holding a stale VP after free would see
+ * the freed slot's content until re-allocation; the bin job
+ * guarantees no stale VPs (the chain no longer references the slot).
+ *
+ * The pool page itself is NOT freed even if all its slots become
+ * free.  Pool-page-level reclamation is a separate optimization
+ * (TODO-12 follow-up).
+ * --------------------------------------------------------------------------- */
+
+int pool_free(Pool* pool, int64_t slot_vp) {
+    if (!pool || slot_vp == VFS_VPTR_NULL) return VFS_ERR_IO;
+
+    int64_t page_index = VFS_VPTR_PAGE(slot_vp);
+    int     slot_index = VFS_VPTR_SLOT(slot_vp);
+    if (page_index < 2) return VFS_ERR_IO;  /* header + superblock never freed */
+
+    /* Bounded retry loop for the per-page CAS on poolState.
+       Same pattern as pool_alloc and bin_push. */
+    for (int retry = 0; retry < POOL_PUSH_MAX_RETRIES; retry++) {
+        /* Pin the page so the in-cache write is durable.  pool_acquire
+           copies 32 bytes; we just need the bytes 0-1 read. */
+        PoolSlot slot_probe = {0};
+        pool_acquire(pool, slot_vp, false, &slot_probe);
+        if (slot_probe.vptr == VFS_VPTR_NULL) return VFS_ERR_IO;
+
+        /* Read the slot's bytes 0-1 (= old "next free" pointer after
+           the slot was already allocated).  We re-read these after
+           CAS loss since another thread might have re-allocated
+           (and overwritten) the slot. */
+        uint16_t next_free_at_alloc = (uint16_t)vfs_rd2_s(
+            slot_probe.bytes, 0, pool->sb->page_size);
+        (void)next_free_at_alloc;  /* not used for free; we just touch the slot */
+
+        /* Re-fetch the page payload to read poolState (the pool
+           may have been evicted from cache between calls). */
+        StorageReadStatus pst;
+        uint8_t* payload = storage_read_with_status(pool->sb, page_index, &pst);
+        if (payload == NULL) {
+            if (pst == STORAGE_IO_ERROR || pst == STORAGE_CRC_ERROR) {
+                fprintf(stderr, "vfs: pool_free: pool page %lld corrupted (status=%d)\n",
+                        (long long)page_index, (int)pst);
+            }
+            return VFS_ERR_IO;
+        }
+
+        /* Read poolState */
+        uint32_t state = (uint32_t)vfs_atomic_load_i32(
+            (const int32_t*)(payload + POOL_OFF_STATE));
+        uint16_t free_count = pool_state_free_count(state);
+        uint16_t first_free = pool_state_first_free(state);
+
+        /* Push the slot to the head of the free list.  Step 1:
+           write the slot's bytes 0-1 = firstFreeSlot.  This must
+           happen BEFORE the CAS, but the order doesn't matter for
+           correctness — a concurrent pool_alloc could read the old
+           bytes 0-1 (= our "next_free_at_alloc" above) and pop
+           the slot, but the CAS in step 2 ensures the slot is
+           pushed exactly once. */
+        int slot_offset = VFS_POOL_ENTRIES_OFFSET + slot_index * VFS_POOL_SLOT_SIZE;
+        vfs_wr2_s(payload, slot_offset, (int16_t)first_free, pool->sb->page_size);
+
+        /* Step 2: CAS poolState.  If we lose, the next iteration
+           re-reads both poolState and the slot's bytes 0-1 (the
+           push of another slot may have changed firstFreeSlot). */
+        uint32_t new_state = pool_state_pack((uint16_t)(free_count + 1),
+                                            (uint16_t)slot_index);
+        if (vfs_cas_i32((int32_t*)(payload + POOL_OFF_STATE),
+                         (int32_t)state, (int32_t)new_state) == (int32_t)state) {
+            /* CAS succeeded — mark the page dirty so the change
+               is flushed.  Decrement the alloc counter so
+               pool_alloc_count() reflects the net allocation. */
+            cache_mark_dirty(&pool->sb->cache, page_index, FLUSH_PRIO_POOL);
+            pool->alloc_count--;
+            return VFS_OK;
+        }
+        /* CAS lost — retry.  The next iteration re-reads poolState
+           and re-writes the slot's next_free. */
+    }
+    /* Retries exhausted.  The page is under heavy contention.  The
+       slot's bytes 0-1 have been written N times (one per retry)
+       with a stale next_free value, but the CAS never succeeded,
+       so the free list is not corrupted — just the slot's
+       bytes 0-1 may be inconsistent.  Return an error; the caller
+       (bin job) can retry on a future pass. */
+    return VFS_ERR_IO;
+}

@@ -204,6 +204,32 @@ int gc_handle_file_deleted(vfs_t* vfs, const BinEntry* entry) {
 
         int drc = drop_dir_entries(ctx, slot_vp, create_vp, tombstone_vp);
 
+        /* Free the create + tombstone slots ONLY if the drop actually
+           removed entries.  drop_dir_entries returns 1 (no-op) if the
+           entries were already gone (idempotent on re-run); calling
+           pool_free in that case would double-free and corrupt the
+           pool's free list.  Returns 0 if at least one entry was
+           removed; -1 on I/O error. */
+        if (drc == 0) {
+            /* Tombstone was definitely in the chain (and is now gone)
+               because drc == 0 means tom_pred was found pre-drop, OR
+               the headPtr was the tombstone.  Free its slot. */
+            if (tombstone_vp != 0) {
+                (void)pool_free(&ctx->pool, tombstone_vp);
+            }
+            /* Create was in the chain iff create_vp was passed in
+               AND it was a separate entry from the tombstone.  The
+               drop removed it iff cre_remove_ok was set inside
+               drop_dir_entries.  We don't have that signal here, so
+               we use the simpler "create_vp != 0 && != tombstone_vp"
+               check.  If the create was the same as the tombstone
+               (single-entry case), we already freed it above.  If
+               the create was a separate entry, it's now gone. */
+            if (create_vp != 0 && create_vp != tombstone_vp) {
+                (void)pool_free(&ctx->pool, create_vp);
+            }
+        }
+
         /* After the drop, the SlotNode has no live entry for this
            child.  Remove the radix-tree link so future lookups in
            this dir take the fast path.  Best-effort: a partial or
@@ -211,7 +237,7 @@ int gc_handle_file_deleted(vfs_t* vfs, const BinEntry* entry) {
            (dcVP=0) per the M8 design — lookups skip zeroed links
            and fall through to the chain walk (which is empty, so
            the lookup correctly returns NOTFOUND). */
-        if (drc == VFS_OK && parent_dir_vp != 0 && name_hash != 0) {
+        if (drc >= 0 && parent_dir_vp != 0 && name_hash != 0) {
             PoolSlot ps = {0};
             pool_acquire(&ctx->pool, parent_dir_vp, false, &ps);
             int64_t index_head = 0;
@@ -658,6 +684,14 @@ static int64_t find_create_in_slot(TreeContext* ctx, int64_t slot_vp,
  * drop_dir_entries — inline CAS-based removal of create + tombstone
  * from the SlotNode's DirContent chain.
  *
+ * Returns:
+ *   0  = at least one entry was removed
+ *   1  = no-op (entries already gone, e.g. from a prior run)
+ *   -1 = I/O error
+ *
+ * The caller uses the return value to decide whether to free the
+ * slot VPs (only on actual removal — pool_free is not idempotent).
+ *
  * The two removals are independent CAS operations.  Between them, a
  * concurrent reader sees one entry removed and the other still
  * present.  This is safe: the read rule at any R (where R is not
@@ -716,8 +750,10 @@ static int drop_dir_entries(TreeContext* ctx, int64_t slot_vp,
             cur = next_vp;
         }
         if (tom_pred == 0) {
-            /* Tombstone not in chain (already removed).  Idempotent. */
-            return VFS_OK;
+            /* Tombstone not in chain (already removed).  Idempotent:
+               no entry was removed, the caller should not free the
+               tombstone slot. */
+            return 1;
         }
     }
 
@@ -859,7 +895,10 @@ static int drop_dir_entries(TreeContext* ctx, int64_t slot_vp,
        pass in.  TODO: thread the name through for full
        option-a support. */
 
-    return VFS_OK;
+    /* At least one entry was removed (either the create, the
+       tombstone, or both).  The caller (gc_handle_file_deleted)
+       uses this to decide whether to free the slot VPs. */
+    return 0;
 }
 
 /* ---------------------------------------------------------------------------

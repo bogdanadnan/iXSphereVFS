@@ -116,9 +116,21 @@ void pool_init(Pool* pool, StorageBackend* sb, int64_t* list_head);
 /* Allocate one 32-byte slot.  Returns VFS_VPTR_NULL on failure. */
 int64_t pool_alloc(Pool* pool);
 
+/* Free one 32-byte slot back to the pool.  Symmetric to pool_alloc
+ * (O(1) per free, one CAS on the page's poolState).  Returns VFS_OK
+ * on success, VFS_ERR_IO on I/O, invalid VP, or CAS retry exhaustion.
+ * See pool.c::pool_free for full semantics. */
+int pool_free(Pool* pool, int64_t slot_vp);
+
+/* Maximum number of pool_free retries (for the per-page CAS on
+   poolState).  Same as the pool_alloc / bin_push pattern. */
+#define POOL_PUSH_MAX_RETRIES  1000
+
 /* H1 instrumentation: total successful pool_alloc calls in this Pool's
    lifetime.  Used by regression tests to detect pool-slot leaks (a
-   single caller's expected N allocations should match N increments). */
+   single caller's expected N allocations should match N increments).
+   Decreased by pool_free.  Used as a regression signal: a caller's
+   expected net allocations should match alloc_count - free_count. */
 static inline int64_t pool_alloc_count(const Pool* pool) {
     return pool->alloc_count;
 }

@@ -839,6 +839,278 @@ void test_pool_init_no_phase5(void) {
 }
 
 /* ========================================================================== */
+/* Phase 28 W6: pool_free acceptance tests                                    */
+/* ========================================================================== */
+
+/* Allocate N slots, free them all, verify alloc_count is back to 0
+   and the slots can be re-allocated (the freed slot comes back as
+   the next allocation, LIFO order). */
+void test_pool_free_basic(void) {
+    printf("16. pool_free basic (alloc N, free all, re-alloc)...\n");
+    const char* path = "/tmp/test_pool_free_basic.vfs";
+    cleanup(path);
+
+    StorageBackend* sb = storage_open(path, 8192);
+    CHECK(sb != NULL);
+    if (!sb) { cleanup(path); return; }
+
+    Pool pool;
+    int64_t list_head = 0;
+    pool_init(&pool, sb, &list_head);
+
+    /* Allocate 10 slots. */
+    int64_t vps[10];
+    for (int i = 0; i < 10; i++) {
+        vps[i] = pool_alloc(&pool);
+        CHECK(vps[i] != VFS_VPTR_NULL);
+    }
+    int64_t after_alloc = pool_alloc_count(&pool);
+    CHECK_EQ(after_alloc, 10);
+
+    /* Free all 10. */
+    for (int i = 0; i < 10; i++) {
+        int rc = pool_free(&pool, vps[i]);
+        CHECK_EQ(rc, VFS_OK);
+    }
+    int64_t after_free = pool_alloc_count(&pool);
+    CHECK_EQ(after_free, 0);
+
+    /* Re-allocate 10.  The freed slots come back LIFO. */
+    for (int i = 0; i < 10; i++) {
+        int64_t vp = pool_alloc(&pool);
+        CHECK(vp != VFS_VPTR_NULL);
+    }
+    int64_t after_re_alloc = pool_alloc_count(&pool);
+    CHECK_EQ(after_re_alloc, 10);
+
+    storage_close(sb);
+    cleanup(path);
+}
+
+/* Free a slot, then re-allocate — verify the same VP comes back
+   (LIFO: freed slot is pushed to head of free list). */
+void test_pool_free_lifo(void) {
+    printf("17. pool_free LIFO (free slot returns on next alloc)...\n");
+    const char* path = "/tmp/test_pool_free_lifo.vfs";
+    cleanup(path);
+
+    StorageBackend* sb = storage_open(path, 8192);
+    CHECK(sb != NULL);
+    if (!sb) { cleanup(path); return; }
+
+    Pool pool;
+    int64_t list_head = 0;
+    pool_init(&pool, sb, &list_head);
+
+    int64_t a = pool_alloc(&pool);  /* slot 0 */
+    int64_t b = pool_alloc(&pool);  /* slot 1 */
+    int64_t c = pool_alloc(&pool);  /* slot 2 */
+
+    /* Free slot 1.  Next alloc returns slot 1. */
+    CHECK_EQ(pool_free(&pool, b), VFS_OK);
+    int64_t d = pool_alloc(&pool);
+    CHECK_EQ(d, b);
+
+    /* Free slot 2.  Next alloc returns slot 2. */
+    CHECK_EQ(pool_free(&pool, c), VFS_OK);
+    int64_t e = pool_alloc(&pool);
+    CHECK_EQ(e, c);
+
+    /* Free slot 0.  Next alloc returns slot 0. */
+    CHECK_EQ(pool_free(&pool, a), VFS_OK);
+    int64_t f = pool_alloc(&pool);
+    CHECK_EQ(f, a);
+
+    storage_close(sb);
+    cleanup(path);
+}
+
+/* Free two slots, alloc twice — verify LIFO: most recently freed
+   comes first. */
+void test_pool_free_lifo_two(void) {
+    printf("18. pool_free LIFO (two frees, alloc returns second)...\n");
+    const char* path = "/tmp/test_pool_free_lifo2.vfs";
+    cleanup(path);
+
+    StorageBackend* sb = storage_open(path, 8192);
+    CHECK(sb != NULL);
+    if (!sb) { cleanup(path); return; }
+
+    Pool pool;
+    int64_t list_head = 0;
+    pool_init(&pool, sb, &list_head);
+
+    int64_t a = pool_alloc(&pool);  /* slot 0 */
+    int64_t b = pool_alloc(&pool);  /* slot 1 */
+    int64_t c = pool_alloc(&pool);  /* slot 2 */
+    (void)c;
+
+    pool_free(&pool, a);
+    pool_free(&pool, b);
+    /* LIFO: b was freed last, so b is at the head. */
+    int64_t d = pool_alloc(&pool);
+    CHECK_EQ(d, b);
+    int64_t e = pool_alloc(&pool);
+    CHECK_EQ(e, a);
+
+    storage_close(sb);
+    cleanup(path);
+}
+
+/* Allocate 20, free in reverse, alloc 20 — verify the alloc order
+   is the reverse-of-free order (LIFO invariant). */
+void test_pool_free_then_alloc(void) {
+    printf("19. pool_free then alloc (LIFO invariant)...\n");
+    const char* path = "/tmp/test_pool_free_then_alloc.vfs";
+    cleanup(path);
+
+    StorageBackend* sb = storage_open(path, 8192);
+    CHECK(sb != NULL);
+    if (!sb) { cleanup(path); return; }
+
+    Pool pool;
+    int64_t list_head = 0;
+    pool_init(&pool, sb, &list_head);
+
+    int64_t vps[20];
+    for (int i = 0; i < 20; i++) {
+        vps[i] = pool_alloc(&pool);
+        CHECK(vps[i] != VFS_VPTR_NULL);
+    }
+
+    /* Free in reverse order: 19, 18, ..., 1, 0.  After the first
+       free, the free list head is vps[19].  After the second,
+       the head is vps[18] (the new freed slot pushes to head).
+       So the final head is vps[0] (the last freed slot). */
+    for (int i = 19; i >= 0; i--) {
+        pool_free(&pool, vps[i]);
+    }
+
+    /* LIFO: the alloc order is the reverse of the free order.
+       new_vps[0] = vps[0] (last freed = head), new_vps[1] = vps[1],
+       ..., new_vps[19] = vps[19] (first freed = tail). */
+    int64_t new_vps[20];
+    for (int i = 0; i < 20; i++) {
+        new_vps[i] = pool_alloc(&pool);
+        CHECK(new_vps[i] != VFS_VPTR_NULL);
+    }
+    for (int i = 0; i < 20; i++) {
+        CHECK_EQ(new_vps[i], vps[i]);
+    }
+
+    storage_close(sb);
+    cleanup(path);
+}
+
+/* Free a slot, re-alloc, write a new value, verify the new value
+   is visible (the slot is fully usable after re-alloc). */
+void test_pool_free_slot_reusable(void) {
+    printf("20. pool_free slot reusable (write to re-allocated slot)...\n");
+    const char* path = "/tmp/test_pool_free_reuse.vfs";
+    cleanup(path);
+
+    StorageBackend* sb = storage_open(path, 8192);
+    CHECK(sb != NULL);
+    if (!sb) { cleanup(path); return; }
+
+    Pool pool;
+    int64_t list_head = 0;
+    pool_init(&pool, sb, &list_head);
+
+    int64_t a = pool_alloc(&pool);
+    /* Write a marker. */
+    PoolSlot s = {0};
+    pool_acquire(&pool, a, true, &s);
+    CHECK(s.vptr != VFS_VPTR_NULL);
+    s.bytes[0] = 0xAA;
+    pool_release(&pool, &s);
+
+    /* Free, re-alloc, write a different marker. */
+    pool_free(&pool, a);
+    int64_t b = pool_alloc(&pool);
+    CHECK_EQ(b, a);
+
+    PoolSlot s2 = {0};
+    pool_acquire(&pool, b, true, &s2);
+    CHECK(s2.vptr != VFS_VPTR_NULL);
+    s2.bytes[0] = 0xBB;
+    pool_release(&pool, &s2);
+
+    /* Read back: should be 0xBB. */
+    PoolSlot s3 = {0};
+    pool_acquire(&pool, b, false, &s3);
+    CHECK(s3.vptr != VFS_VPTR_NULL);
+    CHECK_EQ(s3.bytes[0], 0xBB);
+
+    storage_close(sb);
+    cleanup(path);
+}
+
+/* Free all 255 slots in a page, verify alloc_count returns to 0
+   and a fresh alloc still works. */
+void test_pool_free_fill_page(void) {
+    printf("21. pool_free fill page (free 255, alloc returns)...\n");
+    const char* path = "/tmp/test_pool_free_fill.vfs";
+    cleanup(path);
+
+    StorageBackend* sb = storage_open(path, 8192);
+    CHECK(sb != NULL);
+    if (!sb) { cleanup(path); return; }
+
+    Pool pool;
+    int64_t list_head = 0;
+    pool_init(&pool, sb, &list_head);
+
+    int64_t vps[255];
+    for (int i = 0; i < 255; i++) {
+        vps[i] = pool_alloc(&pool);
+        CHECK(vps[i] != VFS_VPTR_NULL);
+    }
+    CHECK_EQ(pool_alloc_count(&pool), 255);
+
+    for (int i = 0; i < 255; i++) {
+        CHECK_EQ(pool_free(&pool, vps[i]), VFS_OK);
+    }
+    CHECK_EQ(pool_alloc_count(&pool), 0);
+
+    /* Next alloc succeeds (uses a freed slot). */
+    int64_t x = pool_alloc(&pool);
+    CHECK(x != VFS_VPTR_NULL);
+    CHECK_EQ(pool_alloc_count(&pool), 1);
+
+    storage_close(sb);
+    cleanup(path);
+}
+
+/* Free invalid VP — returns error, doesn't crash. */
+void test_pool_free_invalid(void) {
+    printf("22. pool_free invalid VP (returns error)...\n");
+    const char* path = "/tmp/test_pool_free_invalid.vfs";
+    cleanup(path);
+
+    StorageBackend* sb = storage_open(path, 8192);
+    CHECK(sb != NULL);
+    if (!sb) { cleanup(path); return; }
+
+    Pool pool;
+    int64_t list_head = 0;
+    pool_init(&pool, sb, &list_head);
+
+    /* Free VP 0 (header page) — rejected by page < 2 check. */
+    int rc = pool_free(&pool, VFS_VPTR_MAKE(0, 0));
+    CHECK_EQ(rc, VFS_ERR_IO);
+
+    /* Free VP 1 (superblock page) — also rejected. */
+    rc = pool_free(&pool, VFS_VPTR_MAKE(1, 0));
+    CHECK_EQ(rc, VFS_ERR_IO);
+
+    /* Free VP_NULL — rejected. */
+    rc = pool_free(&pool, VFS_VPTR_NULL);
+    CHECK_EQ(rc, VFS_ERR_IO);
+
+    storage_close(sb);
+    cleanup(path);
+}
 
 int main(void) {
     printf("=== Pool Allocator Tests ===\n\n");
@@ -872,6 +1144,15 @@ int main(void) {
     /* W3.6 acceptance tests */
     test_pool_init_existing_file();
     test_pool_init_no_phase5();
+
+    /* Phase 28 W6: pool_free acceptance tests */
+    test_pool_free_basic();
+    test_pool_free_lifo();
+    test_pool_free_lifo_two();
+    test_pool_free_then_alloc();
+    test_pool_free_slot_reusable();
+    test_pool_free_fill_page();
+    test_pool_free_invalid();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
