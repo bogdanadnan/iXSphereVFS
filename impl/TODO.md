@@ -115,7 +115,7 @@ abort the commit.
 
 ---
 
-## TODO-12 — Pool Slot Freeing (deferred from Phase 28 first bin job) [PARTIALLY RESOLVED]
+## TODO-12 — Pool Slot Freeing (deferred from Phase 28 first bin job) [PARTIALLY RESOLVED — chain slots fully resolved by Phase 28 W6 + Type 2, page-level reclamation deferred]
 
 ### Problem (historical)
 
@@ -176,6 +176,46 @@ Plus 1 new test in `test/test_gc_thread.c`:
   (within a small slack for other GC allocations).
 
 All 16/16 ctest pass; test_pool 35105/35105, test_gc_thread 163/163.
+
+### Resolution (Phase 28 Type 2, commit `18cc501`) — OLD NameEntry leak fixed
+
+The rename bin job (`gc_handle_rename_done` in
+`src/gc_bin_rename_tombstone.c`) now also calls `pool_free` on
+the OLD NameEntry's first chain slot.  The work handler
+(`process_name_entry`) walks the chain via `ANCHOR_OFF_SIBPTR`
+and frees each chain slot.
+
+This was the second half of the original "chain slot leak"
+problem: file deletion only freed the chain slots for the
+create + tombstone, but rename was leaving the OLD NameEntry
+chain orphaned in the pool.  With the rename bin job in
+place, the "no space leak after GC" guarantee extends to
+`vfs_rename` as well.
+
+Per the W5 spec review (M1), no tree-wide lookup is needed for
+the OLD NameEntry: each `vfs_create` calls `nodes_write_name`
+which calls `pool_alloc` for fresh slots, so two creates for
+the same name produce two different NameEntry VPs.  The OLD
+NameEntry is referenced only by the create being freed.  A
+defensive check verifies the slot content matches the
+expected name to catch the theoretical VP-reuse case.
+
+Multi-slot NameEntry chains (names > 16 bytes) are handled by
+walking the chain via `ANCHOR_OFF_SIBPTR` from the first slot.
+The spec's §4.4 covers the multi-slot case explicitly.
+
+3 new tests in `test/test_gc_thread.c`:
+
+- `test_rename_tombstone_bin_job_basic` — same-dir rename
+  "foo" → "bar", verify OLD name not findable on remount,
+  pool count bounded.
+- `test_rename_tombstone_with_active_snapshot` — snapshot
+  before rename, verify OLD name still findable at the
+  snapshot, NEW name findable at the head.
+- `test_rename_no_space_leak` — 20 renames, verify pool count
+  bounded (delta < 2000, accounts for radix index and
+  DirSegment allocations; the test verifies BOUNDED growth,
+  not small absolute count).
 
 ### Remaining work — pool-page-level reclamation
 

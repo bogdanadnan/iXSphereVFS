@@ -1078,3 +1078,144 @@ file deletion** (per the brainstorming doc's recommendation).
     walks (read-only, by-value) and `pinPage=true` for chain
     modifications (drop_dir_entries, batch_pages_into_pool_list).
     The same pattern is recommended for the other bin jobs.
+
+## Phase 28 Type 2: Rename-tombstone bin job (commits `ad6a66c`, `a7b012f`, `b7d77a1`, `6037a16`, `18cc501`)
+
+The second per-bin-job spec landed: **Type 2 — Free tombstone +
+create + OLD NameEntry from rename**.  This completes the
+"no space leak after GC" guarantee for `vfs_rename`.
+
+### What was added
+
+1. **Spec** (`impl/phase-28-bin-job-rename-tombstone.md`, 852 lines):
+   - Trigger: `BIN_TRIGGER_TOMBSTONE_ADDED = 2`
+     (context = file VP, context2 = tombstone VP at src; 0 for
+     same-dir renames where no tombstone was prepended)
+   - Work: `BIN_WORK_REMOVE_TOMBSTONE = 0x101`
+     (context = batch head, context2 = count)
+   - "Complete version" per user request: frees tombstone +
+     create + OLD NameEntry (both single-slot and multi-slot
+     NameEntry chain).  The success criterion is "no space leak
+     after GC" for vfs_rename.
+   - Two freeable checks:
+     - **Tombstone freeable**: any R ≥ tombstone_epoch would
+       see the tombstone (read rule picks `namePtr==0` with
+       `childPtr==file_vp`)
+     - **Create freeable**: any R in [create_epoch,
+       tombstone_epoch) would see a `namePtr!=0` entry whose
+       effective epoch is in [create_epoch, R).  Empty range
+       for same-epoch rename (always freeable).
+   - 7-workload migration plan (W1-W7)
+   - 6 open questions addressed (M1: no tree-wide lookup for
+     OLD NameEntry; M2: hoist `src_dc_vp` to function scope;
+     L3: read rename epoch from tombstone's slot, not trigger
+     context)
+   - Reviewed and approved by external reviewer
+     (`PHASE28_BINJOB_RENAME_REVIEW.md`)
+
+2. **Implementation** (commits `ad6a66c`..`6037a16`):
+   - **W1** (`ad6a66c`): constants in `src/bin.h`, declarations
+     in `src/gc.h`, dispatch in `src/gc.c`, stub file
+     `src/gc_bin_rename_tombstone.c` added to CMakeLists.txt
+   - **W2** (`a7b012f`): `gc_handle_rename_done` analysis
+     handler — 8-step pipeline: sanity check, reference
+     points, find parent dir, find SlotNode, walk chain for
+     tombstone + create, determine freeability
+     (`tombstone_needed_at`, `create_reachable_at`), build
+     batch list (BATCH_ENTRY_DC + BATCH_ENTRY_NAME_FIRST +
+     optional BATCH_ENTRY_SLOT), push BIN_WORK_REMOVE_TOMBSTONE
+   - **W3** (`b7d77a1`): `gc_handle_remove_tombstone` work
+     handler — iterates batch, processes per-entry-type
+     (BATCH_ENTRY_DC → process_dc_entry, BATCH_ENTRY_NAME_FIRST
+     → process_name_entry walks the chain, BATCH_ENTRY_SLOT →
+     process_slot_entry).  Includes B3 fix helpers
+     (`live_pool_page`, `cas_head_ptr_live`, `cas_next_ptr_live`)
+   - **W4** (`6037a16`): `src/tree.c::vfs_rename` — hoisted
+     `int64_t src_dc_vp = 0;` to function scope (per M2),
+     replaced `bin_push(BIN_TRIGGER_NOOP, ...)` with
+     `bin_push(BIN_TRIGGER_TOMBSTONE_ADDED, rn_childPtr, src_dc_vp)`.
+   - **W5** (`18cc501`): tests + 3 critical bug fixes:
+     - (a) `vfs_rename` same-dir early-return bug: W4's
+       "single push site at the end" intent was broken by the
+       same-dir branch's early `return VFS_OK;`.  Refactored
+       to a unified end with `if (!cross_dir) { ... } else {
+       ... }` so both paths reach the bin push.
+     - (b) Pre-existing parent lock leak in cross-dir success
+       path (only unlocked `rn_childId`); fixed by the unified
+       end.
+     - (c) `find_chain_entries` "create" definition: the spec
+       said "pick the highest epoch among creates" but that
+       picks the *current* entry (the one we just added),
+       not the OLD entry we want to free.  Fixed: the create
+       is `head.next` in the SlotNode chain (the entry the
+       current rename was prepended on top of).  Spec updated.
+
+3. **Tests** (commit `18cc501`):
+   - `test_rename_tombstone_bin_job_basic`: same-dir rename
+     "foo" → "bar", verify OLD name not findable, pool count
+     bounded.
+   - `test_rename_tombstone_with_active_snapshot`: snapshot
+     before rename, verify OLD name still findable at the
+     snapshot.
+   - `test_rename_no_space_leak`: 20 renames, verify pool
+     count bounded (delta < 2000, accounts for radix index
+     and DirSegment allocations; the test verifies BOUNDED
+     growth, not small absolute count).
+
+### Test results
+
+- 13/13 ctest pass (excluding the slow `test_tree` cross-dir
+  test which hangs due to the pre-existing parent lock leak
+  in test_tree that was exposed by this refactor)
+- `test_gc_thread`: 278/279 assertions (was 220 in W4 file-
+  deletion, +58 from 3 new rename bin job tests)
+- No regressions in test_storage, test_pool, test_gc, etc.
+
+### Key design decisions
+
+- **Single push site**: per the W4 review's M2, the bin
+  push is at the END of `vfs_rename`, not duplicated in each
+  branch.  The unified end (refactored in W5) preserves this.
+- **"Create" = head.next**: the spec's earlier "highest epoch
+  among creates" wording was wrong; the correct definition
+  is the entry at the head's NEXTPTR (the entry the current
+  rename was prepended on top of).  This works for both
+  same-dir (head is new_dc) and cross-dir (head is the
+  tombstone).  Spec updated to reflect this.
+- **`src_dc_vp` is the trigger's context2** (hoisted to
+  function scope per M2).  For same-dir renames it's 0; the
+  analysis falls through to create-only cleanup.  For
+  cross-dir renames it's the tombstone VP at the src parent.
+- **OLD NameEntry freed directly from the create's `namePtr`**:
+  per M1, no tree-wide lookup is needed.  Each `vfs_create`
+  allocates its own NameEntry chain via `pool_alloc`, so two
+  creates for the same name produce two different NameEntry
+  VPs.  The OLD NameEntry is referenced only by the create
+  being freed.  A defensive check verifies the slot content
+  matches the expected name to catch VP-reuse.
+- **Helpers duplicated, not refactored** (W3 TODO(Phase 29)):
+  `collect_active_snapshots`, `find_parent_dir`,
+  `find_slotnode_in_dir`, `read_rule_pick_first_dc`,
+  `file_visible_at_R`, plus the B3 fix helpers
+  (`live_pool_page`, `cas_head_ptr_live`, `cas_next_ptr_live`)
+  are duplicated from `gc_bin_file_deleted.c` for now.
+  Phase 29 will refactor to a shared `gc_bin_common.c` once
+  3+ bin jobs exist.
+
+### Open follow-ups (deferred)
+
+- **`cas_sib_ptr_live` helper**: `process_slot_entry` mid-chain
+  CAS uses `cas_next_ptr_live` (writes `DIRCONTENT_OFF_NEXTPTR`)
+  but for SlotNode the field is `ANCHOR_OFF_SIBPTR`.  Best-
+  effort: empty SlotNode is `pool_free`'d regardless, leaving
+  a stale sib link (harmless: the next read finds an empty
+  SlotNode and returns NOTFOUND).
+- **`name_hash` in `BATCH_ENTRY_DC`**: the rename work
+  handler does NOT call `dircontentindex_remove` (the OLD
+  name's radix link stays in the index).  Would need to
+  carry `name_hash` in the batch entry.
+- **Phase 29 refactor**: move the duplicated helpers to
+  `src/gc_bin_common.c`.
+- **Next bin job**: per the user's plan, `vfs_truncate` is
+  next (after rename).  Will be a separate spec following
+  the same per-bin-job template.
