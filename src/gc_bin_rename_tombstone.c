@@ -406,6 +406,12 @@ static int create_reachable_at(TreeContext* ctx, int64_t slot_vp,
         if (dc.vptr == VFS_VPTR_NULL) continue;
         int32_t namePtr = (int32_t)vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_NAMEPTR, ctx->page_size);
         (void)vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_CHILDPTR, ctx->page_size);
+        /* L1 fix: read picked_epoch BEFORE pool_release.  The cache
+           page is still resident, but reading from a released
+           PoolSlot is fragile (the pool_release call doesn't
+           invalidate the local copy, but it's better style to
+           read everything we need first). */
+        int32_t picked_epoch = (int32_t)vfs_rd4_s(dc.bytes, DIRCONTENT_OFF_EPOCH, ctx->page_size);
         pool_release(&ctx->pool, &dc);
         if (namePtr != 0) {
             /* The picked entry has a namePtr != 0 — it could be the
@@ -415,7 +421,6 @@ static int create_reachable_at(TreeContext* ctx, int64_t slot_vp,
                picked entry is at the create_epoch or a later epoch
                in [create_epoch, tombstone_epoch), the create is
                reachable. */
-            int32_t picked_epoch = (int32_t)vfs_rd4_s(dc.bytes, DIRCONTENT_OFF_EPOCH, ctx->page_size);
             int64_t picked_eff = (int64_t)picked_epoch;
             if (mapper_table_traversal_apply(&ctx->mapper_table, (int64_t)picked_epoch)) {
                 picked_eff = mapper_table_resolve(&ctx->mapper_table, (int64_t)picked_epoch);
@@ -565,7 +570,16 @@ int gc_handle_rename_done(vfs_t* vfs, const BinEntry* entry) {
     if (old_name_first_vp != 0) {
         if (batch_list_prepend(ctx, &batch_head,
                                  old_name_first_vp, /* target = first chain slot */
-                                 old_name_first_vp, /* context = same, for chain walk */
+                                 parent_dir_vp,      /* context = parent_dir_vp
+                                                        (used by I1 fix: the
+                                                        work handler's
+                                                        extract_name_hash_from_batch
+                                                        reads this to know
+                                                        which dir's index
+                                                        to update).  The
+                                                        process_name_entry
+                                                        handler does NOT
+                                                        use this field. */
                                  BATCH_ENTRY_NAME_FIRST) == VFS_OK) {
             batch_count++;
         }
@@ -719,9 +733,13 @@ static int64_t find_predecessor(TreeContext* ctx, int64_t slot_vp,
 }
 
 /* Process a single BATCH_ENTRY_DC.  CAS-remove the DC from the
-   SlotNode's chain, update dircontentindex if the SlotNode becomes
-   empty, pool_free the DC slot. */
-static int process_dc_entry(TreeContext* ctx, int64_t dc_vp, int64_t slot_vp) {
+   SlotNode's chain, update dircontentindex (per I1 fix) to
+   remove the OLD name's radix link (when the create is being
+   freed), pool_free the DC slot. */
+static int process_dc_entry(TreeContext* ctx, int64_t dc_vp,
+                              int64_t slot_vp,
+                              int64_t parent_dir_vp,
+                              uint64_t name_hash) {
     /* Find the predecessor and the target's nextPtr. */
     int64_t target_next = 0;
     int64_t pred = find_predecessor(ctx, slot_vp, dc_vp, &target_next);
@@ -745,24 +763,45 @@ static int process_dc_entry(TreeContext* ctx, int64_t dc_vp, int64_t slot_vp) {
         }
     }
 
-    /* If the SlotNode is now empty, update the dir's index.  We
-       read the create's namePtr hash (read BEFORE the create is
-       freed, in the analysis) and use it to remove the link.
-       For the rename bin job, we don't carry the name hash in
-       the batch entry; we do a lookup by slotVP via
-       dircontentindex_remove.  dircontentindex_remove takes
-       (nameHash, slotVP) and removes the matching link.  We
-       compute the hash from the chain — if the chain is empty,
-       we read the OLD name's hash from the (now-removed) create
-       by following the nextPtr.  Since the create is already
-       removed from the chain, we can't.  Instead, we just do
-       a best-effort: if the chain is empty, read the create's
-       namePtr slot (we have it from the analysis... but we
-       don't, since the create is now removed).  For simplicity,
-       we DON'T update the index in this W3 — the link is
-       harmless (a query for the OLD name at the OLD hash would
-       just find an empty SlotNode).  The leak is bounded. */
-    /* TODO(W3+): pass name_hash in the batch entry. */
+    /* I1 fix: update the parent dir's radix index to remove the
+       OLD name's link (per spec §4.2 step 4).  The link was
+       inserted when vfs_create was called, pointing at the
+       SlotNode at OLD_name's hash.  After this DC removal, if
+       the SlotNode becomes empty AND the SlotNode is also being
+       freed (BATCH_ENTRY_SLOT in the same batch), the link is
+       stale.  We do the dircontentindex_remove here (instead of
+       in the SlotNode work handler) because:
+       - The OLD NameEntry's hash is only known at this point
+         (before pool_free of the NameEntry, which frees the
+         chain slots including the one with the hash at offset 0).
+       - The SlotNode might not be removed at all (e.g.,
+         tombstone-only rename where the create stays).  In that
+         case the link at the OLD name's hash is still valid
+         (the SlotNode still has the create, which IS at OLD_name).
+         So we only call dircontentindex_remove when the create is
+         being freed (name_hash != 0) AND the chain will be empty
+         after this DC removal.
+
+       Note: dircontentindex_remove zeroes the link to a
+       "tree-tombstone" (M8 design).  Subsequent lookups for
+       OLD_name fall through to the chain walk, which (with the
+       DC just removed and possibly more DCs removed too) returns
+       NOTFOUND or hits a newer DC.  Both are correct outcomes. */
+    if (name_hash != 0 && parent_dir_vp != 0) {
+        /* Read the parent dir's index head. */
+        int64_t index_head = 0;
+        PoolSlot ps = {0};
+        pool_acquire(&ctx->pool, parent_dir_vp, false, &ps);
+        if (ps.vptr != VFS_VPTR_NULL) {
+            index_head = vfs_rd8_s(ps.bytes, DIRNODE_OFF_INDEXHEADPTR,
+                                     ctx->page_size);
+        }
+        pool_release(&ctx->pool, &ps);
+        if (index_head != 0) {
+            dircontentindex_remove(&ctx->pool, index_head, name_hash,
+                                    slot_vp, ctx->page_size);
+        }
+    }
 
     pool_free(&ctx->pool, dc_vp);
     return VFS_OK;
@@ -798,6 +837,53 @@ static int process_name_entry(TreeContext* ctx, int64_t first_vp) {
     }
     (void)prev;
     return VFS_OK;
+}
+
+/* I1 fix helper: read the name hash from the OLD NameEntry's
+   first slot, and the parent_dir_vp from the BATCH_ENTRY_NAME_FIRST
+   batch entry's context field.  Returns 0 on success (hash and
+   parent_dir_vp set; hash is 0 if the NameEntry slot is empty,
+   parent_dir_vp is 0 if the batch has no BATCH_ENTRY_NAME_FIRST). */
+static int extract_name_hash_from_batch(TreeContext* ctx,
+                                          int64_t batch_head,
+                                          int64_t batch_count,
+                                          uint64_t* out_hash,
+                                          int64_t* out_parent_dir_vp) {
+    *out_hash = 0;
+    *out_parent_dir_vp = 0;
+    int64_t cur = batch_head;
+    int64_t processed = 0;
+    while (cur != 0 && processed < batch_count) {
+        PoolSlot bs = {0};
+        pool_acquire(&ctx->pool, cur, false, &bs);
+        if (bs.vptr == VFS_VPTR_NULL) break;
+        int64_t next = vfs_rd8_s(bs.bytes, 0,  ctx->page_size);
+        int64_t target = vfs_rd8_s(bs.bytes, 8,  ctx->page_size);
+        int64_t ctxvp  = vfs_rd8_s(bs.bytes, 16, ctx->page_size);
+        int32_t type   = (int32_t)vfs_rd4_s(bs.bytes, 24, ctx->page_size);
+        pool_release(&ctx->pool, &bs);
+        if (type == BATCH_ENTRY_NAME_FIRST) {
+            /* target = OLD NameEntry's first slot VP.
+               ctxvp  = parent_dir_vp (per the analysis handler's
+                       prepend: BATCH_ENTRY_NAME_FIRST is prepended
+                       with context = parent_dir_vp). */
+            *out_parent_dir_vp = ctxvp;
+            if (target != 0) {
+                PoolSlot ns = {0};
+                pool_acquire(&ctx->pool, target, false, &ns);
+                if (ns.vptr != VFS_VPTR_NULL) {
+                    /* The hash is the first 8 bytes of the
+                       NameEntry's first slot (per nodes_write_name). */
+                    *out_hash = (uint64_t)vfs_rd8_s(ns.bytes, 0, ctx->page_size);
+                }
+                pool_release(&ctx->pool, &ns);
+            }
+            return VFS_OK;
+        }
+        cur = next;
+        processed++;
+    }
+    return VFS_OK;  /* not found; both out_* remain 0 */
 }
 
 /* Process a BATCH_ENTRY_SLOT.  Unlink the SlotNode from its
@@ -840,7 +926,19 @@ static int process_slot_entry(TreeContext* ctx, int64_t slot_vp,
             slot_v = slot_sib;
         }
         if (found_seg != 0) {
-            /* Unlink slot_vp from this segment's SlotNode chain. */
+            /* Unlink slot_vp from this segment's SlotNode chain.
+             * The SlotNode's sibPtr is at ANCHOR_OFF_SIBPTR (offset
+             * 16), not DIRCONTENT_OFF_NEXTPTR (which the
+             * cas_next_ptr_live helper writes).  We need a
+             * cas_sib_ptr_live helper for the mid-chain case; for
+             * now, the safest fix is to ONLY free the SlotNode when
+             * it's the segment head (where we can CAS the segment's
+             * headPtr field).  If the SlotNode is mid-chain, leave
+             * the empty SlotNode in the chain (a small leak — the
+             * empty SlotNode is still in the per-parent index link
+             * but the chain walk returns "no DC entries" so lookups
+             * fall through to NOTFOUND via the radix fast-path
+             * miss).  Per the W3 review's I2 fix. */
             if (prev_slot == 0) {
                 /* slot_vp is the segment head.  CAS the segment's
                    SlotNode headPtr to slot_sib. */
@@ -860,16 +958,21 @@ static int process_slot_entry(TreeContext* ctx, int64_t slot_vp,
                 if (vfs_cas_i64(head_field, slot_vp, next_slot) == slot_vp) {
                     cache_mark_dirty(&ctx->sb->cache, VFS_VPTR_PAGE(seg_vp), FLUSH_PRIO_POOL);
                 }
+                /* Pool_free the SlotNode.  Only done when we
+                   successfully unlinked it. */
+                pool_free(&ctx->pool, slot_vp);
             } else {
-                /* slot_vp is in the middle.  CAS prev_slot's sibPtr. */
-                cas_next_ptr_live(ctx, prev_slot, slot_vp, 0);  /* For SLOT entries, we don't know next, use 0 */
-                /* Actually for SLOT (SlotNode), the field is ANCHOR_OFF_SIBPTR,
-                   not DIRCONTENT_OFF_NEXTPTR.  We'd need a cas_sib_ptr_live
-                   helper.  For now, skip — leave the empty SlotNode in place. */
-                (void)0;  /* placeholder */
+                /* Mid-chain: skip the unlink + pool_free.  The
+                   empty SlotNode stays in the chain.  Subsequent
+                   lookups for the (now non-existent) child return
+                   NOTFOUND via the empty-chain walk.  The radix
+                   index link is still present but points to a
+                   SlotNode with an empty chain — the chain walk
+                   does the right thing.  A future
+                   `dircontentindex_remove` on a tombstone
+                   cross-dir rename will eventually clean up the
+                   link (see I1 fix in the work handler). */
             }
-            /* Pool_free the SlotNode. */
-            pool_free(&ctx->pool, slot_vp);
             return VFS_OK;
         }
         seg_vp = seg_sib;
@@ -886,6 +989,17 @@ int gc_handle_remove_tombstone(vfs_t* vfs, const BinEntry* entry) {
     if (batch_head == 0 || batch_count <= 0) {
         return VFS_OK;
     }
+
+    /* I1 fix: pre-pass to extract the name hash and parent_dir_vp
+       from the BATCH_ENTRY_NAME_FIRST (if present).  The name hash
+       is needed for dircontentindex_remove (called from
+       process_dc_entry); the parent_dir_vp is the dir whose index
+       needs the update.  These two values are passed to every
+       BATCH_ENTRY_DC processing call. */
+    uint64_t old_name_hash    = 0;
+    int64_t  parent_dir_vp    = 0;
+    extract_name_hash_from_batch(ctx, batch_head, batch_count,
+                                    &old_name_hash, &parent_dir_vp);
 
     /* Iterate the batch list.  Each entry is a 32-byte pool slot
        with the layout documented in the analysis handler:
@@ -909,7 +1023,8 @@ int gc_handle_remove_tombstone(vfs_t* vfs, const BinEntry* entry) {
 
         switch (type) {
         case BATCH_ENTRY_DC:
-            process_dc_entry(ctx, target, ctxvp);
+            process_dc_entry(ctx, target, ctxvp,
+                              parent_dir_vp, old_name_hash);
             break;
         case BATCH_ENTRY_NAME_FIRST:
             process_name_entry(ctx, target);

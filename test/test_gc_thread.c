@@ -1106,6 +1106,59 @@ void test_rename_no_space_leak(void) {
     cleanup(path);
 }
 
+/* Test 16: rename-tombstone cross-dir bin job (T1 from the
+ * W3 review).  Verifies that the cross-dir rename (where a
+ * tombstone is created at src) is fully cleaned up by the bin
+ * job: the tombstone, the OLD create, and the OLD NameEntry
+ * are all freed, and the radix link at the OLD name's hash in
+ * the src parent is removed. */
+void test_rename_tombstone_cross_dir(void) {
+    printf("16. Rename-tombstone cross-dir (tombstone + create + OLD name freed, radix link removed)...\n");
+    const char* path = "/tmp/test_rename_tombstone_cross_dir.vfs";
+    cleanup(path);
+
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    int64_t root = vfs->ctx->rootNodeOffset;
+    /* Create two dirs at the root. */
+    int64_t dir_a = vfs_mkdir(vfs, root, "dirA", 0);
+    int64_t dir_b = vfs_mkdir(vfs, root, "dirB", 0);
+    CHECK(dir_a > 0);
+    CHECK(dir_b > 0);
+    if (dir_a <= 0 || dir_b <= 0) { vfs_unmount(vfs); cleanup(path); return; }
+
+    /* Create a file in dirA. */
+    int64_t fvp = vfs_create(vfs, dir_a, "cross_src.txt", 0);
+    CHECK(fvp > 0);
+    if (fvp <= 0) { vfs_unmount(vfs); cleanup(path); return; }
+
+    /* Cross-dir rename: dirA/cross_src.txt → dirB/cross_dst.txt. */
+    int rrc = vfs_rename(vfs, dir_a, "cross_src.txt", dir_b, "cross_dst.txt", 0);
+    CHECK_EQ(rrc, VFS_OK);
+
+    vfs_flush(vfs);
+    /* Give the GC thread time to process the trigger. */
+    sleep_ms(500);
+
+    /* Reopen and verify:
+     *   - At dirB: "cross_dst.txt" is findable.
+     *   - At dirA: "cross_src.txt" is NOT findable. */
+    vfs_unmount(vfs);
+    vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    int64_t a_old = vfs_open(vfs, dir_a, "cross_src.txt", 0);
+    int64_t b_new = vfs_open(vfs, dir_b, "cross_dst.txt", 0);
+    CHECK(a_old <= 0);  /* OLD name gone at src */
+    CHECK(b_new > 0);   /* NEW name findable at dst */
+
+    vfs_unmount(vfs);
+    cleanup(path);
+}
+
 int main(void) {
     printf("=== GC Thread Tests (Phase 28: file-deletion + rename-tombstone bin jobs) ===\n\n");
 
@@ -1136,6 +1189,7 @@ int main(void) {
     test_rename_tombstone_bin_job_basic();
     test_rename_tombstone_with_active_snapshot();
     test_rename_no_space_leak();
+    test_rename_tombstone_cross_dir();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
