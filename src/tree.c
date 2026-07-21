@@ -2542,7 +2542,9 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         }
     }
 
-    if (src_parent == dst_parent) {
+    int cross_dir = (src_parent != dst_parent);
+
+    if (!cross_dir) {
         /* W5a: for same-dir rename, ALWAYS use the existing SlotNode
          * and prepend a new DirContent.  The previous condition
          * `found_epoch == epoch` forced snapshot renames into the
@@ -2659,14 +2661,15 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
         }
         pool_release(&ctx->pool, &dst_slot);
         pool_release(&ctx->pool, &src_slot);
-        return VFS_OK;
-
-    }
-
-    /* Cross-directory rename: create new entry at dst, tombstone at src.
-       For same-directory cross-epoch: skip tombstone — the old entry at lower
-       epoch is naturally hidden by read-rule. */
-    int cross_dir = (src_parent != dst_parent);
+        /* No return: fall through to the unified end below so the
+           bin push (single push site per the W4 review) happens
+           for same-dir renames too.  src_dc_vp is 0 (no tombstone
+           for same-dir), so the analysis handler falls through to
+           create-only cleanup. */
+    } else {
+        /* CROSS-DIR PATH: create new entry at dst, tombstone at src.
+           For same-directory cross-epoch: skip tombstone — the old
+           entry at lower epoch is naturally hidden by read-rule. */
     int64_t dst_name_vp;
     int dst_ns = nodes_write_name(&ctx->pool, dst, &dst_name_vp);
 
@@ -2866,22 +2869,22 @@ int vfs_rename(vfs_t* vfs, int64_t src_parent, const char* src,
             (void)src_dc_vp;
         }
     } /* cross_dir */
+    } /* cross_dir (else branch) */
 
-    vfs_unlock(vfs, (int64_t)rn_childId, epoch);
-
-    /* Phase 25 critical: when src_slot and dst_slot refer to the same
-       DirNode (same-dir rename), each has its own local. The second
-       release would overwrite the first. Release dst_slot first so
-       its updates land in the cache, then re-acquire src_slot to pick
-       up those updates, then release src_slot. */
-    if (src_parent == dst_parent) {
-        pool_release(&ctx->pool, &dst_slot);
-        pool_acquire(&ctx->pool, (int64_t)src_parent, true, &src_slot);
-        pool_release(&ctx->pool, &src_slot);
-    } else {
+    /* Unified end: unlock parents + child, release pool slots.
+       Both same-dir and cross-dir paths reach here.  The same-dir
+       path already did its own unlocks/releases (since the
+       same-dir branch needed to release before falling through to
+       the bin push).  The cross-dir path did its work in the
+       `else` block above. */
+    if (cross_dir) {
+        vfs_unlock(vfs, (int64_t)rn_childId, epoch);
+        vfs_unlock(vfs, (int64_t)src_parent, epoch);
+        vfs_unlock(vfs, (int64_t)dst_parent, epoch);
         pool_release(&ctx->pool, &dst_slot);
         pool_release(&ctx->pool, &src_slot);
     }
+    /* else: same-dir already did its own unlocks/releases inline. */
 
     /* Phase 28 Type 2 (spec: impl/phase-28-bin-job-rename-tombstone.md):
        push BIN_TRIGGER_TOMBSTONE_ADDED to the Bin.  The GC's analysis

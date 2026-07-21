@@ -214,14 +214,28 @@ static int batch_list_prepend(TreeContext* ctx, int64_t* head_io,
 /* ---- Analysis handler (W2) ---- */
 
 /* Walk the src SlotNode's chain.  Find:
-   - tombstone_vp:  namePtr == 0, childPtr == file_vp, epoch == tombstone_epoch
-   - create_vp:     namePtr != 0, childPtr == file_vp
+   - tombstone_vp:  namePtr == 0, childPtr == file_vp (cross-dir only;
+                    for same-dir there is no tombstone, returns 0)
+   - create_vp:     the OLD namePtr!=0 entry that was the "current"
+                    entry BEFORE the current rename.  For same-dir
+                    this is the entry at the head's NEXTPTR.  For
+                    cross-dir this is the entry at the tombstone's
+                    NEXTPTR.  (I.e., the entry that was the head
+                    before the current rename's new entry was
+                    prepended.)
+
    Returns 0 on success (with *out_tombstone_vp, *out_tombstone_epoch,
    *out_create_vp, *out_create_epoch set; 0 if not in chain), or -1 on
-   I/O error.  If the tombstone's epoch is unknown (e.g., tombstone
-   was already removed), the analysis reads it from the entry.
-   The "create" picked is the one with the highest epoch (handles
-   rename-away-and-back scenarios). */
+   I/O error.
+
+   Note: the spec's earlier wording ("pick the highest epoch among
+   creates") was WRONG for the bin job's purpose.  The bin job frees
+   the OLD entry (the one that was current BEFORE the current
+   rename), not the current entry (the most recent).  The OLD entry
+   is the one immediately following the current rename's new entry
+   in the chain.  This is the correct definition for "no space leak
+   after GC": each bin job frees exactly one OLD entry, leaving the
+   most recent entry as the only one in the chain. */
 static int find_chain_entries(TreeContext* ctx, int64_t slot_vp,
                                  int64_t file_vp, int64_t tombstone_vp_hint,
                                  int64_t* out_tombstone_vp,
@@ -239,40 +253,100 @@ static int find_chain_entries(TreeContext* ctx, int64_t slot_vp,
     int64_t dc_head = vfs_rd8_s(slot.bytes, ANCHOR_OFF_HEADPTR, ctx->page_size);
     pool_release(&ctx->pool, &slot);
 
-    int64_t dc_vp = dc_head;
-    while (dc_vp != 0) {
-        PoolSlot dc = {0};
-        pool_acquire(&ctx->pool, dc_vp, false, &dc);
-        if (dc.vptr == VFS_VPTR_NULL) break;
-        int32_t namePtr  = (int32_t)vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_NAMEPTR,  ctx->page_size);
-        int64_t childPtr = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_CHILDPTR, ctx->page_size);
-        int32_t epoch    = (int32_t)vfs_rd4_s(dc.bytes, DIRCONTENT_OFF_EPOCH,    ctx->page_size);
-        int64_t dc_next  = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_NEXTPTR, ctx->page_size);
-        pool_release(&ctx->pool, &dc);
+    /* The "current rename's new entry" is the head of the chain
+       (for both same-dir and cross-dir: same-dir prepends a new_dc
+       with namePtr!=0; cross-dir prepends a tombstone with namePtr==0).
+       The "OLD entry" to free is at the head's NEXTPTR.  If the
+       head is the hint (tombstone_vp_hint != 0), then head IS the
+       tombstone; otherwise (tombstone_vp_hint == 0 for same-dir),
+       head is a new_dc and we look for a namePtr==0 entry anywhere
+       in the chain for the tombstone (which is 0 if no such entry). */
+    int64_t head_vp = dc_head;
+    int64_t head_next_vp = 0;
+    int32_t head_epoch = 0;
 
-        if (childPtr == file_vp) {
-            if (namePtr == 0) {
-                /* Tombstone.  Use the hint if it matches; otherwise
-                   accept any tombstone with childPtr == file_vp. */
-                if (*out_tombstone_vp == 0 ||
-                    dc_vp == tombstone_vp_hint) {
-                    if (*out_tombstone_vp != 0 && dc_vp != tombstone_vp_hint) {
-                        /* don't override an earlier match unless the hint matches */
-                    } else {
-                        *out_tombstone_vp = dc_vp;
-                        *out_tombstone_epoch = (int64_t)epoch;
-                    }
-                }
-            } else {
-                /* Create-like (namePtr != 0).  Pick the one with the
-                   highest epoch. */
-                if ((int64_t)epoch > *out_create_epoch) {
-                    *out_create_vp = dc_vp;
-                    *out_create_epoch = (int64_t)epoch;
-                }
-            }
+    if (head_vp != 0) {
+        PoolSlot h = {0};
+        pool_acquire(&ctx->pool, head_vp, false, &h);
+        if (h.vptr != VFS_VPTR_NULL) {
+            head_next_vp = vfs_rd8_s(h.bytes, DIRCONTENT_OFF_NEXTPTR, ctx->page_size);
+            head_epoch    = (int32_t)vfs_rd4_s(h.bytes, DIRCONTENT_OFF_EPOCH, ctx->page_size);
         }
-        dc_vp = dc_next;
+        pool_release(&ctx->pool, &h);
+    }
+
+    /* Identify the tombstone.  If tombstone_vp_hint matches the
+       head, head IS the tombstone.  Otherwise (tombstone_vp_hint
+       is 0 for same-dir), there is no tombstone in the chain. */
+    if (tombstone_vp_hint != 0 && head_vp == tombstone_vp_hint) {
+        *out_tombstone_vp = head_vp;
+        *out_tombstone_epoch = (int64_t)head_epoch;
+    } else if (tombstone_vp_hint == 0) {
+        /* Same-dir: no tombstone.  Confirm by walking the chain
+           looking for a namePtr==0 entry with childPtr == file_vp
+           — there should be none. */
+        int64_t dc_vp = dc_head;
+        while (dc_vp != 0) {
+            PoolSlot dc = {0};
+            pool_acquire(&ctx->pool, dc_vp, false, &dc);
+            if (dc.vptr == VFS_VPTR_NULL) break;
+            int32_t namePtr  = (int32_t)vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_NAMEPTR, ctx->page_size);
+            int64_t childPtr = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_CHILDPTR, ctx->page_size);
+            int64_t dc_next  = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_NEXTPTR, ctx->page_size);
+            pool_release(&ctx->pool, &dc);
+            if (childPtr == file_vp && namePtr == 0) {
+                /* Unexpected tombstone in same-dir rename — could
+                   be a stale entry from a prior cross-dir rename.
+                   Skip (don't try to free it from this trigger). */
+                break;
+            }
+            dc_vp = dc_next;
+        }
+    } else {
+        /* tombstone_vp_hint != 0 but head_vp != hint.  Walk the
+           chain to find the tombstone at the hint. */
+        int64_t dc_vp = dc_head;
+        while (dc_vp != 0) {
+            PoolSlot dc = {0};
+            pool_acquire(&ctx->pool, dc_vp, false, &dc);
+            if (dc.vptr == VFS_VPTR_NULL) break;
+            int32_t namePtr  = (int32_t)vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_NAMEPTR, ctx->page_size);
+            int64_t childPtr = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_CHILDPTR, ctx->page_size);
+            int32_t epoch    = (int32_t)vfs_rd4_s(dc.bytes, DIRCONTENT_OFF_EPOCH, ctx->page_size);
+            int64_t dc_next  = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_NEXTPTR, ctx->page_size);
+            pool_release(&ctx->pool, &dc);
+            if (childPtr == file_vp && namePtr == 0 &&
+                dc_vp == tombstone_vp_hint) {
+                *out_tombstone_vp = dc_vp;
+                *out_tombstone_epoch = (int64_t)epoch;
+                break;
+            }
+            dc_vp = dc_next;
+        }
+    }
+
+    /* The "create" (OLD entry to free) is the entry at the head's
+       NEXTPTR.  This is the entry that was the "current" entry
+       BEFORE the current rename.  For same-dir, head is new_dc and
+       head.next is the OLD create.  For cross-dir, head is the
+       tombstone and head.next is the OLD create (at the src parent). */
+    if (head_next_vp != 0) {
+        PoolSlot c = {0};
+        pool_acquire(&ctx->pool, head_next_vp, false, &c);
+        if (c.vptr != VFS_VPTR_NULL) {
+            int32_t namePtr  = (int32_t)vfs_rd8_s(c.bytes, DIRCONTENT_OFF_NAMEPTR, ctx->page_size);
+            int64_t childPtr = vfs_rd8_s(c.bytes, DIRCONTENT_OFF_CHILDPTR, ctx->page_size);
+            int32_t epoch    = (int32_t)vfs_rd4_s(c.bytes, DIRCONTENT_OFF_EPOCH, ctx->page_size);
+            if (childPtr == file_vp && namePtr != 0) {
+                *out_create_vp = head_next_vp;
+                *out_create_epoch = (int64_t)epoch;
+            }
+            /* If namePtr == 0 here, it means the head.next is
+               another tombstone (rare: cross-dir then same-dir
+               renames).  In that case, leave create_vp = 0 and
+               let the analysis skip the create. */
+        }
+        pool_release(&ctx->pool, &c);
     }
     return 0;
 }
