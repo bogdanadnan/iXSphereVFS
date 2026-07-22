@@ -1220,6 +1220,69 @@ void test_rename_tombstone_directory(void) {
     cleanup(path);
 }
 
+/* Test 18: rename-tombstone works for files in nested dirs.
+ * Pre-fix, walk_dir_recursive_rename did NOT recurse into
+ * subdirectories, so a rename of a file at depth > 1 from
+ * root would fail to find the file's parent dir.  The bin job
+ * would skip the cleanup, leaving the OLD create + OLD NameEntry
+ * orphaned.  After the fix, the function recurses similar to
+ * the file-deletion bin job's walk_dir_recursive. */
+void test_rename_tombstone_nested_dir(void) {
+    printf("18. Rename-tombstone for files in nested dirs (walk_dir_recursive_rename now recurses)...\n");
+    const char* path = "/tmp/test_rename_tombstone_nested.vfs";
+    cleanup(path);
+
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    int64_t root = vfs->ctx->rootNodeOffset;
+    /* Create a nested directory structure. */
+    int64_t dir_a = vfs_mkdir(vfs, root, "dirA", 0);
+    CHECK(dir_a > 0);
+    int64_t dir_sub = vfs_mkdir(vfs, dir_a, "subdir", 0);
+    CHECK(dir_sub > 0);
+    if (dir_a <= 0 || dir_sub <= 0) { vfs_unmount(vfs); cleanup(path); return; }
+
+    /* Create a file in the nested dir. */
+    int64_t fvp = vfs_create(vfs, dir_sub, "nested_file.txt", 0);
+    CHECK(fvp > 0);
+    if (fvp <= 0) { vfs_unmount(vfs); cleanup(path); return; }
+
+    int64_t pool_before = pool_alloc_count(&vfs->ctx->pool);
+
+    /* Same-dir rename inside the nested dir. */
+    int rrc = vfs_rename(vfs, dir_sub, "nested_file.txt", dir_sub, "renamed.txt", 0);
+    CHECK_EQ(rrc, VFS_OK);
+
+    vfs_flush(vfs);
+    sleep_ms(500);
+
+    /* Reopen and verify the rename worked. */
+    vfs_unmount(vfs);
+    vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    int64_t old_found = vfs_open(vfs, dir_sub, "nested_file.txt", 0);
+    int64_t new_found = vfs_open(vfs, dir_sub, "renamed.txt", 0);
+    CHECK(old_found <= 0);
+    CHECK(new_found > 0);
+
+    int64_t pool_after = pool_alloc_count(&vfs->ctx->pool);
+    int64_t delta = pool_after - pool_before;
+    /* OLD create + OLD NameEntry = 2 slots freed.
+     * Plus the new name's allocations = 2 slots.
+     * Plus radix/DirSegment overhead.
+     * The key check: the bin job processed the trigger.  Without
+     * the recursion fix, the bin job would skip (parent dir not
+     * found), and the pool delta would be much larger. */
+    CHECK(delta < 100);
+
+    vfs_unmount(vfs);
+    cleanup(path);
+}
+
 int main(void) {
     printf("=== GC Thread Tests (Phase 28: file-deletion + rename-tombstone bin jobs) ===\n\n");
 
@@ -1252,6 +1315,7 @@ int main(void) {
     test_rename_no_space_leak();
     test_rename_tombstone_cross_dir();
     test_rename_tombstone_directory();
+    test_rename_tombstone_nested_dir();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

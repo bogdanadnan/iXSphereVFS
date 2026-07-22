@@ -106,11 +106,30 @@ static int walk_dir_recursive_rename(TreeContext* ctx, int64_t dir_vp,
                 if (dc.vptr == VFS_VPTR_NULL) break;
                 int64_t child = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_CHILDPTR, ctx->page_size);
                 int64_t dc_next = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_NEXTPTR, ctx->page_size);
+                int64_t name_ptr = vfs_rd8_s(dc.bytes, DIRCONTENT_OFF_NAMEPTR, ctx->page_size);
                 pool_release(&ctx->pool, &dc);
                 if (child == file_vp) {
                     *out_found = 1;
                     *out_parent = dir_vp;
                     return VFS_OK;
+                }
+                /* Recurse into subdirs to find the file.  We
+                 * recurse on any non-tombstone child (name_ptr != 0)
+                 * with child_ptr != 0.  If the child is a FileNode
+                 * (not a DirNode), the recursion's pool_acquire on
+                 * DirNode_OFF_HEADPTR will fail gracefully (returns
+                 * 0 head), and the recursion will return VFS_OK
+                 * without recursing further.  Per the file-deletion
+                 * bin job's walk_dir_recursive (gc_bin_file_deleted.c
+                 * line 534-540).  Without this recursion, files in
+                 * nested directories (depth > 1 from root) would
+                 * not be found by the rename bin job, and the OLD
+                 * create + OLD NameEntry would leak. */
+                if (name_ptr != 0 && child != 0 && child != file_vp) {
+                    int err = walk_dir_recursive_rename(ctx, child,
+                                                          file_vp, out_found,
+                                                          out_parent);
+                    if (err != VFS_OK && err != VFS_ERR_NOTFOUND) return err;
                 }
                 dc_vp = dc_next;
             }
