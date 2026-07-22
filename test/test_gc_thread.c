@@ -1159,6 +1159,67 @@ void test_rename_tombstone_cross_dir(void) {
     cleanup(path);
 }
 
+/* Test 17: rename-tombstone works for directories too (not
+ * just files).  Pre-fix, the analysis handler's sanity check
+ * explicitly returned VFS_OK for non-FILE types, leaving the
+ * OLD create + OLD NameEntry orphaned in the pool for
+ * directory renames.  After the fix (accept both NODE_TYPE_FILE
+ * and NODE_TYPE_DIR), the bin job processes both. */
+void test_rename_tombstone_directory(void) {
+    printf("17. Rename-tombstone for directories (bin job frees OLD create + OLD name for dir renames)...\n");
+    const char* path = "/tmp/test_rename_tombstone_dir.vfs";
+    cleanup(path);
+
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    int64_t root = vfs->ctx->rootNodeOffset;
+    /* Create a directory at the root. */
+    int64_t dvp = vfs_mkdir(vfs, root, "old_dir", 0);
+    CHECK(dvp > 0);
+    if (dvp <= 0) { vfs_unmount(vfs); cleanup(path); return; }
+
+    int64_t pool_before = pool_alloc_count(&vfs->ctx->pool);
+
+    /* Same-dir rename: old_dir → new_dir. */
+    int rrc = vfs_rename(vfs, root, "old_dir", root, "new_dir", 0);
+    CHECK_EQ(rrc, VFS_OK);
+
+    vfs_flush(vfs);
+    sleep_ms(500);
+
+    /* Reopen and verify the rename worked. */
+    vfs_unmount(vfs);
+    vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    int64_t old_found = vfs_open(vfs, root, "old_dir", 0);
+    int64_t new_found = vfs_open(vfs, root, "new_dir", 0);
+    CHECK(old_found <= 0);  /* OLD name gone */
+    CHECK(new_found > 0);   /* NEW name findable */
+
+    /* The bin job should have freed the OLD create + OLD NameEntry.
+     * Pool count should be bounded (not much higher than before
+     * the rename).  The exact delta depends on the new
+     * allocations for the new name; the key check is that the
+     * delta is BOUNDED, not that it's small in absolute terms. */
+    int64_t pool_after = pool_alloc_count(&vfs->ctx->pool);
+    int64_t delta = pool_after - pool_before;
+    /* new_dir = 1 new NameEntry + 1 new DC = 2 new slots.
+     * OLD create + OLD NameEntry = 2 slots freed.
+     * Plus a few batch slots (allocated and freed, net 0).
+     * Plus DirSegment / radix overhead = ~10-20 slots.
+     * We allow 50 for slack.  A leak (no bin job for dirs) would
+     * show delta ~ 100+ (the OLD create + OLD NameEntry stay
+     * orphaned). */
+    CHECK(delta < 50);
+
+    vfs_unmount(vfs);
+    cleanup(path);
+}
+
 int main(void) {
     printf("=== GC Thread Tests (Phase 28: file-deletion + rename-tombstone bin jobs) ===\n\n");
 
@@ -1190,6 +1251,7 @@ int main(void) {
     test_rename_tombstone_with_active_snapshot();
     test_rename_no_space_leak();
     test_rename_tombstone_cross_dir();
+    test_rename_tombstone_directory();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

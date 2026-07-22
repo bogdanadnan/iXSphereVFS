@@ -461,10 +461,26 @@ int gc_handle_rename_done(vfs_t* vfs, const BinEntry* entry) {
     }
     uint32_t file_child_id = (uint32_t)vfs_rd4_s(file_slot.bytes,
                                                   FILENODE_OFF_NODEID, ctx->page_size);
+    /* The "file" slot can be either a FileNode (for files) or a
+     * DirNode (for directories).  Both layouts put the type at
+     * offset 0 (FILENODE_OFF_TYPE == DIRNODE_OFF_TYPE) and the
+     * childId at offset 4.  The bin job's dir-entry cleanup is
+     * identical for both: find the SlotNode (keyed by childId)
+     * in the parent, walk the chain, CAS-remove the create +
+     * tombstone, free the OLD NameEntry.  The file vs dir
+     * distinction does not affect the chain walk.
+     *
+     * The type check below is a SAFETY check for VP reuse (if
+     * the slot was freed and reused for an unrelated node with
+     * a different layout).  We accept FILE and DIR; anything
+     * else (e.g., a future node type) is treated as VP reuse
+     * and skipped.  Per the W3 review follow-up (renaming
+     * directories also needs the bin job). */
     int16_t file_type = (int16_t)vfs_rd2_s(file_slot.bytes, FILENODE_OFF_TYPE, ctx->page_size);
     pool_release(&ctx->pool, &file_slot);
-    if (file_type != (int16_t)NODE_TYPE_FILE) {
-        return VFS_OK;  /* slot reused; no-op */
+    if (file_type != (int16_t)NODE_TYPE_FILE &&
+        file_type != (int16_t)NODE_TYPE_DIR) {
+        return VFS_OK;  /* slot reused for unknown type; no-op */
     }
 
     /* 2. Determine reference points. */
