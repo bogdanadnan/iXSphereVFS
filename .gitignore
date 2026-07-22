@@ -448,3 +448,34 @@ cmake_install.cmake
 CMakeCache.txt
 CTestTestfile.cmake
 Makefile
+
+# Stray CMake build artifacts in the project root (binaries
+# should go in build/, not the root).  The default RUNTIME_OUTPUT
+# for CMake puts executables in the cwd, so if you run
+# 'cmake . && make' from the project root, the binaries end
+# up here.  Ignore them.
+/test_bin
+/test_c6_debug
+/test_crash
+/test_epoch
+/test_fuzz
+/test_gc
+/test_gc_thread
+/test_hash_map
+/test_mapper
+/test_nodes
+/test_pool
+/test_resolve_path
+/test_storage
+/test_tree
+/test_var_array
+/vfs_bench
+/vfs_fuse
+/vfs_test
+/vfs_walk
+/vfsctl
+/libixsphere_vfs.a
+/*.o
+/*.so
+/*.dylib
+
