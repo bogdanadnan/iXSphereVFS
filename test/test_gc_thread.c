@@ -1283,6 +1283,86 @@ void test_rename_tombstone_nested_dir(void) {
     cleanup(path);
 }
 
+/* Test 19: rename-tombstone for files in nested dirs WITH an
+ * active snapshot.  This is the "end-to-end" test that closes
+ * the loop on the recursion fix:
+ *   - The file is at depth 2 (root/dirA/subdir/file.txt), so
+ *     walk_dir_recursive_rename must recurse to find the parent.
+ *   - The snapshot is taken BEFORE the rename, so the OLD
+ *     create is still reachable at the snapshot epoch.  The
+ *     bin job must keep the OLD create (NOT free it), and the
+ *     OLD NameEntry is also kept (referenced by the OLD create).
+ *   - The rename pushes a BIN_TRIGGER_TOMBSTONE_ADDED; the
+ *     analysis runs, finds the OLD create is reachable at
+ *     snap, and returns VFS_OK without pushing a work entry.
+ *
+ * Without the recursion fix, the analysis fails to find the
+ * parent dir, returns "not found" and skips entirely — the
+ * bin job does nothing, but in this test the bin job SHOULD
+ * do nothing (the OLD create is reachable at snap).  So this
+ * test passes either way for the snapshot case.  The previous
+ * nested-dir test (test 18) covers the no-snapshot case where
+ * the bin job MUST do something.  Together they cover both
+ * branches of the recursion fix.
+ *
+ * The key check is the visibility:
+ *   - At the snapshot epoch: OLD name findable, NEW name NOT.
+ *   - At the head epoch: NEW name findable, OLD name NOT. */
+void test_rename_tombstone_nested_dir_with_snapshot(void) {
+    printf("19. Rename-tombstone for files in nested dirs WITH active snapshot (OLD create kept at snap)...\n");
+    const char* path = "/tmp/test_rename_tombstone_nested_snap.vfs";
+    cleanup(path);
+
+    vfs_t* vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    int64_t root = vfs->ctx->rootNodeOffset;
+    int64_t dir_a = vfs_mkdir(vfs, root, "dirA", 0);
+    int64_t dir_sub = vfs_mkdir(vfs, dir_a, "subdir", 0);
+    CHECK(dir_a > 0);
+    CHECK(dir_sub > 0);
+    if (dir_a <= 0 || dir_sub <= 0) { vfs_unmount(vfs); cleanup(path); return; }
+
+    int64_t fvp = vfs_create(vfs, dir_sub, "snap_nested.dat", 0);
+    CHECK(fvp > 0);
+    if (fvp <= 0) { vfs_unmount(vfs); cleanup(path); return; }
+
+    /* Take a snapshot before the rename. */
+    int64_t snap = vfs_snapshot(vfs);
+    CHECK(snap > 0 && (snap & 1) == 1);
+
+    int64_t head_epoch = vfs->ctx->currentEpoch;
+    CHECK(head_epoch == snap + 1);
+
+    /* Rename at the head (currentEpoch = snap + 1). */
+    int rrc = vfs_rename(vfs, dir_sub, "snap_nested.dat", dir_sub,
+                          "renamed_snap.dat", head_epoch);
+    CHECK_EQ(rrc, VFS_OK);
+
+    vfs_flush(vfs);
+    sleep_ms(500);
+
+    /* Reopen and verify. */
+    vfs_unmount(vfs);
+    vfs = vfs_mount(path, 8192);
+    CHECK(vfs != NULL);
+    if (!vfs) { cleanup(path); return; }
+
+    int64_t h_old = vfs_open(vfs, dir_sub, "snap_nested.dat", head_epoch);
+    int64_t h_new = vfs_open(vfs, dir_sub, "renamed_snap.dat", head_epoch);
+    int64_t s_old = vfs_open(vfs, dir_sub, "snap_nested.dat", snap);
+    int64_t s_new = vfs_open(vfs, dir_sub, "renamed_snap.dat", snap);
+
+    CHECK(h_old <= 0);  /* OLD name hidden at head */
+    CHECK(h_new > 0);   /* NEW name findable at head */
+    CHECK(s_old > 0);   /* OLD name STILL findable at snapshot */
+    CHECK(s_new <= 0);  /* NEW name hidden at snapshot */
+
+    vfs_unmount(vfs);
+    cleanup(path);
+}
+
 int main(void) {
     printf("=== GC Thread Tests (Phase 28: file-deletion + rename-tombstone bin jobs) ===\n\n");
 
@@ -1316,6 +1396,7 @@ int main(void) {
     test_rename_tombstone_cross_dir();
     test_rename_tombstone_directory();
     test_rename_tombstone_nested_dir();
+    test_rename_tombstone_nested_dir_with_snapshot();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
