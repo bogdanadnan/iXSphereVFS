@@ -479,3 +479,16 @@ Makefile
 /*.so
 /*.dylib
 
+# Spec/spec-review and spec/impl-review files are working
+# documents for the review cycle, not part of the deliverables.
+# Only the final spec (e.g., impl/phase-NN-*.md) lands in
+# the repo.  Review files are kept locally (or in trash) but
+# never committed.
+# Examples that SHOULD be ignored:
+#   PHASE28_BINJOB_FILEDEL_IMPL_REVIEW.md
+#   PHASE28_BINJOB_RENAME_REVIEW.md
+#   PHASE28_BINJOB_RENAME_IMPL_REVIEW.md
+/_REVIEW*.md
+PHASE*_REVIEW*.md
+
+
